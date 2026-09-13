@@ -17,6 +17,7 @@ pub mod content_capture;
 pub mod content_playout;
 pub mod content_sender;
 pub mod crypto;
+pub mod device;
 pub mod error;
 pub mod feature_trust;
 pub mod file_transfer;

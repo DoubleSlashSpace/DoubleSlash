@@ -48,6 +48,7 @@ graph TD
 
         subgraph ID_LAYER["Identity & Crypto"]
             ID_C[identity.rs — Ed25519 keypair]
+            DEVICE_C["device.rs — device keys / signed registry<br/>foundation; no network integration yet"]
             CRYPTO_C[crypto.rs — HKDF / AES-GCM]
             HS_C[handshake.rs]
             TLS_C[quic_tls.rs — self-signed cert]

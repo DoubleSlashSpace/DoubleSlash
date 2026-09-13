@@ -119,8 +119,8 @@ impl Identity {
     ///
     /// `info` is a domain-separation label (use `"conquerd-store/<name>/v<n>"`).
     pub fn derive_store_key(&self, info: &str) -> Result<[u8; 32]> {
-        let seed = self.signing.to_bytes();
-        hkdf_derive_key(&seed, info.as_bytes())
+        let seed = Zeroizing::new(self.signing.to_bytes());
+        hkdf_derive_key(seed.as_ref(), info.as_bytes())
     }
 
     /// Derive the deterministic pairwise key shared with `peer_identity_pub_b64`

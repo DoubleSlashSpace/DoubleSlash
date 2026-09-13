@@ -185,18 +185,22 @@ impl ChatStore {
         let path = db_path
             .map(Path::to_path_buf)
             .unwrap_or_else(|| default_dir.join(CHAT_DB_FILENAME));
+        let key = identity.derive_store_key(CHAT_STORE_LABEL)?;
+        Self::open_with_key(&key, &path)
+    }
 
+    /// Open with the history subkey, without granting identity signing authority.
+    pub fn open_with_key(key: &[u8; 32], path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        let conn = Connection::open(&path)?;
+        let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
 
-        let key = identity.derive_store_key(CHAT_STORE_LABEL)?;
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
-            key,
+            key: *key,
         };
         store.migrate()?;
         // At process start nothing is genuinely in flight: any self-authored

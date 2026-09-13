@@ -58,6 +58,8 @@ fn backup_restores_identity_wal_history_hidden_rooms_and_attachments() -> anyhow
     let source = tempfile::tempdir()?;
     let destination = tempfile::tempdir()?;
     let archive = source.path().join("backup.dbackup");
+    let original_device =
+        crate::device::DeviceKey::load_or_create(&Identity::from_seed(&[7; 32])?, source.path())?;
     let summary = fixture(source.path(), true)?.write(&archive, PASSWORD)?;
     assert_eq!(summary.messages, 1);
     assert_eq!(summary.attachments, 1);
@@ -70,6 +72,9 @@ fn backup_restores_identity_wal_history_hidden_rooms_and_attachments() -> anyhow
     prepared.commit(&restored, LOCAL_PASSWORD)?;
     let identity = Identity::load_with_passphrase(LOCAL_PASSWORD, &restored)?;
     assert_eq!(identity.public_id(), summary.public_id);
+    assert!(!restored.join("device-key.dat").exists());
+    let restored_device = crate::device::DeviceKey::load_or_create(&identity, &restored)?;
+    assert_ne!(original_device.id(), restored_device.id());
     assert!(Identity::load_with_passphrase(PASSWORD, &restored).is_err());
     let peers = PeerStore::open(&identity, Some(&restored.join("peers.dat")))?;
     assert!(peers.get("friend").is_some_and(|p| p.blocked));

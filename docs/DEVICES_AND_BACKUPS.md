@@ -92,6 +92,24 @@ remains a developer helper for debug builds, not the recommended user flow.
 
 ## Remaining device-linking work
 
+The current development groundwork is in `src/device.rs`: independent Ed25519
+device keys, an identity-signed device registry, permanent revocation tombstones,
+monotonic version checks, same-version fork detection, and possession proofs bound
+to a challenge and handshake transcript. This library is **not yet wired into
+session startup or network authentication**. Nothing advertises multi-device
+support yet. `DeviceKey::load_or_create` offers encrypted, atomic owner-profile
+persistence; `device-key.dat` is deliberately excluded from portable backups so
+restoring creates a distinct endpoint key. Registry snapshots can be encoded and
+verified, but durable trust-store integration is still required before use on the
+network. Callers must pin the contact identity independently and persist accepted
+versions; signature validity alone does not establish trust or freshness.
+
+Peer, room and chat stores now also accept their individual storage subkeys through
+`open_with_key`, so opening them no longer requires possession of an `Identity`.
+Existing entry points and file formats remain compatible. This separates access
+to local data from signing authority at the API boundary; it does not yet implement
+a companion credential vault or distribute keys to another device.
+
 The backup format deliberately does not masquerade as a device credential.
 Current stores derive encryption keys from the identity signing seed. Before
 linking a phone without granting it full identity authority, introduce portable
@@ -123,6 +141,12 @@ committed SQLite data, attachments spanning frames, hidden rooms, block state,
 wrong passwords, tampering, truncation, trailing bytes, frame reordering, path
 validation, source-file changes, non-overwrite publication, preview tokens,
 profile isolation and staging cleanup.
+
+Device groundwork tests cover two keys under one identity, wrong-identity and
+tampered registries, revocation, rollback, conflicting registries, transcript and
+challenge binding, malformed keys/names, bounded documents, concurrent key-file
+creation, encrypted persistence, and existing-store access after dropping the
+identity seed. Backup tests also verify that restore does not clone a device key.
 
 `scripts/test_backup_wizard.ps1` runs the shipping desktop wizard with a mocked
 backend under Qt Quick Test, including preview confirmation, password clearing,

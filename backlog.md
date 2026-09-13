@@ -478,8 +478,10 @@ exchanged, no message sent, no supernode reached from the device.
    rationale turns every direct LAN session into a relayed one, with no error to explain
    it. Do not declare the permission early — declaring it is what revokes the implicit grant.
 
-11. **Multi-device (one identity, several live endpoints).** Not supported, and the failure is
-   silent rather than refused. `relay.rs` (`peers.insert`), `signaling.rs` (`register_quic_sender`)
+11. **Multi-device (one identity, several live endpoints).** Not supported. The local
+   `device.rs` credential/registry groundwork and explicit storage-subkey constructors
+   are present but not wired into network sessions yet. The failure remains silent
+   rather than refused. `relay.rs` (`peers.insert`), `signaling.rs` (`register_quic_sender`)
    and the endpoint mailbox all key on identity alone, so a second live connection evicts the
    first; room group keys are sealed per *member identity* to one signaling target, so the losing
    device fails closed and sees nothing. Real support needs per-device subkeys under the identity

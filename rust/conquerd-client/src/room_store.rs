@@ -157,9 +157,14 @@ impl RoomStore {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| default_dir.join(ROOM_STORE_FILE));
         let key = identity.derive_store_key(ROOM_STORE_LABEL)?;
+        Self::open_with_key(&key, &path)
+    }
+
+    /// Open with the rooms subkey, without granting identity signing authority.
+    pub fn open_with_key(key: &[u8; 32], path: &Path) -> Result<Self> {
         let mut store = Self {
-            file_path: path,
-            key,
+            file_path: path.to_owned(),
+            key: *key,
             rooms: HashMap::new(),
             deleted_ids: HashSet::new(),
             spaces: HashMap::new(),

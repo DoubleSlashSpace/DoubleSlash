@@ -520,6 +520,8 @@ Update `agents.md` (this section) in the same change as any signing-related work
 
 ### Process
 
+- Multi-device groundwork now provides independent device keys, identity-signed registries, revocation/rollback/fork validation and transcript-bound possession proofs in `src/device.rs`; store `open_with_key` APIs separate local-data access from identity signing authority. These APIs are not wired into live sessions or capability advertisements. Registry persistence, device-aware routing, pairing, room key delivery, calls and history sync remain pending; simultaneous use is still unsupported. Backup restore must not copy `device-key.dat`.
+
 - Devices & Backups first delivery adds a shared streaming encrypted archive, validated staged restore, selectable preserved profiles, and desktop/Android wizards. The archive and its own password recover the identity without the old passphrase/keyfile/keyring. Qt settings remain pinned to their loaded profile across selection; Android JNI handles are registry IDs so stopping a session cannot invalidate an export's store references. File-based moves still require one live device per identity. Device subkeys, storage-key separation, device-aware routing and continuous sync remain open; see `docs/DEVICES_AND_BACKUPS.md`. Real-device cross-platform restore acceptance remains required.
 
 - Portal showcase expanded to seven bundled demos on 2026-09-12: Task Board, Focus Timer, Four in a Row and Memory Match join the existing three. Their bounded, repeated snapshots are ephemeral; concurrent edits resolve by version and guest ID. Focus Timer assumes synchronized device clocks. Real-device QUIC acceptance remains a separate check from the local browser fixtures.
