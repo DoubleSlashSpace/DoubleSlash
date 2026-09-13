@@ -2,7 +2,7 @@
 
 import QtQuick
 import QtQuick.Controls
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Item {
     id: root
@@ -120,7 +120,7 @@ Item {
 
         Image {
             anchors.centerIn: parent
-            source: "qrc:/qt/qml/ConquerD/Client/icons/mic-off.svg"
+            source: "qrc:/qt/qml/DoubleSlash/Client/icons/mic-off.svg"
             sourceSize.width: 12
             sourceSize.height: 12
             width: 12
@@ -175,7 +175,7 @@ Item {
 
         Image {
             anchors.centerIn: parent
-            source: "qrc:/qt/qml/ConquerD/Client/icons/video.svg"
+            source: "qrc:/qt/qml/DoubleSlash/Client/icons/video.svg"
             sourceSize.width: 12
             sourceSize.height: 12
             width: 12

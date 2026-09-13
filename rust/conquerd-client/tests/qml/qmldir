@@ -1,4 +1,4 @@
-module ConquerD.Client
+module DoubleSlash.Client
 singleton Theme 1.0 Theme.qml
 StyledButton 1.0 StyledButton.qml
 StyledTextField 1.0 StyledTextField.qml

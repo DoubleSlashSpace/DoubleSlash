@@ -9,7 +9,7 @@ pages. See the [shared app guide](../README.md) for session controls and limits.
 
 ## Requirements
 
-- Native ConquerD client + trusted supernode with `game.relay.v1` and `web.host.app.v1`.
+- Native DoubleSlash client + trusted supernode with `game.relay.v1` and `web.host.app.v1`.
 
 ## Open
 

@@ -1,4 +1,4 @@
-// FilePreviewPanel.qml — Inline file preview using the secure ConquerdWebView.
+// FilePreviewPanel.qml — Inline file preview using the secure DoubleSlashWebView.
 //
 // Renders received files in a local Chromium surface:
 //   • Images, PDF, HTML, text, code files → loaded via file:// URL directly.
@@ -18,7 +18,7 @@
 import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Item {
     id: root
@@ -83,7 +83,7 @@ Item {
                 }
 
                 ToolButton {
-                    icon.source: "qrc:/qt/qml/ConquerD/Client/icons/globe.svg"
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
                     icon.width: 14
                     icon.height: 14
                     icon.color: Theme.accent
@@ -96,7 +96,7 @@ Item {
                 }
 
                 ToolButton {
-                    icon.source: "qrc:/qt/qml/ConquerD/Client/icons/close.svg"
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                     icon.width: 12
                     icon.height: 12
                     icon.color: Theme.muted
@@ -116,7 +116,7 @@ Item {
                 left: parent.left; right: parent.right; bottom: parent.bottom
             }
 
-            ConquerdWebView {
+            DoubleSlashWebView {
                 id: _webView
                 anchors.fill: parent
                 allowAll: false
@@ -131,7 +131,7 @@ Item {
 
                 EmptyState {
                     Layout.alignment: Qt.AlignHCenter
-                    iconSource: "qrc:/qt/qml/ConquerD/Client/icons/attach.svg"
+                    iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/attach.svg"
                     iconSize: 32
                     title: "No preview available"
                     subtitle: root._fileName

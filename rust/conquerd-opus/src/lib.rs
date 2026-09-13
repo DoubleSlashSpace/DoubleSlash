@@ -1,4 +1,4 @@
-//! `conquerd-opus`: first-party libopus wrapper for ConquerD.
+//! `conquerd-opus`: first-party libopus wrapper for DoubleSlash.
 //!
 //! Builds libopus from the official [xiph/opus](https://github.com/xiph/opus)
 //! git submodule, exposes a safe Rust API, and supports the DNN model weights
@@ -67,7 +67,7 @@ pub enum Application {
     /// Optimised for speech intelligibility in VoIP applications.
     ///
     /// Applies voice-activity detection, SILK layer tuning, and in-band FEC.
-    /// Recommended for ConquerD voice calls.
+    /// Recommended for DoubleSlash voice calls.
     Voip,
 
     /// Optimised for musical or broadcast audio where input fidelity matters

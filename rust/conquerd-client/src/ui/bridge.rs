@@ -28,7 +28,7 @@ use crate::call_controller::CallCommand;
 use crate::connection_manager::{ConnectionCommand, ConnectionEvent};
 use crate::sfu_client::SfuCommand;
 
-/// The main QObject singleton exposed to QML as `ConquerD.Client::AppBridge`.
+/// The main QObject singleton exposed to QML as `DoubleSlash.Client::AppBridge`.
 #[cxx_qt::bridge]
 pub mod ffi {
     unsafe extern "C++" {
@@ -243,7 +243,7 @@ pub mod ffi {
         fn pasteInvite(self: Pin<&mut AppBridge>, url: &QString);
 
         /// Append a QML-originated diagnostic line to the client log (visible in
-        /// `~/.conquerd/logs/conquerd-client.log` at info level).
+        /// `~/.doubleslash/logs/doubleslash-client.log` at info level).
         #[qinvokable]
         #[rust_name = "log_event"]
         fn logEvent(self: Pin<&mut AppBridge>, message: &QString);

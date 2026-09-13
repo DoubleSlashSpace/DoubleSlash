@@ -12,7 +12,7 @@ use crate::identity::Identity;
 /// Protocol version.
 pub const PROTOCOL_VERSION: u32 = 2;
 
-/// All message types in the ConquerD protocol.
+/// All message types in the DoubleSlash protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MessageType {
     // Auth

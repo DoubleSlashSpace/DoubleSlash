@@ -5,7 +5,7 @@
       cleanly at launch. NoActionBar because the app draws its own top bars,
       and a translucent status bar so edge-to-edge content sits under it.
     -->
-    <style name="Theme.ConquerD" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.DoubleSlash" parent="android:Theme.Material.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowBackground">@color/background</item>

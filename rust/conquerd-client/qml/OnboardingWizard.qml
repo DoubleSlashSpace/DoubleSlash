@@ -3,7 +3,7 @@
 import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Dialog {
     id: root
@@ -117,7 +117,7 @@ Dialog {
                 spacing: Theme.spacingMd
 
                 Image {
-                    source: "qrc:/qt/qml/ConquerD/Client/icons/logo.svg"
+                    source: "qrc:/qt/qml/DoubleSlash/Client/icons/logo.svg"
                     sourceSize.width: 36
                     sourceSize.height: 36
                     Layout.preferredWidth: 36
@@ -170,7 +170,7 @@ Dialog {
                 Item { Layout.fillHeight: true }
 
                 Image {
-                    source: "qrc:/qt/qml/ConquerD/Client/icons/lock.svg"
+                    source: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg"
                     sourceSize.width: 52
                     sourceSize.height: 52
                     Layout.preferredWidth: 52
@@ -307,7 +307,7 @@ Dialog {
 
                         StyledButton {
                             text: root.copiedPublicId ? "Copied" : "Copy"
-                            icon.source: "qrc:/qt/qml/ConquerD/Client/icons/clipboard.svg"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
                             success: root.copiedPublicId
                             Layout.alignment: Qt.AlignTop
                             onClicked: {
@@ -483,7 +483,7 @@ Dialog {
 
                         StyledButton {
                             text: "Accept"
-                            icon.source: "qrc:/qt/qml/ConquerD/Client/icons/connect.svg"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/connect.svg"
                             enabled: incomingInviteField.text.trim().length > 0
                             onClicked: {
                                 if (root.appBackend) root.appBackend.pasteInvite(incomingInviteField.text.trim())
@@ -535,7 +535,7 @@ Dialog {
 
                         StyledButton {
                             text: "Generate"
-                            icon.source: "qrc:/qt/qml/ConquerD/Client/icons/invite.svg"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
                             onClicked: {
                                 if (root.appBackend) {
                                     root.generatedInvite = root.appBackend.generateInvite()
@@ -546,7 +546,7 @@ Dialog {
 
                         StyledButton {
                             text: root.copiedInvite ? "Copied" : "Copy"
-                            icon.source: "qrc:/qt/qml/ConquerD/Client/icons/clipboard.svg"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
                             enabled: root.generatedInvite !== ""
                             success: root.copiedInvite
                             onClicked: {

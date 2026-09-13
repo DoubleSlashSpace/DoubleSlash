@@ -344,7 +344,7 @@ fn spawn_event_pump(
     my_public_id: String,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
-        .name("conquerd-events".to_owned())
+        .name("doubleslash-events".to_owned())
         .spawn(move || {
             let mut guard = match sink.attach() {
                 Ok(g) => g,

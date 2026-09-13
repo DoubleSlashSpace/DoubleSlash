@@ -3,7 +3,7 @@
 import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Rectangle {
     id: root
@@ -46,7 +46,7 @@ Rectangle {
 
         // Mute toggle
         Button {
-            icon.source: root.muted ? "qrc:/qt/qml/ConquerD/Client/icons/mic-off.svg" : "qrc:/qt/qml/ConquerD/Client/icons/mic.svg"
+            icon.source: root.muted ? "qrc:/qt/qml/DoubleSlash/Client/icons/mic-off.svg" : "qrc:/qt/qml/DoubleSlash/Client/icons/mic.svg"
             icon.width: 18
             icon.height: 18
             flat: true
@@ -60,7 +60,7 @@ Rectangle {
         }
 
         ToolButton {
-            icon.source: "qrc:/qt/qml/ConquerD/Client/icons/x-circle.svg"
+            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg"
             icon.width: 16
             icon.height: 16
             icon.color: Theme.danger

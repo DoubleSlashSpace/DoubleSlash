@@ -1,4 +1,4 @@
-# Preflight helper for ConquerD's Ollama integration (HTTP only, no client binary).
+# Preflight helper for DoubleSlash's Ollama integration (HTTP only, no client binary).
 # Usage:
 #   .\scripts\test_ollama_api.ps1
 #   .\scripts\test_ollama_api.ps1 -BaseUrl http://127.0.0.1:11434

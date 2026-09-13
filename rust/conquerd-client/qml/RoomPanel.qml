@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Item {
     id: root
@@ -437,7 +437,7 @@ Item {
                         spacing: Theme.spacingXs
 
                         Image {
-                            source: "qrc:/qt/qml/ConquerD/Client/icons/phone.svg"
+                            source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
                             sourceSize.width: 14
                             sourceSize.height: 14
                             width: 14
@@ -477,7 +477,7 @@ Item {
                         spacing: Theme.spacingXs
 
                         Image {
-                            source: "qrc:/qt/qml/ConquerD/Client/icons/peers.svg"
+                            source: "qrc:/qt/qml/DoubleSlash/Client/icons/peers.svg"
                             sourceSize.width: 15
                             sourceSize.height: 15
                             width: 15
@@ -551,7 +551,7 @@ Item {
                 anchors.centerIn: parent
                 visible: roomChatModel.count === 0
                 width: Math.min(parent.width - Theme.spacingXl, 200)
-                iconSource: "qrc:/qt/qml/ConquerD/Client/icons/speech.svg"
+                iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
                 iconSize: 36
                 title: "Room chat"
                 subtitle: "Messages from room members appear here."
@@ -736,7 +736,7 @@ Item {
                         anchors.centerIn: parent
                         visible: membersList.count === 0
                         width: Math.min(parent.width - Theme.spacingLg, 150)
-                        iconSource: "qrc:/qt/qml/ConquerD/Client/icons/peers.svg"
+                        iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/peers.svg"
                         iconSize: 28
                         title: "No one else here"
                         subtitle: "Members appear as they join."

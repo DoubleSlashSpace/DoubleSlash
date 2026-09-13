@@ -2,7 +2,7 @@
 //
 // Usage:
 //   SidebarItem {
-//       iconSource: "qrc:/qt/qml/ConquerD/Client/icons/speech.svg"
+//       iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
 //       label: "Chat"
 //       badge: 3        // 0 = no badge
 //       selected: true
@@ -12,7 +12,7 @@
 import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 ItemDelegate {
     id: root

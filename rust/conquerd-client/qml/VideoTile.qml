@@ -13,8 +13,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtMultimedia
-import ConquerD.Native 1.0
-import ConquerD.Client 1.0
+import DoubleSlash.Native 1.0
+import DoubleSlash.Client 1.0
 
 Item {
     id: root
@@ -230,7 +230,7 @@ Item {
                 color: popoutHover.hovered ? Qt.rgba(0, 0, 0, 0.85) : Qt.rgba(0, 0, 0, 0.6)
                 Image {
                     anchors.centerIn: parent
-                    source: "qrc:/qt/qml/ConquerD/Client/icons/popout.svg"
+                    source: "qrc:/qt/qml/DoubleSlash/Client/icons/popout.svg"
                     sourceSize.width: 14; sourceSize.height: 14
                     width: 14; height: 14
                 }
@@ -259,7 +259,7 @@ Item {
 
                 Image {
                     anchors.centerIn: parent
-                    source: "qrc:/qt/qml/ConquerD/Client/icons/headphone.svg"
+                    source: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
                     sourceSize.width: 14; sourceSize.height: 14
                     width: 14; height: 14
                     opacity: root.contentMuted ? 0.5 : 1.0
@@ -331,7 +331,7 @@ Item {
 
                 Image {
                     anchors.centerIn: parent
-                    source: "qrc:/qt/qml/ConquerD/Client/icons/close.svg"
+                    source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                     sourceSize.width: 14; sourceSize.height: 14
                     width: 14; height: 14
                 }

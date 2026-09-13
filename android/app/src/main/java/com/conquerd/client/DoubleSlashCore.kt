@@ -19,7 +19,7 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
-private const val TAG = "ConquerdCore"
+private const val TAG = "DoubleSlashCore"
 
 /**
  * The app's single handle on the Rust client core.
@@ -28,7 +28,7 @@ private const val TAG = "ConquerdCore"
  * starting a second one against the same directory would have two SQLite
  * writers and two QUIC endpoints claiming the same identity.
  */
-class ConquerdCore private constructor(context: Context) : NativeCore.EventSink {
+class DoubleSlashCore private constructor(context: Context) : NativeCore.EventSink {
 
     private val appContext = context.applicationContext
 
@@ -39,7 +39,17 @@ class ConquerdCore private constructor(context: Context) : NativeCore.EventSink 
      * message history, and app-private storage is the only location Android
      * keeps out of reach of other apps without extra permissions.
      */
-    private val homeDir: String get() = appContext.filesDir.resolve("conquerd").absolutePath
+    private val profileDir: java.io.File
+        get() {
+            val neu = appContext.filesDir.resolve("doubleslash")
+            val old = appContext.filesDir.resolve("conquerd")
+            return when {
+                neu.exists() -> neu
+                old.exists() -> old
+                else -> neu
+            }
+        }
+    private val homeDir: String get() = profileDir.absolutePath
 
     @Volatile
     private var handle: Long = 0L
@@ -102,7 +112,7 @@ class ConquerdCore private constructor(context: Context) : NativeCore.EventSink 
             if (backupBusy) return@withContext Result.failure(IllegalStateException("A backup operation is still running"))
             if (isRunning) return@withContext Result.success(Unit)
             runCatching {
-                appContext.filesDir.resolve("conquerd").mkdirs()
+                profileDir.mkdirs()
                 val started =
                     NativeCore.nativeStart(
                         homeDir,
@@ -110,7 +120,7 @@ class ConquerdCore private constructor(context: Context) : NativeCore.EventSink 
                         keyfilePath,
                         storedKey,
                         appContext,
-                        this@ConquerdCore,
+                        this@DoubleSlashCore,
                     )
                 check(started != 0L) { "the core returned no handle" }
                 Log.i(TAG, "core started, version ${version()}")
@@ -211,11 +221,11 @@ class ConquerdCore private constructor(context: Context) : NativeCore.EventSink 
 
     companion object {
         @Volatile
-        private var instance: ConquerdCore? = null
+        private var instance: DoubleSlashCore? = null
 
-        fun get(context: Context): ConquerdCore =
+        fun get(context: Context): DoubleSlashCore =
             instance ?: synchronized(this) {
-                instance ?: ConquerdCore(context).also { instance = it }
+                instance ?: DoubleSlashCore(context).also { instance = it }
             }
 
         private fun failure(reason: String): JsonObject = buildJsonObject {
@@ -277,7 +287,7 @@ fun JsonObject.stringList(key: String): List<String> =
  * gained a field the app cannot read should degrade to an empty screen, not
  * crash the process.
  */
-inline fun <reified T> JsonObject.decodeList(core: ConquerdCore, key: String): List<T> {
+inline fun <reified T> JsonObject.decodeList(core: DoubleSlashCore, key: String): List<T> {
     val array = this[key] ?: return emptyList()
     return runCatching { core.json.decodeFromJsonElement<List<T>>(array) }.getOrDefault(emptyList())
 }

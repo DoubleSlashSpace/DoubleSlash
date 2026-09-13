@@ -1,5 +1,5 @@
 ﻿#!/usr/bin/env bash
-# Start Conquerd as a supernode (headless TURN relay)
+# Start DoubleSlash as a supernode (headless QUIC relay)
 #
 #   supernode_invite_ttl  — invite lifetime in minutes (-1 = never expires)
 #   supernode_port        — TURN relay UDP port (default 3478)
@@ -20,7 +20,12 @@
 # Voice is never used — supernodes are headless relays.
 # The invite link will be printed to the console. Share it with peers.
 
-export CONQUERD_HOME="$HOME/.conquerd"
+if [ -d "$HOME/.conquerd" ] && [ ! -d "$HOME/.doubleslash" ]; then
+  export DOUBLESLASH_HOME="${DOUBLESLASH_HOME:-$HOME/.conquerd}"
+else
+  export DOUBLESLASH_HOME="${DOUBLESLASH_HOME:-$HOME/.doubleslash}"
+fi
+export CONQUERD_HOME="${CONQUERD_HOME:-$DOUBLESLASH_HOME}"
 export supernode=1
 export supernode_invite_ttl=-1
 export supernode_port=3478

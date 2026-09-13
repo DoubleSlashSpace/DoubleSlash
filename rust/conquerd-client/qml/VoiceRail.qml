@@ -11,7 +11,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Rectangle {
     id: root
@@ -657,7 +657,7 @@ Rectangle {
 
                     Image {
                         anchors.centerIn: parent
-                        source: root.muted ? "qrc:/qt/qml/ConquerD/Client/icons/mic-off.svg" : "qrc:/qt/qml/ConquerD/Client/icons/mic.svg"
+                        source: root.muted ? "qrc:/qt/qml/DoubleSlash/Client/icons/mic-off.svg" : "qrc:/qt/qml/DoubleSlash/Client/icons/mic.svg"
                         sourceSize.width: 18
                         sourceSize.height: 18
                         width: 18
@@ -702,8 +702,8 @@ Rectangle {
                     Image {
                         anchors.centerIn: parent
                         source: root.videoOn
-                            ? "qrc:/qt/qml/ConquerD/Client/icons/video.svg"
-                            : "qrc:/qt/qml/ConquerD/Client/icons/video-off.svg"
+                            ? "qrc:/qt/qml/DoubleSlash/Client/icons/video.svg"
+                            : "qrc:/qt/qml/DoubleSlash/Client/icons/video-off.svg"
                         sourceSize.width: 18
                         sourceSize.height: 18
                         width: 18
@@ -728,7 +728,7 @@ Rectangle {
 
                         Image {
                             anchors.centerIn: parent
-                            source: "qrc:/qt/qml/ConquerD/Client/icons/headphone.svg"
+                            source: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
                             sourceSize.width: 8; sourceSize.height: 8
                             width: 8; height: 8
                             fillMode: Image.PreserveAspectFit
@@ -1054,7 +1054,7 @@ Rectangle {
 
                     Image {
                         anchors.centerIn: parent
-                        source: "qrc:/qt/qml/ConquerD/Client/icons/x-circle.svg"
+                        source: "qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg"
                         width: 18; height: 18
                         smooth: true
                         antialiasing: true

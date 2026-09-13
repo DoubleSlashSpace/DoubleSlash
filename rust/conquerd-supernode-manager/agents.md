@@ -1,6 +1,6 @@
 # supernode-manager
 
-A standalone Rust CLI + TUI for deploying and operating fleets of `conquerd-supernode` instances over SSH. It lives at `rust/conquerd-supernode-manager/` in the ConquerD repository, in its own Cargo workspace; it is independent of the application crates but targets the same supernode release artifacts.
+A standalone Rust CLI + TUI for deploying and operating fleets of `conquerd-supernode` instances over SSH. It lives at `rust/conquerd-supernode-manager/` in the DoubleSlash repository, in its own Cargo workspace; it is independent of the application crates but targets the same supernode release artifacts.
 
 > **Status (v0.1.0):** Production-tested. Linux remote hosts with systemd are supported end-to-end; cluster provisioning is operational (acdc a/b/c three-node cluster used for live integration testing). Default entry point is an interactive TUI; all operations are also available as CLI subcommands. Remote targets are **Linux + systemd only** — no launchd or Windows-service backends yet.
 
@@ -21,7 +21,7 @@ Let one operator, from a laptop, manage many supernodes:
 
 ## 2. What a supernode needs to run (host contract)
 
-Derived from `rust/conquerd-supernode` in the ConquerD repo (`config.rs`, `manifest.rs`, `main.rs`) and `docs/SUPERNODE.md`. The manager must honor this contract; it does not import ConquerD crates.
+Derived from `rust/conquerd-supernode` in the DoubleSlash repo (`config.rs`, `manifest.rs`, `main.rs`) and `docs/SUPERNODE.md`. The manager must honor this contract; it does not import DoubleSlash application crates.
 
 ### Binary
 
@@ -413,7 +413,7 @@ Compare `VERSION` column hashes after deploy — matching `@` suffix means the s
 
 ## 13a. Testing real supernodes and clusters
 
-The manager is the primary integration-testing tool for the ConquerD supernode. Use it to set up a live cluster, verify cluster state, and debug remotely without logging into VMs.
+The manager is the primary integration-testing tool for the DoubleSlash supernode. Use it to set up a live cluster, verify cluster state, and debug remotely without logging into VMs.
 
 ### Cluster bring-up
 
@@ -473,7 +473,7 @@ If a manifest somehow loses the cluster section (e.g. manual edit), just re-run 
 .\launch.ps1 invite --host acdc --instance a
 ```
 
-Prints the reusable invite URL. Paste the invite into the ConquerD client to join the cluster via node a; the client will receive the full cluster roster in `SUPERNODE_INFO` and can fail over to b or c automatically.
+Prints the reusable invite URL. Paste the invite into the DoubleSlash client to join the cluster via node a; the client will receive the full cluster roster in `SUPERNODE_INFO` and can fail over to b or c automatically.
 
 ---
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Report LLVM line/region coverage % for ConquerD Rust crates (cargo-llvm-cov).
+# Report LLVM line/region coverage % for DoubleSlash Rust crates (cargo-llvm-cov).
 #
 # Run from the repository root:
 #

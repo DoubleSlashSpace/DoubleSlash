@@ -227,7 +227,7 @@ data class Prefs(
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val core = ConquerdCore.get(app)
+    private val core = DoubleSlashCore.get(app)
 
     /** Optional Keystore-backed "stay unlocked" storage. Empty until opted in. */
     private val vault = IdentityVault(app)
@@ -308,7 +308,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** The core handle the portal bridge issues its commands through. */
-    fun portalCore(): ConquerdCore = core
+    fun portalCore(): DoubleSlashCore = core
 
     /**
      * Set the name peers see, and tell them.

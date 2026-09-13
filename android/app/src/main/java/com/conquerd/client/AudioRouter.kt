@@ -131,7 +131,7 @@ class AudioRouter(context: Context) {
     }
 
     private companion object {
-        const val TAG = "ConquerdAudioRoute"
+        const val TAG = "DoubleSlashAudioRoute"
 
         /**
          * Wired output types. USB headsets report as either the headset or the

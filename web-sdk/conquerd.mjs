@@ -191,19 +191,21 @@ export class ConquerdClient {
     get peerId() { return this._peerId; }
 
     async connect() {
-        if (typeof window === "undefined" || !window?.conquerd?.ready) {
+        const bridge = (typeof window !== "undefined")
+            && (window.doubleslash || window.conquerd);
+        if (!bridge?.ready) {
             const err = new Error(
                 "DoubleSlash games require the native in-app portal " +
-                "(d:// + window.conquerd). External browsers are not supported."
+                "(d:// + window.doubleslash). External browsers are not supported."
             );
             this._emit("error", err);
             throw err;
         }
         try {
-            const ctx = await window.conquerd.ready;
+            const ctx = await bridge.ready;
             if (typeof ctx.openChannel !== "function") {
                 throw new Error(
-                    "window.conquerd is missing portal channel APIs — rebuild the native client"
+                    "window.doubleslash is missing portal channel APIs — rebuild the native client"
                 );
             }
             const transport = new PortalNativeTransport(ctx, this.room);
@@ -237,3 +239,5 @@ export class ConquerdClient {
         }
     }
 }
+
+export { ConquerdClient as DoubleSlashClient };

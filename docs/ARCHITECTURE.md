@@ -1,4 +1,4 @@
-# ConquerD Architecture
+# DoubleSlash Architecture
 
 ```mermaid
 graph TD

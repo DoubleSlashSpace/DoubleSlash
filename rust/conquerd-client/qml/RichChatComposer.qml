@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Dialogs
 import QtQuick.Layouts
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Rectangle {
     id: root
@@ -117,7 +117,7 @@ Rectangle {
                 onClicked: root.wrapSelection("`", "`")
             }
             ToolButton {
-                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/chain.svg"
+                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/chain.svg"
                 icon.width: 14
                 icon.height: 14
                 icon.color: Theme.muted
@@ -133,7 +133,7 @@ Rectangle {
             Item { Layout.fillWidth: true }
 
             ToolButton {
-                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/attach.svg"
+                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/attach.svg"
                 icon.width: 16
                 icon.height: 16
                 enabled: root.enabledForTarget && root.fileTransferEnabled
@@ -186,7 +186,7 @@ Rectangle {
             }
 
             ToolButton {
-                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/send.svg"
+                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/send.svg"
                 icon.width: 16
                 icon.height: 16
                 icon.color: composer.text.trim() !== "" && root.enabledForTarget ? Theme.accent : Theme.muted

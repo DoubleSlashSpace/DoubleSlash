@@ -30,7 +30,7 @@ if not exist "%CLIENT_DIR%\Cargo.toml" (
     exit /b 1
 )
 
-echo === ConquerD headless client build ===
+echo === DoubleSlash headless client build ===
 echo Crate:    %CLIENT_DIR%
 echo Target:   %CARGO_TARGET_DIR%
 echo Mode:     %MODE%

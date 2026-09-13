@@ -30,7 +30,8 @@
 #
 # Usage:
 #   ./build_linux.sh             # debug build
-#   CONQUERD_RELEASE=1 ./build_linux.sh  # release build (optimised)
+#   DOUBLESLASH_RELEASE=1 ./build_linux.sh  # release build (optimised)
+#   CONQUERD_RELEASE=1 is still accepted as an alias.
 # ============================================================================
 
 set -euo pipefail
@@ -68,7 +69,7 @@ echo "==> Building DoubleSlash v${VERSION} for Linux"
 
 PROFILE="debug"
 CARGO_FLAGS=""
-if [ "${CONQUERD_RELEASE:-0}" = "1" ]; then
+if [ "${DOUBLESLASH_RELEASE:-${CONQUERD_RELEASE:-0}}" = "1" ]; then
     PROFILE="release"
     CARGO_FLAGS="--release"
 fi
@@ -99,25 +100,34 @@ mkdir -p "$APPDIR/usr/bin"
 mkdir -p "$APPDIR/usr/share/applications"
 mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
-cp "$BINARY" "$APPDIR/usr/bin/conquerd"
+cp "$BINARY" "$APPDIR/usr/bin/doubleslash"
 cp "$INSTALLER_BIN" "$APPDIR/usr/bin/conquerd-installer"
-chmod +x "$APPDIR/usr/bin/conquerd" "$APPDIR/usr/bin/conquerd-installer"
+ln -s doubleslash "$APPDIR/usr/bin/conquerd"
+chmod +x "$APPDIR/usr/bin/doubleslash" "$APPDIR/usr/bin/conquerd-installer"
 
 # Desktop integration
 cp "$ROOT/packaging/AppRun" "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
+cp "$ROOT/packaging/doubleslash.desktop" "$APPDIR/usr/share/applications/doubleslash.desktop"
 cp "$ROOT/packaging/conquerd.desktop" "$APPDIR/usr/share/applications/conquerd.desktop"
-ln -sf usr/share/applications/conquerd.desktop "$APPDIR/conquerd.desktop"
+ln -sf usr/share/applications/doubleslash.desktop "$APPDIR/doubleslash.desktop"
 
 # Icon (PNG)
-if [ -f "$ROOT/assets/conquerd_256.png" ]; then
-    cp "$ROOT/assets/conquerd_256.png" "$APPDIR/conquerd.png"
-    cp "$ROOT/assets/conquerd_256.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/conquerd.png"
-elif [ -f "$ROOT/assets/conquerd.ico" ]; then
-    # Fallback: convert ICO to PNG using ImageMagick if available
+ICON_SRC=""
+if [ -f "$ROOT/assets/doubleslash_256.png" ]; then
+    ICON_SRC="$ROOT/assets/doubleslash_256.png"
+elif [ -f "$ROOT/assets/conquerd_256.png" ]; then
+    ICON_SRC="$ROOT/assets/conquerd_256.png"
+fi
+if [ -n "$ICON_SRC" ]; then
+    cp "$ICON_SRC" "$APPDIR/doubleslash.png"
+    cp "$ICON_SRC" "$APPDIR/usr/share/icons/hicolor/256x256/apps/doubleslash.png"
+elif [ -f "$ROOT/assets/doubleslash.ico" ] || [ -f "$ROOT/assets/conquerd.ico" ]; then
+    ICO_SRC="$ROOT/assets/doubleslash.ico"
+    [ -f "$ICO_SRC" ] || ICO_SRC="$ROOT/assets/conquerd.ico"
     if command -v convert &>/dev/null; then
-        convert "$ROOT/assets/conquerd.ico[0]" "$APPDIR/conquerd.png"
-        cp "$APPDIR/conquerd.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/conquerd.png"
+        convert "$ICO_SRC[0]" "$APPDIR/doubleslash.png"
+        cp "$APPDIR/doubleslash.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/doubleslash.png"
     fi
 fi
 
@@ -126,7 +136,7 @@ echo ""
 echo "==> Running linuxdeployqt..."
 LDQT="${LINUXDEPLOYQT:-$(command -v linuxdeployqt 2>/dev/null || true)}"
 if [ -n "$LDQT" ] && [ -f "$LDQT" ]; then
-    "$LDQT" "$APPDIR/usr/bin/conquerd" -appimage \
+    "$LDQT" "$APPDIR/usr/bin/doubleslash" -appimage \
         -qmldir="$RUST_DIR/conquerd-client/qml" \
         -no-translations
 else

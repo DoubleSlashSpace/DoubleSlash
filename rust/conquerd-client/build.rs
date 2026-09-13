@@ -167,7 +167,7 @@ fn main() {
         res.set("LegalCopyright", "DoubleSlash Project");
         res.set("ProductVersion", env!("CARGO_PKG_VERSION"));
         res.set("FileVersion", env!("CARGO_PKG_VERSION"));
-        res.set_icon("../../assets/conquerd.ico");
+        res.set_icon("../../assets/doubleslash.ico");
         if let Err(e) = res.compile() {
             eprintln!("cargo:warning=Failed to set Windows resource: {e}");
         }
@@ -406,7 +406,7 @@ fn build_qt_ui() {
     let qml_files: Vec<QmlFile> = {
         let mut v = qml_files;
         v.extend([
-            QmlFile::from("qml/ConquerdWebView.qml"),
+            QmlFile::from("qml/DoubleSlashWebView.qml"),
             QmlFile::from("qml/FilePreviewPanel.qml"),
             QmlFile::from("qml/BrowserPanel.qml"),
         ]);
@@ -453,7 +453,7 @@ fn build_qt_ui() {
     };
 
     let builder = CxxQtBuilder::new_qml_module(
-        QmlModule::new("ConquerD.Client")
+        QmlModule::new("DoubleSlash.Client")
             .version(1, 0)
             .qml_files(qml_files),
     )
@@ -514,7 +514,7 @@ fn build_qt_ui() {
     compile_scheme_cpp();
 
     // Set the application icon on Windows so the taskbar, alt-tab switcher,
-    // and title bar show the ConquerD logo instead of the generic Qt icon.
+    // and title bar show the DoubleSlash logo instead of the generic Qt icon.
     #[cfg(target_os = "windows")]
     compile_app_icon_cpp();
 

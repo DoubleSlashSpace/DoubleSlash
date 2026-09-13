@@ -6,9 +6,9 @@
   ========================================================
   The build script substitutes @VERSION@ with the current APP_VERSION_STRING.
 
-  CFBundleURLTypes registers the d:// URI scheme (and legacy conquerd://)
-  so clicking an invite link in a browser launches DoubleSlash with the
-  URL as argv[1].
+  CFBundleURLTypes registers doubleslash:// and d:// (legacy conquerd://
+  kept) so clicking an invite link in a browser launches DoubleSlash with
+  the URL as argv[1].
 -->
 <plist version="1.0">
 <dict>
@@ -28,10 +28,10 @@
     <string>@VERSION@</string>
 
     <key>CFBundleExecutable</key>
-    <string>conquerd</string>
+    <string>doubleslash</string>
 
     <key>CFBundleIconFile</key>
-    <string>conquerd.icns</string>
+    <string>doubleslash.icns</string>
 
     <key>CFBundlePackageType</key>
     <string>APPL</string>
@@ -48,7 +48,7 @@
     <key>NSMicrophoneUsageDescription</key>
     <string>DoubleSlash needs microphone access for voice calls.</string>
 
-    <!-- d:// URI scheme registration (legacy conquerd:// kept) -->
+    <!-- Invite hand-off + portal schemes (legacy conquerd:// kept) -->
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
@@ -56,6 +56,7 @@
             <string>DoubleSlash Protocol</string>
             <key>CFBundleURLSchemes</key>
             <array>
+                <string>doubleslash</string>
                 <string>d</string>
                 <string>conquerd</string>
             </array>

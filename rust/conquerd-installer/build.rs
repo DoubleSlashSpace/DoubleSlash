@@ -24,7 +24,7 @@ fn main() {
 </assembly>"#;
 
         let mut res = winresource::WindowsResource::new();
-        res.set_icon("../../assets/conquerd.ico");
+        res.set_icon("../../assets/doubleslash.ico");
         res.set("ProductName", "DoubleSlash");
         res.set("FileDescription", "DoubleSlash Installer / Updater");
         res.set("LegalCopyright", "DoubleSlash Project");

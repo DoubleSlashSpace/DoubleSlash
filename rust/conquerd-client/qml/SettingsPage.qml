@@ -3,7 +3,7 @@
 import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Item {
     id: root
@@ -687,7 +687,7 @@ Item {
                                 // sink is what tells a capture thread somebody
                                 // is watching.
                                 active: root.visible && root.currentTab === root.tabVideo
-                                source: "qrc:/qt/qml/ConquerD/Client/qml/VideoTile.qml"
+                                source: "qrc:/qt/qml/DoubleSlash/Client/qml/VideoTile.qml"
 
                                 onLoaded: {
                                     // Our own id: captured frames are shown
@@ -1531,7 +1531,7 @@ Item {
                     StyledButton {
                         text: "Copy Invite Link"
                         primary: true
-                        icon.source: "qrc:/qt/qml/ConquerD/Client/icons/invite.svg"
+                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
                         onClicked: if (backend) backend.copyInvite()
                     }
                 }
@@ -1559,7 +1559,7 @@ Item {
 
                             StyledButton {
                                 text: "Reset Avatar"
-                                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/undo.svg"
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/undo.svg"
                                 onClicked: {
                                     if (!root.settings || !backend) return
                                     var defaultJson = JSON.stringify(root.defaultAvatarConfig())
@@ -1916,7 +1916,7 @@ Item {
                             ToolButton {
                                 implicitWidth: Theme.controlHeight
                                 implicitHeight: Theme.controlHeight
-                                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/refresh.svg"
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
                                 icon.width: 16
                                 icon.height: 16
                                 icon.color: Theme.muted
@@ -2092,13 +2092,13 @@ Item {
 
                                 StyledButton {
                                     text: "Open Portal"
-                                    icon.source: "qrc:/qt/qml/ConquerD/Client/icons/globe.svg"
+                                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
                                     onClicked: if (backend) backend.openNodePortal(nodeRow.node_id)
                                 }
 
                                 StyledButton {
                                     text: "Copy ID"
-                                    icon.source: "qrc:/qt/qml/ConquerD/Client/icons/clipboard.svg"
+                                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
                                     onClicked: if (backend) backend.copyToClipboard(nodeRow.node_id)
                                 }
 
@@ -2106,7 +2106,7 @@ Item {
                                     visible: !nodeRow.confirming
                                     text: "Remove"
                                     danger: true
-                                    icon.source: "qrc:/qt/qml/ConquerD/Client/icons/trash.svg"
+                                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                                     onClicked: supernodesCard.pendingRemoveId = nodeRow.node_id
                                 }
                             }
@@ -2379,7 +2379,7 @@ Item {
                         visible: !privacyBox.confirmPurge
                         text: "Purge All Chat History"
                         danger: true
-                        icon.source: "qrc:/qt/qml/ConquerD/Client/icons/trash.svg"
+                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                         onClicked: privacyBox.confirmPurge = true
                     }
 
@@ -2409,7 +2409,7 @@ Item {
                         visible: !privacyBox.confirmLock
                         text: "Lock Identity and Quit"
                         danger: true
-                        icon.source: "qrc:/qt/qml/ConquerD/Client/icons/lock.svg"
+                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg"
                         onClicked: privacyBox.confirmLock = true
                     }
                 }
@@ -2464,13 +2464,13 @@ Item {
                         spacing: Theme.spacingSm
                         StyledButton {
                             text: "Refresh"
-                            icon.source: "qrc:/qt/qml/ConquerD/Client/icons/refresh.svg"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
                             onClicked: diagnosticsBox.logText = backend ? backend.getEventLogs() : ""
                         }
                         StyledButton {
                             text: "Clear"
                             danger: true
-                            icon.source: "qrc:/qt/qml/ConquerD/Client/icons/trash.svg"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                             onClicked: {
                                 if (backend) backend.clearEventLogs()
                                 diagnosticsBox.logText = ""
@@ -2508,7 +2508,7 @@ Item {
                         spacing: Theme.spacingSm
                         StyledButton {
                             text: "Create Shortcuts"
-                            icon.source: "qrc:/qt/qml/ConquerD/Client/icons/plus.svg"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
                             onClicked: {
                                 if (!backend) return
                                 backend.createDesktopShortcuts()

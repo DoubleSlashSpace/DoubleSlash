@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Item {
     id: root
@@ -77,9 +77,9 @@ Item {
     property bool inviteIgnored: false
     property bool inviteAccepted: false
 
-    readonly property string inviteUrl: root.conquerdInviteUrl(root.body)
+    readonly property string inviteUrl: root.appInviteUrl(root.body)
     readonly property bool hasInvite: root.inviteUrl !== ""
-    readonly property string inviteKind: root.conquerdInviteKind(root.inviteUrl)
+    readonly property string inviteKind: root.appInviteKind(root.inviteUrl)
     readonly property string bodyWithoutInvite: root.stripInviteUrl(root.body, root.inviteUrl)
     readonly property bool showInviteEmbed: root.hasInvite && !root.inviteIgnored
 
@@ -104,7 +104,7 @@ Item {
     /// First invite link in a chat body. Invites are minted as
     /// `https://doubleslash.space/i#…`; the `d://` / `doubleslash://` hand-off
     /// forms are still recognised so a link pasted from elsewhere routes too.
-    function conquerdInviteUrl(value) {
+    function appInviteUrl(value) {
         var body = value || ""
         var m = body.match(/https?:\/\/(?:www\.)?doubleslash\.space\/[ir]\/?#[^\s<>"']+/i)
         if (m)
@@ -113,7 +113,7 @@ Item {
         return m ? m[0] : ""
     }
 
-    function conquerdInviteKind(url) {
+    function appInviteKind(url) {
         var u = (url || "").toLowerCase()
         if (u === "")
             return ""
@@ -434,7 +434,7 @@ Item {
                         spacing: 8
                         Image {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            source: "qrc:/qt/qml/ConquerD/Client/icons/play.svg"
+                            source: "qrc:/qt/qml/DoubleSlash/Client/icons/play.svg"
                             sourceSize.width: 28
                             sourceSize.height: 28
                             width: 28
@@ -499,7 +499,7 @@ Item {
                             spacing: 8
 
                             Image {
-                                source: "qrc:/qt/qml/ConquerD/Client/icons/attach.svg"
+                                source: "qrc:/qt/qml/DoubleSlash/Client/icons/attach.svg"
                                 sourceSize.width: 16
                                 sourceSize.height: 16
                                 width: 16
@@ -529,7 +529,7 @@ Item {
                                 }
                             }
                             ToolButton {
-                                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/check.svg"
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg"
                                 icon.width: 14
                                 icon.height: 14
                                 icon.color: Theme.online
@@ -546,7 +546,7 @@ Item {
                                 }
                             }
                             ToolButton {
-                                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/x-circle.svg"
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg"
                                 icon.width: 14
                                 icon.height: 14
                                 icon.color: Theme.danger
@@ -561,7 +561,7 @@ Item {
                             }
                             ToolButton {
                                 id: openFileBtn
-                                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/folder.svg"
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/folder.svg"
                                 icon.width: 14
                                 icon.height: 14
                                 icon.color: root.mine ? Theme.textInv : Theme.muted
@@ -618,7 +618,7 @@ Item {
                     }
                 }
 
-                // ConquerD invite embed — Accept / Ignore for inbound links.
+                // DoubleSlash invite embed — Accept / Ignore for inbound links.
                 Rectangle {
                     id: inviteEmbed
                     visible: root.showInviteEmbed
@@ -655,8 +655,8 @@ Item {
                                 Image {
                                     anchors.centerIn: parent
                                     source: root.inviteKind === "room"
-                                        ? "qrc:/qt/qml/ConquerD/Client/icons/handshake.svg"
-                                        : "qrc:/qt/qml/ConquerD/Client/icons/invite.svg"
+                                        ? "qrc:/qt/qml/DoubleSlash/Client/icons/handshake.svg"
+                                        : "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
                                     sourceSize.width: 18
                                     sourceSize.height: 18
                                     width: 18
@@ -709,7 +709,7 @@ Item {
                                 text: root.inviteAccepted ? "Accepted" : "Accept"
                                 primary: true
                                 compact: true
-                                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/check.svg"
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg"
                                 onClicked: root.acceptInvite()
                             }
                             StyledButton {
@@ -717,7 +717,7 @@ Item {
                                 text: "Ignore"
                                 compact: true
                                 flat: true
-                                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/close.svg"
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                                 onClicked: root.ignoreInvite()
                             }
                             StyledButton {
@@ -725,7 +725,7 @@ Item {
                                 text: "Copy link"
                                 compact: true
                                 flat: true
-                                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/clipboard.svg"
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
                                 onClicked: root.copyRequested(root.inviteUrl)
                             }
                             Item { Layout.fillWidth: true }
@@ -836,8 +836,8 @@ Item {
                     Image {
                         anchors.centerIn: parent
                         source: preview.kindName === "link"
-                            ? "qrc:/qt/qml/ConquerD/Client/icons/globe.svg"
-                            : "qrc:/qt/qml/ConquerD/Client/icons/play.svg"
+                            ? "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
+                            : "qrc:/qt/qml/DoubleSlash/Client/icons/play.svg"
                         sourceSize.width: 13
                         sourceSize.height: 13
                         width: 13
@@ -866,7 +866,7 @@ Item {
 
                 ToolButton {
                     visible: root.inlineUrl() !== ""
-                    icon.source: "qrc:/qt/qml/ConquerD/Client/icons/play.svg"
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/play.svg"
                     icon.width: 14
                     icon.height: 14
                     icon.color: Theme.muted
@@ -886,7 +886,7 @@ Item {
                 }
 
                 ToolButton {
-                    icon.source: "qrc:/qt/qml/ConquerD/Client/icons/globe.svg"
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
                     icon.width: 14
                     icon.height: 14
                     icon.color: Theme.muted
@@ -902,7 +902,7 @@ Item {
             Loader {
                 visible: preview.inline
                 anchors.fill: parent
-                source: preview.inline ? Qt.resolvedUrl("ConquerdWebView.qml") : ""
+                source: preview.inline ? Qt.resolvedUrl("DoubleSlashWebView.qml") : ""
                 onLoaded: {
                     item.allowedDomains = [
                         "youtube.com", "youtu.be", "ytimg.com", "ggpht.com",
@@ -935,7 +935,7 @@ Item {
 
             ToolButton {
                 visible: root.copyableText() !== ""
-                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/clipboard.svg"
+                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
                 icon.width: 14
                 icon.height: 14
                 icon.color: Theme.muted
@@ -949,7 +949,7 @@ Item {
 
             ToolButton {
                 visible: root.mine && (root.status === "failed" || root.status === "sending")
-                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/refresh.svg"
+                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
                 icon.width: 14
                 icon.height: 14
                 icon.color: Theme.muted
@@ -963,7 +963,7 @@ Item {
 
             ToolButton {
                 visible: root.mine && root.msgId !== ""
-                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/trash.svg"
+                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                 icon.width: 14
                 icon.height: 14
                 icon.color: Theme.danger

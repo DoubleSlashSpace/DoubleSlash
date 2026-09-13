@@ -48,7 +48,9 @@ pub use channel_frame::{
 pub use channel_tag::{ChannelTagError, ChannelTagRegistry};
 pub use client_modules::register_client_modules;
 pub use descriptor::{AuthTier, CapabilityDescriptor, ChannelKind, FeatureError};
-pub use examples::{register_example_modules, x_conquerd_matchmaker_v1, Matchmaker, MATCHMAKER_ID};
+pub use examples::{
+    register_example_modules, x_doubleslash_matchmaker_v1, Matchmaker, MATCHMAKER_ID,
+};
 pub use loader::{ConquerdModuleVtable, LoadError, NativeModuleLoader, TrustRequest, ABI_VERSION};
 pub use module::{
     FeatureModule, InvocationContext, ModuleError, ModuleResult, PeerId, SharedModule,

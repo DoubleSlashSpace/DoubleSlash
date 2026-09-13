@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # ============================================================================
-# install_uri_scheme.sh — Register the d:// URI scheme on Linux
+# install_uri_scheme.sh — Register the DoubleSlash URI schemes on Linux
 # ============================================================================
 # Installs the .desktop file and registers it as the handler for
-# d:// (and legacy conquerd://) URLs so clicking invite links launches DoubleSlash.
+# doubleslash://, d://, and legacy conquerd:// URLs so clicking invite links
+# launches DoubleSlash.
 #
 # Usage:
 #   ./packaging/install_uri_scheme.sh          # current user only
@@ -13,31 +14,32 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DESKTOP_FILE="$SCRIPT_DIR/conquerd.desktop"
+DESKTOP_FILE="$SCRIPT_DIR/doubleslash.desktop"
+LEGACY_DESKTOP_FILE="$SCRIPT_DIR/conquerd.desktop"
 
 if [ ! -f "$DESKTOP_FILE" ]; then
-    echo "ERROR: conquerd.desktop not found at $DESKTOP_FILE"
+    echo "ERROR: doubleslash.desktop not found at $DESKTOP_FILE"
     exit 1
 fi
 
 if [ "$(id -u)" -eq 0 ]; then
-    # System-wide install
     DEST="/usr/share/applications"
-    echo "Installing conquerd.desktop system-wide to $DEST..."
-    cp "$DESKTOP_FILE" "$DEST/conquerd.desktop"
-    update-desktop-database "$DEST" 2>/dev/null || true
+    echo "Installing doubleslash.desktop system-wide to $DEST..."
 else
-    # Per-user install
     DEST="$HOME/.local/share/applications"
     mkdir -p "$DEST"
-    echo "Installing conquerd.desktop for current user to $DEST..."
-    cp "$DESKTOP_FILE" "$DEST/conquerd.desktop"
-    update-desktop-database "$DEST" 2>/dev/null || true
+    echo "Installing doubleslash.desktop for current user to $DEST..."
 fi
 
-# Register as default handler for d:// and legacy conquerd:// URIs
-xdg-mime default conquerd.desktop x-scheme-handler/d 2>/dev/null || true
-xdg-mime default conquerd.desktop x-scheme-handler/conquerd 2>/dev/null || true
+cp "$DESKTOP_FILE" "$DEST/doubleslash.desktop"
+if [ -f "$LEGACY_DESKTOP_FILE" ]; then
+    cp "$LEGACY_DESKTOP_FILE" "$DEST/conquerd.desktop"
+fi
+update-desktop-database "$DEST" 2>/dev/null || true
 
-echo "Done. The d:// URI scheme is now registered (legacy conquerd:// kept)."
-echo "Test with: xdg-open 'd://test'"
+xdg-mime default doubleslash.desktop x-scheme-handler/doubleslash 2>/dev/null || true
+xdg-mime default doubleslash.desktop x-scheme-handler/d 2>/dev/null || true
+xdg-mime default doubleslash.desktop x-scheme-handler/conquerd 2>/dev/null || true
+
+echo "Done. The doubleslash:// and d:// URI schemes are now registered (legacy conquerd:// kept)."
+echo "Test with: xdg-open 'doubleslash://test'"

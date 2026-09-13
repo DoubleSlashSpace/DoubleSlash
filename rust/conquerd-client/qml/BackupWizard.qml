@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Dialog {
     id: root

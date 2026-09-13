@@ -28,7 +28,7 @@
 import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Item {
     id: root
@@ -69,7 +69,7 @@ Item {
 
             ToolButton {
                 id: _backBtn
-                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/connect.svg"
+                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/connect.svg"
                 icon.width: 14
                 icon.height: 14
                 icon.color: _webView.loading ? Theme.muted : Theme.text
@@ -84,7 +84,7 @@ Item {
 
             ToolButton {
                 id: _fwdBtn
-                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/send.svg"
+                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/send.svg"
                 icon.width: 14
                 icon.height: 14
                 icon.color: _webView.loading ? Theme.muted : Theme.text
@@ -100,8 +100,8 @@ Item {
             ToolButton {
                 id: _reloadBtn
                 icon.source: _webView.loading
-                    ? "qrc:/qt/qml/ConquerD/Client/icons/x-circle.svg"
-                    : "qrc:/qt/qml/ConquerD/Client/icons/refresh.svg"
+                    ? "qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg"
+                    : "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
                 icon.width: 14
                 icon.height: 14
                 icon.color: Theme.text
@@ -134,7 +134,7 @@ Item {
             }
 
             ToolButton {
-                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/globe.svg"
+                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
                 icon.width: 14
                 icon.height: 14
                 icon.color: Theme.muted
@@ -184,7 +184,7 @@ Item {
             spacing: Theme.spacingSm
 
             Image {
-                source: "qrc:/qt/qml/ConquerD/Client/icons/lock.svg"
+                source: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg"
                 sourceSize.width: 12
                 sourceSize.height: 12
                 Layout.preferredWidth: 12
@@ -198,7 +198,7 @@ Item {
                 font.pixelSize: Theme.fontSizeCaption
             }
             ToolButton {
-                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/close.svg"
+                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                 icon.width: 12
                 icon.height: 12
                 icon.color: Theme.muted
@@ -211,13 +211,13 @@ Item {
     }
 
     // ── Browser view ──────────────────────────────────────────────────────
-    ConquerdWebView {
+    DoubleSlashWebView {
         id: _webView
         anchors {
             top: _privacyBar.bottom
             left: parent.left; right: parent.right; bottom: parent.bottom
         }
-        allowConquerd: root.nodeMode
+        allowPortal: root.nodeMode
         allowAll: !root.nodeMode
         startUrl: root.startUrl !== "" ? root.startUrl : "about:blank"
 

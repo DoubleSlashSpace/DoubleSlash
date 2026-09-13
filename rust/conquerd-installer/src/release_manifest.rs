@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Deserialize;
 
-/// Hex-encoded Ed25519 public key of the ConquerD release signer.
+/// Hex-encoded Ed25519 public key of the DoubleSlash release signer.
 /// This is the public half of the key generated for manifest signing
 /// (see keys/release-signer-public.pem; private key is kept out-of-repo).
 ///

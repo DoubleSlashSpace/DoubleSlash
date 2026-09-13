@@ -1,4 +1,4 @@
-// ConquerD Supernode — config.rs
+// DoubleSlash supernode — config.rs
 // Environment-variable-based configuration.
 
 use std::env;
@@ -43,11 +43,26 @@ pub enum AccessMode {
 
 impl Config {
     pub fn from_env() -> Self {
-        let data_dir = match env::var("CONQUERD_HOME") {
-            Ok(h) => std::path::PathBuf::from(h),
-            Err(_) => {
+        let data_dir = match conquerd_features::first_env(&[
+            conquerd_features::ENV_HOME,
+            conquerd_features::ENV_HOME_LEGACY,
+        ]) {
+            Some(h) => std::path::PathBuf::from(h),
+            None => {
                 let home = dirs_next().unwrap_or_else(|| ".".into());
-                std::path::PathBuf::from(home).join(".conquerd")
+                let current =
+                    std::path::PathBuf::from(&home).join(conquerd_features::DEFAULT_PROFILE_DIR);
+                if current.exists() {
+                    current
+                } else {
+                    let legacy =
+                        std::path::PathBuf::from(&home).join(conquerd_features::LEGACY_PROFILE_DIR);
+                    if legacy.exists() {
+                        legacy
+                    } else {
+                        current
+                    }
+                }
             }
         };
 

@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ConquerD"
+rootProject.name = "DoubleSlash"
 include(":app")

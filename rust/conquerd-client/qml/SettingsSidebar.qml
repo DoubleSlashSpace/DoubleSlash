@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Rectangle {
     id: root
@@ -41,15 +41,15 @@ Rectangle {
             Layout.fillHeight: true
             clip: true
             model: ListModel {
-                ListElement { label: "Audio"; icon: "qrc:/qt/qml/ConquerD/Client/icons/headphone.svg" }
-                ListElement { label: "Video"; icon: "qrc:/qt/qml/ConquerD/Client/icons/video.svg" }
-                ListElement { label: "Identity"; icon: "qrc:/qt/qml/ConquerD/Client/icons/person.svg" }
-                ListElement { label: "General"; icon: "qrc:/qt/qml/ConquerD/Client/icons/gear.svg" }
-                ListElement { label: "AI"; icon: "qrc:/qt/qml/ConquerD/Client/icons/lightning.svg" }
-                ListElement { label: "Network"; icon: "qrc:/qt/qml/ConquerD/Client/icons/globe.svg" }
-                ListElement { label: "Security"; icon: "qrc:/qt/qml/ConquerD/Client/icons/lock.svg" }
-                ListElement { label: "Privacy"; icon: "qrc:/qt/qml/ConquerD/Client/icons/key.svg" }
-                ListElement { label: "Diagnostics"; icon: "qrc:/qt/qml/ConquerD/Client/icons/logs.svg" }
+                ListElement { label: "Audio"; icon: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg" }
+                ListElement { label: "Video"; icon: "qrc:/qt/qml/DoubleSlash/Client/icons/video.svg" }
+                ListElement { label: "Identity"; icon: "qrc:/qt/qml/DoubleSlash/Client/icons/person.svg" }
+                ListElement { label: "General"; icon: "qrc:/qt/qml/DoubleSlash/Client/icons/gear.svg" }
+                ListElement { label: "AI"; icon: "qrc:/qt/qml/DoubleSlash/Client/icons/lightning.svg" }
+                ListElement { label: "Network"; icon: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg" }
+                ListElement { label: "Security"; icon: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg" }
+                ListElement { label: "Privacy"; icon: "qrc:/qt/qml/DoubleSlash/Client/icons/key.svg" }
+                ListElement { label: "Diagnostics"; icon: "qrc:/qt/qml/DoubleSlash/Client/icons/logs.svg" }
             }
 
             delegate: Item {
@@ -146,7 +146,7 @@ Rectangle {
                 font.pixelSize: Theme.fontSizeTitle
                 font.bold: root.dirty
                 text: root.dirty ? "Save Settings" : "Settings Saved"
-                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/save.svg"
+                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/save.svg"
                 onClicked: root.saveRequested()
 
                 Accessible.description: root.dirty

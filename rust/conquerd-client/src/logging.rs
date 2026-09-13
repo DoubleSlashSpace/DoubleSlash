@@ -15,12 +15,12 @@ use tracing_subscriber::{fmt, reload, EnvFilter, Registry};
 
 static RELOAD: OnceLock<reload::Handle<EnvFilter, Registry>> = OnceLock::new();
 
-/// Path of the current-session log file (`~/.conquerd/logs/conquerd-client.log`).
+/// Path of the current-session log file (`~/.doubleslash/logs/doubleslash-client.log`).
 /// The GUI build has no console, so a file is the only way to capture logs.
 pub fn log_file_path() -> PathBuf {
     crate::identity::Identity::default_key_dir()
         .join("logs")
-        .join("conquerd-client.log")
+        .join("doubleslash-client.log")
 }
 
 /// A cloneable `MakeWriter` over a shared log file handle.

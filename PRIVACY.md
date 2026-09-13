@@ -35,7 +35,7 @@ optional feature described below (updates, link previews, Ollama, and so on).
 | `chat_history.db` | Local chat history; message bodies and sender handles are AES-256-GCM encrypted at rest |
 | `settings.json` | App preferences (audio, video/capture choices, plugins, privacy toggles, window size, etc.) |
 | `my_rooms.dat` | Saved room invites (encrypted) |
-| OS keyring (`conquerd` service) | Optional cached AES unlock key so you are not prompted for your passphrase every launch |
+| OS keyring (`doubleslash` service, legacy `conquerd`) | Optional cached AES unlock key so you are not prompted for your passphrase every launch |
 | OS **Downloads** folder | Files received from peers (saved by the desktop client on completion) |
 | `installer.log` | Installer/updater activity log (written when `conquerd-installer` runs) |
 
@@ -46,17 +46,17 @@ by default.
 ### Android
 
 On Android the same encrypted stores live in **app-private storage**
-(`filesDir/conquerd/`), not under `~/.doubleslash/`. Other apps cannot read
+(`filesDir/doubleslash/`, falling back to a pre-rebrand `filesDir/conquerd/`), not under `~/.doubleslash/`. Other apps cannot read
 that directory. Cloud backup is turned off (`allowBackup="false"`) so a
 device backup cannot copy the identity key or chat database off the phone.
 
 | Location | What it contains |
 |---|---|
-| App-private `conquerd/` | `identity.dat`, `peers.dat`, `chat_history.db`, `my_rooms.dat` — same encrypted formats as desktop |
+| App-private `doubleslash/` (legacy `conquerd/`) | `identity.dat`, `peers.dat`, `chat_history.db`, `my_rooms.dat` — same encrypted formats as desktop |
 | Android Keystore + app-private preferences | Optional “stay unlocked” wrapping of the identity *file key* (never the passphrase). Off until you turn it on. A copy of that wrapped blob is useless without this device’s Keystore key. |
 | App cache (`cacheDir/outbound`) | Temporary copies of files you chose to send, because a Storage Access Framework `content://` URI is not a path the transfer can stream from |
 | App-private received files | Downloads stay in app storage until you export them with the system document picker |
-| Logcat (`ConquerD` tag) | Diagnostic logs on a USB-debuggable build. Not a persistent file. |
+| Logcat (`DoubleSlash` tag) | Diagnostic logs on a USB-debuggable build. Not a persistent file. |
 
 Android does **not** run the desktop GitHub update checker or UPnP mapper.
 

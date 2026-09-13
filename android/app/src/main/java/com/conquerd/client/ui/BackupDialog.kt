@@ -15,7 +15,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.conquerd.client.ConquerdCore
+import com.conquerd.client.DoubleSlashCore
 import com.conquerd.client.AppSettings
 import com.conquerd.client.ok
 import com.conquerd.client.errorText
@@ -38,7 +38,7 @@ fun BackupButton(unlocked: Boolean, enabled: Boolean = true) {
 @Composable
 fun BackupDialog(unlocked: Boolean, onDismiss: () -> Unit) {
     val context = LocalContext.current
-    val core = remember { ConquerdCore.get(context) }
+    val core = remember { DoubleSlashCore.get(context) }
     val scope = rememberCoroutineScope()
     var page by remember { mutableStateOf("choose") }
     var busy by remember { mutableStateOf(false) }

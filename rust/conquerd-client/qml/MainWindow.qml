@@ -8,7 +8,7 @@ import QtQuick.Window
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 import Qt.labs.platform as Platform
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 ApplicationWindow {
     id: root
@@ -596,7 +596,7 @@ ApplicationWindow {
             Layout.preferredHeight: 22
             Layout.alignment: Qt.AlignVCenter
             fillMode: Image.PreserveAspectFit
-            source: "qrc:/qt/qml/ConquerD/Client/icons/logo.svg"
+            source: "qrc:/qt/qml/DoubleSlash/Client/icons/logo.svg"
         }
 
         // Invite / peer-ID paste field
@@ -624,7 +624,7 @@ ApplicationWindow {
             Layout.preferredHeight: Theme.controlHeight
             Layout.maximumHeight: Theme.controlHeight
             Layout.alignment: Qt.AlignVCenter
-            icon.source: "qrc:/qt/qml/ConquerD/Client/icons/invite-submit.svg"
+            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite-submit.svg"
             Accessible.name: "Accept invite"
             ToolTip.text: "Connect to peer / accept invite"
             ToolTip.visible: hovered || visualFocus
@@ -643,7 +643,7 @@ ApplicationWindow {
             id: newInviteBtn
             text: "Invite"
             primary: true
-            icon.source: "qrc:/qt/qml/ConquerD/Client/icons/invite.svg"
+            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
             Layout.preferredHeight: Theme.controlHeight
             Layout.maximumHeight: Theme.controlHeight
             Layout.alignment: Qt.AlignVCenter
@@ -677,7 +677,7 @@ ApplicationWindow {
             property bool installing: false
             property string errorMessage: ""
 
-            icon.source: "qrc:/qt/qml/ConquerD/Client/icons/download.svg"
+            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/download.svg"
             icon.width: 18
             icon.height: 18
             icon.color: Theme.textInv
@@ -912,7 +912,7 @@ ApplicationWindow {
             return
         }
         var comp = Qt.createComponent(
-            "qrc:/qt/qml/ConquerD/Client/qml/VideoPopoutWindow.qml")
+            "qrc:/qt/qml/DoubleSlash/Client/qml/VideoPopoutWindow.qml")
         if (comp.status === Component.Error) {
             console.warn("[video] popout unavailable:", comp.errorString())
             return
@@ -1608,7 +1608,7 @@ ApplicationWindow {
                 }
 
                 Button {
-                    icon.source: "qrc:/qt/qml/ConquerD/Client/icons/clipboard.svg"
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
                     icon.width: 30
                     icon.height: 30
                     icon.color: Theme.text
@@ -1880,7 +1880,7 @@ ApplicationWindow {
                             Item { Layout.fillWidth: true }
 
                             ToolButton {
-                                icon.source: "qrc:/qt/qml/ConquerD/Client/icons/plus.svg"
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
                                 icon.width: 16
                                 icon.height: 16
                                 icon.color: enabled ? Theme.text : Theme.muted
@@ -1906,7 +1906,7 @@ ApplicationWindow {
                             anchors.centerIn: parent
                             visible: nodeListModel.count === 0
                             width: Math.min(parent.width - Theme.spacingXl, 170)
-                            iconSource: "qrc:/qt/qml/ConquerD/Client/icons/headphone.svg"
+                            iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
                             iconSize: 30
                             title: "No rooms"
                             subtitle: "Accept a supernode invite to see the rooms it hosts."
@@ -2165,7 +2165,7 @@ ApplicationWindow {
                                                             fillMode: Image.PreserveAspectFit
                                                             smooth: true
                                                             visible: roomDelegate.has_children
-                                                            source: "qrc:/qt/qml/ConquerD/Client/icons/chevron.svg"
+                                                            source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
                                                             // collapsed → points right (0°);
                                                             // expanded → points down (90°).
                                                             rotation: roomDelegate.collapsed ? 0 : 90
@@ -2219,7 +2219,7 @@ ApplicationWindow {
                                                             spacing: 4
 
                                                             Image {
-                                                                source: "qrc:/qt/qml/ConquerD/Client/icons/headphone.svg"
+                                                                source: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
                                                                 sourceSize.width: 12
                                                                 sourceSize.height: 12
                                                                 width: 12
@@ -2340,7 +2340,7 @@ ApplicationWindow {
                                                             spacing: 4
 
                                                             Image {
-                                                                source: "qrc:/qt/qml/ConquerD/Client/icons/speech.svg"
+                                                                source: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
                                                                 sourceSize.width: 12
                                                                 sourceSize.height: 12
                                                                 width: 12
@@ -2464,8 +2464,8 @@ ApplicationWindow {
 
                     Repeater {
                         model: [
-                            { icon: "qrc:/qt/qml/ConquerD/Client/icons/speech.svg", label: "Chat", index: 0 },
-                            { icon: "qrc:/qt/qml/ConquerD/Client/icons/gear.svg", label: "Settings", index: 2 }
+                            { icon: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg", label: "Chat", index: 0 },
+                            { icon: "qrc:/qt/qml/DoubleSlash/Client/icons/gear.svg", label: "Settings", index: 2 }
                         ]
 
                         delegate: Item {
@@ -2536,7 +2536,7 @@ ApplicationWindow {
                 // Loaded lazily: a build without Qt Multimedia has no
                 // VideoRegion in the qrc at all, and MainWindow must still parse.
                 active: root.expandedVideoPeers.length > 0
-                source: "qrc:/qt/qml/ConquerD/Client/qml/VideoRegion.qml"
+                source: "qrc:/qt/qml/DoubleSlash/Client/qml/VideoRegion.qml"
 
                 readonly property bool showing:
                     active && (navIndex === 0 || navIndex === 1)
@@ -2887,7 +2887,7 @@ ApplicationWindow {
     Platform.SystemTrayIcon {
         id: trayIcon
         visible: true
-        icon.source: "qrc:/assets/conquerd.ico"
+        icon.source: "qrc:/assets/doubleslash.ico"
         tooltip: backend.session_banner.length > 0 ? backend.session_banner : "DoubleSlash"
 
         menu: Platform.Menu {

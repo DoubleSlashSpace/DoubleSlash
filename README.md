@@ -191,11 +191,11 @@ xdg-mime default conquerd.desktop x-scheme-handler/conquerd
 
 **Windows (installer):** Open *Add or Remove Programs* (Settings → Apps → Installed apps), search for **DoubleSlash**, and click Uninstall. Alternatively, run `conquerd-installer.exe --uninstall` from the command line for a silent uninstall.
 
-**Windows (portable):** Delete the extracted `conquerd\` folder. No registry keys are written by the portable version.
+**Windows (portable):** Delete the extracted `DoubleSlash\` folder. No registry keys are written by the portable version.
 
 **macOS:** Drag the DoubleSlash app from Applications to the Trash. User data in `~/.doubleslash/` (or a pre-rebrand `~/.conquerd/`) can be removed manually if desired.
 
-**Linux (AppImage):** Delete the `.AppImage` file. If you registered the URI scheme, remove `~/.local/share/applications/conquerd.desktop` and run `update-desktop-database ~/.local/share/applications/`. User data in `~/.doubleslash/` (or a pre-rebrand `~/.conquerd/`) can be removed manually.
+**Linux (AppImage):** Delete the `.AppImage` file. If you registered the URI scheme, remove `~/.local/share/applications/doubleslash.desktop` (and a leftover `conquerd.desktop` if present) and run `update-desktop-database ~/.local/share/applications/`. User data in `~/.doubleslash/` (or a pre-rebrand `~/.conquerd/`) can be removed manually.
 
 ### System Requirements
 - **OS:** Windows 10+, macOS 10.15+, Linux (glibc 2.31+)
@@ -878,7 +878,7 @@ All DoubleSlash data is stored under `DOUBLESLASH_HOME` / `CONQUERD_HOME` (defau
 | `my_rooms.dat` | Client-owned SFU room definitions per supernode (encrypted); used to rematerialize rooms on reconnect. Sidebar hide list is stored here too. |
 | `installer.log` | Installer/updater activity (when `conquerd-installer` runs) |
 
-Received files are saved to your OS **Downloads** folder on completion (not under `CONQUERD_HOME`). The desktop client logs through `tracing` to stderr and to the current-session file `~/.conquerd/logs/conquerd-client.log` (truncated on each launch). The **Verbose debug logging** setting changes the runtime/file filter immediately; an explicit `RUST_LOG` overrides it. An optional OS keyring entry (`conquerd` service) caches your unlock key locally.
+Received files are saved to your OS **Downloads** folder on completion (not under `DOUBLESLASH_HOME`). The desktop client logs through `tracing` to stderr and to the current-session file `~/.doubleslash/logs/doubleslash-client.log` (truncated on each launch). The **Verbose debug logging** setting changes the runtime/file filter immediately; an explicit `RUST_LOG` overrides it. An optional OS keyring entry (`doubleslash` service, with a pre-rebrand `conquerd` fallback) caches your unlock key locally.
 
 Supernodes additionally store:
 
@@ -912,7 +912,7 @@ SFU **room state is not persisted** on the supernode — rooms exist in memory w
 - Set `RUST_LOG=conquerd_client=debug` for detailed pipeline logging.
 
 ### Crash dumps
-- Rust panic backtraces are written to `conquerd-client.log` in the working directory; set `RUST_BACKTRACE=1` for full traces.
+- Rust panic backtraces are written to `doubleslash-client.log` in the working directory; set `RUST_BACKTRACE=1` for full traces.
 - The `.bat`/`.sh` launchers keep the console window open after a crash so the trace is visible.
 
 ### Supernode troubleshooting

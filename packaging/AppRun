@@ -1,8 +1,8 @@
 #!/bin/bash
-# AppImage entry point — locates and launches the ConquerD executable.
+# AppImage entry point — locates and launches the DoubleSlash executable.
 # This file is placed at the root of the AppDir and is invoked by the
 # AppImage runtime when the user double-clicks the .AppImage file or
-# runs it from the command line (including conquerd:// URI arguments).
+# runs it from the command line (including d:// / doubleslash:// URI arguments).
 
 SELF="$(readlink -f "$0")"
 HERE="${SELF%/*}"
@@ -10,5 +10,5 @@ HERE="${SELF%/*}"
 # Export LD_LIBRARY_PATH so bundled Qt/OpenSSL/PortAudio libs are found
 export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
 
-# Pass all arguments through (including conquerd:// URIs from xdg-open)
-exec "${HERE}/usr/bin/conquerd" "$@"
+# Pass all arguments through (including invite and portal URIs from xdg-open)
+exec "${HERE}/usr/bin/doubleslash" "$@"

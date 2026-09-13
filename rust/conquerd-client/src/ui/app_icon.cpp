@@ -9,5 +9,5 @@
 #include <QIcon>
 
 extern "C" void conquerd_set_app_icon() {
-    QGuiApplication::setWindowIcon(QIcon(":/assets/conquerd.ico"));
+    QGuiApplication::setWindowIcon(QIcon(":/assets/doubleslash.ico"));
 }

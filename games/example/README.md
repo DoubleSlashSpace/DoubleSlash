@@ -42,7 +42,7 @@ convergence, collision, wire and envelope rules.
 ## Requirements
 
 - A running `conquerd-supernode` with `game.relay.v1` and `web.host.app.v1`.
-- A native ConquerD client that has accepted the supernode invite (portal + relay).
+- A native DoubleSlash client that has accepted the supernode invite (portal + relay).
 
 ## Enable features in supernode.toml
 

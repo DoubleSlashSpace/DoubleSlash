@@ -23,7 +23,10 @@ extern "C" bool conquerd_fetch_sync(const char* raw, size_t len,
     char** contentType, size_t* ctLen, uint8_t** body, size_t* bodyLen)
 {
     const QUrl url(QString::fromUtf8(raw, static_cast<qsizetype>(len)));
-    const auto path = url.path();
+    auto path = url.path();
+    if (path.startsWith("/_doubleslash/")) {
+        path = QString("/_conquerd/") + path.mid(QString("/_doubleslash/").size());
+    }
     const auto host = url.host();
     const QUrlQuery query(url);
     QByteArray bytes, type("application/json");

@@ -2,7 +2,7 @@
 //
 // Usage: Theme.bg0, Theme.accent, etc.
 // Toggle dark/light: Theme.isDark = false
-// All QML files in ConquerD.Client 1.0 can reference this without extra imports.
+// All QML files in DoubleSlash.Client 1.0 can reference this without extra imports.
 pragma Singleton
 import QtQuick
 

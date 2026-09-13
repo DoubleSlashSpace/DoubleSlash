@@ -14,7 +14,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import android.util.Size
 import java.util.concurrent.Executors
 
-private const val TAG = "ConquerdCamera"
+private const val TAG = "DoubleSlashCamera"
 
 /**
  * Feeds the native encoder from CameraX.
@@ -34,7 +34,7 @@ object CameraCapture {
      * up directly as UI jank during a call.
      */
     private val executor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "conquerd-camera").apply { priority = Thread.NORM_PRIORITY + 1 }
+        Thread(runnable, "doubleslash-camera").apply { priority = Thread.NORM_PRIORITY + 1 }
     }
 
     private var provider: ProcessCameraProvider? = null

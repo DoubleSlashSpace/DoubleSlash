@@ -1,4 +1,4 @@
-# ConquerD Supernode Operator Guide
+# DoubleSlash Supernode Operator Guide
 
 This guide covers running a production or volunteer `conquerd-supernode`.
 
@@ -11,7 +11,7 @@ The supernode provides optional transport assistance (QUIC relay, SFU rooms) and
 cd rust
 cargo build -p conquerd-supernode --release
 
-# Run with defaults (data in $HOME/.conquerd, or %USERPROFILE%\.conquerd on Windows)
+# Run with defaults (data in $HOME/.doubleslash, or an existing $HOME/.conquerd)
 ./target/release/conquerd-supernode
 ```
 
@@ -71,7 +71,7 @@ Hosted feature declarations are read from `<data_dir>/supernode.toml` (see below
 
 ## Configuration (supernode.toml)
 
-Create `<data_dir>/supernode.toml`. The default data dir is `$CONQUERD_HOME` when set, otherwise `$HOME/.conquerd` on Linux/macOS or `%USERPROFILE%\.conquerd` on Windows.
+Create `<data_dir>/supernode.toml`. The default data dir is `$DOUBLESLASH_HOME` / `$CONQUERD_HOME` when set, otherwise `$HOME/.doubleslash` (falling back to an existing `$HOME/.conquerd`).
 
 Example:
 
@@ -229,4 +229,4 @@ Improvements to the supernode (especially better observability, hot-reload for p
 
 ---
 
-*Maintained as part of the ConquerD project. Last updated for multi-platform release binaries (linux-x86_64, linux-aarch64, win64).*
+*Maintained as part of the DoubleSlash project. Last updated for multi-platform release binaries (linux-x86_64, linux-aarch64, win64).*

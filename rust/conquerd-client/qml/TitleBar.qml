@@ -8,7 +8,7 @@ import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 import QtQuick.Window
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Item {
     id: root
@@ -87,15 +87,15 @@ Item {
 
         // Minimize
         TitleBarButton {
-            iconSource: "qrc:/qt/qml/ConquerD/Client/icons/wm-minimize.svg"
+            iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/wm-minimize.svg"
             onClicked: appWindow && appWindow.showMinimized()
         }
 
         // Maximize / Restore
         TitleBarButton {
             iconSource: root.isMaximized
-                ? "qrc:/qt/qml/ConquerD/Client/icons/wm-restore.svg"
-                : "qrc:/qt/qml/ConquerD/Client/icons/wm-maximize.svg"
+                ? "qrc:/qt/qml/DoubleSlash/Client/icons/wm-restore.svg"
+                : "qrc:/qt/qml/DoubleSlash/Client/icons/wm-maximize.svg"
             onClicked: {
                 if (!appWindow) return
                 if (root.isMaximized) appWindow.showNormal()
@@ -106,7 +106,7 @@ Item {
         // Close
         TitleBarButton {
             id: closeBtn
-            iconSource: "qrc:/qt/qml/ConquerD/Client/icons/wm-close.svg"
+            iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/wm-close.svg"
             hoverColor: Theme.danger
             onClicked: appWindow && appWindow.close()
         }

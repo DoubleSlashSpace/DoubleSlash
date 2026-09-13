@@ -12,7 +12,7 @@
 //! * demonstrate how a coordination feature composes with the opaque
 //!   [`game.relay.v1`](crate::wellknown::game_relay_v1) datagram relay.
 //!
-//! ## `x.conquerd.matchmaker.v1`
+//! ## `x.doubleslash.matchmaker.v1`
 //!
 //! A minimal lobby/matchmaking control feature. Peers invoke it to create,
 //! join, or leave a named game lobby. When a lobby fills to its
@@ -37,7 +37,7 @@ use crate::{
 };
 
 /// Capability id for the reference matchmaker module.
-pub const MATCHMAKER_ID: &str = "x.conquerd.matchmaker.v1";
+pub const MATCHMAKER_ID: &str = "x.doubleslash.matchmaker.v1";
 
 /// Default lobby capacity when an invoker omits `max_players`.
 const DEFAULT_MAX_PLAYERS: usize = 2;
@@ -50,7 +50,7 @@ const MAX_LOBBY_CAPACITY: usize = 16;
 /// with peers you already trust; the resulting session then moves to the
 /// `room-member` tier of `game.relay.v1`). Quotas are modest — this is a
 /// control-plane feature, not a data path.
-pub fn x_conquerd_matchmaker_v1() -> CapabilityDescriptor {
+pub fn x_doubleslash_matchmaker_v1() -> CapabilityDescriptor {
     CapabilityDescriptor::new(MATCHMAKER_ID, "1.0", ChannelKind::Request)
         .with_auth(AuthTier::TrustedPeer)
         .with_params(json!({
@@ -72,7 +72,7 @@ struct Lobby {
     members: Vec<PeerId>,
 }
 
-/// Reference matchmaking module (`x.conquerd.matchmaker.v1`).
+/// Reference matchmaking module (`x.doubleslash.matchmaker.v1`).
 #[derive(Default)]
 pub struct Matchmaker {
     lobbies: Mutex<BTreeMap<String, Lobby>>,
@@ -209,7 +209,7 @@ impl Matchmaker {
 
 impl FeatureModule for Matchmaker {
     fn descriptor(&self) -> CapabilityDescriptor {
-        x_conquerd_matchmaker_v1()
+        x_doubleslash_matchmaker_v1()
     }
 
     fn on_invoke(&self, ctx: InvocationContext) -> ModuleResult<()> {
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn descriptor_is_valid_bespoke_request() {
-        let d = x_conquerd_matchmaker_v1();
+        let d = x_doubleslash_matchmaker_v1();
         d.validate().unwrap();
         assert_eq!(d.namespace(), "x");
         assert_eq!(d.kind, ChannelKind::Request);

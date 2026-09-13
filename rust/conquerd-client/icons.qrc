@@ -1,6 +1,6 @@
 <!DOCTYPE RCC>
 <RCC version="1.0">
-    <qresource prefix="/qt/qml/ConquerD/Client">
+    <qresource prefix="/qt/qml/DoubleSlash/Client">
         <file alias="icons/mic.svg">qml/icons/mic.svg</file>
         <file alias="icons/mic-off.svg">qml/icons/mic-off.svg</file>
         <file alias="icons/video.svg">qml/icons/video.svg</file>

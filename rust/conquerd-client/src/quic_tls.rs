@@ -1,4 +1,4 @@
-//! QUIC TLS helpers for ConquerD peer-to-peer transport.
+//! QUIC TLS helpers for DoubleSlash peer-to-peer transport.
 //!
 //! Mirrors the cert generation in `conquerd-quic/src/identity.rs`:
 //! - Self-signed Ed25519 certificate, CN = hex(public_key_bytes).

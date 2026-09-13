@@ -40,7 +40,7 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
-        android:theme="@style/Theme.ConquerD">
+        android:theme="@style/Theme.DoubleSlash">
 
         <!--
           allowBackup is off deliberately: the identity key and the chat

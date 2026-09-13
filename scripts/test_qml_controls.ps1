@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 $clientRoot = Join-Path $PSScriptRoot "../rust/conquerd-client"
 $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("conquerd-qml-" + [guid]::NewGuid())
-$moduleRoot = Join-Path $temporaryRoot "ConquerD/Client"
+$moduleRoot = Join-Path $temporaryRoot "DoubleSlash/Client"
 try {
     New-Item -ItemType Directory -Path $moduleRoot -Force | Out-Null
     Copy-Item (Join-Path $clientRoot "tests/qml/qmldir") $moduleRoot

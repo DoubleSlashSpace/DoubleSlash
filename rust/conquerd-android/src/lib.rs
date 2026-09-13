@@ -1,4 +1,4 @@
-//! JNI entry points for the ConquerD Android client.
+//! JNI entry points for the DoubleSlash Android client.
 //!
 //! The Kotlin side sees four `native` methods on `com.conquerd.client.NativeCore`:
 //!
@@ -56,7 +56,7 @@ fn sessions() -> &'static Mutex<HashMap<jlong, Session>> {
 /// Install the tracing subscriber the first time we are called into.
 ///
 /// `RUST_LOG` still works for on-device debugging via
-/// `adb shell setprop log.tag.ConquerD VERBOSE`-style workflows; the default
+/// `adb shell setprop log.tag.DoubleSlash VERBOSE`-style workflows; the default
 /// keeps the core at info and silences dependency noise.
 fn init_logging() {
     LOGGING.call_once(|| {

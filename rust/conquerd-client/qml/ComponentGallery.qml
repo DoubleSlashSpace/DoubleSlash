@@ -1,10 +1,10 @@
-// ComponentGallery.qml — Visual inventory for the ConquerD design system.
+// ComponentGallery.qml — Visual inventory for the DoubleSlash design system.
 // Load via a dev entry point or embed in diagnostics when needed.
 
 import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 ScrollView {
     id: root
@@ -57,7 +57,7 @@ ScrollView {
                     StyledButton {
                         text: "With Icon"
                         primary: true
-                        icon.source: "qrc:/qt/qml/ConquerD/Client/icons/invite.svg"
+                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
                     }
                     StyledButton {
                         text: "Compact"
@@ -115,14 +115,14 @@ ScrollView {
 
                     SidebarItem {
                         width: parent.width
-                        iconSource: "qrc:/qt/qml/ConquerD/Client/icons/speech.svg"
+                        iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
                         label: "Chat"
                         badge: 3
                         selected: true
                     }
                     SidebarItem {
                         width: parent.width
-                        iconSource: "qrc:/qt/qml/ConquerD/Client/icons/gear.svg"
+                        iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/gear.svg"
                         label: "Settings"
                         badge: 0
                         selected: false
@@ -169,7 +169,7 @@ ScrollView {
 
                 EmptyState {
                     Layout.fillWidth: true
-                    iconSource: "qrc:/qt/qml/ConquerD/Client/icons/peers.svg"
+                    iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/peers.svg"
                     iconSize: 32
                     title: "No peers yet"
                     subtitle: "Paste an invite above to add a trusted peer."

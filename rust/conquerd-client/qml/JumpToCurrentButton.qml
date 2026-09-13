@@ -1,5 +1,5 @@
 import QtQuick
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 /*!
     A "jump to current" affordance for a chat \l ListView.
@@ -38,7 +38,7 @@ StyledButton {
 
     text: qsTr("Jump to current")
     primary: true
-    icon.source: "qrc:/qt/qml/ConquerD/Client/icons/arrow-down.svg"
+    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/arrow-down.svg"
 
     // Driven by opacity so the button fades rather than blinking, and folded
     // back into `visible` so a fully faded button cannot be clicked or take

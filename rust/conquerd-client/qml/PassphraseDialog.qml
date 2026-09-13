@@ -5,7 +5,7 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 import QtQuick.Dialogs
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Item {
     id: root
@@ -134,7 +134,7 @@ Item {
 
                 ToolButton {
                     visible: root._selectedFilePath !== ""
-                    icon.source: "qrc:/qt/qml/ConquerD/Client/icons/close.svg"
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                     icon.width: 14
                     icon.height: 14
                     icon.color: Theme.muted

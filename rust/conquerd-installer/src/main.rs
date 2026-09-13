@@ -198,7 +198,7 @@ fn archive_pick_rank(path: &std::path::Path) -> (u8, u64, u64, u64) {
     (0, 0, 0, 0)
 }
 
-/// Look for a ConquerD client .7z next to the running executable.
+/// Look for a DoubleSlash client .7z next to the running executable.
 fn detect_archive() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
@@ -245,7 +245,7 @@ fn validate_sha256(archive: &std::path::Path) -> anyhow::Result<bool> {
     Ok(true)
 }
 
-/// Launch the ConquerD exe from the given versioned directory.
+/// Launch the DoubleSlash exe from the given versioned directory.
 ///
 /// Re-verifies the executable's SHA-256 against the install manifest
 /// immediately before spawning to close the extract→exec TOCTOU window.

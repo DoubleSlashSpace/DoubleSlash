@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Material
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Rectangle {
     id: root

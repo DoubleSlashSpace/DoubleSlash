@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Item {
     width: 640
@@ -8,10 +8,10 @@ Item {
 
     Component {
         id: portalComponent
-        ConquerdWebView {
+        DoubleSlashWebView {
             width: 640
             height: 360
-            allowConquerd: true
+            allowPortal: true
         }
     }
 

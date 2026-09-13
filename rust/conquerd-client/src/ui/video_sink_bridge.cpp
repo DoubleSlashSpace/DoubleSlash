@@ -192,9 +192,9 @@ void ConquerdWindowChrome::disable(QObject *window) {
 }
 
 extern "C" void conquerd_register_video_singleton() {
-  qmlRegisterSingletonInstance("ConquerD.Native", 1, 0, "VideoRegistry",
+  qmlRegisterSingletonInstance("DoubleSlash.Native", 1, 0, "VideoRegistry",
                                ConquerdVideoRegistry::instance());
-  qmlRegisterSingletonInstance("ConquerD.Native", 1, 0, "WindowChrome",
+  qmlRegisterSingletonInstance("DoubleSlash.Native", 1, 0, "WindowChrome",
                                ConquerdWindowChrome::instance());
 }
 

@@ -15,7 +15,7 @@ use std::os::raw::{c_char, c_int};
 const ANDROID_LOG_INFO: c_int = 4;
 
 /// The tag `adb logcat -s` filters on.
-const TAG: &str = "ConquerD";
+const TAG: &str = "DoubleSlash";
 
 #[link(name = "log")]
 extern "C" {

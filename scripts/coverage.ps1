@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Report LLVM line/region coverage % for ConquerD Rust crates.
+    Report LLVM line/region coverage % for DoubleSlash Rust crates.
 
 .DESCRIPTION
     Uses cargo-llvm-cov (+ llvm-tools-preview) on both Cargo workspaces.

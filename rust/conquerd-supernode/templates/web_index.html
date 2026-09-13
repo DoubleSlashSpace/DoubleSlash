@@ -260,11 +260,12 @@
 
     async function bootstrap() {
       try {
-        if (typeof window.conquerd === "undefined") {
-          showError("window.conquerd bridge not available. Open this page through the Conquerd client.");
+        const bridge = window.doubleslash || window.conquerd;
+        if (!bridge) {
+          showError("window.doubleslash bridge not available. Open this page through the DoubleSlash client.");
           return;
         }
-        const ctx = await window.conquerd.ready;
+        const ctx = await bridge.ready;
         myPeerId    = ctx.myPeerId   || "";
         supernodeId = ctx.supernodeId || window.location.hostname;
         conquerdFetch = ctx.fetch.bind(ctx);

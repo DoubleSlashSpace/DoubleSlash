@@ -24,7 +24,7 @@ import java.io.FileInputStream
  * `pollDatagrams` drains them.
  */
 class PortalBridge(
-    private val core: ConquerdCore,
+    private val core: DoubleSlashCore,
     private val supernodeId: String,
     private val myPeerId: String,
 ) {
@@ -146,7 +146,7 @@ class PortalBridge(
         val sn = JsonPrimitive(supernodeId).toString()
         return """
         (function () {
-          if (window.conquerd) return;
+          if (window.conquerd || window.doubleslash) return;
           var raw = window.__conquerdNative;
           if (!raw) return;
           var sn = $sn;
@@ -196,7 +196,7 @@ class PortalBridge(
               href = '';
             }
 
-            if (href.indexOf('conquerd:') !== 0 && href.indexOf('d://') !== 0) {
+            if (href.indexOf('conquerd:') !== 0 && href.indexOf('d://') !== 0 && href.indexOf('doubleslash:') !== 0) {
               if (!nativeFetch) return Promise.reject(new Error('fetch unavailable'));
               return nativeFetch(input, opts);
             }
@@ -216,10 +216,16 @@ class PortalBridge(
               }));
             });
           };
+          var frozen = Object.freeze({ supernodeId: sn, ready: Promise.resolve(api) });
           Object.defineProperty(window, 'conquerd', {
             configurable: false,
             writable: false,
-            value: Object.freeze({ supernodeId: sn, ready: Promise.resolve(api) })
+            value: frozen
+          });
+          Object.defineProperty(window, 'doubleslash', {
+            configurable: false,
+            writable: false,
+            value: frozen
           });
         })();
         """.trimIndent()

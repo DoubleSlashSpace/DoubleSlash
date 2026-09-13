@@ -1,4 +1,4 @@
-# ConquerD Lightweight Threat Model (P3)
+# DoubleSlash Lightweight Threat Model (P3)
 
 **Date:** 2026  
 **Scope:** Invite + handshake, direct/relay sessions, in-app portal games, capability negotiation, supernode surfaces.  

@@ -109,9 +109,9 @@ cargo ndk -t arm64-v8a --platform 26 -o ../../android/app/src/main/jniLibs build
 
 ### ABIs
 
-`gradle.properties` sets `conquerd.abis=arm64-v8a`. Each extra ABI is a full
+`gradle.properties` sets `doubleslash.abis=arm64-v8a`. Each extra ABI is a full
 Rust build of the core *including libopus and libvpx*, so add `x86_64` only when
-you actually need the emulator. `conquerd.ndkApi` must stay equal to `minSdk`
+you actually need the emulator. `doubleslash.ndkApi` must stay equal to `minSdk`
 (26): cargo-ndk bakes it into the clang target triple, and a mismatch produces a
 library `dlopen` refuses on older devices with no useful diagnostic.
 
@@ -165,10 +165,10 @@ is worth re-checking with the commands above.
 
 ```powershell
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
-adb logcat -s ConquerD
+adb logcat -s DoubleSlash
 ```
 
-Rust logging goes to logcat under the tag `ConquerD` via a `MakeWriter` over
+Rust logging goes to logcat under the tag `DoubleSlash` via a `MakeWriter` over
 liblog (`logcat.rs`) — an Android process has no stdout anyone can read, so the
 default `tracing_subscriber` writer would send every line into the void.
 

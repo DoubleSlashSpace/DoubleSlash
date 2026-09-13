@@ -2,13 +2,15 @@
 setlocal
 
 set "ROOT=%~dp0"
-set "CONQUERD_HOME=%ROOT%.clientA"
-set "CONQUERD_KEY_DIR=%CONQUERD_HOME%"
+set "DOUBLESLASH_HOME=%ROOT%.clientA"
+set "DOUBLESLASH_KEY_DIR=%DOUBLESLASH_HOME%"
+set "CONQUERD_HOME=%DOUBLESLASH_HOME%"
+set "CONQUERD_KEY_DIR=%DOUBLESLASH_HOME%"
 set "LEGACY_HOME=%ROOT%.clientA_home"
 set "LEGACY_PROFILE_LINK=%LEGACY_HOME%\.conquerd"
 set "BINARY=%ROOT%dist\DoubleSlash\DoubleSlash.exe"
 
-:: HiDPI display scaling.  ConquerD sets QT_SCALE_FACTOR=0.75 automatically
+:: HiDPI display scaling.  DoubleSlash sets QT_SCALE_FACTOR=0.75 automatically
 :: at runtime when Windows DPI > 96 (i.e. display scaling > 100%), so Material
 :: controls stay desktop-compact on 4K/HiDPI monitors.
 :: Override here if you want a different value, e.g.:

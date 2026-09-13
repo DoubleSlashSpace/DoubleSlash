@@ -12,21 +12,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 // The desktop client's accent, so the two clients read as one product.
-private val ConquerdAccent = Color(0xFF3B82F6)
-private val ConquerdAccentDark = Color(0xFF60A5FA)
+private val DoubleSlashAccent = Color(0xFF3B82F6)
+private val DoubleSlashAccentDark = Color(0xFF60A5FA)
 
 private val LightColors = lightColorScheme(
-    primary = ConquerdAccent,
+    primary = DoubleSlashAccent,
     secondary = Color(0xFF64748B),
 )
 
 private val DarkColors = darkColorScheme(
-    primary = ConquerdAccentDark,
+    primary = DoubleSlashAccentDark,
     secondary = Color(0xFF94A3B8),
 )
 
 @Composable
-fun ConquerdTheme(
+fun DoubleSlashTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {

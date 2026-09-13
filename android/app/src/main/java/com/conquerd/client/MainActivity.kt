@@ -12,7 +12,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.ViewModelProvider
 import com.conquerd.client.ui.AppRoot
-import com.conquerd.client.ui.ConquerdTheme
+import com.conquerd.client.ui.DoubleSlashTheme
 
 class MainActivity : ComponentActivity() {
 
@@ -28,7 +28,7 @@ class MainActivity : ComponentActivity() {
             // Collected here rather than inside the theme so a change repaints
             // the whole tree, including the system bars.
             val state by viewModel.state.collectAsState()
-            ConquerdTheme(
+            DoubleSlashTheme(
                 darkTheme = when (state.prefs.theme) {
                     AppSettings.THEME_DARK -> true
                     AppSettings.THEME_LIGHT -> false

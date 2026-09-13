@@ -178,11 +178,18 @@ pub unsafe extern "C" fn conquerd_fetch_sync(
         }
     };
 
+    let path = if let Some(rewritten) = canonicalize_portal_api_path(&path) {
+        rewritten
+    } else {
+        path
+    };
+
     // ── Built-in local endpoints (served without a relay round-trip) ──────
-    // conquerd://<any_supernode>/_conquerd/ctx.json
+    // d://<any_supernode>/_conquerd/ctx.json (alias `/_doubleslash/ctx.json`)
     //   Returns the client's own peer ID and version so portal JS can
-    //   populate `window.conquerd` without an extra network hop.
-    //   `nativeTransport: true` — games use identity-path channel APIs only.
+    //   populate `window.conquerd` / `window.doubleslash` without an extra
+    //   network hop. `nativeTransport: true` — games use identity-path
+    //   channel APIs only.
     if path == "/_conquerd/ctx.json" {
         let peer_id = PORTAL_PEER_ID.get().map(String::as_str).unwrap_or("");
         let json = format!(
@@ -201,7 +208,7 @@ pub unsafe extern "C" fn conquerd_fetch_sync(
     }
 
     // Portal game channel (identity QUIC relay — no WebTransport cert).
-    // Paths:
+    // Paths (canonical `/_conquerd/…`; `/_doubleslash/…` is rewritten above):
     //   /_conquerd/channel/open?room=<lobby>
     //   /_conquerd/channel/send?b64=<base64url payload>
     //   /_conquerd/channel/poll
@@ -468,6 +475,13 @@ fn libc_alloc(src: &[u8]) -> *mut u8 {
 /// Also accepts `d:/PEERID/path` (single slash, no authority) for
 /// robustness in case a relative-URL resolution produces it.
 ///
+/// Rewrite `/_doubleslash/...` to the canonical `/_conquerd/...` prefix so
+/// both portal API spellings hit the same handlers. Other paths are unchanged.
+fn canonicalize_portal_api_path(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/_doubleslash/")?;
+    Some(format!("/_conquerd/{rest}"))
+}
+
 /// Returns `None` if the URL does not match the expected structure.
 fn parse_conquerd_url(url: &str) -> Option<(String, String, Option<String>)> {
     let rest = conquerd_features::strip_scheme(url)?;
@@ -501,7 +515,21 @@ fn parse_conquerd_url(url: &str) -> Option<(String, String, Option<String>)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_conquerd_url;
+    use super::{canonicalize_portal_api_path, parse_conquerd_url};
+
+    #[test]
+    fn doubleslash_portal_api_prefix_rewrites() {
+        assert_eq!(
+            canonicalize_portal_api_path("/_doubleslash/ctx.json").as_deref(),
+            Some("/_conquerd/ctx.json")
+        );
+        assert_eq!(
+            canonicalize_portal_api_path("/_doubleslash/channel/open").as_deref(),
+            Some("/_conquerd/channel/open")
+        );
+        assert!(canonicalize_portal_api_path("/_conquerd/ctx.json").is_none());
+        assert!(canonicalize_portal_api_path("/index.html").is_none());
+    }
 
     #[test]
     fn basic_parse() {

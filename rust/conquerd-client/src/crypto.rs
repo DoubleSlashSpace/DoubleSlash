@@ -361,7 +361,7 @@ pub fn ed25519_verify(public_key_bytes: &[u8], signature_bytes: &[u8], data: &[u
     pk.verify(data, &sig).is_ok()
 }
 
-/// Hex-encoded Ed25519 public key of the ConquerD release signer.
+/// Hex-encoded Ed25519 public key of the DoubleSlash release signer.
 /// Must be kept in sync with the one in conquerd-installer/src/release_manifest.rs.
 const RELEASE_SIGNER_PUBKEY_HEX: &str =
     "d31f43fcfba1fae04313d384d7fba026bd52796550c57def6cf47b069c18043f";

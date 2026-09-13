@@ -1,6 +1,6 @@
 # supernode-manager
 
-A standalone Rust CLI + TUI for deploying and operating fleets of `conquerd-supernode` instances over SSH. Lives in this repo (`ConquerD_Manager`); independent of the ConquerD application crates but targets the same supernode release artifacts.
+A standalone Rust CLI + TUI for deploying and operating fleets of `conquerd-supernode` instances over SSH. Lives in this repo (`ConquerD_Manager`); independent of the DoubleSlash application crates but targets the same supernode release artifacts.
 
 > **Status (v0.1.0):** Working prototype. Linux remote hosts with systemd are supported end-to-end (multi-instance proven on production VPS). Default entry point is an interactive TUI; all operations are also available as CLI subcommands. Remote targets are **Linux + systemd only** — no launchd or Windows-service backends yet.
 
@@ -21,7 +21,7 @@ Let one operator, from a laptop, manage many supernodes:
 
 ## 2. What a supernode needs to run (host contract)
 
-Derived from `rust/conquerd-supernode` in the ConquerD repo (`config.rs`, `manifest.rs`, `main.rs`) and `docs/SUPERNODE.md`. The manager must honor this contract; it does not import ConquerD crates.
+Derived from `rust/conquerd-supernode` in the DoubleSlash repo (`config.rs`, `manifest.rs`, `main.rs`) and `docs/SUPERNODE.md`. The manager must honor this contract; it does not import DoubleSlash application crates.
 
 ### Binary
 

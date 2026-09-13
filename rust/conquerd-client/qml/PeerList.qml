@@ -3,7 +3,7 @@
 import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Rectangle {
     id: root
@@ -80,7 +80,7 @@ Rectangle {
                 anchors.centerIn: parent
                 visible: peerListView.count === 0
                 width: Math.min(parent.width - Theme.spacingXl, 170)
-                iconSource: "qrc:/qt/qml/ConquerD/Client/icons/peers.svg"
+                iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/peers.svg"
                 iconSize: 32
                 title: "No peers yet"
                 subtitle: "Paste an invite above to add a trusted peer."
@@ -163,7 +163,7 @@ Rectangle {
                             // In-call phone icon
                             Image {
                                 visible: delegateItem.inCall
-                                source: "qrc:/qt/qml/ConquerD/Client/icons/phone.svg"
+                                source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
                                 sourceSize.width: 12
                                 sourceSize.height: 12
                                 width: 12

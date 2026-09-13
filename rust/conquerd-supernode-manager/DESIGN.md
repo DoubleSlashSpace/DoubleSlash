@@ -51,7 +51,7 @@ Crate responsibilities:
 | `snm-transport` | SSH abstraction, embedded russh backend, OpenSSH backend. |
 | `snm-supernode` | Supernode-specific ops: install, systemd, manifest render, release download, firewall, invite, status probing. |
 
-The manager does not import ConquerD crates. It encodes only the supernode host
+The manager does not import DoubleSlash application crates. It encodes only the supernode host
 contract and release artifact naming.
 
 ## Runtime Model

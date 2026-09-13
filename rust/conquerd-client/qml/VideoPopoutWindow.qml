@@ -13,8 +13,8 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Window
-import ConquerD.Client 1.0
-import ConquerD.Native 1.0
+import DoubleSlash.Client 1.0
+import DoubleSlash.Native 1.0
 
 Window {
     id: popWin
@@ -75,7 +75,7 @@ Window {
         }
         // Lazy for the same reason as the region: without Qt Multimedia there
         // is no VideoTile in the qrc, and this file must still parse.
-        source: "qrc:/qt/qml/ConquerD/Client/qml/VideoTile.qml"
+        source: "qrc:/qt/qml/DoubleSlash/Client/qml/VideoTile.qml"
         onLoaded: {
             item.peerId = Qt.binding(() => popWin.peerId)
             item.displayName = ""      // the title bar already names the peer

@@ -117,7 +117,7 @@ fn run_qt_ui() {
     }
 
     // Single-instance guard.  If a `conquerd://` URL was passed on argv and
-    // another ConquerD is already running (e.g. Chromium inside our embedded
+    // another DoubleSlash is already running (e.g. Chromium inside our embedded
     // BrowserPanel handed a URL to the OS via its external-protocol
     // fallback), exit silently before any window is created.  The running
     // instance keeps everything in-process.
@@ -152,7 +152,7 @@ fn run_qt_ui() {
         ui::scheme::conquerd_install_scheme_handler();
     }
 
-    // Must precede `engine.load()`: QML resolves `import ConquerD.Native` at
+    // Must precede `engine.load()`: QML resolves `import DoubleSlash.Native` at
     // parse time, so registering afterwards would leave VideoTile unable to
     // find the registry.
     video::sink::register_singleton();
@@ -164,7 +164,7 @@ fn run_qt_ui() {
                 as *mut std::ffi::c_void
         };
         engine.load(&QUrl::from(
-            "qrc:/qt/qml/ConquerD/Client/qml/MainWindow.qml",
+            "qrc:/qt/qml/DoubleSlash/Client/qml/MainWindow.qml",
         ));
         unsafe {
             // On Windows this also installs the snap-friendly frame filter

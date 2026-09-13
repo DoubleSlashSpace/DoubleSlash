@@ -70,7 +70,7 @@ Two things follow for any client:
 
 Three SQLite stores, all opened with the identity and all client-owned:
 `peer_store.rs`, `chat_store.rs`, `room_store.rs`. They resolve their paths
-through `Identity::default_key_dir()`, which reads `CONQUERD_HOME` — Android
+through `Identity::default_key_dir()`, which reads `DOUBLESLASH_HOME` / `CONQUERD_HOME` — Android
 must set that before opening anything, since it has no meaningful `HOME`.
 
 ### Transport
@@ -295,7 +295,7 @@ member must resolve to the same place, and sessions fail over between members.
 client's QUIC channels — the multiplayer game demos run on this.
 
 * **Core** — `web_app_client.rs` (`web.host.app.v1`), `ui/scheme.rs`.
-* **Desktop** — `openNodePortal`, `ConquerdWebView.qml` (Qt WebEngine).
+* **Desktop** — `openNodePortal`, `DoubleSlashWebView.qml` (Qt WebEngine).
 * **Android** — a `WebView` reached from a supernode row in Settings.
   `portal.fetch` answers every request the WebView makes, because a
   `d://` URL is not fetchable by a browser: there is no such network
@@ -442,7 +442,7 @@ Android yet) or is purely local (theme, camera choice).
 
 1. **ID encoding.** Padded `public_id` versus hex `peer_id` versus un-padded
    ephemeral keys. Decode leniently, emit exactly.
-2. **`CONQUERD_HOME` before any store.** The stores resolve their own paths;
+2. **`DOUBLESLASH_HOME` / `CONQUERD_HOME` before any store.** The stores resolve their own paths;
    set it first or they land somewhere unwritable.
 3. **Cluster fan-out duplicates rooms.** The same room arrives from every
    member of a cluster. Fold on the delivering node before showing a list.

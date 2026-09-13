@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 const LOGO_BYTES: &[u8] = include_bytes!("../../conquerd-client/qml/icons/logo-full.svg");
-const ICO_BYTES: &[u8] = include_bytes!("../../../assets/conquerd.ico");
+const ICO_BYTES: &[u8] = include_bytes!("../../../assets/doubleslash.ico");
 
 /// Match the native client's Discord-dark palette (`Theme.qml`).
 fn apply_dark_theme(ctx: &egui::Context) {

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Copy a desktop ConquerD profile onto a connected Android device.
+    Copy a desktop DoubleSlash profile onto a connected Android device.
 
 .DESCRIPTION
     Moves an existing identity (and optionally its peer, room and chat stores)
@@ -18,7 +18,8 @@
     debug builds are debuggable. Release builds are not, and this will refuse.
 
 .PARAMETER ProfileDir
-    Desktop profile to copy from. Defaults to $env:USERPROFILE\.conquerd.
+    Desktop profile to copy from. Defaults to ~/.doubleslash, or ~/.conquerd
+    if that profile still exists.
 
 .PARAMETER IdentityOnly
     Copy only identity.dat, leaving the phone with empty peer/room/chat stores.
@@ -34,7 +35,11 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ProfileDir = (Join-Path $env:USERPROFILE ".conquerd"),
+    [string]$ProfileDir = $(
+        $ds = Join-Path $env:USERPROFILE ".doubleslash"
+        $legacy = Join-Path $env:USERPROFILE ".conquerd"
+        if (Test-Path $ds) { $ds } elseif (Test-Path $legacy) { $legacy } else { $ds }
+    ),
     [switch]$IdentityOnly,
     [string]$Serial
 )
@@ -42,8 +47,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $PackageId = "com.conquerd.client"
-# Must match ConquerdCore.homeDir on the Kotlin side.
-$RemoteHome = "files/conquerd"
+# Must match DoubleSlashCore.homeDir on the Kotlin side.
+$RemoteHome = "files/doubleslash"
 
 # --- Locate adb ----------------------------------------------------------
 $adb = (Get-Command adb -ErrorAction SilentlyContinue).Source
@@ -60,7 +65,7 @@ if ($Serial) { $adbArgs += @("-s", $Serial) }
 
 # Arguments are passed as one explicit array rather than as remaining
 # arguments. PowerShell binds any bare token starting with "-" to a parameter
-# name, so `Invoke-Adb shell ... mkdir -p files/conquerd` would swallow the
+# name, so `Invoke-Adb shell ... mkdir -p files/doubleslash` would swallow the
 # "-p" and hand Android a mkdir with no path.
 function Invoke-Adb {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)

@@ -175,10 +175,10 @@ Adaptive audio normalization uses a 30Hz peak envelope tracker (`peakTimer`) and
 80×80px tile. Contains a 48px `Avatar` with `showRing: true` at center, overlaid by a property-bound activity ring (two concentric `Rectangle` borders). Activity ring color uses a heat map from `Qt.rgba` (cool teal → warm green → hot yellow). Ring width and opacity animate at `animMicro` for live audio responsiveness. Mute badge: 18px circular `danger` with mic-off icon at bottom-right. Optional name bubble: `accent` pill at bottom-center, visible when `showNameBubbles: true`.
 
 ### FilePreviewPanel
-Inline file preview using `ConquerdWebView`. Supports: images, PDF, HTML, text/code, video (HTML5 `<video>`), audio (HTML5 `<audio>`). Navigation restricted to `file://` and `data:` URIs — no outbound network. Shows "cannot preview" message for unsupported types.
+Inline file preview using `DoubleSlashWebView`. Supports: images, PDF, HTML, text/code, video (HTML5 `<video>`), audio (HTML5 `<audio>`). Navigation restricted to `file://` and `data:` URIs — no outbound network. Shows "cannot preview" message for unsupported types.
 
-### ConquerdWebView
-Shared secure `QtWebEngine` wrapper. Always off-the-record (no persistent cookies, cache, localStorage, or history). Navigation whitelist: only hosts matching `allowedDomains` suffixes are allowed; `file://` and `data:` are always permitted. `allowAll: true` bypasses the whitelist (browser panel). `allowConquerd: true` permits `conquerd://` URLs for supernode portal pages. No `QWebChannel` bridge — zero access to Rust/AppBridge peer data.
+### DoubleSlashWebView
+Shared secure `QtWebEngine` wrapper. Always off-the-record (no persistent cookies, cache, localStorage, or history). Navigation whitelist: only hosts matching `allowedDomains` suffixes are allowed; `file://` and `data:` are always permitted. `allowAll: true` bypasses the whitelist (browser panel). `allowPortal: true` permits `conquerd://` URLs for supernode portal pages. No `QWebChannel` bridge — zero access to Rust/AppBridge peer data.
 
 ## States & Interactions
 
@@ -226,7 +226,7 @@ Shared secure `QtWebEngine` wrapper. Always off-the-record (no persistent cookie
 
 ## Changelog
 - 2026-08-10: Remove `TalkingRing` — the component was never instantiated and was absent from the QML module's file list, so it shipped in no build. `ParticipantWidget` draws the activity ring.
-- 2026-06-26: Add `radiusPill` + `animMicro` tokens; sweep all hardcoded animation durations and badge radii to token references; document TitleBar buttons, Avatar ring behavior, and 7 new components (ConnectionStatsChip, StatsPanel, TalkingRing, VoiceRail, ParticipantWidget, FilePreviewPanel, ConquerdWebView)
+- 2026-06-26: Add `radiusPill` + `animMicro` tokens; sweep all hardcoded animation durations and badge radii to token references; document TitleBar buttons, Avatar ring behavior, and 7 new components (ConnectionStatsChip, StatsPanel, TalkingRing, VoiceRail, ParticipantWidget, FilePreviewPanel, DoubleSlashWebView)
 - 2026-06-06: Initial design system document v1.0
 
 ---

@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Layouts
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Item {
     id: root
@@ -173,7 +173,7 @@ Item {
                 }
 
                 ToolButton {
-                    icon.source: "qrc:/qt/qml/ConquerD/Client/icons/search.svg"
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/search.svg"
                     icon.width: 18
                     icon.height: 18
                     visible: root.selectedPeerId !== ""
@@ -191,7 +191,7 @@ Item {
                 }
 
                 Button {
-                    icon.source: "qrc:/qt/qml/ConquerD/Client/icons/phone.svg"
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
                     icon.width: 18
                     icon.height: 18
                     visible: root.selectedPeerId !== "" && !root.callActiveWithPeer
@@ -238,7 +238,7 @@ Item {
                 }
 
                 ToolButton {
-                    icon.source: "qrc:/qt/qml/ConquerD/Client/icons/close.svg"
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                     icon.width: 12
                     icon.height: 12
                     icon.color: Theme.muted
@@ -309,8 +309,8 @@ Item {
 
                 Image {
                     source: root.selectedPeerId === ""
-                        ? "qrc:/qt/qml/ConquerD/Client/icons/speech.svg"
-                        : "qrc:/qt/qml/ConquerD/Client/icons/send.svg"
+                        ? "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
+                        : "qrc:/qt/qml/DoubleSlash/Client/icons/send.svg"
                     sourceSize.width: 40
                     sourceSize.height: 40
                     Layout.preferredWidth: 40
@@ -436,7 +436,7 @@ Item {
                         }
                     }
                     ToolButton {
-                        icon.source: "qrc:/qt/qml/ConquerD/Client/icons/close.svg"
+                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                         icon.width: 12
                         icon.height: 12
                         icon.color: Theme.muted

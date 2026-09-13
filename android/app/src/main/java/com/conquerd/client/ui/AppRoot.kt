@@ -2133,7 +2133,7 @@ private fun PortalScreen(
     supernodeId: String,
     label: String,
     myPeerId: String,
-    core: com.conquerd.client.ConquerdCore,
+    core: com.conquerd.client.DoubleSlashCore,
     onBack: () -> Unit,
 ) {
     val bridge = remember(supernodeId, myPeerId) {

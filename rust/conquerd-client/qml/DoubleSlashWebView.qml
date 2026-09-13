@@ -1,4 +1,4 @@
-// ConquerdWebView.qml — Shared secure Chromium (QtWebEngine) wrapper.
+// DoubleSlashWebView.qml — Shared secure Chromium (QtWebEngine) wrapper.
 //
 // Security model:
 //   • Always off-the-record: no persistent cookies, cache, localStorage,
@@ -14,14 +14,14 @@
 //     peer data or crypto state.
 //
 // Usage (embed use-cases):
-//   ConquerdWebView {
+//   DoubleSlashWebView {
 //       anchors.fill: parent
 //       allowedDomains: ["youtube.com", "googlevideo.com"]
 //       startUrl: "https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1"
 //   }
 //
 // Usage (general browser panel):
-//   ConquerdWebView {
+//   DoubleSlashWebView {
 //       anchors.fill: parent
 //       allowAll: true
 //       startUrl: "about:blank"
@@ -31,7 +31,7 @@ import QtQuick
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 import QtWebEngine
-import ConquerD.Client 1.0
+import DoubleSlash.Client 1.0
 
 Item {
     id: root
@@ -48,7 +48,7 @@ Item {
     /// When true, navigation to d:// and conquerd:// URLs is permitted.
     /// Set this for the node-portal panel to allow supernode portal pages
     /// while still blocking outbound https:// navigation.
-    property bool allowConquerd: false
+    property bool allowPortal: false
 
     /// Initial URL to load on component creation.
     property string startUrl: ""
@@ -75,7 +75,7 @@ Item {
 
     /// Navigate to a new URL programmatically.
     function navigate(url) {
-        console.log("[portal] ConquerdWebView.navigate url=" + url + " allowConquerd=" + root.allowConquerd + " allowAll=" + root.allowAll)
+        console.log("[portal] DoubleSlashWebView.navigate url=" + url + " allowPortal=" + root.allowPortal + " allowAll=" + root.allowAll)
         _view.url = root.browserUrl(url)
     }
 
@@ -107,7 +107,7 @@ Item {
                 var slash = rest.indexOf("/")
                 host = slash >= 0 ? rest.substring(0, slash) : rest
             }
-            console.log("[portal] onNavigationRequested scheme=" + scheme + " host=" + host + " url=" + urlStr + " allowConquerd=" + root.allowConquerd)
+            console.log("[portal] onNavigationRequested scheme=" + scheme + " host=" + host + " url=" + urlStr + " allowPortal=" + root.allowPortal)
 
             if (scheme === "file" || scheme === "data" ||
                 scheme === "qrc"  || scheme === "about") {
@@ -116,7 +116,7 @@ Item {
             }
 
             if (scheme === "d" || scheme === "conquerd") {
-                if (root.allowConquerd || root.allowAll) {
+                if (root.allowPortal || root.allowAll) {
                     if (scheme === "d") {
                         request.reject()
                         root.navigate(urlStr)
@@ -129,7 +129,7 @@ Item {
                 return
             }
 
-            if (root.allowConquerd && !root.allowAll) {
+            if (root.allowPortal && !root.allowAll) {
                 request.reject()
                 Qt.openUrlExternally(request.url)
                 return
@@ -211,7 +211,7 @@ Item {
             width: Math.min(parent.width - Theme.spacingXl * 2, 300)
 
             Image {
-                source: "qrc:/qt/qml/ConquerD/Client/icons/warning.svg"
+                source: "qrc:/qt/qml/DoubleSlash/Client/icons/warning.svg"
                 sourceSize.width: 28
                 sourceSize.height: 28
                 Layout.preferredWidth: 28

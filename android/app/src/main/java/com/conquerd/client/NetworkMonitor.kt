@@ -27,7 +27,7 @@ private const val TAG = "NetworkMonitor"
  * callbacks fire constantly — signal strength, metered flags, DNS updates — and
  * none of them invalidate a socket.
  */
-class NetworkMonitor(context: Context, private val core: ConquerdCore) {
+class NetworkMonitor(context: Context, private val core: DoubleSlashCore) {
 
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

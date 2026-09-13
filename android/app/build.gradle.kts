@@ -15,22 +15,28 @@ plugins {
 
 /// ABIs to build, from gradle.properties. Each one is a full Rust build of the
 /// core including libopus and libvpx, so the default is arm64-v8a alone.
+fun firstProp(vararg names: String): String? =
+    names.firstNotNullOfOrNull { providers.gradleProperty(it).orNull }
+
+fun firstEnv(vararg names: String): String? =
+    names.firstNotNullOfOrNull { providers.environmentVariable(it).orNull }
+
 val conquerdAbis: List<String> =
-    (providers.gradleProperty("conquerd.abis").orNull ?: "arm64-v8a")
+    (firstProp("doubleslash.abis", "conquerd.abis") ?: "arm64-v8a")
         .split(",")
         .map { it.trim() }
         .filter { it.isNotEmpty() }
 
 /// Android API level the Rust side compiles against. Must match `minSdk`.
-val conquerdNdkApi: String = providers.gradleProperty("conquerd.ndkApi").orNull ?: "26"
+val conquerdNdkApi: String = firstProp("doubleslash.ndkApi", "conquerd.ndkApi") ?: "26"
 
 /// Overridable so a machine with a non-PATH toolchain can point at its own.
-val cargoExecutable: String = providers.gradleProperty("conquerd.cargo").orNull ?: "cargo"
+val cargoExecutable: String = firstProp("doubleslash.cargo", "conquerd.cargo") ?: "cargo"
 
 /// Keystore that signs the APK, when CI supplies one.
 ///
 /// Android replaces an installed app only if the replacement carries the same
-/// signature, so a build meant to land on a device already running ConquerD
+/// signature, so a build meant to land on a device already running DoubleSlash
 /// has to be signed with the key that signed what is there now. An APK signed
 /// with a CI runner's own throwaway debug keystore cannot be installed over it
 /// at all - only after an uninstall, and an uninstall takes app-private
@@ -40,17 +46,17 @@ val cargoExecutable: String = providers.gradleProperty("conquerd.cargo").orNull 
 /// Unset on a developer machine, where the build falls through to the debug
 /// keystore Gradle manages itself. That is what has always signed local
 /// builds, so it is also what the CI secret should hold.
-val signingKeystore: String? = providers.environmentVariable("CONQUERD_KEYSTORE").orNull
+val signingKeystore: String? = firstEnv("DOUBLESLASH_KEYSTORE", "CONQUERD_KEYSTORE")
 
 /// Passwords for [signingKeystore]. The defaults are the published
 /// debug-keystore credentials, so reusing a debug keystore needs no secret
 /// beyond the file itself; a real release keystore overrides all three.
 val signingStorePassword: String =
-    providers.environmentVariable("CONQUERD_KEYSTORE_PASSWORD").orNull ?: "android"
+    firstEnv("DOUBLESLASH_KEYSTORE_PASSWORD", "CONQUERD_KEYSTORE_PASSWORD") ?: "android"
 val signingKeyAlias: String =
-    providers.environmentVariable("CONQUERD_KEY_ALIAS").orNull ?: "androiddebugkey"
+    firstEnv("DOUBLESLASH_KEY_ALIAS", "CONQUERD_KEY_ALIAS") ?: "androiddebugkey"
 val signingKeyPassword: String =
-    providers.environmentVariable("CONQUERD_KEY_PASSWORD").orNull ?: "android"
+    firstEnv("DOUBLESLASH_KEY_PASSWORD", "CONQUERD_KEY_PASSWORD") ?: "android"
 
 /// Build stamp appended to the version name, so a side-loaded APK can be
 /// identified from the device Settings screen.
@@ -61,7 +67,7 @@ val signingKeyPassword: String =
 /// costs the identity key and the message store. versionName carries no such
 /// rule, so it is the safe place to put a build number.
 val conquerdBuildStamp: String =
-    providers.environmentVariable("CONQUERD_BUILD_ID").orNull?.let { "-$it" } ?: ""
+    firstEnv("DOUBLESLASH_BUILD_ID", "CONQUERD_BUILD_ID")?.let { "-$it" } ?: ""
 
 val rustCrateDir = rootProject.layout.projectDirectory.dir("../rust/conquerd-android")
 val jniLibsDir = layout.projectDirectory.dir("src/main/jniLibs")
@@ -74,7 +80,7 @@ val jniLibsDir = layout.projectDirectory.dir("src/main/jniLibs")
 fun registerCargoBuild(taskName: String, releaseProfile: Boolean) =
     tasks.register<Exec>(taskName) {
         group = "build"
-        description = "Cross-compile the ConquerD client core for Android (" +
+        description = "Cross-compile the DoubleSlash client core for Android (" +
             (if (releaseProfile) "release" else "debug") + ")."
 
         workingDir = rustCrateDir.asFile

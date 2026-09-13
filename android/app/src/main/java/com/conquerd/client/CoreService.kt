@@ -76,7 +76,7 @@ class CoreService : Service() {
      * the app is in someone's pocket, which is exactly when no activity exists
      * to notice.
      */
-    private val networkMonitor by lazy { NetworkMonitor(this, ConquerdCore.get(this)) }
+    private val networkMonitor by lazy { NetworkMonitor(this, DoubleSlashCore.get(this)) }
 
     /**
      * Event pump for incoming calls. The ViewModel is gone when the activity
@@ -91,7 +91,7 @@ class CoreService : Service() {
         networkMonitor.start()
         IncomingCallNotifier.ensureLifecycleObserver()
         scope.launch {
-            ConquerdCore.get(this@CoreService).events.collect { event ->
+            DoubleSlashCore.get(this@CoreService).events.collect { event ->
                 when (event.eventName()) {
                     "call_request" -> {
                         val peerId = event.stringOrEmpty("peer_id")
@@ -123,7 +123,7 @@ class CoreService : Service() {
             if (!peerId.isNullOrEmpty()) {
                 IncomingCallNotifier.declined(this, peerId)
                 scope.launch {
-                    ConquerdCore.get(this@CoreService).command("call.reject") {
+                    DoubleSlashCore.get(this@CoreService).command("call.reject") {
                         put("peer_id", peerId)
                     }
                 }
@@ -138,7 +138,7 @@ class CoreService : Service() {
             cameraActive = intent.getBooleanExtra(EXTRA_CAMERA, false)
         }
 
-        if (!ConquerdCore.get(this).isRunning) {
+        if (!DoubleSlashCore.get(this).isRunning) {
             // Sticky restart after the process died, or a start with no
             // session. A notification that says we are connected when the
             // core is gone is a lie.
@@ -178,7 +178,7 @@ class CoreService : Service() {
         scope.cancel()
         IncomingCallNotifier.cancel(this)
         networkMonitor.stop()
-        ConquerdCore.get(this).stop()
+        DoubleSlashCore.get(this).stop()
     }
 
     private fun startInForeground() {

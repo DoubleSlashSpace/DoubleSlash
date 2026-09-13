@@ -1,4 +1,4 @@
-These tests load the production `ConquerdWebView.qml` in Qt WebEngine with the
+These tests load the production `DoubleSlashWebView.qml` in Qt WebEngine with the
 production scheme handler. Only the Rust QUIC fetch callback is replaced with
 local HTML/JSON fixtures. No identity, running client, or supernode is needed.
 

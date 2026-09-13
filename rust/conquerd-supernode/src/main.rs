@@ -1,4 +1,4 @@
-// ConquerD Supernode — main.rs
+// DoubleSlash supernode — main.rs
 // Standalone Rust supernode binary: QUIC relay + SFU + WebSocket signaling + in-app portal (web.host.app.v1).
 
 mod access;

@@ -7,16 +7,16 @@ find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest WebEngineQuick)
 add_executable(portal_tests main.cpp ../../src/ui/scheme.cpp)
 target_link_libraries(portal_tests PRIVATE Qt6::QuickTest Qt6::WebEngineQuick)
 qt_add_resources(portal_tests portal_icons
-    PREFIX "/qt/qml/ConquerD/Client"
+    PREFIX "/qt/qml/DoubleSlash/Client"
     BASE "../../qml"
     FILES "../../qml/icons/warning.svg")
 
 # Exercise the production QML without building the Rust/Qt application.
-set(module_dir "${CMAKE_CURRENT_BINARY_DIR}/imports/ConquerD/Client")
+set(module_dir "${CMAKE_CURRENT_BINARY_DIR}/imports/DoubleSlash/Client")
 file(MAKE_DIRECTORY "${module_dir}")
 configure_file(../qml/qmldir "${module_dir}/qmldir" COPYONLY)
-file(APPEND "${module_dir}/qmldir" "\nConquerdWebView 1.0 ConquerdWebView.qml\n")
-foreach(component Theme StyledButton StyledTextField ConquerdWebView)
+file(APPEND "${module_dir}/qmldir" "\nDoubleSlashWebView 1.0 DoubleSlashWebView.qml\n")
+foreach(component Theme StyledButton StyledTextField DoubleSlashWebView)
     configure_file("../../qml/${component}.qml" "${module_dir}/${component}.qml" COPYONLY)
 endforeach()
 enable_testing()

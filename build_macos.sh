@@ -17,7 +17,8 @@
 #
 # Usage:
 #   ./build_macos.sh                    # debug build
-#   CONQUERD_RELEASE=1 ./build_macos.sh # release build (optimised)
+#   DOUBLESLASH_RELEASE=1 ./build_macos.sh # release build (optimised)
+#   CONQUERD_RELEASE=1 is still accepted as an alias.
 # ============================================================================
 
 set -euo pipefail
@@ -54,7 +55,7 @@ echo "==> Building DoubleSlash v${VERSION} for macOS"
 
 PROFILE="debug"
 CARGO_FLAGS=""
-if [ "${CONQUERD_RELEASE:-0}" = "1" ]; then
+if [ "${DOUBLESLASH_RELEASE:-${CONQUERD_RELEASE:-0}}" = "1" ]; then
     PROFILE="release"
     CARGO_FLAGS="--release"
 fi
@@ -88,9 +89,9 @@ echo "==> Assembling $APP_BUNDLE..."
 rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS" "$RESOURCES" "$FRAMEWORKS"
 
-cp "$BINARY" "$MACOS/conquerd"
+cp "$BINARY" "$MACOS/doubleslash"
 cp "$INSTALLER_BIN" "$MACOS/conquerd-installer"
-chmod +x "$MACOS/conquerd" "$MACOS/conquerd-installer"
+chmod +x "$MACOS/doubleslash" "$MACOS/conquerd-installer"
 
 # Info.plist (from packaging template, with version substitution)
 PLIST_TEMPLATE="$ROOT/packaging/Info.plist.in"
@@ -107,14 +108,14 @@ else
   <key>CFBundleIdentifier</key>       <string>com.conquerd.client</string>
   <key>CFBundleVersion</key>          <string>${VERSION}</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-  <key>CFBundleExecutable</key>       <string>conquerd</string>
-  <key>CFBundleIconFile</key>         <string>conquerd.icns</string>
+  <key>CFBundleExecutable</key>       <string>doubleslash</string>
+  <key>CFBundleIconFile</key>         <string>doubleslash.icns</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.social-networking</string>
   <key>NSHighResolutionCapable</key>  <true/>
   <key>CFBundleURLTypes</key>
   <array>
     <dict>
-      <key>CFBundleURLSchemes</key><array><string>d</string><string>conquerd</string></array>
+      <key>CFBundleURLSchemes</key><array><string>doubleslash</string><string>d</string><string>conquerd</string></array>
       <key>CFBundleURLName</key>   <string>DoubleSlash URL</string>
     </dict>
   </array>
@@ -124,8 +125,10 @@ PLIST
 fi
 
 # Icon
-if [ -f "$ROOT/assets/conquerd.icns" ]; then
-    cp "$ROOT/assets/conquerd.icns" "$RESOURCES/conquerd.icns"
+if [ -f "$ROOT/assets/doubleslash.icns" ]; then
+    cp "$ROOT/assets/doubleslash.icns" "$RESOURCES/doubleslash.icns"
+elif [ -f "$ROOT/assets/conquerd.icns" ]; then
+    cp "$ROOT/assets/conquerd.icns" "$RESOURCES/doubleslash.icns"
 fi
 
 # Qt deployment (bundles Qt frameworks + QML runtime)
@@ -136,13 +139,16 @@ macdeployqt "$APP_BUNDLE" \
     -no-strip
 
 # ── Code signing (optional) ────────────────────────────────────────────────────
-if [ -n "${CONQUERD_SIGN_ID:-}" ]; then
-    echo "==> Code signing with identity: $CONQUERD_SIGN_ID"
-    codesign --deep --force --sign "$CONQUERD_SIGN_ID" \
-             --entitlements "$ROOT/packaging/conquerd.entitlements" \
+SIGN_ID="${DOUBLESLASH_SIGN_ID:-${CONQUERD_SIGN_ID:-}}"
+if [ -n "$SIGN_ID" ]; then
+    echo "==> Code signing with identity: $SIGN_ID"
+    ENTITLEMENTS="$ROOT/packaging/doubleslash.entitlements"
+    [ -f "$ENTITLEMENTS" ] || ENTITLEMENTS="$ROOT/packaging/conquerd.entitlements"
+    codesign --deep --force --sign "$SIGN_ID" \
+             --entitlements "$ENTITLEMENTS" \
              "$APP_BUNDLE"
 else
-    echo "==> Skipping code signing (CONQUERD_SIGN_ID not set)"
+    echo "==> Skipping code signing (DOUBLESLASH_SIGN_ID / CONQUERD_SIGN_ID not set)"
 fi
 
 # ── Create DMG ────────────────────────────────────────────────────────────────

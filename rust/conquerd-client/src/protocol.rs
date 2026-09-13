@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 /// Wire format version. Bump when a breaking change is made.
 pub const PROTOCOL_VERSION: u32 = 2;
 
-/// Every signaling message type used in the ConquerD protocol.
+/// Every signaling message type used in the DoubleSlash protocol.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageType {

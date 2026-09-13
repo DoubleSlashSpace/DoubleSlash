@@ -23,7 +23,8 @@ use crate::error::{ClientError, Result};
 const KDF_T: u32 = 3;
 const KDF_M: u32 = 65536; // 64 MiB
 const KDF_P: u32 = 4;
-const KEYRING_SERVICE: &str = "conquerd";
+const KEYRING_SERVICE: &str = "doubleslash";
+const KEYRING_SERVICE_LEGACY: &str = "conquerd";
 
 pub const DEFAULT_KEY_DIR_SUFFIX: &str = conquerd_features::DEFAULT_PROFILE_DIR;
 pub const LEGACY_KEY_DIR_SUFFIX: &str = conquerd_features::LEGACY_PROFILE_DIR;
@@ -396,15 +397,25 @@ fn machine_id_hex() -> String {
 }
 
 fn keyring_load_aes_key(pub_b64: &str) -> Option<[u8; 32]> {
-    let entry = Entry::new(KEYRING_SERVICE, &keyring_username(pub_b64)).ok()?;
-    let encoded = entry.get_password().ok()?;
-    let decoded = URL_SAFE.decode(encoded.trim()).ok()?;
-    if decoded.len() != 32 {
-        return None;
+    let user = keyring_username(pub_b64);
+    for service in [KEYRING_SERVICE, KEYRING_SERVICE_LEGACY] {
+        let Ok(entry) = Entry::new(service, &user) else {
+            continue;
+        };
+        let Ok(encoded) = entry.get_password() else {
+            continue;
+        };
+        let Ok(decoded) = URL_SAFE.decode(encoded.trim()) else {
+            continue;
+        };
+        if decoded.len() != 32 {
+            continue;
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&decoded);
+        return Some(arr);
     }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&decoded);
-    Some(arr)
+    None
 }
 
 pub fn keyring_store_aes_key(pub_b64: &str, aes_key: &[u8; 32]) -> bool {
@@ -418,10 +429,14 @@ pub fn keyring_store_aes_key(pub_b64: &str, aes_key: &[u8; 32]) -> bool {
 /// Remove the keyring entry for the given public_id. Used by "Lock Identity & Quit".
 /// Returns `true` if the entry was found and deleted, `false` if absent or on error.
 pub fn keyring_delete_aes_key(pub_b64: &str) -> bool {
-    let Ok(entry) = Entry::new(KEYRING_SERVICE, &keyring_username(pub_b64)) else {
-        return false;
-    };
-    entry.delete_credential().is_ok()
+    let user = keyring_username(pub_b64);
+    let mut any = false;
+    for service in [KEYRING_SERVICE, KEYRING_SERVICE_LEGACY] {
+        if let Ok(entry) = Entry::new(service, &user) {
+            any |= entry.delete_credential().is_ok();
+        }
+    }
+    any
 }
 
 fn dirs_or_home() -> PathBuf {
