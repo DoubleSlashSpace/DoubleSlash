@@ -14,5 +14,9 @@ singleton Theme 1.0 Theme.qml
 BackupWizard 1.0 BackupWizard.qml
 '@
 $env:QT_QPA_PLATFORM = 'offscreen'
-& (Join-Path $QtDir 'bin/qmltestrunner.exe') -input (Join-Path $repoRoot 'rust/conquerd-client/tests/qml') -import $fixtureRoot
-exit $LASTEXITCODE
+$env:QT_QUICK_CONTROLS_STYLE = 'Material'
+$results = Join-Path $fixtureRoot 'results.txt'
+& (Join-Path $QtDir 'bin/qmltestrunner.exe') -input (Join-Path $repoRoot 'rust/conquerd-client/tests/qml/tst_BackupWizard.qml') -import $fixtureRoot -o "$results,txt"
+$testExitCode = $LASTEXITCODE
+if (Test-Path -LiteralPath $results) { Get-Content -LiteralPath $results }
+exit $testExitCode

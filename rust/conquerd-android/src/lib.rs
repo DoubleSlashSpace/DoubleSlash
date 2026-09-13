@@ -30,8 +30,12 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Once, OnceLock};
 
-use jni::objects::{JByteBuffer, JClass, JObject, JString};
-use jni::sys::{jint, jlong, jstring};
+#[cfg(target_os = "android")]
+use jni::objects::JByteBuffer;
+use jni::objects::{JClass, JObject, JString};
+#[cfg(target_os = "android")]
+use jni::sys::jint;
+use jni::sys::{jlong, jstring};
 use jni::JNIEnv;
 use tracing::{error, info};
 

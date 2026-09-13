@@ -328,6 +328,12 @@ fn validate_manifest(manifest: &Manifest) -> Result<()> {
     let mut seen = HashSet::new();
     let mut total = 0u64;
     for entry in &manifest.entries {
+        if entry.name != "chat_history.db"
+            && !entry.name.starts_with("attachments/")
+            && entry.size > (16 * CHUNK) as u64
+        {
+            return Err(invalid("Profile metadata is too large"));
+        }
         let valid = matches!(
             entry.name.as_str(),
             "peers.dat"

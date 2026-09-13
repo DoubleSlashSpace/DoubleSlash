@@ -150,6 +150,10 @@ fn manifest_rejects_traversal_duplicates_and_missing_stores() -> anyhow::Result<
     assert!(validate_manifest(&manifest).is_err());
     manifest.entries[0].name = "attachments/0".into();
     assert!(validate_manifest(&manifest).is_err());
+    manifest.entries[0].name = "peers.dat".into();
+    manifest.entries[0].size = (16 * CHUNK + 1) as u64;
+    manifest.summary.bytes = manifest.entries.iter().map(|entry| entry.size).sum();
+    assert!(validate_manifest(&manifest).is_err());
     Ok(())
 }
 

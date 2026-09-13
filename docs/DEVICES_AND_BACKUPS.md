@@ -124,6 +124,11 @@ wrong passwords, tampering, truncation, trailing bytes, frame reordering, path
 validation, source-file changes, non-overwrite publication, preview tokens,
 profile isolation and staging cleanup.
 
+`scripts/test_backup_wizard.ps1` runs the shipping desktop wizard with a mocked
+backend under Qt Quick Test, including preview confirmation, password clearing,
+retry after failure, busy-state controls, and compact-window sizing. The mock
+does not substitute for the shared Rust archive tests or real document pickers.
+
 Before release, exercise desktop → real Android → desktop restore with a large
 attachment, a missing attachment, a keyfile-protected source, a failed/cancelled
 document-picker copy and a restart after profile selection. Check actual history

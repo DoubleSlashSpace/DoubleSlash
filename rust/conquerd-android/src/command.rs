@@ -25,13 +25,6 @@ use crate::session::{attachment_label, Session};
 /// Kept next to the dispatcher so the two are edited together; it is a
 /// diagnostic aid, not a source of truth - the match arms are.
 const KNOWN_COMMANDS: &[&str] = &[
-    // Handled at the native boundary, including before a session exists.
-    "backup.export",
-    "backup.inspect",
-    "backup.restore",
-    "backup.cancel",
-    "profile.list",
-    "profile.select",
     "identity.info",
     "identity.export_key",
     "identity.set_handle",
