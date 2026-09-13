@@ -9,6 +9,7 @@ Item {
     id: root
 
     property var settings: null
+    signal backupsRequested()
     property int currentTab: 0
 
     // The Rooms sidebar's node list, handed in by MainWindow. Reused rather
@@ -1474,6 +1475,12 @@ Item {
                 spacing: Theme.spacingLg
 
                 SettingsSectionHeader { title: "Identity" }
+
+                SettingsCard {
+                    title: "Devices & Backups"
+                    subtitle: "Save a complete encrypted backup or move your identity to another device."
+                    StyledButton { text: "Open backup wizard"; onClicked: root.backupsRequested() }
+                }
 
                 SettingsCard {
                     title: "Local Profile"

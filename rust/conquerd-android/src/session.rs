@@ -113,13 +113,13 @@ impl Session {
         stored_key: Option<[u8; 32]>,
         sink: EventSink,
     ) -> anyhow::Result<Self> {
-        let key_dir = PathBuf::from(home_dir);
+        let key_dir = conquerd_client::backup::selected_profile(&PathBuf::from(home_dir))?;
         std::fs::create_dir_all(&key_dir)?;
 
         // The stores resolve their own default paths through
         // `Identity::default_key_dir()`, which reads this. Android has no
         // meaningful HOME, so it must be set before any store is opened.
-        std::env::set_var("CONQUERD_HOME", &key_dir);
+        std::env::set_var("CONQUERD_HOME", home_dir);
 
         let pending_sub_room_parent: Arc<RwLock<HashMap<String, String>>> =
             Arc::new(RwLock::new(HashMap::new()));

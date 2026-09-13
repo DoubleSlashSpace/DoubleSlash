@@ -393,6 +393,7 @@ fn build_qt_ui() {
         QmlFile::from("qml/CreateRoomDialog.qml"),
         QmlFile::from("qml/ComponentGallery.qml"),
         QmlFile::from("qml/OnboardingWizard.qml"),
+        QmlFile::from("qml/BackupWizard.qml"),
         QmlFile::from("qml/SidebarItem.qml"),
         QmlFile::from("qml/ParticipantWidget.qml"),
         QmlFile::from("qml/StatsPanel.qml"),

@@ -171,6 +171,14 @@ pub struct ChatStore {
 }
 
 impl ChatStore {
+    /// SQLite's backup API includes committed WAL pages in a consistent snapshot.
+    pub fn backup_snapshot(&self, destination: &Path) -> Result<()> {
+        self.conn
+            .lock()
+            .backup(rusqlite::DatabaseName::Main, destination, None)?;
+        Ok(())
+    }
+
     /// Open the chat store for the given identity.
     pub fn open(identity: &Identity, db_path: Option<&Path>) -> Result<Self> {
         let default_dir = Identity::default_key_dir();

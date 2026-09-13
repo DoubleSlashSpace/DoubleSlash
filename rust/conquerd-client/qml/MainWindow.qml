@@ -1383,10 +1383,16 @@ ApplicationWindow {
 
     PassphraseDialog {
         id: passphraseDialog
+        onBackupsRequested: backupWizard.open()
         onSubmitted: function(passphrase, filePath, remember) {
             passphraseDialog.visible = false
             backend.unlockWithPassphraseAndFile(passphrase, filePath, remember)
         }
+    }
+
+    BackupWizard {
+        id: backupWizard
+        appBackend: backend
     }
 
     // Listen for "Incorrect passphrase" banner to re-show dialog with error
@@ -2656,6 +2662,7 @@ ApplicationWindow {
 
             SettingsPage {
                 id: settingsPage
+                onBackupsRequested: { settingsModel.save(); backupWizard.open() }
                 anchors.fill: parent
                 visible: navIndex === 2
                 settings: settingsModel

@@ -204,6 +204,16 @@ impl RoomStore {
     }
 
     fn save(&self) -> Result<()> {
+        let envelope = self.backup_snapshot()?;
+        if let Some(parent) = self.file_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&self.file_path, envelope)?;
+        Ok(())
+    }
+
+    /// Snapshot definitions, Space trees and sidebar tombstones together.
+    pub fn backup_snapshot(&self) -> Result<Vec<u8>> {
         let data = StoreData {
             schema: 1,
             rooms: {
@@ -224,12 +234,7 @@ impl RoomStore {
         };
         let plaintext = serde_json::to_vec(&data)
             .map_err(|e| crate::error::ClientError::Store(e.to_string()))?;
-        let envelope = encrypt_blob(&self.key, &plaintext)?;
-        if let Some(parent) = self.file_path.parent() {
-            std::fs::create_dir_all(parent).map_err(crate::error::ClientError::Io)?;
-        }
-        std::fs::write(&self.file_path, &envelope).map_err(crate::error::ClientError::Io)?;
-        Ok(())
+        encrypt_blob(&self.key, &plaintext)
     }
 
     // -- Space tree (Layer 1) ----------------------------------------------

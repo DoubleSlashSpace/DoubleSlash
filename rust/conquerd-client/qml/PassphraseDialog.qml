@@ -26,6 +26,7 @@ Item {
                                      : "your desktop keyring"
 
     signal submitted(string passphrase, string filePath, bool remember)
+    signal backupsRequested()
 
     FileDialog {
         id: filePickerDialog
@@ -181,6 +182,11 @@ Item {
                 text: root.isNew ? "Create identity" : "Unlock"
                 primary: true
                 onClicked: root._submit()
+            }
+            StyledButton {
+                Layout.fillWidth: true
+                text: "Restore backup or load another identity"
+                onClicked: root.backupsRequested()
             }
         }
     }

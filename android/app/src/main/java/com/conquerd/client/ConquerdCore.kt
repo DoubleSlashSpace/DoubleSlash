@@ -46,6 +46,7 @@ class ConquerdCore private constructor(context: Context) : NativeCore.EventSink 
 
     /** Guards start/stop so two callers cannot race a second core into life. */
     private val lifecycleLock = Any()
+    @Volatile private var backupBusy = false
 
     val isRunning: Boolean get() = handle != 0L
 
@@ -98,6 +99,7 @@ class ConquerdCore private constructor(context: Context) : NativeCore.EventSink 
         storedKey: String? = null,
     ): Result<Unit> = withContext(Dispatchers.IO) {
         synchronized(lifecycleLock) {
+            if (backupBusy) return@withContext Result.failure(IllegalStateException("A backup operation is still running"))
             if (isRunning) return@withContext Result.success(Unit)
             runCatching {
                 appContext.filesDir.resolve("conquerd").mkdirs()
@@ -159,6 +161,29 @@ class ConquerdCore private constructor(context: Context) : NativeCore.EventSink 
 
     /** Convenience for a command with no arguments beyond its name. */
     suspend fun command(name: String): JsonObject = command(buildJsonObject { put("cmd", name) })
+
+    /** Backup/restore is also available before unlocking, on the same JSON channel. */
+    suspend fun backupCommand(request: JsonObject): JsonObject = withContext(Dispatchers.IO) {
+        val current = synchronized(lifecycleLock) {
+            if (backupBusy) return@withContext failure("A backup operation is still running")
+            backupBusy = true
+            handle
+        }
+        try {
+            val payload = JsonObject(request + ("home_dir" to kotlinx.serialization.json.JsonPrimitive(homeDir)))
+            val response = NativeCore.nativeCommand(current, payload.toString())
+            val parsed = json.parseToJsonElement(response).jsonObject
+            if (parsed.ok && (request["cmd"] as? JsonPrimitive)?.contentOrNull in listOf("backup.restore", "profile.select")) {
+                IdentityVault(appContext).clear()
+                (parsed["android_settings"] as? JsonObject)?.let { AppSettings(appContext).restoreValues(it) }
+            }
+            parsed
+        } catch (error: Exception) {
+            failure(error.message ?: "Backup operation failed")
+        } finally {
+            synchronized(lifecycleLock) { backupBusy = false }
+        }
+    }
 
     /** Build and run a command with arguments. */
     suspend fun command(

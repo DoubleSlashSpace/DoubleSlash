@@ -173,6 +173,12 @@ impl PeerStore {
         if let Some(parent) = self.file_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        std::fs::write(&self.file_path, self.backup_snapshot()?)?;
+        Ok(())
+    }
+
+    /// Snapshot the live records, including block and trust state.
+    pub fn backup_snapshot(&self) -> Result<Vec<u8>> {
         let mut sorted_peers: Vec<&PeerRecord> = self.records.values().collect();
         sorted_peers.sort_by(|a, b| {
             a.created_at
@@ -186,9 +192,7 @@ impl PeerStore {
             "peers": sorted_peers,
         });
         let plaintext = serde_json::to_vec(&payload)?;
-        let envelope = encrypt_blob(&self.key, &plaintext)?;
-        std::fs::write(&self.file_path, &envelope)?;
-        Ok(())
+        encrypt_blob(&self.key, &plaintext)
     }
 
     // -- accessors ----------------------------------------------------------

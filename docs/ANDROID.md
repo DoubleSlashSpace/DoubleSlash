@@ -222,6 +222,16 @@ reason to stay tethered.
 
 ## Using your desktop identity on the phone
 
+Use the **Devices & Backups** wizard for normal transfers, including release
+builds: export a `.dbackup` on desktop, transfer the encrypted file, and choose
+**Restore backup or load another identity** on Android's unlock screen. The
+backup password is sufficient; restore sets a new local unlock passphrase and
+preserves any existing profile. Available attachments can travel with history.
+See [Devices and backups](DEVICES_AND_BACKUPS.md). Quit the desktop before
+connecting the phone; this is still a move, not simultaneous device linking.
+
+The following script is an alternative for developer/debug installations.
+
 `scripts/push_android_profile.ps1` copies an existing profile onto a connected
 device — `identity.dat` plus, unless you pass `-IdentityOnly`, `peers.dat`,
 `my_rooms.dat` and `chat_history.db`. The stores are encrypted with keys
@@ -260,11 +270,12 @@ per-device group-key sealing — see `backlog.md`.
 
 ### The passphrase does not travel
 
-The desktop unlocks from the OS keyring, which caches the *derived AES key*,
-not the passphrase. That cache is machine-local, and Android has no Keystore
-backend yet, so the phone prompts on every launch and needs the real
-passphrase. If it has been auto-unlocking for months, confirm you still know it
-before relying on the copy.
+For a raw profile copy made by the script, the desktop OS keyring does not
+travel: it caches the *derived AES key*, not the passphrase. Unlock the copied
+identity with the original passphrase/keyfile. Android can then cache the file
+key through its own Keystore if you choose to stay unlocked. A `.dbackup`
+restore instead uses its independent backup password and sets a fresh local
+passphrase, so it does not require the original credentials.
 
 ## What is wired, and what is not
 

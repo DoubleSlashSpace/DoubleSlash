@@ -6,6 +6,7 @@
 
 pub mod aec;
 pub mod avatar_config;
+pub mod backup;
 pub mod call_controller;
 pub mod chat_store;
 pub mod cluster;

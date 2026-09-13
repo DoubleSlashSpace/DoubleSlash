@@ -466,6 +466,9 @@ impl Default for SettingsSnapshot {
 // ---------------------------------------------------------------------------
 
 pub struct SettingsModelRust {
+    // Pin writes to the profile this model loaded. Selecting a restored
+    // identity for next launch must not save the old settings over its data.
+    profile_settings_file: PathBuf,
     notifications_enabled: bool,
     auto_connect: bool,
     direct_p2p_enabled: bool,
@@ -539,6 +542,7 @@ impl Default for SettingsModelRust {
     fn default() -> Self {
         let s = SettingsSnapshot::default();
         Self {
+            profile_settings_file: settings_file(),
             notifications_enabled: s.notifications_enabled,
             auto_connect: s.auto_connect,
             direct_p2p_enabled: s.direct_p2p_enabled,
@@ -765,7 +769,7 @@ impl ffi::SettingsModel {
         let snap = self.snapshot();
         // Apply the log-verbosity choice live so it takes effect without a restart.
         crate::logging::set_debug_logging(snap.debug_logging);
-        let path = settings_file();
+        let path = self.rust().profile_settings_file.clone();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -860,7 +864,7 @@ impl ffi::SettingsModel {
     }
 
     fn load(mut self: Pin<&mut Self>) {
-        let path = settings_file();
+        let path = self.rust().profile_settings_file.clone();
         let snap: SettingsSnapshot = match std::fs::read_to_string(&path) {
             Ok(txt) => serde_json::from_str(&txt).unwrap_or_else(|e| {
                 warn!("SettingsModel::load parse error: {e} — using defaults");

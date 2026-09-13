@@ -60,6 +60,33 @@ device backup cannot copy the identity key or chat database off the phone.
 
 Android does **not** run the desktop GitHub update checker or UPnP mapper.
 
+### User-created backups and restored profiles
+
+The **Devices & Backups** wizard exports an encrypted `.dbackup` file only when
+you request it. The file contains identity recovery material, saved peer trust
+and blocks, rooms and Space trees (including hidden rooms), chat history, and
+preferences. Available files referenced by chat history are included by default;
+you can turn attachment inclusion off. The completion report counts missing files.
+The backup password protects the entire archive, including metadata. Anyone with
+both the file and its password can recover the identity and read its saved data.
+There is no password-reset service.
+
+The destination is chosen with the platform file picker. If you choose a cloud
+document provider on Android, that provider receives the encrypted backup file.
+Android uses a temporary encrypted copy in app cache during import/export. While
+verifying an import, the app extracts its data into a private staging directory;
+attachment contents there have the same protection as ordinary received files.
+Normal cancellation and failed verification remove staging data. A process or
+device crash can leave a private staging directory behind.
+
+Successful imports are stored in `profiles/<random-id>/` beneath the profile
+collection root. `active-profile` selects the profile to load; existing profiles
+are preserved. Restore sets a new local unlock passphrase and does not copy
+keyring/Keystore entries, OS permission grants, or native plugin binaries. Camera
+sharing and capture-source selections are reset. A backup is a snapshot, not a
+live sync or a revocable device credential; deleting or replacing it elsewhere
+does not revoke an already copied identity.
+
 No telemetry, analytics, advertising ID, or usage reporting is collected by
 DoubleSlash on any platform.
 

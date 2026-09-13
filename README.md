@@ -862,6 +862,10 @@ Access settings via the gear icon in DoubleSlash.
 
 ## Data and Files
 
+Use **Settings → Identity → Devices & Backups** on desktop, or **Settings → Devices & Backups** on Android, to create a verified `.dbackup` file. It contains identity recovery material, peer trust/block state, room definitions and Space trees, history, preferences, and optionally available attachments. Restore from the unlock screen with the backup password, then choose a new local passphrase. The original passphrase, keyfile and OS keyring are not needed. Restores create a separate selectable profile and preserve existing identities. See [Devices and backups](docs/DEVICES_AND_BACKUPS.md).
+
+This also supports moving between desktop and phone using the encrypted file. **Run only one device per identity at a time**; simultaneous linked devices and continuous sync remain future protocol work.
+
 All DoubleSlash data is stored under `DOUBLESLASH_HOME` / `CONQUERD_HOME` (default `~/.doubleslash/`, or an existing `~/.conquerd/` profile):
 
 | File | Purpose |
@@ -889,7 +893,7 @@ Supernodes additionally store:
 
 SFU **room state is not persisted** on the supernode — rooms exist in memory while in use and are idle-GC'd after ~15 minutes empty. Room definitions and chat history live on clients.
 
-> **What to back up**: At minimum, back up `identity.dat` (and your passphrase). Losing it means peers will see you as a new, untrusted identity.
+> **What to back up**: Keep the verified `.dbackup` file and its backup password separately. An `identity.dat` copy alone requires the original unlock credentials and does not include history or attachments. Losing all identity recovery material means peers will see you as a new, untrusted identity.
 
 ---
 

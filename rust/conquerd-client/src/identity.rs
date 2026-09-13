@@ -141,6 +141,18 @@ impl Identity {
     /// `DOUBLESLASH_HOME` / `CONQUERD_HOME` → existing `~/.doubleslash` →
     /// existing `~/.conquerd` → create `~/.doubleslash`.
     pub fn default_key_dir() -> PathBuf {
+        let root = Self::default_profile_root();
+        crate::backup::selected_profile(&root).unwrap_or_else(|error| {
+            tracing::error!("Cannot resolve selected profile: {error}");
+            // An invalid selector must not cause creation of a replacement
+            // identity in the root. This deliberately unopenable file path
+            // makes startup fail visibly until the selector is repaired.
+            root.join("active-profile")
+        })
+    }
+
+    /// Profile collection root, before resolving the selected restored profile.
+    pub fn default_profile_root() -> PathBuf {
         if let Some(path) = conquerd_features::first_env(&[
             conquerd_features::ENV_KEY_DIR,
             conquerd_features::ENV_KEY_DIR_LEGACY,

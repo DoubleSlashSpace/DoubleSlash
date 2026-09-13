@@ -59,7 +59,8 @@ flate2 = "1"
 dirs = "5"
 
 # SQLite (chat store)
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31", features = ["bundled", "backup"] }
+tempfile = "3"
 
 # Audio pipeline (CPAL I/O + Opus codec + lock-free ring buffer)
 cpal = "0.15"

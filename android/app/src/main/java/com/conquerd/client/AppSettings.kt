@@ -1,6 +1,7 @@
 package com.conquerd.client
 
 import android.content.Context
+import kotlinx.serialization.json.*
 
 /**
  * Preferences that live on this device only.
@@ -16,6 +17,26 @@ import android.content.Context
  * message already reads it from, not in a local preferences file.
  */
 class AppSettings(context: Context) {
+
+    /** Portable preferences only; OS permission grants and legal acceptance
+     * must be established separately on the destination device. */
+    fun backupValues(): JsonObject = buildJsonObject {
+        put("voice_activation", voiceActivation)
+        put("input_gain", inputGain)
+        put("output_gain", outputGain)
+        put("noise_strength", noiseStrength)
+        put("voice_bitrate", voiceBitrate)
+        put("theme", theme)
+    }
+
+    fun restoreValues(values: JsonObject) {
+        (values["voice_activation"] as? JsonPrimitive)?.booleanOrNull?.let { voiceActivation = it }
+        (values["input_gain"] as? JsonPrimitive)?.intOrNull?.let { inputGain = it }
+        (values["output_gain"] as? JsonPrimitive)?.intOrNull?.let { outputGain = it }
+        (values["noise_strength"] as? JsonPrimitive)?.intOrNull?.let { noiseStrength = it }
+        (values["voice_bitrate"] as? JsonPrimitive)?.intOrNull?.let { voiceBitrate = it }
+        (values["theme"] as? JsonPrimitive)?.contentOrNull?.takeIf { it in listOf(THEME_SYSTEM, THEME_LIGHT, THEME_DARK) }?.let { theme = it }
+    }
 
     private val prefs =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

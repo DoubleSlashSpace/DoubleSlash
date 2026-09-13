@@ -13,6 +13,7 @@
 //! [`command`] and [`event`], so adding a feature does not mean adding a JNI
 //! signature on both sides of the boundary.
 
+mod backup;
 mod camera;
 mod command;
 mod event;
@@ -23,8 +24,11 @@ mod video;
 #[cfg(target_os = "android")]
 mod logcat;
 
+use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::Once;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Once, OnceLock};
 
 use jni::objects::{JByteBuffer, JClass, JObject, JString};
 use jni::sys::{jint, jlong, jstring};
@@ -38,6 +42,12 @@ use crate::sink::EventSink;
 const RUNTIME_EXCEPTION: &str = "java/lang/RuntimeException";
 
 static LOGGING: Once = Once::new();
+static NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
+
+fn sessions() -> &'static Mutex<HashMap<jlong, Session>> {
+    static SESSIONS: OnceLock<Mutex<HashMap<jlong, Session>>> = OnceLock::new();
+    SESSIONS.get_or_init(Mutex::default)
+}
 
 /// Install the tracing subscriber the first time we are called into.
 ///
@@ -97,21 +107,6 @@ fn install_panic_hook() {
         error!("PANIC at {location}: {message}");
         previous(info);
     }));
-}
-
-/// Turn a handle back into a session reference.
-///
-/// # Safety
-///
-/// `handle` must be a value returned by `nativeStart` that has not yet been
-/// passed to `nativeStop`. Kotlin holds it in a single field guarded by the
-/// core's own lifecycle, so a stale handle is a bug on that side rather than
-/// something this can validate.
-unsafe fn session_from(handle: jlong) -> Option<&'static Session> {
-    if handle == 0 {
-        return None;
-    }
-    (handle as *const Session).as_ref()
 }
 
 /// Read a Java string, or `None` if it was null or not decodable.
@@ -245,7 +240,9 @@ pub extern "system" fn Java_com_conquerd_client_NativeCore_nativeStart<'local>(
     match started {
         Ok(Ok(session)) => {
             info!("core started");
-            Box::into_raw(Box::new(session)) as jlong
+            let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+            sessions().lock().insert(handle, session);
+            handle
         }
         Ok(Err(e)) => {
             error!("core failed to start: {e}");
@@ -271,11 +268,6 @@ pub extern "system" fn Java_com_conquerd_client_NativeCore_nativeCommand<'local>
     handle: jlong,
     request: JString<'local>,
 ) -> jstring {
-    // SAFETY: see `session_from`.
-    let Some(session) = (unsafe { session_from(handle) }) else {
-        return reply(&mut env, r#"{"ok":false,"error":"no running session"}"#);
-    };
-
     let Some(request) = read_string(&mut env, &request) else {
         return reply(
             &mut env,
@@ -283,7 +275,25 @@ pub extern "system" fn Java_com_conquerd_client_NativeCore_nativeCommand<'local>
         );
     };
 
-    let result = catch_unwind(AssertUnwindSafe(|| command::dispatch(session, &request)));
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let parsed = serde_json::from_str::<serde_json::Value>(&request).ok();
+        let cmd = parsed
+            .as_ref()
+            .and_then(|v| v["cmd"].as_str())
+            .unwrap_or("");
+        if cmd.starts_with("backup.") || cmd.starts_with("profile.") {
+            let context = sessions().lock().get(&handle).map(backup::Context::capture);
+            if handle != 0 && context.is_none() {
+                return serde_json::json!({"ok": false, "error": "The session has stopped"});
+            }
+            return backup::dispatch(&request, context);
+        }
+        let sessions = sessions().lock();
+        match sessions.get(&handle) {
+            Some(session) => command::dispatch(session, &request),
+            None => serde_json::json!({"ok": false, "error": "no running session"}),
+        }
+    }));
 
     match result {
         Ok(value) => {
@@ -402,9 +412,9 @@ pub extern "system" fn Java_com_conquerd_client_NativeCore_nativeStop<'local>(
         return;
     }
 
-    // SAFETY: reclaims the box `nativeStart` leaked. Kotlin clears its handle
-    // field before calling, so this runs once per session.
-    let session = unsafe { Box::from_raw(handle as *mut Session) };
+    let Some(session) = sessions().lock().remove(&handle) else {
+        return;
+    };
 
     if catch_unwind(AssertUnwindSafe(|| session.stop())).is_err() {
         error!("core panicked during shutdown");

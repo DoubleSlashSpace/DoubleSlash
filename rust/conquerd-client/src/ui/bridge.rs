@@ -93,7 +93,13 @@ pub mod ffi {
         /// device, and a call takes it over. The settings surface is fed by
         /// whichever is running, so it should watch both.
         #[qproperty(bool, video_preview_active)]
+        #[qproperty(bool, backup_busy)]
+        #[qproperty(QString, backup_result)]
         type AppBridge = super::AppBridgeRust;
+
+        #[qinvokable]
+        #[rust_name = "backup_command"]
+        fn backupCommand(self: Pin<&mut AppBridge>, request: &QString);
 
         // ── Signals ───────────────────────────────────────────────────────
 
@@ -1177,6 +1183,9 @@ pub mod ffi {
 // ---------------------------------------------------------------------------
 
 pub struct AppBridgeRust {
+    backup_busy: bool,
+    backup_result: QString,
+    backup_service: Arc<crate::backup::BackupService>,
     // QML property backing fields
     peer_count: i32,
     in_room: bool,
@@ -1639,6 +1648,9 @@ impl Default for AppBridgeRust {
             my_peer_id: String::new(),
             my_public_id: String::new(),
             identity: None,
+            backup_busy: false,
+            backup_result: QString::default(),
+            backup_service: Arc::default(),
             pending_release: None,
             rt_thread: None,
             rt_handle: None,
@@ -1966,12 +1978,63 @@ impl ffi::AppBridge {
         self.as_mut().passphrase_required(true);
     }
 
+    fn backup_command(mut self: Pin<&mut Self>, request: &QString) {
+        if self.rust().backup_busy {
+            return;
+        }
+        self.as_mut().set_backup_busy(true);
+        self.as_mut().set_backup_result(QString::default());
+        let request = zeroize::Zeroizing::new(request.to_string());
+        let service = Arc::clone(&self.rust().backup_service);
+        let identity = self.rust().identity.clone();
+        let peers = self.rust().peer_store.clone();
+        let rooms = self.rust().room_store.clone();
+        let chat = self.rust().chat_store.clone();
+        let directory = crate::identity::Identity::default_key_dir();
+        let root = crate::identity::Identity::default_profile_root();
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let reply = service.run(&request, &root, identity.is_some(), |attachments| {
+                let (Some(identity), Some(peers), Some(rooms), Some(chat)) = (
+                    identity.as_ref(),
+                    peers.as_ref(),
+                    rooms.as_ref(),
+                    chat.as_ref(),
+                ) else {
+                    return Err(crate::error::ClientError::Identity(
+                        "Unlock your identity before creating a backup".into(),
+                    ));
+                };
+                crate::backup::BackupSnapshot::capture(
+                    crate::backup::BackupSource {
+                        identity,
+                        peers: &peers.read(),
+                        rooms: &rooms.read(),
+                        chat,
+                        directory: &directory,
+                    },
+                    attachments,
+                )
+            });
+            let reply = reply.to_string();
+            let _ = thread.queue(move |mut bridge| {
+                bridge.as_mut().set_backup_busy(false);
+                bridge
+                    .as_mut()
+                    .set_backup_result(QString::from(reply.as_str()));
+            });
+        });
+    }
+
     fn unlock_with_passphrase_and_file(
         mut self: Pin<&mut Self>,
         passphrase: &QString,
         file_path: &QString,
         remember: bool,
     ) {
+        if self.rust().backup_busy {
+            return;
+        }
         let key_dir = crate::identity::Identity::default_key_dir();
         let dat = key_dir.join(crate::identity::IDENTITY_FILENAME);
         let text = passphrase.to_string();
@@ -5923,16 +5986,26 @@ fn attachment_body_label(kind: &crate::chat_store::MessageKind, name: &str) -> S
 /// Put an inbound file offer into the chat stream so progress lives in the
 /// bubble, not a detached status strip. The sender already echoed their own
 /// `xfer-{id}` row from `send_file` / `send_room_file`.
-fn insert_inbound_file_offer(
-    mut bridge: Pin<&mut ffi::AppBridge>,
-    transfer_id: &str,
-    peer_id: &str,
-    origin_id: &str,
-    rel_path: &str,
+struct InboundFileOffer<'a> {
+    transfer_id: &'a str,
+    peer_id: &'a str,
+    origin_id: &'a str,
+    rel_path: &'a str,
     size: usize,
-    purpose: &str,
-    supernode_id: &str,
-) {
+    purpose: &'a str,
+    supernode_id: &'a str,
+}
+
+fn insert_inbound_file_offer(mut bridge: Pin<&mut ffi::AppBridge>, offer: InboundFileOffer<'_>) {
+    let InboundFileOffer {
+        transfer_id,
+        peer_id,
+        origin_id,
+        rel_path,
+        size,
+        purpose,
+        supernode_id,
+    } = offer;
     let message_id = format!("xfer-{transfer_id}");
     if let Some(ref cs) = bridge.rust().chat_store {
         if cs
@@ -7031,16 +7104,25 @@ fn emit_cluster_node_connected(
 /// the full cluster set so rooms saved under the invite host (A) are found even
 /// when replaying onto B/C after A is down — without this, private joins hit
 /// `room_absent` on cold members.
+struct RoomReplayTarget<'a> {
+    host: &'a str,
+    source_member_ids: &'a [String],
+    hide_keys: &'a [String],
+}
+
 fn replay_saved_rooms_on_supernode_connect(
     room_store: &crate::room_store::RoomStore,
     peer_store: &crate::peer_store::PeerStore,
     conn_cmd_tx: &mpsc::Sender<ConnectionCommand>,
-    target_host: &str,
-    source_member_ids: &[String],
-    hide_keys: &[String],
+    target: RoomReplayTarget<'_>,
     my_public_id: &str,
     identity: Option<&crate::identity::Identity>,
 ) {
+    let RoomReplayTarget {
+        host: target_host,
+        source_member_ids,
+        hide_keys,
+    } = target;
     let entries = if source_member_ids.is_empty() {
         room_store.list_for_supernode_resolved(peer_store, target_host)
     } else {
@@ -7142,9 +7224,7 @@ fn cluster_materialize_context(
     }
     // Always include live member itself for standalone / first-connect.
     let mut source_ids = sources;
-    if source_ids.is_empty() {
-        source_ids.push(target.clone());
-    } else if !source_ids.iter().any(|k| pub_id_eq(k, &target)) {
+    if !source_ids.iter().any(|k| pub_id_eq(k, &target)) {
         source_ids.push(target.clone());
     }
     (target, source_ids, hide_keys)
@@ -7174,9 +7254,11 @@ fn rematerialize_rooms_on_live_host(bridge: &mut AppBridgeRust, live_member: &st
         &rs.read(),
         &ps.read(),
         tx,
-        &target,
-        &sources,
-        &hide_keys,
+        RoomReplayTarget {
+            host: &target,
+            source_member_ids: &sources,
+            hide_keys: &hide_keys,
+        },
         bridge.my_public_id.as_str(),
         bridge.identity.as_deref(),
     );
@@ -7217,7 +7299,7 @@ fn repad_public_id(id: &str) -> String {
         rem => {
             let mut s = String::with_capacity(bare.len() + (4 - rem));
             s.push_str(bare);
-            s.extend(std::iter::repeat('=').take(4 - rem));
+            s.extend(std::iter::repeat_n('=', 4 - rem));
             s
         }
     }
@@ -9272,13 +9354,15 @@ fn dispatch_event(
             let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
                 insert_inbound_file_offer(
                     bridge.as_mut(),
-                    &transfer_id,
-                    &peer_id,
-                    &origin_id,
-                    &rel_path,
-                    size,
-                    &purpose,
-                    &supernode_id,
+                    InboundFileOffer {
+                        transfer_id: &transfer_id,
+                        peer_id: &peer_id,
+                        origin_id: &origin_id,
+                        rel_path: &rel_path,
+                        size,
+                        purpose: &purpose,
+                        supernode_id: &supernode_id,
+                    },
                 );
                 bridge.as_mut().file_offered(QString::from(json.as_str()));
             });

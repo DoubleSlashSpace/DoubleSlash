@@ -485,8 +485,9 @@ exchanged, no message sent, no supernode reached from the device.
    device fails closed and sees nothing. Real support needs per-device subkeys under the identity
    key, a device registry peers can learn, and group-key sealing per device rather than per member
    — plus a history-sync story, since the stores are local and unsynced. Until then the supported
-   answers are "copy the identity and run one at a time"
-   (`scripts/push_android_profile.ps1`) or "give the phone its own identity and trust it as a
+   answers are "export a `.dbackup`, restore it, and run one at a time"
+   ([Devices and backups](docs/DEVICES_AND_BACKUPS.md); the debug-only script is still available)
+   or "give the phone its own identity and trust it as a
    peer". Worth deciding deliberately: it changes the `SfuGroupKey` fan-out and the ACL shape.
 
 12. **CI.** No Android job exists. It needs the NDK, `cargo-ndk`, and `cmake;3.31.6` specifically —

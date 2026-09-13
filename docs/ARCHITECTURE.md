@@ -13,6 +13,7 @@ graph TD
             CAP[CallPanel]
             RP[RoomPanel / VoiceRail]
             SP[SettingsPage]
+            BW[BackupWizard]
             BP[BrowserPanel]
             STATS[StatsPanel / ConnectionStatsChip]
             VID[VideoTile / VideoRegion / VideoPopoutWindow]
@@ -57,6 +58,7 @@ graph TD
             CS[chat_store — SQLite]
             RS[room_store — my_rooms.dat AES-GCM]
             SET[settings.json]
+            BACKUP["backup.rs + backup/service.rs<br/>streaming encrypted archive / staged restore / profile selection"]
         end
 
         subgraph AUDIO_PIPE["Audio Pipeline"]
@@ -151,11 +153,16 @@ example"]
     CAP --> CALLM & AB
     RP --> RM & AB
     SP --> AB
+    BW --> AB
     BP --> WAC
     FM --> AB
 
     %% ── Bridge → Logic / Store ───────────────────────────
     AB --> CONN & FTR & UPDATE & OLLAMA
+    AB --> BACKUP
+    ANDROID_BACKUP["Android BackupDialog<br/>existing JNI JSON channel"] --> BACKUP
+    BACKUP --> ID_C & PS_C & CS & RS & SET
+    BACKUP --> ARCHIVE["User-selected .dbackup file<br/>Argon2id + authenticated AES-GCM frames"]
     PM --> PS_C
     CM --> CS
     RM --> RS

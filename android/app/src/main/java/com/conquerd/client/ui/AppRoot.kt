@@ -592,6 +592,7 @@ private fun UnlockScreen(
         }
 
         Spacer(Modifier.height(16.dp))
+        BackupButton(unlocked = false, enabled = !busy)
         val context = LocalContext.current
         TextButton(onClick = { Legal.openUrl(context, Legal.PRIVACY_URL) }) {
             Text("Privacy policy")
@@ -2349,6 +2350,8 @@ private fun SettingsScreen(
                 onClick = { onSetHandle(handle) },
                 enabled = handle.trim() != state.identity.handle,
             ) { Text("Save name") }
+
+            BackupButton(unlocked = true)
 
             Spacer(Modifier.height(24.dp))
             HorizontalDivider()
