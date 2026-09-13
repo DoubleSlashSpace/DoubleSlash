@@ -89,19 +89,19 @@ fn parse_reusable_invite(raw: &str) -> Result<String> {
     }
 
     if looks_like_app_url(trimmed) {
-        let url = extract_conquerd_url(trimmed).context("parse invite URL")?;
+        let url = extract_invite_url(trimmed).context("parse invite URL")?;
         return Ok(url);
     }
 
     let value: serde_json::Value =
         serde_json::from_str(trimmed).context("parse reusable_invite.json as JSON")?;
 
-    if let Some(url) = find_conquerd_url_in_value(&value) {
+    if let Some(url) = find_invite_url_in_value(&value) {
         return Ok(url);
     }
 
     if value.get("invite").is_some() {
-        return build_conquerd_invite_url(&value);
+        return build_invite_url(&value);
     }
 
     bail!("no invite payload found in reusable_invite.json")
@@ -122,7 +122,7 @@ struct InvitePayload {
     signature: String,
 }
 
-fn build_conquerd_invite_url(root: &serde_json::Value) -> Result<String> {
+fn build_invite_url(root: &serde_json::Value) -> Result<String> {
     let invite = root
         .get("invite")
         .context("reusable_invite.json missing invite object")?;
@@ -144,7 +144,7 @@ fn looks_like_app_url(text: &str) -> bool {
         || lower.starts_with("conquerd://")
 }
 
-fn extract_conquerd_url(text: &str) -> Option<String> {
+fn extract_invite_url(text: &str) -> Option<String> {
     let lower = text.to_ascii_lowercase();
     let start = ["https://doubleslash.space/", "conquerd://"]
         .iter()
@@ -167,11 +167,11 @@ fn extract_conquerd_url(text: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-fn find_conquerd_url_in_value(value: &serde_json::Value) -> Option<String> {
+fn find_invite_url_in_value(value: &serde_json::Value) -> Option<String> {
     match value {
-        serde_json::Value::String(s) => extract_conquerd_url(s),
-        serde_json::Value::Array(items) => items.iter().find_map(find_conquerd_url_in_value),
-        serde_json::Value::Object(map) => map.values().find_map(find_conquerd_url_in_value),
+        serde_json::Value::String(s) => extract_invite_url(s),
+        serde_json::Value::Array(items) => items.iter().find_map(find_invite_url_in_value),
+        serde_json::Value::Object(map) => map.values().find_map(find_invite_url_in_value),
         _ => None,
     }
 }

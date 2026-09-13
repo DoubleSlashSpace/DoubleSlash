@@ -1,4 +1,4 @@
-// ConquerD Supernode — wire.rs
+// DoubleSlash supernode — wire.rs
 // Datagram and stream wire formats for QUIC relay forwarding.
 
 /// Broadcast target index (all room members).

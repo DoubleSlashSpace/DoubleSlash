@@ -1,4 +1,4 @@
-// ConquerD Supernode — crypto.rs
+// DoubleSlash supernode — crypto.rs
 // Shared crypto primitives: base64url, SHA-256, HKDF, nonce generation.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};

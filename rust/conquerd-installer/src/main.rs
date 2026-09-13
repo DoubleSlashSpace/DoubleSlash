@@ -143,7 +143,7 @@ fn default_install_dir() -> PathBuf {
 
 /// Windows client archives published by our build scripts:
 /// `DoubleSlash-<version>-win64.7z` (legacy `ConquerD-…` still accepted).
-fn is_conquerd_client_archive(path: &std::path::Path) -> bool {
+fn is_client_archive(path: &std::path::Path) -> bool {
     if !path
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("7z"))
@@ -206,7 +206,7 @@ fn detect_archive() -> Option<PathBuf> {
         .ok()?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| is_conquerd_client_archive(p))
+        .filter(|p| is_client_archive(p))
         .collect();
 
     candidates.sort_by_key(|path| std::cmp::Reverse(archive_pick_rank(path)));
@@ -760,23 +760,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_conquerd_client_archive_accepts_release_and_nightly_names() {
-        assert!(is_conquerd_client_archive(std::path::Path::new(
+    fn is_client_archive_accepts_release_and_nightly_names() {
+        assert!(is_client_archive(std::path::Path::new(
             "DoubleSlash-1.0.0-win64.7z"
         )));
-        assert!(is_conquerd_client_archive(std::path::Path::new(
+        assert!(is_client_archive(std::path::Path::new(
             "ConquerD-1.0.0-win64.7z"
         )));
-        assert!(is_conquerd_client_archive(std::path::Path::new(
+        assert!(is_client_archive(std::path::Path::new(
             "conquerd-nightly-win64.7z"
         )));
-        assert!(is_conquerd_client_archive(std::path::Path::new(
+        assert!(is_client_archive(std::path::Path::new(
             "DoubleSlash-nightly-win64.7z"
         )));
     }
 
     #[test]
-    fn is_conquerd_client_archive_rejects_unrelated_seven_zip_files() {
+    fn is_client_archive_rejects_unrelated_seven_zip_files() {
         for name in [
             "backup.7z",
             "7z2301-x64.7z",
@@ -785,7 +785,7 @@ mod tests {
             "conquerd-supernode-1.0.0-win64.zip",
         ] {
             assert!(
-                !is_conquerd_client_archive(std::path::Path::new(name)),
+                !is_client_archive(std::path::Path::new(name)),
                 "unexpected match for {name}"
             );
         }

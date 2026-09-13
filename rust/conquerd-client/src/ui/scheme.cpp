@@ -3,20 +3,20 @@
 //
 // Two entry points are exported with C linkage so Rust can call them:
 //
-//   conquerd_register_scheme()
+//   doubleslash_register_scheme()
 //     Must be called BEFORE QGuiApplication::new().
 //     Registers "d" and "conquerd" as secure schemes so QtWebEngine treats
 //     them like https:// (allows CORS, service workers, secure context APIs).
 //
-//   conquerd_install_scheme_handler()
+//   doubleslash_install_scheme_handler()
 //     Must be called AFTER QGuiApplication is created but BEFORE any
 //     WebEngineView loads a d:// / conquerd:// URL.
-//     Installs a ConquerdSchemeHandler on the default off-the-record
+//     Installs a PortalSchemeHandler on the default off-the-record
 //     QWebEngineProfile so every WebEngineView in the process shares it.
 //
 // The handler calls the Rust function:
 //
-//   extern "C" bool conquerd_fetch_sync(
+//   extern "C" bool doubleslash_fetch_sync(
 //       const char* url, size_t url_len,
 //       char** out_content_type, size_t* out_ct_len,
 //       uint8_t** out_body,     size_t* out_body_len
@@ -46,7 +46,7 @@
 #include <cstring>
 
 // ── Rust callback declared in src/ui/scheme.rs ───────────────────────────────
-extern "C" bool conquerd_fetch_sync(
+extern "C" bool doubleslash_fetch_sync(
     const char* url,
     size_t      url_len,
     char**      out_content_type,
@@ -56,25 +56,25 @@ extern "C" bool conquerd_fetch_sync(
 );
 
 // ── Scheme handler ────────────────────────────────────────────────────────────
-class ConquerdSchemeHandler : public QWebEngineUrlSchemeHandler
+class PortalSchemeHandler : public QWebEngineUrlSchemeHandler
 {
     Q_OBJECT
 public:
-    explicit ConquerdSchemeHandler(QObject* parent = nullptr)
+    explicit PortalSchemeHandler(QObject* parent = nullptr)
         : QWebEngineUrlSchemeHandler(parent) {}
 
     void requestStarted(QWebEngineUrlRequestJob* job) override
     {
         const QUrl url = job->requestUrl();
         const QByteArray urlUtf8 = url.toString(QUrl::FullyEncoded).toUtf8();
-        qInfo("[conquerd-scheme] requestStarted: %s", urlUtf8.constData());
+        qInfo("[portal-scheme] requestStarted: %s", urlUtf8.constData());
 
         char*    contentType = nullptr;
         size_t   ctLen       = 0;
         uint8_t* body        = nullptr;
         size_t   bodyLen     = 0;
 
-        const bool ok = conquerd_fetch_sync(
+        const bool ok = doubleslash_fetch_sync(
             urlUtf8.constData(),
             static_cast<size_t>(urlUtf8.size()),
             &contentType,
@@ -143,14 +143,14 @@ static void register_one_scheme(const char* name)
     QWebEngineUrlScheme::registerScheme(scheme);
 }
 
-extern "C" void conquerd_register_scheme()
+extern "C" void doubleslash_register_scheme()
 {
     // Must be called before QCoreApplication is constructed.
     register_one_scheme("d");
     register_one_scheme("conquerd");
 }
 
-extern "C" void conquerd_install_scheme_handler()
+extern "C" void doubleslash_install_scheme_handler()
 {
     // Must be called after QCoreApplication; installs on the default profile.
     auto* profile = QWebEngineProfile::defaultProfile();
@@ -172,9 +172,9 @@ extern "C" void conquerd_install_scheme_handler()
 
     // Guard: don't install twice (e.g. multiple calls after hot-reload).
     if (!profile->urlSchemeHandler("d")) {
-        profile->installUrlSchemeHandler("d", new ConquerdSchemeHandler(profile));
-        profile->installUrlSchemeHandler("conquerd", new ConquerdSchemeHandler(profile));
-        qInfo("[conquerd-scheme] installed handler on QWebEngineProfile::defaultProfile()=%p",
+        profile->installUrlSchemeHandler("d", new PortalSchemeHandler(profile));
+        profile->installUrlSchemeHandler("conquerd", new PortalSchemeHandler(profile));
+        qInfo("[portal-scheme] installed handler on QWebEngineProfile::defaultProfile()=%p",
               static_cast<void*>(profile));
     }
 
@@ -188,12 +188,12 @@ extern "C" void conquerd_install_scheme_handler()
     if (qmlProfile != nullptr && !qmlProfile->urlSchemeHandler("d")) {
         qmlProfile->setHttpUserAgent(profile->httpUserAgent());
         qmlProfile->setSpellCheckEnabled(false);
-        qmlProfile->installUrlSchemeHandler("d", new ConquerdSchemeHandler(qmlProfile));
-        qmlProfile->installUrlSchemeHandler("conquerd", new ConquerdSchemeHandler(qmlProfile));
-        qInfo("[conquerd-scheme] installed handler on QQuickWebEngineProfile=%p",
+        qmlProfile->installUrlSchemeHandler("d", new PortalSchemeHandler(qmlProfile));
+        qmlProfile->installUrlSchemeHandler("conquerd", new PortalSchemeHandler(qmlProfile));
+        qInfo("[portal-scheme] installed handler on QQuickWebEngineProfile=%p",
               static_cast<void*>(qmlProfile));
     } else if (qmlProfile != nullptr) {
-        qInfo("[conquerd-scheme] QQuickWebEngineProfile=%p already has handler",
+        qInfo("[portal-scheme] QQuickWebEngineProfile=%p already has handler",
               static_cast<void*>(qmlProfile));
     }
 #endif

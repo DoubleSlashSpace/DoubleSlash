@@ -1,4 +1,4 @@
-import { ConquerdClient } from "./conquerd.mjs";
+import { DoubleSlashClient } from "./conquerd.mjs";
 
 export const FEATURE = "game.relay.v1";
 export const PEER_TIMEOUT = 6500;
@@ -50,7 +50,7 @@ export class DemoSession {
     // A drawing and a game with the same human room name cannot mix packets.
     this.client =
       client ||
-      new ConquerdClient({
+      new DoubleSlashClient({
         features: [FEATURE],
         room: `demo-v1:${app}:${this.room}`,
       });

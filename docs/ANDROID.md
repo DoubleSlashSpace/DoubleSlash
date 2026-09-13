@@ -60,7 +60,7 @@ JNI at all.
 
 ### Threading
 
-Events are pumped by a dedicated OS thread (`conquerd-events`), not a tokio
+Events are pumped by a dedicated OS thread (`doubleslash-events`), not a tokio
 task. Delivering an event means calling into the JVM, which requires the calling
 thread to stay attached — and tokio moves tasks between worker threads freely,
 so a task would have to attach and detach around every single event.

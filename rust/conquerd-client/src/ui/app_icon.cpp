@@ -8,6 +8,6 @@
 #include <QGuiApplication>
 #include <QIcon>
 
-extern "C" void conquerd_set_app_icon() {
+extern "C" void doubleslash_set_app_icon() {
     QGuiApplication::setWindowIcon(QIcon(":/assets/doubleslash.ico"));
 }

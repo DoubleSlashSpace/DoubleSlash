@@ -49,7 +49,7 @@ run_cargo() {
     (cd "$dir" && cargo "$@")
 }
 
-echo "ConquerD local CI (toolchain $RUST_TOOLCHAIN)"
+echo "DoubleSlash local CI (toolchain $RUST_TOOLCHAIN)"
 echo "Repo: $REPO_ROOT"
 
 step "Ensure git submodules (recursive)"

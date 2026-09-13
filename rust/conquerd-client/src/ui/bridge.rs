@@ -4450,7 +4450,7 @@ impl ffi::AppBridge {
         }
         // Emit the navigate signal immediately so the panel is shown and
         // shows a "Loading…" spinner while the relay connects. The first
-        // real page fetch will block in `conquerd_fetch_sync` until the
+        // real page fetch will block in `doubleslash_fetch_sync` until the
         // connection is established.
         //
         // Chromium lower-cases the authority of any `scheme://` URL, which

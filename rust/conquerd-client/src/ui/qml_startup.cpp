@@ -11,7 +11,7 @@
 
 #if defined(Q_OS_WIN)
 // Defined in window_chrome.cpp (linked only on Windows qt-ui builds).
-extern "C" void conquerd_enable_windows_snap(void *qwindow_ptr);
+extern "C" void doubleslash_enable_windows_snap(void *qwindow_ptr);
 #endif
 
 static void qtLogToStderr(QtMsgType type, const QMessageLogContext &ctx, const QString &msg) {
@@ -34,7 +34,7 @@ static void qtLogToStderr(QtMsgType type, const QMessageLogContext &ctx, const Q
     }
 }
 
-extern "C" void conquerd_install_qt_message_handler(void) {
+extern "C" void doubleslash_install_qt_message_handler(void) {
     qInstallMessageHandler(qtLogToStderr);
 }
 
@@ -42,14 +42,14 @@ extern "C" void conquerd_install_qt_message_handler(void) {
 /// after QGuiApplication exists and before the first window is shown; an
 /// empty ApplicationWindow title otherwise falls back to the executable
 /// basename (still `conquerd-client` from cargo).
-extern "C" void conquerd_set_app_identity(void) {
+extern "C" void doubleslash_set_app_identity(void) {
     QGuiApplication::setApplicationName("DoubleSlash");
     QGuiApplication::setApplicationDisplayName("DoubleSlash");
     QGuiApplication::setOrganizationName("DoubleSlash");
     QGuiApplication::setOrganizationDomain("doubleslash.space");
 }
 
-extern "C" void conquerd_qml_post_load_check(QQmlApplicationEngine *engine) {
+extern "C" void doubleslash_qml_post_load_check(QQmlApplicationEngine *engine) {
     if (!engine) {
         fprintf(stderr, "[QML] engine pointer is null\n");
         return;
@@ -80,7 +80,7 @@ extern "C" void conquerd_qml_post_load_check(QQmlApplicationEngine *engine) {
             // Force HWND creation then install snap-friendly frame chrome.
             // Re-arm on show is WM_SHOWWINDOW in window_chrome.cpp.
             (void)quickWin->winId();
-            conquerd_enable_windows_snap(static_cast<QWindow *>(quickWin));
+            doubleslash_enable_windows_snap(static_cast<QWindow *>(quickWin));
 #endif
         } else if (auto *win = qobject_cast<QWindow *>(obj)) {
             sawWindow = true;
@@ -93,7 +93,7 @@ extern "C" void conquerd_qml_post_load_check(QQmlApplicationEngine *engine) {
                     win->y());
 #if defined(Q_OS_WIN)
             (void)win->winId();
-            conquerd_enable_windows_snap(win);
+            doubleslash_enable_windows_snap(win);
 #endif
         }
     }

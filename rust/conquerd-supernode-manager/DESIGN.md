@@ -1,7 +1,7 @@
 # supernode-manager Design
 
 `supernode-manager` is a standalone Rust CLI and TUI for deploying and operating
-fleets of `conquerd-supernode` processes over SSH. It lives outside the ConquerD
+fleets of `conquerd-supernode` processes over SSH. It lives outside the DoubleSlash
 application workspace and treats the supernode as an external binary with a
 stable host contract: binary, data directory, manifest, ports, and systemd unit.
 
@@ -21,7 +21,7 @@ experience is the TUI; every operation is also exposed as a CLI subcommand.
 
 Non-goals:
 
-- Not a ConquerD backend, identity authority, or discovery service.
+- Not a DoubleSlash backend, identity authority, or discovery service.
 - Not a client identity manager.
 - Not currently a cross-platform remote supervisor. Remote install targets are
   Linux plus systemd.
@@ -29,7 +29,7 @@ Non-goals:
 ## Workspace Layout
 
 ```text
-ConquerD_Manager/
+rust/conquerd-supernode-manager/
   Cargo.toml
   DESIGN.md
   agents.md

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Conquerd — Supernode Portal</title>
+  <title>DoubleSlash — Supernode Portal</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -226,7 +226,7 @@
   </main>
 
   <footer>
-    <span id="footer-version">Conquerd</span>
+    <span id="footer-version">DoubleSlash</span>
     <span id="footer-refresh">Auto-refreshes every 10 s</span>
   </footer>
 
@@ -326,7 +326,7 @@
           const s = await statsRaw.value.json().catch(() => ({}));
           el("stat-uptime").textContent = fmtUptime(s.uptime_secs);
           el("stat-rooms").textContent  = s.active_rooms     ?? "—";
-          if (s.version) el("footer-version").textContent = `Conquerd ${s.version}`;
+          if (s.version) el("footer-version").textContent = `DoubleSlash ${s.version}`;
           renderCluster(s.cluster);
         }
 

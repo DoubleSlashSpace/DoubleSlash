@@ -210,7 +210,7 @@ foreach ($j in $jobs) {
 }
 
 $md = New-Object System.Collections.Generic.List[string]
-$md.Add('# ConquerD coverage')
+$md.Add('# DoubleSlash coverage')
 $md.Add('')
 $md.Add("Scope: ``$Scope`` | Toolchain: ``$RustToolchain`` | Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
 $md.Add('')

@@ -1,4 +1,4 @@
-// ConquerD Supernode — ticket.rs
+// DoubleSlash supernode — ticket.rs
 // Relay ticket creation, signing, validation.
 
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};

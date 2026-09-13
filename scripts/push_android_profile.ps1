@@ -95,7 +95,7 @@ if (-not (Test-Path $ProfileDir)) {
 
 $identity = Join-Path $ProfileDir "identity.dat"
 if (-not (Test-Path $identity)) {
-    throw "No identity.dat in $ProfileDir - is that a ConquerD profile?"
+    throw "No identity.dat in $ProfileDir - is that a DoubleSlash profile?"
 }
 
 # @() is load-bearing: a pipeline that matches nothing yields $null, and
@@ -149,7 +149,7 @@ Write-Host ""
 # SQLite keeps recent writes in the -wal sidecar, so copying chat_history.db
 # alone from a running client silently loses them. Checkpoint by closing the
 # desktop client, or accept the loss.
-$desktop = @(Get-Process -Name "ConquerD", "conquerd-client" -ErrorAction SilentlyContinue)
+$desktop = @(Get-Process -Name "DoubleSlash", "ConquerD", "conquerd-client" -ErrorAction SilentlyContinue)
 if ($desktop.Count -gt 0) {
     throw @"
 The desktop client is still running (PID $($desktop[0].Id)).

@@ -198,7 +198,7 @@ Typical systemd unit (example):
 
 ```ini
 [Unit]
-Description=ConquerD Supernode
+Description=DoubleSlash Supernode
 After=network.target
 
 [Service]

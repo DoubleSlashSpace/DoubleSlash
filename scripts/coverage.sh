@@ -176,7 +176,7 @@ done
 
 SUMMARY="$OUT_DIR/summary.md"
 {
-    echo "# ConquerD coverage"
+    echo "# DoubleSlash coverage"
     echo ""
     echo "Scope: \`$SCOPE\` · Toolchain: \`$RUST_TOOLCHAIN\` · Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo ""

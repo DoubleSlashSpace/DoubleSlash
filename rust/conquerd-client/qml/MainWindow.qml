@@ -1,4 +1,4 @@
-// MainWindow.qml — Conquerd native client main window (Phase 3 scaffold)
+// MainWindow.qml — DoubleSlash native client main window (Phase 3 scaffold)
 //
 // Hosts the navigation rail, chat panel, call panel, and session banner.
 // Binds to AppBridge (exposed from Rust via cxx-qt) for live state.

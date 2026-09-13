@@ -1,5 +1,5 @@
 ﻿@echo off
-REM Start Conquerd as a supernode (headless TURN relay)
+REM Start DoubleSlash as a supernode (headless QUIC relay)
 REM
 REM   supernode_invite_ttl  — invite lifetime in minutes (-1 = never expires)
 REM   supernode_port        — TURN relay UDP port (default 3478)

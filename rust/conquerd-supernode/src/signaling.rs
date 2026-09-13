@@ -1,4 +1,4 @@
-// ConquerD Supernode — signaling.rs
+// DoubleSlash supernode — signaling.rs
 // WebSocket signaling server: accept connections, verify signatures, relay messages.
 
 use std::collections::HashMap;

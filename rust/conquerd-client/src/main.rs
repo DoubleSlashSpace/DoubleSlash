@@ -95,9 +95,9 @@ fn run_qt_ui() {
     use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
     extern "C" {
-        fn conquerd_install_qt_message_handler();
-        fn conquerd_set_app_identity();
-        fn conquerd_qml_post_load_check(engine: *mut std::ffi::c_void);
+        fn doubleslash_install_qt_message_handler();
+        fn doubleslash_set_app_identity();
+        fn doubleslash_qml_post_load_check(engine: *mut std::ffi::c_void);
     }
 
     // On HiDPI displays set QT_SCALE_FACTOR before Qt is initialised so
@@ -106,14 +106,14 @@ fn run_qt_ui() {
 
     // Mirror Qt/QML warnings and errors to stderr (visible with the `console` feature).
     unsafe {
-        conquerd_install_qt_message_handler();
+        doubleslash_install_qt_message_handler();
     }
 
     // Windows taskbar / alt-tab icon — set via C++ shim so that
     // QGuiApplication::setWindowIcon() is called before exec().
     #[cfg(target_os = "windows")]
     extern "C" {
-        fn conquerd_set_app_icon();
+        fn doubleslash_set_app_icon();
     }
 
     // Single-instance guard.  If a `conquerd://` URL was passed on argv and
@@ -131,25 +131,25 @@ fn run_qt_ui() {
     // browser WebTransport / Chromium QUIC flags required).
     #[cfg(feature = "webengine")]
     unsafe {
-        ui::scheme::conquerd_register_scheme();
+        ui::scheme::doubleslash_register_scheme();
     }
 
     let mut app = QGuiApplication::new();
     unsafe {
-        conquerd_set_app_identity();
+        doubleslash_set_app_identity();
     }
 
     // Set the application icon now that QGuiApplication exists.
     #[cfg(target_os = "windows")]
     unsafe {
-        conquerd_set_app_icon();
+        doubleslash_set_app_icon();
     }
 
     // Install the conquerd:// scheme handler on the default WebEngine
     // profile AFTER QGuiApplication exists. No-op without webengine.
     #[cfg(feature = "webengine")]
     unsafe {
-        ui::scheme::conquerd_install_scheme_handler();
+        ui::scheme::doubleslash_install_scheme_handler();
     }
 
     // Must precede `engine.load()`: QML resolves `import DoubleSlash.Native` at
@@ -169,7 +169,7 @@ fn run_qt_ui() {
         unsafe {
             // On Windows this also installs the snap-friendly frame filter
             // (see window_chrome.cpp via qml_startup.cpp).
-            conquerd_qml_post_load_check(engine_ptr);
+            doubleslash_qml_post_load_check(engine_ptr);
         }
     } else {
         error!("QQmlApplicationEngine::new() returned null — UI cannot start");

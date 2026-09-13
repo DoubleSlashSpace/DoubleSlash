@@ -1,4 +1,4 @@
-// ConquerD Supernode — access.rs
+// DoubleSlash supernode — access.rs
 // Access control: trait + built-in implementations (open, TOS, ad, code).
 
 use std::collections::HashSet;

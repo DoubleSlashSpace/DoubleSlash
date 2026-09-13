@@ -4,7 +4,7 @@
 /// `d://` and `conquerd://` scheme forms are still matched so older nodes and
 /// saved log dumps keep working. Mirrors `conquerd_features::find_app_url`,
 /// which this crate's workspace cannot depend on.
-pub fn extract_conquerd_url(text: &str) -> Option<String> {
+pub fn extract_invite_url(text: &str) -> Option<String> {
     let lower = text.to_ascii_lowercase();
     let start = ["https://doubleslash.space/", "conquerd://"]
         .iter()
@@ -28,7 +28,7 @@ pub fn extract_conquerd_url(text: &str) -> Option<String> {
 }
 
 pub fn copy_target_from_logs(text: &str) -> String {
-    extract_conquerd_url(text).unwrap_or_else(|| text.to_string())
+    extract_invite_url(text).unwrap_or_else(|| text.to_string())
 }
 
 pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
@@ -46,18 +46,18 @@ mod tests {
     fn extracts_invite_url_from_logs_text() {
         let text = "source: /var/lib/conquerd/a/reusable_invite.json\n\nconquerd://abc123\n";
         assert_eq!(
-            extract_conquerd_url(text).as_deref(),
+            extract_invite_url(text).as_deref(),
             Some("conquerd://abc123")
         );
         let minted = "invite ready: d://invite#abc trailing";
         assert_eq!(
-            extract_conquerd_url(minted).as_deref(),
+            extract_invite_url(minted).as_deref(),
             Some("d://invite#abc")
         );
         let https = "Invite URL: https://doubleslash.space/i#abc123
 ";
         assert_eq!(
-            extract_conquerd_url(https).as_deref(),
+            extract_invite_url(https).as_deref(),
             Some("https://doubleslash.space/i#abc123")
         );
     }

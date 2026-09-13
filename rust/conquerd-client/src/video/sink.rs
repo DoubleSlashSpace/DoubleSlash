@@ -17,8 +17,8 @@ mod imp {
     use std::os::raw::{c_char, c_int};
 
     extern "C" {
-        fn conquerd_register_video_singleton();
-        fn conquerd_video_push_i420(
+        fn doubleslash_register_video_singleton();
+        fn doubleslash_video_push_i420(
             peer_id: *const c_char,
             width: c_int,
             height: c_int,
@@ -26,9 +26,9 @@ mod imp {
             u: *const u8,
             v: *const u8,
         );
-        fn conquerd_video_clear(peer_id: *const c_char);
-        fn conquerd_video_clear_all();
-        fn conquerd_video_has_sink(peer_id: *const c_char) -> bool;
+        fn doubleslash_video_clear(peer_id: *const c_char);
+        fn doubleslash_video_clear_all();
+        fn doubleslash_video_has_sink(peer_id: *const c_char) -> bool;
     }
 
     pub fn has_sink(peer_id: &str) -> bool {
@@ -37,13 +37,13 @@ mod imp {
         };
         // SAFETY: read-only query against GUI-thread-owned state; the shim
         // treats an unknown id as "no sink".
-        unsafe { conquerd_video_has_sink(id.as_ptr()) }
+        unsafe { doubleslash_video_has_sink(id.as_ptr()) }
     }
 
     pub fn register_singleton() {
         // SAFETY: registers a process-wide singleton with the QML engine;
         // must be called before `engine.load()`.
-        unsafe { conquerd_register_video_singleton() }
+        unsafe { doubleslash_register_video_singleton() }
     }
 
     pub fn push_frame(peer_id: &str, frame: &super::RawFrame) {
@@ -57,7 +57,7 @@ mod imp {
         // shim's row-wise copy stays in bounds. The pointers are only read
         // during the call; the shim copies before returning.
         unsafe {
-            conquerd_video_push_i420(
+            doubleslash_video_push_i420(
                 id.as_ptr(),
                 frame.width as c_int,
                 frame.height as c_int,
@@ -73,12 +73,12 @@ mod imp {
             return;
         };
         // SAFETY: the shim marshals to the GUI thread before touching state.
-        unsafe { conquerd_video_clear(id.as_ptr()) }
+        unsafe { doubleslash_video_clear(id.as_ptr()) }
     }
 
     pub fn clear_all() {
         // SAFETY: the shim hops to the GUI thread before touching state.
-        unsafe { conquerd_video_clear_all() }
+        unsafe { doubleslash_video_clear_all() }
     }
 }
 

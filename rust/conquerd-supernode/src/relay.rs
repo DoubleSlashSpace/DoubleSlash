@@ -1,4 +1,4 @@
-// ConquerD Supernode — relay.rs
+// DoubleSlash supernode — relay.rs
 // QUIC relay server: accept connections, validate tickets, forward datagrams.
 
 use std::collections::{HashMap, HashSet};

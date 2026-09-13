@@ -78,7 +78,7 @@ function Invoke-Cargo([string]$WorkingDir, [string[]]$CargoArgs) {
     }
 }
 
-Write-Host "ConquerD local CI (toolchain $RustToolchain)" -ForegroundColor Green
+Write-Host "DoubleSlash local CI (toolchain $RustToolchain)" -ForegroundColor Green
 Write-Host "Repo: $RepoRoot"
 
 Invoke-Step 'Ensure git submodules (recursive)' {

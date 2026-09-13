@@ -11,7 +11,7 @@ use std::path::PathBuf;
 const RELEASE_SIGNER_PUBKEY_HEX: &str =
     "d31f43fcfba1fae04313d384d7fba026bd52796550c57def6cf47b069c18043f";
 
-/// Sign a ConquerD release manifest using an Ed25519 private key seed.
+/// Sign a DoubleSlash release manifest using an Ed25519 private key seed.
 ///
 /// The input should be the unsigned manifest JSON.
 /// Output is pretty-printed signed JSON with "signature" and "signer_pubkey".

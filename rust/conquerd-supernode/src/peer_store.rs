@@ -1,4 +1,4 @@
-// ConquerD Supernode — peer_store.rs
+// DoubleSlash supernode — peer_store.rs
 // JSON-based trusted peer persistence.
 
 use serde::{Deserialize, Serialize};

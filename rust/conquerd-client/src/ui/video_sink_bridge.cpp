@@ -18,12 +18,12 @@ constexpr int kMaxInFlightPerPeer = 2;
 
 } // namespace
 
-ConquerdVideoRegistry *ConquerdVideoRegistry::instance() {
-  static ConquerdVideoRegistry registry;
+DoubleSlashVideoRegistry *DoubleSlashVideoRegistry::instance() {
+  static DoubleSlashVideoRegistry registry;
   return &registry;
 }
 
-void ConquerdVideoRegistry::registerSink(const QString &peerId,
+void DoubleSlashVideoRegistry::registerSink(const QString &peerId,
                                          QObject *videoOutput) {
   if (peerId.isEmpty() || videoOutput == nullptr) {
     return;
@@ -47,7 +47,7 @@ void ConquerdVideoRegistry::registerSink(const QString &peerId,
   list.append(QPointer<QVideoSink>(sink));
 }
 
-void ConquerdVideoRegistry::unregisterSink(const QString &peerId,
+void DoubleSlashVideoRegistry::unregisterSink(const QString &peerId,
                                            QObject *videoOutput) {
   if (peerId.isEmpty() || videoOutput == nullptr) {
     return;
@@ -72,7 +72,7 @@ void ConquerdVideoRegistry::unregisterSink(const QString &peerId,
   }
 }
 
-bool ConquerdVideoRegistry::hasSink(const QString &peerId) const {
+bool DoubleSlashVideoRegistry::hasSink(const QString &peerId) const {
   auto it = m_sinks.constFind(peerId);
   if (it == m_sinks.constEnd()) {
     return false;
@@ -85,7 +85,7 @@ bool ConquerdVideoRegistry::hasSink(const QString &peerId) const {
   return false;
 }
 
-bool ConquerdVideoRegistry::tryReserveInFlight(const QString &peerId) {
+bool DoubleSlashVideoRegistry::tryReserveInFlight(const QString &peerId) {
   int &n = m_inFlight[peerId];
   if (n >= kMaxInFlightPerPeer) {
     return false;
@@ -94,14 +94,14 @@ bool ConquerdVideoRegistry::tryReserveInFlight(const QString &peerId) {
   return true;
 }
 
-void ConquerdVideoRegistry::releaseInFlight(const QString &peerId) {
+void DoubleSlashVideoRegistry::releaseInFlight(const QString &peerId) {
   auto it = m_inFlight.find(peerId);
   if (it != m_inFlight.end() && it.value() > 0) {
     --it.value();
   }
 }
 
-void ConquerdVideoRegistry::fanOut(const QString &peerId,
+void DoubleSlashVideoRegistry::fanOut(const QString &peerId,
                                    const QVideoFrame &frame) {
   auto it = m_sinks.find(peerId);
   if (it == m_sinks.end()) {
@@ -120,7 +120,7 @@ void ConquerdVideoRegistry::fanOut(const QString &peerId,
   }
 }
 
-void ConquerdVideoRegistry::clearPeer(const QString &peerId) {
+void DoubleSlashVideoRegistry::clearPeer(const QString &peerId) {
   // Blank the last frame but keep the registration: a peer who turns their
   // camera back on (or rejoins) must be able to push frames without the QML
   // tile re-running registerSink. Dead QPointers are pruned so a destroyed
@@ -142,7 +142,7 @@ void ConquerdVideoRegistry::clearPeer(const QString &peerId) {
   m_inFlight.remove(peerId);
 }
 
-void ConquerdVideoRegistry::clearAll() {
+void DoubleSlashVideoRegistry::clearAll() {
   for (auto it = m_sinks.begin(); it != m_sinks.end();) {
     auto &list = it.value();
     for (int i = list.size() - 1; i >= 0; --i) {
@@ -163,25 +163,25 @@ void ConquerdVideoRegistry::clearAll() {
 
 // Implemented in window_chrome.cpp; declared here rather than in a shared
 // header because these two shims are otherwise independent.
-extern "C" void conquerd_enable_windows_snap(void *qwindow_ptr);
+extern "C" void doubleslash_enable_windows_snap(void *qwindow_ptr);
 extern "C" void conquerd_disable_windows_snap(void *qwindow_ptr);
 
-ConquerdWindowChrome *ConquerdWindowChrome::instance() {
-  static ConquerdWindowChrome chrome;
+DoubleSlashWindowChrome *DoubleSlashWindowChrome::instance() {
+  static DoubleSlashWindowChrome chrome;
   return &chrome;
 }
 
-void ConquerdWindowChrome::enable(QObject *window) {
+void DoubleSlashWindowChrome::enable(QObject *window) {
 #if defined(Q_OS_WIN)
   if (auto *w = qobject_cast<QWindow *>(window)) {
-    conquerd_enable_windows_snap(w);
+    doubleslash_enable_windows_snap(w);
   }
 #else
   Q_UNUSED(window);
 #endif
 }
 
-void ConquerdWindowChrome::disable(QObject *window) {
+void DoubleSlashWindowChrome::disable(QObject *window) {
 #if defined(Q_OS_WIN)
   if (auto *w = qobject_cast<QWindow *>(window)) {
     conquerd_disable_windows_snap(w);
@@ -191,14 +191,14 @@ void ConquerdWindowChrome::disable(QObject *window) {
 #endif
 }
 
-extern "C" void conquerd_register_video_singleton() {
+extern "C" void doubleslash_register_video_singleton() {
   qmlRegisterSingletonInstance("DoubleSlash.Native", 1, 0, "VideoRegistry",
-                               ConquerdVideoRegistry::instance());
+                               DoubleSlashVideoRegistry::instance());
   qmlRegisterSingletonInstance("DoubleSlash.Native", 1, 0, "WindowChrome",
-                               ConquerdWindowChrome::instance());
+                               DoubleSlashWindowChrome::instance());
 }
 
-extern "C" void conquerd_video_push_i420(const char *peer_id, int width,
+extern "C" void doubleslash_video_push_i420(const char *peer_id, int width,
                                          int height, const uint8_t *y,
                                          const uint8_t *u, const uint8_t *v) {
   if (peer_id == nullptr || y == nullptr || u == nullptr || v == nullptr) {
@@ -209,7 +209,7 @@ extern "C" void conquerd_video_push_i420(const char *peer_id, int width,
   }
 
   const QString id = QString::fromUtf8(peer_id);
-  auto *reg = ConquerdVideoRegistry::instance();
+  auto *reg = DoubleSlashVideoRegistry::instance();
 
   // Shed before doing any work when the GUI thread is behind.
   if (!reg->tryReserveInFlight(id)) {
@@ -259,40 +259,40 @@ extern "C" void conquerd_video_push_i420(const char *peer_id, int width,
   QMetaObject::invokeMethod(
       reg,
       [id, frame]() {
-        auto *r = ConquerdVideoRegistry::instance();
+        auto *r = DoubleSlashVideoRegistry::instance();
         r->fanOut(id, frame);
         r->releaseInFlight(id);
       },
       Qt::QueuedConnection);
 }
 
-extern "C" bool conquerd_video_has_sink(const char *peer_id) {
+extern "C" bool doubleslash_video_has_sink(const char *peer_id) {
   if (peer_id == nullptr) {
     return false;
   }
   // Read-only and racy by nature: a tile could open or close between this
   // check and the next frame. Worst case is one wasted or one skipped decode,
   // which self-corrects on the following frame.
-  return ConquerdVideoRegistry::instance()->hasSink(QString::fromUtf8(peer_id));
+  return DoubleSlashVideoRegistry::instance()->hasSink(QString::fromUtf8(peer_id));
 }
 
-extern "C" void conquerd_video_clear(const char *peer_id) {
+extern "C" void doubleslash_video_clear(const char *peer_id) {
   if (peer_id == nullptr) {
     return;
   }
   const QString id = QString::fromUtf8(peer_id);
   QMetaObject::invokeMethod(
-      ConquerdVideoRegistry::instance(),
+      DoubleSlashVideoRegistry::instance(),
       [id]() {
         // Clearing on the GUI thread keeps all m_sinks access single-threaded.
-        ConquerdVideoRegistry::instance()->clearPeer(id);
+        DoubleSlashVideoRegistry::instance()->clearPeer(id);
       },
       Qt::QueuedConnection);
 }
 
-extern "C" void conquerd_video_clear_all() {
+extern "C" void doubleslash_video_clear_all() {
   QMetaObject::invokeMethod(
-      ConquerdVideoRegistry::instance(),
-      []() { ConquerdVideoRegistry::instance()->clearAll(); },
+      DoubleSlashVideoRegistry::instance(),
+      []() { DoubleSlashVideoRegistry::instance()->clearAll(); },
       Qt::QueuedConnection);
 }

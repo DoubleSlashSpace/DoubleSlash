@@ -5,12 +5,12 @@
 #include <cstdlib>
 #include <cstring>
 
-extern "C" void conquerd_register_scheme();
-extern "C" void conquerd_install_scheme_handler();
+extern "C" void doubleslash_register_scheme();
+extern "C" void doubleslash_install_scheme_handler();
 
 // Replace only the QUIC fetch boundary. Production scheme registration,
 // Chromium navigation, relative URL resolution, and QML run unchanged.
-extern "C" bool conquerd_fetch_sync(
+extern "C" bool doubleslash_fetch_sync(
     const char* url, size_t url_len, char** content_type, size_t* ct_len,
     uint8_t** body, size_t* body_len)
 {
@@ -44,12 +44,12 @@ class PortalSetup : public QObject
 {
     Q_OBJECT
 public slots:
-    void applicationAvailable() { conquerd_install_scheme_handler(); }
+    void applicationAvailable() { doubleslash_install_scheme_handler(); }
 };
 
 int main(int argc, char** argv)
 {
-    conquerd_register_scheme();
+    doubleslash_register_scheme();
     QtWebEngineQuick::initialize();
     PortalSetup setup;
     return quick_test_main_with_setup(argc, argv, "portal_navigation", nullptr, &setup);

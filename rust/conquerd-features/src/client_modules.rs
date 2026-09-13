@@ -1,6 +1,6 @@
 //! First-party client-side `FeatureModule` implementations.
 //!
-//! Each struct corresponds to a capability the Conquerd desktop client
+//! Each struct corresponds to a capability the DoubleSlash desktop client
 //! implements natively.  Modules hold an optional callback hook so any Rust
 //! consumer (tests, future native client) can observe or intercept inbound
 //! payloads without subclassing.

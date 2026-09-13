@@ -1,8 +1,8 @@
 //! Rust side of the `conquerd://` custom URL scheme handler.
 //!
 //! Registers a process-global callback that [`scheme.cpp`]'s
-//! `ConquerdSchemeHandler::requestStarted` calls synchronously
-//! (from Qt's internal IO thread) via [`conquerd_fetch_sync`].
+//! `PortalSchemeHandler::requestStarted` calls synchronously
+//! (from Qt's internal IO thread) via [`doubleslash_fetch_sync`].
 //!
 //! # Setup (called from the AppBridge during initialisation)
 //!
@@ -54,7 +54,7 @@ static PORTAL_PEER_ID: OnceLock<String> = OnceLock::new();
 /// Chromium lower-cases the authority of every `scheme://AUTHORITY/path`
 /// URL, which would destroy the case-sensitive base64url peer IDs that
 /// flow through `conquerd://`.  Whenever the UI opens a portal we record
-/// the canonical form here so [`parse_conquerd_url`] can recover it from
+/// the canonical form here so [`parse_portal_url`] can recover it from
 /// the lower-cased authority Chromium hands the scheme handler.
 static PORTAL_ID_MAP: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 
@@ -125,13 +125,13 @@ pub fn register_fetch_callback(cmd_tx: mpsc::Sender<ConnectionCommand>, rt_handl
 // Register the `conquerd://` URL scheme with QtWebEngine.
 // Must be called **before** `QGuiApplication::new()`.
 extern "C" {
-    pub fn conquerd_register_scheme();
-    pub fn conquerd_install_scheme_handler();
+    pub fn doubleslash_register_scheme();
+    pub fn doubleslash_install_scheme_handler();
 }
 
 /// Perform a blocking fetch of a `conquerd://` URL.
 ///
-/// Called from `ConquerdSchemeHandler::requestStarted` (Qt IO thread, NOT a
+/// Called from `PortalSchemeHandler::requestStarted` (Qt IO thread, NOT a
 /// tokio task). Allocates response buffers with the global allocator; the C++
 /// caller is responsible for freeing them with `std::free()`.
 ///
@@ -139,7 +139,7 @@ extern "C" {
 /// `url` must be a valid UTF-8 pointer of `url_len` bytes.
 /// Output pointer-to-pointer arguments must not be null.
 #[no_mangle]
-pub unsafe extern "C" fn conquerd_fetch_sync(
+pub unsafe extern "C" fn doubleslash_fetch_sync(
     url: *const u8,
     url_len: usize,
     out_content_type: *mut *mut u8,
@@ -170,7 +170,7 @@ pub unsafe extern "C" fn conquerd_fetch_sync(
     info!("[scheme] fetch_sync url={}", url_str);
 
     // conquerd://<supernode_id>/<path>
-    let (supernode_id, path, query) = match parse_conquerd_url(url_str) {
+    let (supernode_id, path, query) = match parse_portal_url(url_str) {
         Some(v) => v,
         None => {
             error!("[scheme] cannot parse conquerd URL: {url_str}");
@@ -483,7 +483,7 @@ fn canonicalize_portal_api_path(path: &str) -> Option<String> {
 }
 
 /// Returns `None` if the URL does not match the expected structure.
-fn parse_conquerd_url(url: &str) -> Option<(String, String, Option<String>)> {
+fn parse_portal_url(url: &str) -> Option<(String, String, Option<String>)> {
     let rest = conquerd_features::strip_scheme(url)?;
     // authority = everything before the first '/'
     let (authority, path_and_query) = if let Some(idx) = rest.find('/') {
@@ -515,7 +515,7 @@ fn parse_conquerd_url(url: &str) -> Option<(String, String, Option<String>)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonicalize_portal_api_path, parse_conquerd_url};
+    use super::{canonicalize_portal_api_path, parse_portal_url};
 
     #[test]
     fn doubleslash_portal_api_prefix_rewrites() {
@@ -533,11 +533,11 @@ mod tests {
 
     #[test]
     fn basic_parse() {
-        let (sn, path, q) = parse_conquerd_url("d://abc123/index.html").unwrap();
+        let (sn, path, q) = parse_portal_url("d://abc123/index.html").unwrap();
         assert_eq!(sn, "abc123");
         assert_eq!(path, "/index.html");
         assert!(q.is_none());
-        let (sn, path, q) = parse_conquerd_url("conquerd://abc123/index.html").unwrap();
+        let (sn, path, q) = parse_portal_url("conquerd://abc123/index.html").unwrap();
         assert_eq!(sn, "abc123");
         assert_eq!(path, "/index.html");
         assert!(q.is_none());
@@ -545,14 +545,14 @@ mod tests {
 
     #[test]
     fn with_query() {
-        let (_, path, q) = parse_conquerd_url("d://abc123/search?q=hello").unwrap();
+        let (_, path, q) = parse_portal_url("d://abc123/search?q=hello").unwrap();
         assert_eq!(path, "/search");
         assert_eq!(q.as_deref(), Some("q=hello"));
     }
 
     #[test]
     fn bare_authority_becomes_root() {
-        let (sn, path, q) = parse_conquerd_url("d://abc123").unwrap();
+        let (sn, path, q) = parse_portal_url("d://abc123").unwrap();
         assert_eq!(sn, "abc123");
         assert_eq!(path, "/");
         assert!(q.is_none());
@@ -560,12 +560,12 @@ mod tests {
 
     #[test]
     fn rejects_empty_authority() {
-        assert!(parse_conquerd_url("d:///index.html").is_none());
-        assert!(parse_conquerd_url("conquerd:///index.html").is_none());
+        assert!(parse_portal_url("d:///index.html").is_none());
+        assert!(parse_portal_url("conquerd:///index.html").is_none());
     }
 
     #[test]
     fn rejects_wrong_scheme() {
-        assert!(parse_conquerd_url("https://example.com/").is_none());
+        assert!(parse_portal_url("https://example.com/").is_none());
     }
 }

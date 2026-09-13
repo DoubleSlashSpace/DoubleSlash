@@ -1,6 +1,6 @@
-// ConquerD in-app portal SDK — identity-path game channel.
+// DoubleSlash in-app portal SDK — identity-path game channel.
 //
-// Games load inside the native client (`d://` + window.conquerd).
+// Games load inside the native client (`d://` + window.doubleslash / window.conquerd).
 // Datagrams ride the authenticated QUIC relay via portal channel APIs
 // (`/_conquerd/channel/*`). There is no WebTransport / self-signed TLS path.
 //
@@ -151,16 +151,16 @@ class PortalNativeTransport {
 /**
  * High-level client for in-app portal games.
  *
- *   new ConquerdClient({ features, room })
+ *   new DoubleSlashClient({ features, room })
  *   .on("connected", peerId => ...)
  *   .on("datagram", (featureId, data) => ...)
  *   await .connect()
  *   .sendDatagram(featureId, bytes)
  *   .disconnect()
  *
- * Transport is always the native portal bridge (`window.conquerd`).
+ * Transport is the native portal bridge (`window.doubleslash` or `window.conquerd`).
  */
-export class ConquerdClient {
+export class DoubleSlashClient {
     constructor({ features, room } = {}) {
         this.features = Array.isArray(features) ? features : [];
         this.room = room || null;
@@ -184,7 +184,7 @@ export class ConquerdClient {
     _emit(event, ...args) {
         const set = this._handlers[event];
         if (set) for (const fn of set) {
-            try { fn(...args); } catch (e) { console.error("[ConquerdClient] handler error", e); }
+            try { fn(...args); } catch (e) { console.error("[DoubleSlashClient] handler error", e); }
         }
     }
 
@@ -240,4 +240,4 @@ export class ConquerdClient {
     }
 }
 
-export { ConquerdClient as DoubleSlashClient };
+export { DoubleSlashClient as ConquerdClient };

@@ -234,7 +234,7 @@ where
     E: FnMut(StreamError) + Send + 'static,
 {
     let builder = configure_for_device(builder, device, config);
-    // ConquerD patch: capture on the voice-communication path.
+    // DoubleSlash patch: capture on the voice-communication path.
     //
     // Stock cpal leaves the input preset unset, which Android treats as
     // generic recording: no platform AcousticEchoCanceler / NS / AGC is
@@ -266,7 +266,7 @@ where
     E: FnMut(StreamError) + Send + 'static,
 {
     let builder = configure_for_device(builder, device, config);
-    // ConquerD patch: play out on the voice-communication path.
+    // DoubleSlash patch: play out on the voice-communication path.
     //
     // Stock cpal opens the stream with the default Usage::Media. Android
     // routes a media-usage stream to the loudspeaker and refuses to honour

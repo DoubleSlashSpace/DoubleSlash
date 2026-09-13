@@ -22,7 +22,7 @@ Write-Host "=== Ollama API probe ==="
 Write-Host "Base URL: $BaseUrl"
 Write-Host ""
 
-# 1) /api/tags — same endpoint ConquerD uses for the model combo
+# 1) /api/tags — same endpoint DoubleSlash uses for the model combo
 try {
     $tags = Invoke-RestMethod -Uri "$BaseUrl/api/tags" -TimeoutSec 5
 } catch {
@@ -79,5 +79,5 @@ if ($Prompt) {
 }
 
 Write-Host ""
-Write-Host "Done. ConquerD Settings → AI should list the same models."
+Write-Host "Done. DoubleSlash Settings → AI should list the same models."
 exit 0

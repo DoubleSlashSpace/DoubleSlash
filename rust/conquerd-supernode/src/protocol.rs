@@ -1,4 +1,4 @@
-// ConquerD Supernode — protocol.rs
+// DoubleSlash supernode — protocol.rs
 // Signaling message types, envelope serialization, signing/verification.
 
 use serde::{Deserialize, Serialize};

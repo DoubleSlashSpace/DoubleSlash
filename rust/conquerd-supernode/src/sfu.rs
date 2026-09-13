@@ -1,4 +1,4 @@
-// ConquerD Supernode — sfu.rs
+// DoubleSlash supernode — sfu.rs
 // SFU room management: room lifecycle, participant tracking, room types.
 
 use std::collections::HashMap;

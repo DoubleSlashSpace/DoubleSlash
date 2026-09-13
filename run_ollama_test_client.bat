@@ -48,7 +48,7 @@ if not defined RUST_LOG set "RUST_LOG=conquerd_client=debug,warn"
 ::   set QT_SCALE_FACTOR=0.85
 
 if not defined BINARY (
-    echo ConquerD client binary not found.
+    echo DoubleSlash client binary not found.
     echo Tried:
     echo   %DEBUG_BIN%
     echo   %DIST_BIN%
@@ -106,7 +106,7 @@ if not exist "%SETTINGS%" (
         echo   "ollama_enabled": true,
         echo   "ollama_base_url": "http://127.0.0.1:11434",
         echo   "ollama_model": "llama3.2:latest",
-        echo   "ollama_system_prompt": "You are a helpful ConquerD debug assistant. Keep answers short.",
+        echo   "ollama_system_prompt": "You are a helpful DoubleSlash debug assistant. Keep answers short.",
         echo   "ollama_auto_respond_direct": false,
         echo   "ollama_auto_respond_room": false,
         echo   "noise_strength": "moderate",
@@ -127,7 +127,7 @@ if not exist "%SETTINGS%" (
 )
 
 echo.
-echo === ConquerD Ollama test client ===
+echo === DoubleSlash Ollama test client ===
 echo Profile:  %CONQUERD_HOME%
 echo Binary:   %BINARY%
 echo Kind:     %BINARY_KIND%
@@ -164,7 +164,7 @@ if errorlevel 1 (
 
 set "HOME=%LEGACY_HOME%"
 
-echo Launching ConquerD...
+echo Launching DoubleSlash...
 echo Tips:
 echo   - Settings → AI → Model combo should populate after refresh.
 echo   - Chat AI needs ollama_enabled=true at startup ^(this profile seeds that^).

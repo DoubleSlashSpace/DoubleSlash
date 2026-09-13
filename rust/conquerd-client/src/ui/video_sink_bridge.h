@@ -21,11 +21,11 @@
 
 #include <cstdint>
 
-class ConquerdVideoRegistry : public QObject {
+class DoubleSlashVideoRegistry : public QObject {
   Q_OBJECT
 
 public:
-  static ConquerdVideoRegistry *instance();
+  static DoubleSlashVideoRegistry *instance();
 
   /// Bind a QML `VideoOutput`'s sink to `peerId`.
   ///
@@ -70,7 +70,7 @@ public:
   bool tryReserveInFlight(const QString &peerId);
 
 private:
-  explicit ConquerdVideoRegistry(QObject *parent = nullptr) : QObject(parent) {}
+  explicit DoubleSlashVideoRegistry(QObject *parent = nullptr) : QObject(parent) {}
 
   QHash<QString, QVector<QPointer<QVideoSink>>> m_sinks;
   QHash<QString, int> m_inFlight;
@@ -85,11 +85,11 @@ private:
 ///
 /// This lives beside the video registry only because that shim already runs
 /// moc; the two are otherwise unrelated.
-class ConquerdWindowChrome : public QObject {
+class DoubleSlashWindowChrome : public QObject {
   Q_OBJECT
 
 public:
-  static ConquerdWindowChrome *instance();
+  static DoubleSlashWindowChrome *instance();
 
   /// Apply frameless snap chrome to `window`. No-op off Windows.
   Q_INVOKABLE void enable(QObject *window);
@@ -100,31 +100,31 @@ public:
   Q_INVOKABLE void disable(QObject *window);
 
 private:
-  explicit ConquerdWindowChrome(QObject *parent = nullptr) : QObject(parent) {}
+  explicit DoubleSlashWindowChrome(QObject *parent = nullptr) : QObject(parent) {}
 };
 
 extern "C" {
 
 /// Register the registry and chrome helper as QML singletons.
 /// Call before `engine.load()`.
-void conquerd_register_video_singleton();
+void doubleslash_register_video_singleton();
 
 /// Push one tightly-packed I420 frame for `peer_id`.
 ///
 /// Safe to call from any thread: the frame is built here (allocation and copy
 /// belong off the GUI thread) and then hopped to the GUI thread for fan-out.
-void conquerd_video_push_i420(const char *peer_id, int width, int height,
+void doubleslash_video_push_i420(const char *peer_id, int width, int height,
                               const uint8_t *y, const uint8_t *u,
                               const uint8_t *v);
 
 /// Blank every sink for a peer (keep registrations), e.g. camera off / leave.
-void conquerd_video_clear(const char *peer_id);
+void doubleslash_video_clear(const char *peer_id);
 
 /// Blank every registered sink. Used when the local session ends.
-void conquerd_video_clear_all();
+void doubleslash_video_clear_all();
 
 /// Whether anything is currently displaying this peer. Lets the decode thread
 /// skip work for peers whose tiles are closed.
-bool conquerd_video_has_sink(const char *peer_id);
+bool doubleslash_video_has_sink(const char *peer_id);
 
 } // extern "C"

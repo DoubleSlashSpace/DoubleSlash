@@ -1,4 +1,4 @@
-// ConquerD Supernode — identity.rs
+// DoubleSlash supernode — identity.rs
 // Ed25519 identity: keypair generation, persistence, signing, verification.
 // Also X25519 ephemeral keys for handshake ECDH.
 

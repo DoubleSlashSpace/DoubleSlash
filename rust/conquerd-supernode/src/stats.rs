@@ -1,4 +1,4 @@
-// ConquerD Supernode — stats.rs
+// DoubleSlash supernode — stats.rs
 // Stats collection aggregating relay, SFU, and connection data.
 
 use std::time::Instant;

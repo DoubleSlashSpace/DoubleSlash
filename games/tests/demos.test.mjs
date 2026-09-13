@@ -37,7 +37,7 @@ import {
   packWorld,
   unpackWorld,
 } from "../example/playground.mjs";
-import { ConquerdClient } from "../../web-sdk/conquerd.mjs";
+import { DoubleSlashClient } from "../../web-sdk/conquerd.mjs";
 import { SharedState } from "../../web-sdk/demo-state.mjs";
 import { defaults, validTask } from "../task-board/tasks.mjs";
 import {
@@ -606,7 +606,7 @@ test("SDK polls never overlap and discards a poll completed after disconnect", a
       }),
     },
   };
-  const c = new ConquerdClient({ features: ["game.relay.v1"], room: "x" });
+  const c = new DoubleSlashClient({ features: ["game.relay.v1"], room: "x" });
   c.on("datagram", () => delivered++);
   try {
     await c.connect();

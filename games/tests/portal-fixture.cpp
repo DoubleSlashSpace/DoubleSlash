@@ -12,14 +12,14 @@
 #include <cstdint>
 #include <cstring>
 
-extern "C" void conquerd_register_scheme();
-extern "C" void conquerd_install_scheme_handler();
+extern "C" void doubleslash_register_scheme();
+extern "C" void doubleslash_install_scheme_handler();
 struct Peer { QString room; QJsonArray queue; };
 static QHash<QString, Peer> peers;
 
 // Real Chromium + production scheme handling; a local opaque relay replaces
 // native QUIC. Each fixture hostname stands in for a separate native client.
-extern "C" bool conquerd_fetch_sync(const char* raw, size_t len,
+extern "C" bool doubleslash_fetch_sync(const char* raw, size_t len,
     char** contentType, size_t* ctLen, uint8_t** body, size_t* bodyLen)
 {
     const QUrl url(QString::fromUtf8(raw, static_cast<qsizetype>(len)));
@@ -72,10 +72,10 @@ extern "C" bool conquerd_fetch_sync(const char* raw, size_t len,
 class Setup : public QObject {
     Q_OBJECT
 public slots:
-    void applicationAvailable() { conquerd_install_scheme_handler(); }
+    void applicationAvailable() { doubleslash_install_scheme_handler(); }
 };
 int main(int argc,char** argv) {
-    conquerd_register_scheme(); QtWebEngineQuick::initialize(); Setup setup;
+    doubleslash_register_scheme(); QtWebEngineQuick::initialize(); Setup setup;
     return quick_test_main_with_setup(argc,argv,"portal_apps",nullptr,&setup);
 }
 #include "portal-fixture.moc"

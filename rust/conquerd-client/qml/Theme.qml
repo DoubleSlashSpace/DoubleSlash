@@ -1,4 +1,4 @@
-// Theme.qml — Conquerd Dracula/Discord-dark palette singleton with dark/light toggle.
+// Theme.qml — DoubleSlash Dracula/Discord-dark palette singleton with dark/light toggle.
 //
 // Usage: Theme.bg0, Theme.accent, etc.
 // Toggle dark/light: Theme.isDark = false

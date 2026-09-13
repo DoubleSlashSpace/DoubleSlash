@@ -1,6 +1,6 @@
 # supernode-manager
 
-A standalone Rust CLI + TUI for deploying and operating fleets of `conquerd-supernode` instances over SSH. Lives in this repo (`ConquerD_Manager`); independent of the DoubleSlash application crates but targets the same supernode release artifacts.
+A standalone Rust CLI + TUI for deploying and operating fleets of `conquerd-supernode` instances over SSH. Lives in this repo (`rust/conquerd-supernode-manager/`); independent of the DoubleSlash application crates but targets the same supernode release artifacts.
 
 > **Status (v0.1.0):** Working prototype. Linux remote hosts with systemd are supported end-to-end (multi-instance proven on production VPS). Default entry point is an interactive TUI; all operations are also available as CLI subcommands. Remote targets are **Linux + systemd only** — no launchd or Windows-service backends yet.
 
@@ -15,7 +15,7 @@ Let one operator, from a laptop, manage many supernodes:
 - A declarative `inventory.toml` plus commands for install, lifecycle, status, logs, config push, invite, and uninstall.
 - No agent pre-installed on hosts: bootstrap everything over SSH.
 
-**Non-goals:** not a ConquerD backend, identity authority, or discovery service. Only provisions and supervises the supernode process. Does not weaken the client-only, invite-only trust model — operates below ConquerD at the OS/process layer.
+**Non-goals:** not a DoubleSlash backend, identity authority, or discovery service. Only provisions and supervises the supernode process. Does not weaken the client-only, invite-only trust model — operates below DoubleSlash at the OS/process layer.
 
 ---
 
@@ -104,7 +104,7 @@ flowchart LR
 **Crate layout:**
 
 ```
-ConquerD_Manager/
+rust/conquerd-supernode-manager/
   Cargo.toml                 # workspace
   inventory.toml             # operator fleet definition (not committed secrets)
   launch.ps1                 # Windows launcher: loads SNM_SSH_PASSWORD, runs TUI/CLI
@@ -333,7 +333,7 @@ Implementation: `snm-supernode::binary_probe` — remote `readlink`, `sha256sum`
 **Partial / gaps:**
 
 - Re-running `install` overwrites the versioned binary path and refreshes the `current` symlink — there is no separate `update` command with rollback.
-- No Ed25519 verification against ConquerD `releases_manifest.json`.
+- No Ed25519 verification against DoubleSlash `releases_manifest.json`.
 - `version = "local"` skips download; operator must set `defaults.binary_path`.
 - Windows `.zip` artifacts are rejected at extract time.
 
@@ -348,7 +348,7 @@ Implementation: `snm-supernode::binary_probe` — remote `readlink`, `sha256sum`
 - **Least privilege:** dedicated service user created on install; `sudo`/`root` for unit installation.
 - **Binary provenance:** SHA-256 sidecar verified on download; running binary SHA shown in status. Signed manifest verification not yet implemented.
 - **Destructive actions:** TUI confirm dialogs for remove/uninstall/purge; CLI `--yes` to skip prompts.
-- **No trust escalation into ConquerD:** manager never mints client identities or invites — only reads `reusable_invite.json` from the node data dir.
+- **No trust escalation into DoubleSlash:** manager never mints client identities or invites — only reads `reusable_invite.json` from the node data dir.
 - **Cluster links:** supernode↔supernode QUIC authenticates peers by cert CN against the signed roster and requires Ed25519-signed cluster messages, so a spoofed identity cannot inject replication. The manager must firewall `cluster_addr` to member IPs only (§8) — it is a trusted, intra-cluster surface, not a public one.
 
 ---

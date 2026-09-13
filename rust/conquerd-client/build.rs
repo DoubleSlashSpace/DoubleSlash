@@ -416,7 +416,7 @@ fn build_qt_ui() {
     // Probe Multimedia *and* compile the QVideoSink C++ shim before deciding
     // whether to enable `cfg(qt_multimedia)`. Linking QtMultimedia without the
     // shim (e.g. moc failed to generate the meta-object sources) leaves the
-    // Rust side with unresolved `conquerd_video_*` symbols at final link —
+    // Rust side with unresolved `doubleslash_video_*` symbols at final link —
     // exactly the failure Linux CI saw after qtmultimedia was added to the
     // aqt install. The shim is compiled here, before CxxQtBuilder runs, so a
     // hard error surfaces early and we never advertise a feature we cannot
@@ -763,7 +763,7 @@ fn compile_window_chrome_cpp() {
 /// Returns `true` when the static library was produced and the linker flags
 /// were emitted. Callers must only set `cfg(qt_multimedia)` on success —
 /// enabling the Rust externs without this library is what produced the Linux
-/// CI undefined-reference failures for `conquerd_video_*`.
+/// CI undefined-reference failures for `doubleslash_video_*`.
 ///
 /// Only meaningful when Qt Multimedia is present; without it there is no
 /// `QVideoSink` to compile against.
@@ -817,7 +817,7 @@ fn compile_video_sink_cpp() -> bool {
     // without -I it fails on Linux CI (aqt layout) even when the same sources
     // moc fine on a developer Windows box where include paths leak from the
     // ambient environment. That silent skip used to leave `cfg(qt_multimedia)`
-    // set with no `conquerd_video_*` symbols at link time.
+    // set with no `doubleslash_video_*` symbols at link time.
     let mut moc_cmd = Command::new(&moc);
     moc_cmd.arg(&header).arg("-o").arg(&moc_out);
     if headers.is_dir() {
@@ -890,10 +890,10 @@ fn compile_video_sink_cpp() -> bool {
     );
     // `compile` panics on failure, which is what we want: a half-built video
     // path must not reach the final link with missing symbols.
-    build.compile("conquerd_video_sink");
+    build.compile("doubleslash_video_sink");
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=static=conquerd_video_sink");
+    println!("cargo:rustc-link-lib=static=doubleslash_video_sink");
     true
 }
 
@@ -931,10 +931,10 @@ fn compile_qml_startup_cpp() {
     #[cfg(not(windows))]
     build.flag("-fPIC");
 
-    build.compile("conquerd_qml_startup");
+    build.compile("doubleslash_qml_startup");
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=static=conquerd_qml_startup");
+    println!("cargo:rustc-link-lib=static=doubleslash_qml_startup");
 }
 
 #[cfg(all(feature = "qt-ui", feature = "webengine"))]
@@ -1033,7 +1033,7 @@ fn compile_scheme_cpp() {
     // some Cargo/build-script cache paths the link directives are not
     // re-emitted when only feature flags change.  Re-emit explicitly so the
     // bin always picks up the static library and finds
-    // conquerd_register_scheme / conquerd_install_scheme_handler.
+    // doubleslash_register_scheme / doubleslash_install_scheme_handler.
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=conquerd_scheme");
 }
