@@ -1,6 +1,6 @@
 # supernode-manager
 
-A standalone Rust CLI + TUI for deploying and operating fleets of `conquerd-supernode` instances over SSH. Lives in this repo (`rust/conquerd-supernode-manager/`); independent of the DoubleSlash application crates but targets the same supernode release artifacts.
+A standalone Rust CLI + TUI for deploying and operating fleets of `doubleslash-supernode` instances over SSH. Lives in this repo (`rust/doubleslash-supernode-manager/`); independent of the DoubleSlash application crates but targets the same supernode release artifacts.
 
 > **Status (v0.1.0):** Working prototype. Linux remote hosts with systemd are supported end-to-end (multi-instance proven on production VPS). Default entry point is an interactive TUI; all operations are also available as CLI subcommands. Remote targets are **Linux + systemd only** — no launchd or Windows-service backends yet.
 
@@ -21,16 +21,16 @@ Let one operator, from a laptop, manage many supernodes:
 
 ## 2. What a supernode needs to run (host contract)
 
-Derived from `rust/conquerd-supernode` in the DoubleSlash repo (`config.rs`, `manifest.rs`, `main.rs`) and `docs/SUPERNODE.md`. The manager must honor this contract; it does not import DoubleSlash application crates.
+Derived from `rust/doubleslash-supernode` in the DoubleSlash repo (`config.rs`, `manifest.rs`, `main.rs`) and `docs/SUPERNODE.md`. The manager must honor this contract; it does not import DoubleSlash application crates.
 
 ### Binary
 
-- Executable: `conquerd-supernode` (`.exe` on Windows builds).
-- Distributed via GitHub Releases (`ConquerD/ConquerD`, overridable via `defaults.release_repo` or `SNM_SUPERNODE_RELEASE_REPO`):
-  - **Linux:** `conquerd-supernode-<version>-<platform>.tar.gz` + `.sha256`
-  - **Windows x86_64:** `conquerd-supernode-<version>-win64.zip` + `.sha256` (zip extraction **not implemented** in the manager yet)
+- Executable: `doubleslash-supernode` (`.exe` on Windows builds).
+- Distributed via GitHub Releases (`DoubleSlashSpace/DoubleSlash`, overridable via `defaults.release_repo` or `SNM_SUPERNODE_RELEASE_REPO`):
+  - **Linux:** `doubleslash-supernode-<version>-<platform>.tar.gz` + `.sha256`
+  - **Windows x86_64:** `doubleslash-supernode-<version>-win64.zip` + `.sha256` (zip extraction **not implemented** in the manager yet)
 - Supported release platforms: `linux-x86_64`, `linux-aarch64`, `win64` (Linux only for remote install today).
-- On the host the manager stages `{install_root}/bin/conquerd-supernode-{version}` and symlinks `{install_root}/bin/current` → that file.
+- On the host the manager stages `{install_root}/bin/doubleslash-supernode-{version}` and symlinks `{install_root}/bin/current` → that file.
 - `defaults.version` may be a release tag (`1.0.0`, `nightly`), or `"local"` with `defaults.binary_path` pointing at a local binary on the operator machine.
 
 ### Data directory (per instance, isolated)
@@ -74,7 +74,7 @@ Omitted relay/ws/cluster ports are auto-allocated at resolve time.
 
 - No hot-reload; config/binary changes need a **restart** (`config-push` restarts by default; `--no-restart` to skip).
 - Graceful shutdown on SIGTERM.
-- Supervisor: systemd templated unit `conquerd-supernode@.service` + per-instance drop-in under `conquerd-supernode@{id}.service.d/override.conf`.
+- Supervisor: systemd templated unit `doubleslash-supernode@.service` + per-instance drop-in under `doubleslash-supernode@{id}.service.d/override.conf`.
 
 ### Health / observability
 
@@ -104,7 +104,7 @@ flowchart LR
 **Crate layout:**
 
 ```
-rust/conquerd-supernode-manager/
+rust/doubleslash-supernode-manager/
   Cargo.toml                 # workspace
   inventory.toml             # operator fleet definition (not committed secrets)
   launch.ps1                 # Windows launcher: loads SNM_SSH_PASSWORD, runs TUI/CLI
@@ -144,7 +144,7 @@ access_mode = "open"
 user = "conquerd"
 install_root = "/opt/conquerd"
 data_root = "/var/lib/conquerd"
-release_repo = "ConquerD/ConquerD"
+release_repo = "DoubleSlashSpace/DoubleSlash"
 privilege = "root"               # sudo | root | rootless-systemd (last: not implemented)
 firewall = "ufw"                 # ufw | off | report
 # binary_path = "..."            # required when version = "local"
@@ -228,9 +228,9 @@ Each instance is independent:
 | Concern | Layout |
 |---|---|
 | Data dir | `{data_root}/{instance_id}` via `CONQUERD_HOME` in systemd drop-in |
-| Binary | Shared `{install_root}/bin/conquerd-supernode-{version}` + `current` symlink |
-| Unit | `conquerd-supernode@{id}.service` from template `conquerd-supernode@.service` |
-| Drop-in | `/etc/systemd/system/conquerd-supernode@{id}.service.d/override.conf` — `CONQUERD_HOME`, `supernode_host`, legacy port env vars |
+| Binary | Shared `{install_root}/bin/doubleslash-supernode-{version}` + `current` symlink |
+| Unit | `doubleslash-supernode@{id}.service` from template `doubleslash-supernode@.service` |
+| Drop-in | `/etc/systemd/system/doubleslash-supernode@{id}.service.d/override.conf` — `CONQUERD_HOME`, `supernode_host`, legacy port env vars |
 | Manifest | `{data_root}/{id}/supernode.toml` — listen addrs, access mode, features |
 
 Install flow (`snm-supernode::ops::install_instance`): ensure service user + dirs → upload binary → symlink `current` → push `supernode.toml` → push unit template + drop-in → `daemon-reload` → optional ufw rules → `enable` + `start`.
@@ -245,7 +245,7 @@ Uninstall: stop/disable → remove drop-in → optional `--purge` of data dir �
 
 ## 8. Clustering — logical supernodes
 
-> **Supernode side: implemented** (`conquerd-supernode` `cluster.rs` / `cluster_link.rs`; client failover in `connection_manager`). **Manager side: implemented** — `cluster-sync` collects identities, renders the shared roster into every member's `supernode.toml`, applies restricted cluster-port firewall rules, and restarts members. See the manager CLI docs for `cluster-sync` and the testing workflow.
+> **Supernode side: implemented** (`doubleslash-supernode` `cluster.rs` / `cluster_link.rs`; client failover in `connection_manager`). **Manager side: implemented** — `cluster-sync` collects identities, renders the shared roster into every member's `supernode.toml`, applies restricted cluster-port firewall rules, and restarts members. See the manager CLI docs for `cluster-sync` and the testing workflow.
 
 Several supernodes can be **linked into a cluster** that presents as one logical supernode to clients. A client attaches to any member; members replicate room chat/audio, durable **room existence** (`RoomRoster`), Space roots, and **client trust** (`PeerAuth` fire-and-forget on new trust plus bulk `PeerAuthRoster` on link-up and every ~15s so cold members converge without re-inviting each client) over a dedicated supernode↔supernode QUIC mesh — **not** per-peer private-room ACLs (cold-node admit is Space proof / local token rematerialize / creator self-admit). A client transparently **fails over to a sibling** if its member goes down. Members never see plaintext — clustering is a fan-out/replication fabric, **not** a trust escalation. One cluster hosts a given room; cross-operator sharing means linking those operators' supernodes into one cluster (there is no inter-cluster federation).
 

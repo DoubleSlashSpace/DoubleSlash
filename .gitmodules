@@ -1,8 +1,8 @@
-[submodule "conquerd-opus-libopus"]
-	path = rust/conquerd-opus/opus
+[submodule "doubleslash-opus-libopus"]
+	path = rust/doubleslash-opus/opus
 	url = https://github.com/xiph/opus
 	ignore = untracked
-[submodule "rust/conquerd-vpx/libvpx"]
-	path = rust/conquerd-vpx/libvpx
+[submodule "rust/doubleslash-vpx/libvpx"]
+	path = rust/doubleslash-vpx/libvpx
 	url = https://github.com/webmproject/libvpx
 	branch = main

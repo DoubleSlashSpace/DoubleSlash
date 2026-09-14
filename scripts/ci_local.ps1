@@ -44,7 +44,7 @@ $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $RustDir = Join-Path $RepoRoot 'rust'
-$ClientDir = Join-Path $RustDir 'conquerd-client'
+$ClientDir = Join-Path $RustDir 'doubleslash-client'
 
 function Write-Step([string]$Name) {
     Write-Host ""
@@ -114,7 +114,7 @@ Invoke-Step 'cargo clippy (rust/ workspace, -D warnings)' {
 
 Invoke-Step 'Release manifest signer self-test' {
     Invoke-Cargo $RustDir @(
-        'run', '-p', 'conquerd-installer', '--bin', 'sign-release-manifest', '--', '--self-test'
+        'run', '-p', 'doubleslash-installer', '--bin', 'sign-release-manifest', '--', '--self-test'
     )
 }
 
@@ -130,7 +130,7 @@ if (-not $SkipTests) {
 
 Invoke-Step 'cargo clippy (client workspace, headless, -D warnings)' {
     Invoke-Cargo $ClientDir @(
-        'clippy', '-p', 'conquerd-client', '--no-default-features', '--', '-D', 'warnings'
+        'clippy', '-p', 'doubleslash-client', '--no-default-features', '--', '-D', 'warnings'
     )
 }
 
@@ -139,7 +139,7 @@ Invoke-Step 'cargo clippy (client workspace, headless, -D warnings)' {
 # without linking, so no Mac is needed) to catch those before CI does.
 Invoke-Step 'cargo clippy (macOS capture module, cross-linted, -D warnings)' {
     Invoke-Cargo $ClientDir @(
-        'clippy', '-p', 'conquerd-client', '--no-default-features',
+        'clippy', '-p', 'doubleslash-client', '--no-default-features',
         '--features', 'lint-macos', '--', '-D', 'warnings'
     )
 }

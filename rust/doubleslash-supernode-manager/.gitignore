@@ -1,0 +1,11 @@
+/target/
+/bin/
+/inventory.toml
+/cluster_cache.toml
+/secrets.toml
+/secrets.local.ps1
+/terminals/
+/agent-tools/
+*.swp
+*.swo
+.DS_Store

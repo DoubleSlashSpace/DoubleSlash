@@ -37,7 +37,7 @@ import {
   packWorld,
   unpackWorld,
 } from "../example/playground.mjs";
-import { DoubleSlashClient } from "../../web-sdk/conquerd.mjs";
+import { DoubleSlashClient } from "../../web-sdk/doubleslash.mjs";
 import { SharedState } from "../../web-sdk/demo-state.mjs";
 import { defaults, validTask } from "../task-board/tasks.mjs";
 import {
@@ -633,7 +633,7 @@ test("embedded supernode assets match the editable examples", async () => {
     ["shared-drawing/index.html", "games_shared_drawing_index.html"],
     ["shared-drawing/drawing.js", "games_shared_drawing_drawing.js"],
     ["shared-drawing/board.mjs", "games_shared_drawing_board.mjs"],
-    ["../web-sdk/conquerd.mjs", "web_sdk_conquerd.mjs"],
+    ["../web-sdk/doubleslash.mjs", "web_sdk_doubleslash.mjs"],
     ["../web-sdk/demo-session.mjs", "web_sdk_demo_session.mjs"],
     ["../web-sdk/demo-shell.mjs", "web_sdk_demo_shell.mjs"],
     ["../web-sdk/demo-shell.css", "web_sdk_demo_shell.css"],
@@ -661,7 +661,7 @@ test("embedded supernode assets match the editable examples", async () => {
       await readFile(new URL(`../${src}`, import.meta.url), "utf8"),
       await readFile(
         new URL(
-          `../../rust/conquerd-supernode/templates/${dst}`,
+          `../../rust/doubleslash-supernode/templates/${dst}`,
           import.meta.url,
         ),
         "utf8",

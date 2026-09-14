@@ -55,7 +55,7 @@
 **Mitigations (current):**  
 - Every signaling message is Ed25519-signed over canonical bytes by the sender's long-term key.  
 - `verify_inbound_signature` + timestamp freshness window (5-minute `MAX_MESSAGE_AGE_SECS` on the client; `is_fresh(300.0)` on the supernode WebSocket path).
-- Per-sender `conquerd_features::ReplayGuard` rejects re-delivery of an already-seen message signature within the freshness window; real-time `SfuAudio` frames are exempt from dedup because they are high-rate and ephemeral.
+- Per-sender `doubleslash_features::ReplayGuard` rejects re-delivery of an already-seen message signature within the freshness window; real-time `SfuAudio` frames are exempt from dedup because they are high-rate and ephemeral.
 - Capability intersection enforced before any feature activation.
 
 **Residual (documented):** A monotonic sequence-number bitmap would provide stricter ordering semantics for very long-lived sessions, but duplicate signed envelopes inside the active freshness window are already rejected.

@@ -26,7 +26,7 @@ classical (not pure-PQ cutover).
 
 | Role | Classical today | PQ approach |
 |------|-----------------|-------------|
-| Invite session key | Ephemeral X25519 → HKDF (`conquerd-invite-session-v2`) | Hybrid: X25519 ss ‖ ML-KEM ss → new HKDF info (`…-v3-hybrid`) |
+| Invite session key | Ephemeral X25519 → HKDF (`doubleslash-invite-session-v1`) | Hybrid: X25519 ss ‖ ML-KEM ss → new HKDF info (`…-v2-hybrid`) |
 | Pairwise relay / `SfuGroupKey` wrap | Static Ed25519→Montgomery DH (no FS) | KEM-DEM (see finding 2); prefer ephemeral hybrid where interactive |
 | Room content | AES-GCM under sender keys | Unchanged AEAD; only key *wrap* migrates |
 | Identity / signaling / invites / Space roots | Ed25519 | Dual-sign transition; high-rate envelopes stay Ed25519 early |
@@ -57,7 +57,7 @@ classical (not pure-PQ cutover).
 3. **Invite handshake maps cleanly** (inviter's ephemeral X25519 point → ML-KEM-768 encapsulation
    key, joiner replies with the ciphertext), but the invite blob grows 32 B → 1,184 B of key
    material + 1,088 B reply; re-check invite-link and **QR-code size limits**. Prefer out-of-band
-   / compressed invite blobs over stuffing full PQ material into `conquerd://` query strings.
+   / compressed invite blobs over stuffing full PQ material into `doubleslash://` query strings.
 4. **`public_id` under ML-DSA.** Today public_id *is* the verifying key (44 chars b64); ML-DSA-65
    pubkeys are 1,952 B (~2.6k chars b64). Preferred transition: **keep Ed25519-derived `public_id`
    as the stable peer id** (room ACL / peer-store / SFU padding unchanged) and attach `ml_dsa_pub`
@@ -173,7 +173,7 @@ treehead signature, not a per-room/per-grant fan-out.
 
 Large in-tree feature, **complete on Windows and unproven elsewhere**. Transport, capability ads,
 quotas, room E2E, camera-state signaling, codec negotiation, A/V sync, adaptive bitrate, Windows
-capture/encode, and call UI are built under `rust/conquerd-client/src/video/` +
+capture/encode, and call UI are built under `rust/doubleslash-client/src/video/` +
 `connection_manager/manager/video_session.rs` + the media-layer modules + QML `VideoTile` /
 `VideoRegion` / `VideoPopoutWindow` / `VoiceRail` share control / settings preview.
 
@@ -206,7 +206,7 @@ change as well as a code change** — that rule now lives in the Documentation A
 1. **Screen share off Windows.**
 
    The codec question is **closed** (Option C, hybrid, 2026-07-30): VP8 ships on every platform
-   via the vendored `conquerd-vpx`, and **camera capture now exists on all three**. Durable
+   via the vendored `doubleslash-vpx`, and **camera capture now exists on all three**. Durable
    invariants live in `agents.md`. What is left is the screen/window surface:
 
    | Platform | Camera | Screen / window |
@@ -241,7 +241,7 @@ change as well as a code change** — that rule now lives in the Documentation A
    is checkable from any host:
 
    ```
-   cargo clippy -p conquerd-client --no-default-features --features lint-macos -- -D warnings
+   cargo clippy -p doubleslash-client --no-default-features --features lint-macos -- -D warnings
    ```
 
    That covers the Rust FFI only. The **Objective-C shim genuinely needs a Mac to compile and
@@ -408,8 +408,8 @@ indistinguishable from a local bug. Use a private two-party room.
 
 ## Android client — remaining
 
-Foundation landed 2026-09-06: the **whole `conquerd-client` core cross-compiles and runs on
-`aarch64-linux-android`**, wrapped by `rust/conquerd-android` (JNI cdylib) under a Kotlin/Compose
+Foundation landed 2026-09-06: the **whole `doubleslash-client` core cross-compiles and runs on
+`aarch64-linux-android`**, wrapped by `rust/doubleslash-android` (JNI cdylib) under a Kotlin/Compose
 app in `android/`. One `./gradlew assembleDebug` builds Rust and APK together. Durable invariants
 — the JSON command/event boundary, the media-never-crosses-JNI rule, the event pump thread, the
 build-script host/target rule — are in `agents.md`; the build and debug runbook is
@@ -417,7 +417,7 @@ build-script host/target rule — are in `agents.md`; the build and debug runboo
 
 Working today: identity create/unlock, all three stores, QUIC + relay + supernode signaling,
 direct chat (history, send, acks, failure status, typing), invite generate/accept plus a
-`conquerd://` intent filter, room list/join/leave and room chat, a foreground service that keeps
+`doubleslash://` intent filter, room list/join/leave and room chat, a foreground service that keeps
 sessions alive, and `audio.start`/`stop`/`set_muted` into `CallController`.
 
 **First hardware run 2026-09-06** on a Pixel 11 (Android 17 / API 37, arm64-v8a): the library
@@ -461,9 +461,9 @@ exchanged, no message sent, no supernode reached from the device.
 
 8. **In-app portal on `android.webkit.WebView`.** The system WebView replaces Qt WebEngine with no
    binary-size cost and exposes both seams `web.host.app.v1` needs: `shouldInterceptRequest` to
-   serve `conquerd://` content from the core over the authenticated QUIC session, and
-   `addJavascriptInterface` for the `window.conquerd` bridge. **Security gate:** that interface must
-   be attached only to `conquerd://`-origin content, never to arbitrary web pages, with
+   serve `doubleslash://` content from the core over the authenticated QUIC session, and
+   `addJavascriptInterface` for the `window.doubleslash` bridge. **Security gate:** that interface must
+   be attached only to `doubleslash://`-origin content, never to arbitrary web pages, with
    `setAllowFileAccess(false)` and `setAllowUniversalAccessFromFileURLs(false)`. External links
    belong in a Custom Tab, outside the trust boundary.
 
@@ -505,13 +505,13 @@ exchanged, no message sent, no supernode reached from the device.
 App-side policy work for a first listing is in the tree: `targetSdk` 36, `specialUse` FGS
 (with `onTimeout` and a notification Disconnect), Android-accurate `PRIVACY.md` / `TERMS.md`,
 in-app terms gate, mic/camera/notification disclosures, peer/room Report, portal WebView
-locked to `d://` / `conquerd://`, and background incoming calls (`CallStyle` + full-screen
+locked to `d://` / `doubleslash://`, and background incoming calls (`CallStyle` + full-screen
 intent). What is left is almost all Play Console, not more Kotlin.
 
 **Blocks a public listing (Console, not code):**
 
 1. **Signed AAB + Play App Signing.** `bundleRelease` with a real upload keystore in
-   `CONQUERD_KEYSTORE`. Package id `com.conquerd.client` is frozen at first upload.
+   `CONQUERD_KEYSTORE`. Package id `com.doubleslash.client` is frozen at first upload.
 2. **`specialUse` declaration + a short video** of the persistent “connected” notification
    and Disconnect. Play will not accept `dataSync` for a standing P2P session.
 3. **Full-screen intent declaration** for lock-screen incoming calls
@@ -532,8 +532,8 @@ intent). What is left is almost all Play Console, not more Kotlin.
 
 Public policy URLs (only after these files are on `develop`):
 
-- https://github.com/ConquerD/DoubleSlash/blob/develop/PRIVACY.md
-- https://github.com/ConquerD/DoubleSlash/blob/develop/TERMS.md
+- https://github.com/DoubleSlashSpace/DoubleSlash/blob/develop/PRIVACY.md
+- https://github.com/DoubleSlashSpace/DoubleSlash/blob/develop/TERMS.md
 
 **First scan you cannot fake from the repo:** upload the AAB to an **internal testing**
 track and read Play Protect + the pre-launch report.

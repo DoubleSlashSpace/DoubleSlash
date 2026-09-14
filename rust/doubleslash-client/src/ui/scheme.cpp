@@ -1,0 +1,255 @@
+// scheme.cpp — d:// (and legacy doubleslash://) custom URL scheme handler
+// for QtWebEngine.
+//
+// Two entry points are exported with C linkage so Rust can call them:
+//
+//   doubleslash_register_scheme()
+//     Must be called BEFORE QGuiApplication::new().
+//     Registers "d" and "conquerd" as secure schemes so QtWebEngine treats
+//     them like https:// (allows CORS, service workers, secure context APIs).
+//
+//   doubleslash_install_scheme_handler()
+//     Must be called AFTER QGuiApplication is created but BEFORE any
+//     WebEngineView loads a d:// / doubleslash:// URL.
+//     Installs a PortalSchemeHandler on the default off-the-record
+//     QWebEngineProfile so every WebEngineView in the process shares it.
+//
+// The handler calls the Rust function:
+//
+//   extern "C" bool doubleslash_fetch_sync(
+//       const char* url, size_t url_len,
+//       char** out_content_type, size_t* out_ct_len,
+//       uint8_t** out_body,     size_t* out_body_len
+//   );
+//
+// Rust allocates the output buffers with malloc(); the handler frees them
+// after writing the response. On failure (returns false) the handler serves
+// a minimal HTML error page.
+
+#include <QtWebEngineCore/QWebEngineProfile>
+#include <QtWebEngineCore/QWebEngineUrlScheme>
+#include <QtWebEngineCore/QWebEngineUrlSchemeHandler>
+#include <QtWebEngineCore/QWebEngineUrlRequestJob>
+#include <QtWebEngineCore/QWebEngineScript>
+#include <QtWebEngineCore/QWebEngineScriptCollection>
+#if __has_include(<QtWebEngineQuick/QQuickWebEngineProfile>)
+#  include <QtWebEngineQuick/QQuickWebEngineProfile>
+#  define DOUBLESLASH_HAVE_QUICK_PROFILE 1
+#endif
+#include <QtCore/QByteArray>
+#include <QtCore/QString>
+#include <QtCore/QUrl>
+#include <QtCore/QBuffer>
+#include <QtCore/QLoggingCategory>
+#include <cstdlib>
+#include <cstdint>
+#include <cstring>
+
+// ── Rust callback declared in src/ui/scheme.rs ───────────────────────────────
+extern "C" bool doubleslash_fetch_sync(
+    const char* url,
+    size_t      url_len,
+    char**      out_content_type,
+    size_t*     out_ct_len,
+    uint8_t**   out_body,
+    size_t*     out_body_len
+);
+
+// ── Scheme handler ────────────────────────────────────────────────────────────
+class PortalSchemeHandler : public QWebEngineUrlSchemeHandler
+{
+    Q_OBJECT
+public:
+    explicit PortalSchemeHandler(QObject* parent = nullptr)
+        : QWebEngineUrlSchemeHandler(parent) {}
+
+    void requestStarted(QWebEngineUrlRequestJob* job) override
+    {
+        const QUrl url = job->requestUrl();
+        const QByteArray urlUtf8 = url.toString(QUrl::FullyEncoded).toUtf8();
+        qInfo("[portal-scheme] requestStarted: %s", urlUtf8.constData());
+
+        char*    contentType = nullptr;
+        size_t   ctLen       = 0;
+        uint8_t* body        = nullptr;
+        size_t   bodyLen     = 0;
+
+        const bool ok = doubleslash_fetch_sync(
+            urlUtf8.constData(),
+            static_cast<size_t>(urlUtf8.size()),
+            &contentType,
+            &ctLen,
+            &body,
+            &bodyLen
+        );
+
+        if (!ok || body == nullptr) {
+            // Serve a minimal error page so Chromium shows something useful.
+            static const char errorHtml[] =
+                "<!DOCTYPE html><html><head><meta charset=\"utf-8\"/>"
+                "<style>body{background:#1a1a1a;color:#ccc;font-family:sans-serif;"
+                "display:flex;align-items:center;justify-content:center;height:100vh;margin:0}"
+                "h1{font-size:1.2rem}p{color:#8e9297;font-size:.9rem}</style></head>"
+                "<body><div><h1>Portal unavailable</h1>"
+                "<p>Could not reach this supernode's portal. "
+                "Check your relay connection and try again.</p></div></body></html>";
+            auto* buf = new QBuffer(job);
+            buf->setData(QByteArray(errorHtml, static_cast<int>(sizeof(errorHtml) - 1)));
+            buf->open(QIODevice::ReadOnly);
+            job->reply(QByteArrayLiteral("text/html; charset=utf-8"), buf);
+            if (contentType) std::free(contentType);
+            return;
+        }
+
+        // Wrap body in a QByteArray (copies bytes), then free the Rust allocation.
+        QByteArray bodyBytes(reinterpret_cast<const char*>(body),
+                             static_cast<int>(bodyLen));
+        std::free(body);
+
+        QByteArray ct(contentType, static_cast<int>(ctLen));
+        std::free(contentType);
+
+        auto* buf = new QBuffer(job);
+        buf->setData(bodyBytes);
+        buf->open(QIODevice::ReadOnly);
+        job->reply(ct, buf);
+    }
+};
+
+#include "scheme.moc"
+
+// ── Public C entry points ─────────────────────────────────────────────────────
+
+static void register_one_scheme(const char* name)
+{
+    QWebEngineUrlScheme scheme(name);
+    // `Syntax::Host` makes Chromium treat the URL as a *standard* URL
+    // (like http://), which is required for relative-URL resolution to
+    // preserve the authority — without this, `fetch('/foo')` from a page
+    // loaded at `d://PEERID/` resolves to `d:///foo` and drops the peer ID.
+    // Chromium does lower-case the authority, which would destroy
+    // case-sensitive base64url peer IDs — we mitigate that by registering
+    // a `{lowercase_peer_id → original_peer_id}` lookup table in
+    // `scheme.rs::register_portal_peer_id` whenever a portal is opened.
+    scheme.setSyntax(QWebEngineUrlScheme::Syntax::Host);
+    scheme.setDefaultPort(QWebEngineUrlScheme::PortUnspecified);
+    scheme.setFlags(
+        QWebEngineUrlScheme::SecureScheme
+        | QWebEngineUrlScheme::LocalAccessAllowed
+        | QWebEngineUrlScheme::ServiceWorkersAllowed
+        | QWebEngineUrlScheme::CorsEnabled
+        | QWebEngineUrlScheme::FetchApiAllowed
+    );
+    QWebEngineUrlScheme::registerScheme(scheme);
+}
+
+extern "C" void doubleslash_register_scheme()
+{
+    // Must be called before QCoreApplication is constructed.
+    register_one_scheme("d");
+    register_one_scheme("doubleslash");
+}
+
+extern "C" void doubleslash_install_scheme_handler()
+{
+    // Must be called after QCoreApplication; installs on the default profile.
+    auto* profile = QWebEngineProfile::defaultProfile();
+    if (!profile) return;
+
+    // Configure the default profile itself — every WebEngineView created
+    // without an explicit `profile:` binding uses this one, which is
+    // critical: only this profile carries the d:// / doubleslash:// URL scheme
+    // handler installed below.  If a WebEngineView were to use a
+    // different profile (e.g. an inline `WebEngineProfile { ... }`),
+    // navigation to a registered-but-unhandled scheme falls back to
+    // QDesktopServices::openUrl() — which on Windows fires the OS-
+    // registered handler and spawns a second DoubleSlash.exe.
+    profile->setHttpUserAgent(QStringLiteral(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"));
+    profile->setSpellCheckEnabled(false);
+
+    // Guard: don't install twice (e.g. multiple calls after hot-reload).
+    if (!profile->urlSchemeHandler("d")) {
+        profile->installUrlSchemeHandler("d", new PortalSchemeHandler(profile));
+        profile->installUrlSchemeHandler("doubleslash", new PortalSchemeHandler(profile));
+        qInfo("[portal-scheme] installed handler on QWebEngineProfile::defaultProfile()=%p",
+              static_cast<void*>(profile));
+    }
+
+#ifdef DOUBLESLASH_HAVE_QUICK_PROFILE
+    // QtWebEngineQuick may surface its own default profile object to QML
+    // (QQuickWebEngineProfile::defaultProfile()).  In Qt 6 it wraps the
+    // same underlying ProfileAdapter, but installing explicitly here is
+    // belt-and-suspenders to guarantee the handler is on whatever profile
+    // the QML WebEngineView actually picks up.
+    auto* qmlProfile = QQuickWebEngineProfile::defaultProfile();
+    if (qmlProfile != nullptr && !qmlProfile->urlSchemeHandler("d")) {
+        qmlProfile->setHttpUserAgent(profile->httpUserAgent());
+        qmlProfile->setSpellCheckEnabled(false);
+        qmlProfile->installUrlSchemeHandler("d", new PortalSchemeHandler(qmlProfile));
+        qmlProfile->installUrlSchemeHandler("doubleslash", new PortalSchemeHandler(qmlProfile));
+        qInfo("[portal-scheme] installed handler on QQuickWebEngineProfile=%p",
+              static_cast<void*>(qmlProfile));
+    } else if (qmlProfile != nullptr) {
+        qInfo("[portal-scheme] QQuickWebEngineProfile=%p already has handler",
+              static_cast<void*>(qmlProfile));
+    }
+#endif
+
+    // ── window.doubleslash bridge script ───────────────────────────────────
+    // Injected at DocumentCreation into every d:// and doubleslash:// page.
+    // Fetch URLs use window.location.protocol so the page works under either
+    // origin.
+    static const QString kBridgeJs = QStringLiteral(
+        "(function(){\n"
+        "  var sn = window.location.hostname;\n"
+        "  var origin = window.location.protocol + '//' + sn;\n"
+        "  var ctxUrl = origin + '/_doubleslash/ctx.json';\n"
+        "  function ch(path, qs){\n"
+        "    var u = origin + path;\n"
+        "    if (qs) u += (path.indexOf('?') >= 0 ? '&' : '?') + qs;\n"
+        "    return fetch(u).then(function(r){ return r.json(); });\n"
+        "  }\n"
+        "  var ready = fetch(ctxUrl)\n"
+        "    .then(function(r){return r.json();})\n"
+        "    .then(function(ctx){\n"
+        "      return Object.freeze({\n"
+        "        myPeerId:    ctx.myPeerId,\n"
+        "        version:     ctx.version,\n"
+        "        nativeTransport: true,\n"
+        "        supernodeId: sn,\n"
+        "        openChannel: function(room){\n"
+        "          return ch('/_doubleslash/channel/open', 'room=' + encodeURIComponent(room || 'default'));\n"
+        "        },\n"
+        "        sendDatagramB64: function(b64){\n"
+        "          return ch('/_doubleslash/channel/send', 'b64=' + encodeURIComponent(b64));\n"
+        "        },\n"
+        "        pollDatagrams: function(){\n"
+        "          return ch('/_doubleslash/channel/poll');\n"
+        "        },\n"
+        "        closeChannel: function(){\n"
+        "          return ch('/_doubleslash/channel/close');\n"
+        "        },\n"
+        "        fetch: function(path,opts){\n"
+        "          var url=path.charAt(0)==='/'?origin+path:origin+'/'+path;\n"
+        "          return window.fetch(url,opts);\n"
+        "        }\n"
+        "      });\n"
+        "    });\n"
+        "  var api = Object.freeze({supernodeId:sn,ready:ready});\n"
+        "  Object.defineProperty(window,'doubleslash',{\n"
+        "    configurable:false,writable:false,value:api\n"
+        "  });\n"
+        "})()"
+    );
+
+    QWebEngineScript bridgeScript;
+    bridgeScript.setName(QStringLiteral("doubleslash-bridge"));
+    bridgeScript.setInjectionPoint(QWebEngineScript::DocumentCreation);
+    bridgeScript.setWorldId(QWebEngineScript::MainWorld);
+    bridgeScript.setRunsOnSubFrames(false);
+    bridgeScript.setSourceCode(kBridgeJs);
+    profile->scripts()->insert(bridgeScript);
+}

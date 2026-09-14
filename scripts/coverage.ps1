@@ -4,8 +4,8 @@
 
 .DESCRIPTION
     Uses cargo-llvm-cov (+ llvm-tools-preview) on both Cargo workspaces.
-    Default scope is "hot" high-ROI crates: conquerd-features, conquerd-supernode,
-    conquerd-client (headless). Use -Scope all for installer as well.
+    Default scope is "hot" high-ROI crates: doubleslash-features, doubleslash-supernode,
+    doubleslash-client (headless). Use -Scope all for installer as well.
 
     Outputs:
       coverage/summary.md          Human-readable table (also printed)
@@ -24,11 +24,11 @@
 
 .PARAMETER Scope
     hot       — features + supernode + headless client (default)
-    all       — hot + installer (still excludes conquerd-opus C/DNN bulk)
-    features  — conquerd-features only
-    supernode — conquerd-supernode only
-    client    — conquerd-client headless only
-    installer — conquerd-installer only
+    all       — hot + installer (still excludes doubleslash-opus C/DNN bulk)
+    features  — doubleslash-features only
+    supernode — doubleslash-supernode only
+    client    — doubleslash-client headless only
+    installer — doubleslash-installer only
 
 .PARAMETER Html
     Also emit HTML reports under coverage/html/<name>/.
@@ -54,7 +54,7 @@ $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $RustDir = Join-Path $RepoRoot 'rust'
-$ClientDir = Join-Path $RustDir 'conquerd-client'
+$ClientDir = Join-Path $RustDir 'doubleslash-client'
 $OutDir = Join-Path $RepoRoot 'coverage'
 
 function Write-Step([string]$Name) {
@@ -169,28 +169,28 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $jobs = @()
 switch ($Scope) {
     'features' {
-        $jobs += @{ Name = 'conquerd-features'; Dir = $RustDir; Args = @('-p', 'conquerd-features') }
+        $jobs += @{ Name = 'doubleslash-features'; Dir = $RustDir; Args = @('-p', 'doubleslash-features') }
     }
     'supernode' {
-        $jobs += @{ Name = 'conquerd-supernode'; Dir = $RustDir; Args = @('-p', 'conquerd-supernode') }
+        $jobs += @{ Name = 'doubleslash-supernode'; Dir = $RustDir; Args = @('-p', 'doubleslash-supernode') }
     }
     'installer' {
-        $jobs += @{ Name = 'conquerd-installer'; Dir = $RustDir; Args = @('-p', 'conquerd-installer') }
+        $jobs += @{ Name = 'doubleslash-installer'; Dir = $RustDir; Args = @('-p', 'doubleslash-installer') }
     }
     'client' {
         # Headless: qt-ui is optional and off unless explicitly enabled (matches CI).
-        $jobs += @{ Name = 'conquerd-client'; Dir = $ClientDir; Args = @() }
+        $jobs += @{ Name = 'doubleslash-client'; Dir = $ClientDir; Args = @() }
     }
     'hot' {
-        $jobs += @{ Name = 'conquerd-features'; Dir = $RustDir; Args = @('-p', 'conquerd-features') }
-        $jobs += @{ Name = 'conquerd-supernode'; Dir = $RustDir; Args = @('-p', 'conquerd-supernode') }
-        $jobs += @{ Name = 'conquerd-client'; Dir = $ClientDir; Args = @() }
+        $jobs += @{ Name = 'doubleslash-features'; Dir = $RustDir; Args = @('-p', 'doubleslash-features') }
+        $jobs += @{ Name = 'doubleslash-supernode'; Dir = $RustDir; Args = @('-p', 'doubleslash-supernode') }
+        $jobs += @{ Name = 'doubleslash-client'; Dir = $ClientDir; Args = @() }
     }
     'all' {
-        $jobs += @{ Name = 'conquerd-features'; Dir = $RustDir; Args = @('-p', 'conquerd-features') }
-        $jobs += @{ Name = 'conquerd-supernode'; Dir = $RustDir; Args = @('-p', 'conquerd-supernode') }
-        $jobs += @{ Name = 'conquerd-installer'; Dir = $RustDir; Args = @('-p', 'conquerd-installer') }
-        $jobs += @{ Name = 'conquerd-client'; Dir = $ClientDir; Args = @() }
+        $jobs += @{ Name = 'doubleslash-features'; Dir = $RustDir; Args = @('-p', 'doubleslash-features') }
+        $jobs += @{ Name = 'doubleslash-supernode'; Dir = $RustDir; Args = @('-p', 'doubleslash-supernode') }
+        $jobs += @{ Name = 'doubleslash-installer'; Dir = $RustDir; Args = @('-p', 'doubleslash-installer') }
+        $jobs += @{ Name = 'doubleslash-client'; Dir = $ClientDir; Args = @() }
     }
 }
 
@@ -229,7 +229,7 @@ if ($Html) {
 }
 $md.Add('')
 $md.Add('Notes:')
-$md.Add('- `conquerd-opus` (native C/DNN) is excluded; high ROI is protocol/SFU/features/client.')
+$md.Add('- `doubleslash-opus` (native C/DNN) is excluded; high ROI is protocol/SFU/features/client.')
 $md.Add('- Client run is headless (no `qt-ui`); Qt/QML UI is not instrumented.')
 $md.Add('- Default CI scope is `hot`. Raise floors gradually with `-FailUnderLines`.')
 

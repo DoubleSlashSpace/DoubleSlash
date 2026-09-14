@@ -36,7 +36,7 @@ done
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUST_DIR="$REPO_ROOT/rust"
-CLIENT_DIR="$RUST_DIR/conquerd-client"
+CLIENT_DIR="$RUST_DIR/doubleslash-client"
 
 step() {
     echo ""
@@ -84,7 +84,7 @@ step "cargo clippy (rust/ workspace, -D warnings)"
 run_cargo "$RUST_DIR" clippy --all -- -D warnings
 
 step "Release manifest signer self-test"
-run_cargo "$RUST_DIR" run -p conquerd-installer --bin sign-release-manifest -- --self-test
+run_cargo "$RUST_DIR" run -p doubleslash-installer --bin sign-release-manifest -- --self-test
 
 if [[ "$SKIP_TESTS" -eq 0 ]]; then
     step "cargo test --all --release (rust/ workspace)"
@@ -95,7 +95,7 @@ if [[ "$SKIP_TESTS" -eq 0 ]]; then
 fi
 
 step "cargo clippy (client workspace, headless, -D warnings)"
-run_cargo "$CLIENT_DIR" clippy -p conquerd-client --no-default-features -- -D warnings
+run_cargo "$CLIENT_DIR" clippy -p doubleslash-client --no-default-features -- -D warnings
 
 if [[ "$SKIP_AUDIT" -eq 0 ]]; then
     if ! command -v cargo-audit >/dev/null 2>&1; then

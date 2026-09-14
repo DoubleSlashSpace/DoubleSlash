@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # fetch_opus_weights.sh
 # Downloads and extracts the Opus DNN model data files required for the
-# conquerd-opus `dnn` feature (DRED + OSCE neural features).
+# doubleslash-opus `dnn` feature (DRED + OSCE neural features).
 #
 # Background
 # ----------
 # The Xiph.Org Foundation distributes the DNN model weights as C source arrays
 # in a tarball on the Xiph media server.  The tarball filename *is* its own
 # SHA-256 hash, so the download is self-verifying.  The C files must be
-# present at `rust/conquerd-opus/opus/dnn/` before cmake builds libopus.
+# present at `rust/doubleslash-opus/opus/dnn/` before cmake builds libopus.
 #
 # What this script does:
 #   1. Skips extraction if the sentinel `lace_data.c` already exists (idempotent).
-#   2. Uses a bundled tarball in rust/conquerd-opus/assets/ when present (optional).
+#   2. Uses a bundled tarball in rust/doubleslash-opus/assets/ when present (optional).
 #   3. Otherwise downloads from media.xiph.org with retries (DNS flakes on GHA macOS).
 #   4. Verifies SHA-256 and extracts into the opus source tree.
 #
@@ -23,7 +23,7 @@ set -euo pipefail
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 # These values correspond to the DNN data package for the libopus commit
-# tracked by the conquerd-opus submodule.
+# tracked by the doubleslash-opus submodule.
 # The hash is the SHA-256 of the tarball itself (it is embedded in the URL).
 DNN_HASH="a5177ec6fb7d15058e99e57029746100121f68e4890b1467d4094aa336b6013e"
 DNN_URL="https://media.xiph.org/opus/models/opus_data-${DNN_HASH}.tar.gz"
@@ -31,8 +31,8 @@ DOWNLOAD_ATTEMPTS="${OPUS_DNN_DOWNLOAD_ATTEMPTS:-5}"
 DOWNLOAD_RETRY_DELAY_SEC="${OPUS_DNN_DOWNLOAD_RETRY_DELAY_SEC:-20}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OPUS_SRC="$SCRIPT_DIR/../rust/conquerd-opus/opus"
-BUNDLED_TAR="$SCRIPT_DIR/../rust/conquerd-opus/assets/opus_data-${DNN_HASH}.tar.gz"
+OPUS_SRC="$SCRIPT_DIR/../rust/doubleslash-opus/opus"
+BUNDLED_TAR="$SCRIPT_DIR/../rust/doubleslash-opus/assets/opus_data-${DNN_HASH}.tar.gz"
 TAR_LIST="$OPUS_SRC/tar_list.txt"
 SENTINEL="$OPUS_SRC/dnn/lace_data.c"
 
@@ -99,7 +99,7 @@ download_tarball() {
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-echo "conquerd-opus: checking Opus DNN model data files..."
+echo "doubleslash-opus: checking Opus DNN model data files..."
 
 if dnn_files_complete; then
     echo "  All DNN data files from tar_list.txt already present — nothing to do."
@@ -143,5 +143,5 @@ if [[ ! -f "$SENTINEL" ]]; then
 fi
 
 echo "  Extraction complete."
-echo "conquerd-opus: DNN model data files ready."
-echo "  You can now build with:  cargo build -p conquerd-client --features qt-ui"
+echo "doubleslash-opus: DNN model data files ready."
+echo "  You can now build with:  cargo build -p doubleslash-client --features qt-ui"

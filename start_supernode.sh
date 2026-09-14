@@ -56,4 +56,4 @@ export supernode_tos_text="By using this relay you agree to behave."
 export supernode_demo_links=1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-"$SCRIPT_DIR/rust/target/release/conquerd-supernode"
+"$SCRIPT_DIR/rust/target/release/doubleslash-supernode"

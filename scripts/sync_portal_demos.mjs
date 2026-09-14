@@ -33,7 +33,7 @@ const assets = [
   ["web-sdk/demo-state.mjs", "web_sdk_demo_state.mjs"],
   ["web-sdk/demo-workspace.mjs", "web_sdk_demo_workspace.mjs"],
   ["web-sdk/demo-workspace.css", "web_sdk_demo_workspace.css"],
-  ["web-sdk/conquerd.mjs", "web_sdk_conquerd.mjs"],
+  ["web-sdk/doubleslash.mjs", "web_sdk_doubleslash.mjs"],
   ["web-sdk/demo-session.mjs", "web_sdk_demo_session.mjs"],
   ["web-sdk/demo-shell.mjs", "web_sdk_demo_shell.mjs"],
   ["web-sdk/demo-shell.css", "web_sdk_demo_shell.css"],
@@ -42,7 +42,7 @@ const check = process.argv.includes("--check");
 for (const [source, name] of assets) {
   const src = new URL(`../${source}`, import.meta.url);
   const dest = new URL(
-    `../rust/conquerd-supernode/templates/${name}`,
+    `../rust/doubleslash-supernode/templates/${name}`,
     import.meta.url,
   );
   const content = await readFile(src);

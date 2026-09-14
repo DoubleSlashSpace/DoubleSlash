@@ -3,7 +3,7 @@
 ```mermaid
 graph TD
 
-    subgraph CLIENT["conquerd-client  (Desktop App)"]
+    subgraph CLIENT["doubleslash-client  (Desktop App)"]
         direction TB
 
         subgraph UI["QML UI Layer"]
@@ -85,7 +85,7 @@ system or per-application"]
         end
     end
 
-    subgraph SUPERNODE["conquerd-supernode  (Server)"]
+    subgraph SUPERNODE["doubleslash-supernode  (Server)"]
         direction TB
         SIG[signaling.rs — WebSocket handler]
         HS_S[handshake.rs]
@@ -98,7 +98,7 @@ system or per-application"]
         CFG[config.rs — TOML]
     end
 
-    subgraph FEATURES["conquerd-features  (Shared Library)"]
+    subgraph FEATURES["doubleslash-features  (Shared Library)"]
         REG[FeatureRegistry]
         DESC[CapabilityDescriptor]
         QUOTA[QuotaSystem — token buckets]
@@ -112,13 +112,13 @@ web.host.app.v1 / game.relay.v1"]
         VCODEC_NEG[video_codec — frozen wire bytes + negotiate]
     end
 
-    subgraph OPUS_LIB["conquerd-opus  (Audio Codec)"]
+    subgraph OPUS_LIB["doubleslash-opus  (Audio Codec)"]
         ENC[OpusEncoder — 48kHz / 128kbps]
         DEC[OpusDecoder — FEC / PLC]
         LIBOPUS[libopus C — DRED / OSCE]
     end
 
-    subgraph VPX_LIB["conquerd-vpx  (Video Codec)"]
+    subgraph VPX_LIB["doubleslash-vpx  (Video Codec)"]
         VPX[Vp8Encoder / Vp8Decoder]
         LIBVPX["libvpx C — VP8, generic arch
 built by our build.rs, no SIMD"]
@@ -126,7 +126,7 @@ built by our build.rs, no SIMD"]
 Windows only — OS-held AVC licence"]
     end
 
-    subgraph INSTALLER["conquerd-installer  (Updater GUI)"]
+    subgraph INSTALLER["doubleslash-installer  (Updater GUI)"]
         IGUI[egui window]
         GH_API[github.rs — release polling]
         EXTRACT[extract.rs — 7z]
@@ -134,7 +134,7 @@ Windows only — OS-held AVC licence"]
     end
 
     subgraph PORTAL["In-app portal games"]
-        SDK[web-sdk / conquerd.mjs]
+        SDK[web-sdk / doubleslash.mjs]
         GAMES["games/
 brick-breaker
 shared-drawing
@@ -263,13 +263,13 @@ example"]
 
 | Crate / Module | Role |
 |---|---|
-| **conquerd-client** | Rust/QML desktop app; owns all UI, media, and peer-to-peer logic |
-| **conquerd-supernode** | Standalone server: WebSocket signaling, QUIC relay, SFU, in-app portal |
-| **conquerd-features** | Shared capability registry, channel framing, quota enforcement, video-codec negotiation |
-| **conquerd-opus** | Rust wrapper around libopus (DRED / OSCE neural models) |
-| **conquerd-vpx** | Rust wrapper around a vendored libvpx (VP8 on every platform; built without libvpx's own `configure`/`make`) |
-| **conquerd-installer** | Cross-platform egui updater GUI; polls GitHub Releases |
-| **conquerd-supernode-manager** | Separate workspace: cluster provisioning, `cluster-sync`, `build-deploy`, remote `exec` |
+| **doubleslash-client** | Rust/QML desktop app; owns all UI, media, and peer-to-peer logic |
+| **doubleslash-supernode** | Standalone server: WebSocket signaling, QUIC relay, SFU, in-app portal |
+| **doubleslash-features** | Shared capability registry, channel framing, quota enforcement, video-codec negotiation |
+| **doubleslash-opus** | Rust wrapper around libopus (DRED / OSCE neural models) |
+| **doubleslash-vpx** | Rust wrapper around a vendored libvpx (VP8 on every platform; built without libvpx's own `configure`/`make`) |
+| **doubleslash-installer** | Cross-platform egui updater GUI; polls GitHub Releases |
+| **doubleslash-supernode-manager** | Separate workspace: cluster provisioning, `cluster-sync`, `build-deploy`, remote `exec` |
 | **web-sdk** | In-app portal game SDK (identity QUIC channel APIs) |
 | **games/** | Demo multiplayer games opened only via `d://` portal |
 
@@ -284,6 +284,6 @@ example"]
 | Audio shared with a video | WASAPI loopback (system or one application) → OpusEncoder in `audio` mode → PTS from the same session clock → `CONTENT_AUDIO_TAG` / `ROOM_CONTENT_AUDIO_TAG` → receiver jitter buffer → playout anchor |
 | A/V sync | Content-audio playout sets a per-sender anchor → `media_sync` extrapolates between anchors → video is held or dropped to meet it; with no anchor (camera-only call) video free-runs |
 | File transfer | FileTransfer module → FeatureRegistry quota gate → `core.file.v1` / `room.file.v1` reliable signaling path |
-| Portal game | games/index.html → web-sdk.mjs → window.conquerd channel → client QUIC relay → supernode game session fan-out |
+| Portal game | games/index.html → web-sdk.mjs → window.doubleslash channel → client QUIC relay → supernode game session fan-out |
 | Identity handshake | identity.rs (Ed25519) → handshake.rs (X25519 ECDH) → HKDF → AES-GCM session |
-| Auto-update | GithubUpdater → GitHub Releases API → conquerd-installer (extract + apply) |
+| Auto-update | GithubUpdater → GitHub Releases API → doubleslash-installer (extract + apply) |

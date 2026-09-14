@@ -35,7 +35,7 @@ No telemetry. No cloud accounts. No third-party infrastructure required.
 > Working on Windows; the Linux and macOS camera backends compile but have not been validated against real hardware, and screen capture is Windows-only. See [Known limitations](#known-limitations).
 
 - **Share a camera, a screen, or a single window** from one **Share video** control. Starting a share asks what to do about audio; stopping does not ask anything. Screen and window capture use `Windows.Graphics.Capture` and are **Windows-only** — cameras work on all three platforms.
-- **Codecs are negotiated, not assumed.** H.264 via Media Foundation on Windows (using the codec licence the OS already holds) and VP8 everywhere via the vendored `conquerd-vpx`. A build advertises only what it can actually encode *and* decode, so a Windows peer and a Linux peer always share VP8. Direct calls intersect both peers' sets; a room sender picks its own codec and stamps every frame with it.
+- **Codecs are negotiated, not assumed.** H.264 via Media Foundation on Windows (using the codec licence the OS already holds) and VP8 everywhere via the vendored `doubleslash-vpx`. A build advertises only what it can actually encode *and* decode, so a Windows peer and a Linux peer always share VP8. Direct calls intersect both peers' sets; a room sender picks its own codec and stamps every frame with it.
 - **One stream per peer.** Picture-in-picture overlays are composited *before* encoding rather than sent as extra streams, so adding an overlay costs no extra bandwidth and no extra decoder.
 - **Audio shared with a video is its own track**, not a second microphone. It is stamped from the same session clock as the picture, so it stays in sync, and it is mixed independently of voice: muting someone does not silence what they are presenting, and shared audio is only mixed for peers whose video you actually have open. Capturing shared audio is currently **Windows-only** (WASAPI loopback, whole-machine or per-application).
 - **Audio-led A/V sync.** Video is held or dropped to meet the shared-audio timeline. A camera-only call has no such timeline and simply free-runs, exactly as it did before sync existed.
@@ -62,7 +62,7 @@ No telemetry. No cloud accounts. No third-party infrastructure required.
 ### In-App Supernode Portal & Browser Games
 - Supernodes with `web.host.app.v1` serve an in-app portal over a QUIC bidi-stream channel. The native client browses `d://` pages using an embedded Chromium view from the **Rooms** sidebar (supernode avatar click) — no external browser, no public game ports, and no public web TLS certificates.
 - **`game.relay.v1`** — opaque datagram relay for in-app portal games: the supernode fans raw QUIC-relay datagrams among peers that joined the same game session (identity path; no external browser / WebTransport). Seven demos are bundled: **Presence Playground**, **Brick Breaker**, **Shared Canvas**, **Task Board**, **Focus Timer**, **Four in a Row**, and **Memory Match**.
-- Game pages are served from `<data_dir>/games/<slug>/` and reachable only via the native portal at `d://<supernode_id>/games/<slug>/`. The `window.conquerd` JS bridge exposes channel APIs over the authenticated QUIC session.
+- Game pages are served from `<data_dir>/games/<slug>/` and reachable only via the native portal at `d://<supernode_id>/games/<slug>/`. The `window.doubleslash` JS bridge exposes channel APIs over the authenticated QUIC session.
 - Portal requests use the identity-authenticated QUIC connection; there is no public HTTPS/WebTransport listener, game TLS certificate, or certificate fingerprint passed to portal pages.
 
 ### Security & Identity
@@ -106,7 +106,7 @@ No telemetry. No cloud accounts. No third-party infrastructure required.
 - **Identity-derived avatars**: every peer has a deterministic, horizontally-symmetric identicon generated from their Ed25519 public key — no image uploads, no servers. Visual complexity signals trust tier: untrusted peers (no completed handshake) get a simple 8×8 flat-hue icon; trusted peers render a full 16×16 multi-shade avatar. Trusted peers can share a custom `AvatarConfig` after the handshake so all clients render an identical SVG. Customise your own avatar in **Settings → Identity → Avatar** with a live preview.
 
 ### Updates
-- Update notifications via the GitHub Releases API; the bundled `conquerd-installer` binary downloads and applies signed releases.
+- Update notifications via the GitHub Releases API; the bundled `doubleslash-installer` binary downloads and applies signed releases.
 - Release automation supports Windows SignPath, macOS Apple Developer ID, and Sigstore attestations when credentials/services are available. The installer always relies on the project-signed Ed25519 release manifest; see [Code Signing Policy](#code-signing-policy) for the initial-release fallback.
 
 ---
@@ -128,13 +128,13 @@ No telemetry. No cloud accounts. No third-party infrastructure required.
   ```powershell
   powershell -ExecutionPolicy Bypass -File scripts/fetch_opus_weights.ps1
   ```
-  Downloads the Xiph.Org DNN tarball and extracts C source arrays into `rust/conquerd-opus/opus/dnn/`. Idempotent.
+  Downloads the Xiph.Org DNN tarball and extracts C source arrays into `rust/doubleslash-opus/opus/dnn/`. Idempotent.
 
 ### Run (debug build)
 ```powershell
 $env:QMAKE = "C:\Qt\6.8.3\msvc2022_64\bin\qmake6.exe"
 $env:PATH  = "C:\Qt\6.8.3\msvc2022_64\bin;$env:PATH"
-cd rust\conquerd-client
+cd rust\doubleslash-client
 cargo build --features qt-ui
 cd ..\..
 .\run_client.bat
@@ -169,7 +169,7 @@ On first launch, an onboarding wizard walks you through choosing a display name,
 | Linux    | AppImage | `.desktop` file + `xdg-mime` |
 
 ### Windows
-Run `conquerd-installer.exe` or extract the portable `conquerd/` folder. The installer registers the `doubleslash://` and `d://` URI schemes (how an invite page opens the app), creates Start Menu shortcuts, and supports silent upgrades (`--silent`) and uninstallation (`--uninstall`).
+Run `doubleslash-installer.exe` or extract the portable `conquerd/` folder. The installer registers the `doubleslash://` and `d://` URI schemes (how an invite page opens the app), creates Start Menu shortcuts, and supports silent upgrades (`--silent`) and uninstallation (`--uninstall`).
 
 ### macOS
 Open the `.dmg` and drag DoubleSlash to Applications. Grant microphone access when prompted.
@@ -182,20 +182,18 @@ chmod +x DoubleSlash-x86_64.AppImage
 
 To register the URI schemes:
 ```bash
-cp packaging/conquerd.desktop ~/.local/share/applications/
-update-desktop-database ~/.local/share/applications/
-xdg-mime default conquerd.desktop x-scheme-handler/conquerd
+./packaging/install_uri_scheme.sh
 ```
 
 ### Uninstalling
 
-**Windows (installer):** Open *Add or Remove Programs* (Settings → Apps → Installed apps), search for **DoubleSlash**, and click Uninstall. Alternatively, run `conquerd-installer.exe --uninstall` from the command line for a silent uninstall.
+**Windows (installer):** Open *Add or Remove Programs* (Settings → Apps → Installed apps), search for **DoubleSlash**, and click Uninstall. Alternatively, run `doubleslash-installer.exe --uninstall` from the command line for a silent uninstall.
 
 **Windows (portable):** Delete the extracted `DoubleSlash\` folder. No registry keys are written by the portable version.
 
-**macOS:** Drag the DoubleSlash app from Applications to the Trash. User data in `~/.doubleslash/` (or a pre-rebrand `~/.conquerd/`) can be removed manually if desired.
+**macOS:** Drag the DoubleSlash app from Applications to the Trash. User data in `~/.doubleslash/` can be removed manually if desired.
 
-**Linux (AppImage):** Delete the `.AppImage` file. If you registered the URI scheme, remove `~/.local/share/applications/doubleslash.desktop` (and a leftover `conquerd.desktop` if present) and run `update-desktop-database ~/.local/share/applications/`. User data in `~/.doubleslash/` (or a pre-rebrand `~/.conquerd/`) can be removed manually.
+**Linux (AppImage):** Delete the `.AppImage` file. If you registered the URI scheme, remove `~/.local/share/applications/doubleslash.desktop` and run `update-desktop-database ~/.local/share/applications/`. User data in `~/.doubleslash/` can be removed manually.
 
 ### System Requirements
 - **OS:** Windows 10+, macOS 10.15+, Linux (glibc 2.31+)
@@ -226,15 +224,15 @@ DoubleSlash is Rust-first, with deliberate native and UI boundaries: Qt Quick sc
 
 | Layer | Crate / Runtime |
 |---|---|
-| Desktop client — UI, signaling, chat, call state, file transfer, audio, settings | **`conquerd-client`** (Qt 6 / QML via CXX-Qt, standalone binary) |
-| Capability registry, `FeatureModule` trait, quota enforcement, auth-tier gating | **`conquerd-features`** (rlib linked into `conquerd-client` and the supernode) |
-| Supernode relay server (SFU + QUIC relay + portal) | **`conquerd-supernode`** (standalone binary) |
-| Installer / updater | **`conquerd-installer`** (standalone binary) |
+| Desktop client — UI, signaling, chat, call state, file transfer, audio, settings | **`doubleslash-client`** (Qt 6 / QML via CXX-Qt, standalone binary) |
+| Capability registry, `FeatureModule` trait, quota enforcement, auth-tier gating | **`doubleslash-features`** (rlib linked into `doubleslash-client` and the supernode) |
+| Supernode relay server (SFU + QUIC relay + portal) | **`doubleslash-supernode`** (standalone binary) |
+| Installer / updater | **`doubleslash-installer`** (standalone binary) |
 
-`conquerd-client` is the sole desktop client. Built with `cargo build --features qt-ui` (from `rust/conquerd-client/`); requires Qt 6.x (`QMAKE` or `CMAKE_PREFIX_PATH`). The audio pipeline (CPAL, spectral-gate noise suppression, jitter buffer), crypto (Ed25519, X25519, AES-GCM, HKDF, Argon2id), and QUIC transport (quinn) are Rust modules in `conquerd-client`; Opus codec support comes from the first-party `conquerd-opus` crate. Headless builds (without `--features qt-ui`) are used for CI integration tests.
+`doubleslash-client` is the sole desktop client. Built with `cargo build --features qt-ui` (from `rust/doubleslash-client/`); requires Qt 6.x (`QMAKE` or `CMAKE_PREFIX_PATH`). The audio pipeline (CPAL, spectral-gate noise suppression, jitter buffer), crypto (Ed25519, X25519, AES-GCM, HKDF, Argon2id), and QUIC transport (quinn) are Rust modules in `doubleslash-client`; Opus codec support comes from the first-party `doubleslash-opus` crate. Headless builds (without `--features qt-ui`) are used for CI integration tests.
 
 ### Transport Stack
-- **Direct calls**: QUIC peer-to-peer via `ConnectionManager` (`quinn::Endpoint`, inside `conquerd-client`).
+- **Direct calls**: QUIC peer-to-peer via `ConnectionManager` (`quinn::Endpoint`, inside `doubleslash-client`).
 - **Direct-call fallback**: after a call is accepted, the caller waits up to 5 seconds for direct QUIC. If it is still unavailable, both peers are moved to a temporary private SFU room on a mutually trusted supernode.
 - **Room audio and room broadcasts**: QUIC relay (`QuicRelayClient` → supernode `QUICRelayServer`) for room audio plus room chat/file signaling when available; WebSocket handles room membership and remains the fallback signaling path.
 - **Video and shared audio**: dedicated datagram channels (`0x06`/`0x07` video, `0x08`/`0x09` content audio) kept separate from the voice path, so the battle-tested voice wire is unchanged. Room video and room shared-audio are relay-datagram-only — deliberately no WebSocket fallback, so a member on a WS-only path keeps audio rather than stalling.
@@ -303,7 +301,7 @@ User types → ChatManager.send_message()
 
 ## Modular Framework
 
-DoubleSlash is structured as a **modular peer-connectivity framework**: chat, voice, files, rooms, and games are not hard-coded behaviors but **features** advertised and negotiated between peers and supernodes. The spine is the `conquerd-features` crate.
+DoubleSlash is structured as a **modular peer-connectivity framework**: chat, voice, files, rooms, and games are not hard-coded behaviors but **features** advertised and negotiated between peers and supernodes. The spine is the `doubleslash-features` crate.
 
 For the precise runtime contract (auth tier enforcement order, quota symmetry across inbound/outbound and all transport paths, dispatch rules, negative-path requirements, and channel tag allocation), see `agents.md` → "Using the Modular Framework (Agent Contract)" and "Feature Module Reference (Agent Contract)". The material below is the human-oriented view suitable for operators and module authors.
 
@@ -320,10 +318,10 @@ For the precise runtime contract (auth tier enforcement order, quota symmetry ac
 
 | ID | Kind | Auth | Provided by |
 |---|---|---|---|
-| `transport.quic.audio.v1` | datagram | trusted-peer | `conquerd-client` QUIC layer |
-| `transport.quic.relay.v1` | datagram | room-member | `conquerd-client` (`QuicRelayClient`) |
-| `transport.quic.stream.v1` | stream | trusted-peer | `conquerd-client` QUIC layer |
-| `transport.quic.feature_datagram.v1` | datagram | trusted-peer | `conquerd-client` QUIC layer |
+| `transport.quic.audio.v1` | datagram | trusted-peer | `doubleslash-client` QUIC layer |
+| `transport.quic.relay.v1` | datagram | room-member | `doubleslash-client` (`QuicRelayClient`) |
+| `transport.quic.stream.v1` | stream | trusted-peer | `doubleslash-client` QUIC layer |
+| `transport.quic.feature_datagram.v1` | datagram | trusted-peer | `doubleslash-client` QUIC layer |
 | `transport.quic.uni_stream.v1` | stream | trusted-peer | tagged unidirectional QUIC stream framing |
 | `transport.quic.stream_priority.v1` | stream | trusted-peer | advisory stream priority hints |
 | `transport.quic.zero_rtt.v1` | stream | trusted-peer | advertised 0-RTT/resumption capability descriptor |
@@ -331,10 +329,10 @@ For the precise runtime contract (auth tier enforcement order, quota symmetry ac
 | `transport.quic.migration.v1` | stream | trusted-peer | QUIC connection migration capability descriptor |
 | `transport.quic.flow_control.v1` | stream | trusted-peer | tuned QUIC flow-control window descriptor |
 | `core.chat.v1` | stream | trusted-peer | desktop client |
-| `core.audio.opus` | datagram | trusted-peer | `conquerd-client` (via `conquerd-opus`) |
+| `core.audio.opus` | datagram | trusted-peer | `doubleslash-client` (via `doubleslash-opus`) |
 | `core.file.v1` | stream | trusted-peer | desktop client |
-| `core.video.v1` | datagram | trusted-peer | `conquerd-client` (H.264 / VP8; `params.codecs` carries what this build can run) |
-| `core.audio.content.v1` | datagram | trusted-peer | `conquerd-client` — audio shared *with* a video, on its own synchronised track |
+| `core.video.v1` | datagram | trusted-peer | `doubleslash-client` (H.264 / VP8; `params.codecs` carries what this build can run) |
+| `core.audio.content.v1` | datagram | trusted-peer | `doubleslash-client` — audio shared *with* a video, on its own synchronised track |
 | `room.audio.sfu` | datagram | room-member | supernode SFU/relay routing (`sfu.rs`, `main.rs`) |
 | `room.video.sfu` | datagram | room-member | supernode opaque relay fan-out (relay datagrams only — no WS fallback) |
 | `room.audio.content.sfu` | datagram | room-member | supernode opaque relay fan-out (audio shared with room video) |
@@ -383,7 +381,7 @@ Disabled entries are kept on disk so an operator can flip them back on without r
 Implement `FeatureModule` and register it on the supernode (or any peer) at startup:
 
 ```rust
-use conquerd_features::{
+use doubleslash_features::{
     AuthTier, CapabilityDescriptor, ChannelKind, FeatureModule, PeerId,
 };
 
@@ -412,12 +410,12 @@ if !state.features.bind_module("x.acme.matchmaker", module.clone()) {
 
 ### In-app portal games (`game.relay.v1`)
 
-Games run only inside the native client portal. The SDK is served at `/web-sdk/conquerd.mjs` and imported with a relative path:
+Games run only inside the native client portal. The SDK is served at `/web-sdk/doubleslash.mjs` and imported with a relative path:
 
 ```js
-import { DoubleSlashClient } from "../../web-sdk/conquerd.mjs";
+import { DoubleSlashClient } from "../../web-sdk/doubleslash.mjs";
 
-// Games run only inside the native portal (window.conquerd).
+// Games run only inside the native portal (window.doubleslash).
 const client = new DoubleSlashClient({
   features: ["game.relay.v1"],
   room: "my-lobby",
@@ -432,7 +430,7 @@ await client.connect();   // opens portal channel over identity QUIC relay
 client.sendDatagram("game.relay.v1", myPayload);
 ```
 
-`window.conquerd.ready` exposes portal channel APIs (`openChannel`, `sendDatagramB64`, `pollDatagrams`, `closeChannel`) and `myPeerId` from the native trust chain — no host/port/cert parameters.
+`window.doubleslash.ready` exposes portal channel APIs (`openChannel`, `sendDatagramB64`, `pollDatagrams`, `closeChannel`) and `myPeerId` from the native trust chain — no host/port/cert parameters.
 
 Seven bundled portal apps are deployed to `<data_dir>/games/` and updated on supernode start:
 
@@ -569,18 +567,18 @@ GitHub Releases (tagged + `nightly`) include standalone supernode packages with 
 
 | Platform | Release asset |
 |---|---|
-| Linux x86_64 | `conquerd-supernode-<version>-linux-x86_64.tar.gz` |
-| Linux ARM64 | `conquerd-supernode-<version>-linux-aarch64.tar.gz` |
-| Windows x86_64 | `conquerd-supernode-<version>-win64.zip` |
+| Linux x86_64 | `doubleslash-supernode-<version>-linux-x86_64.tar.gz` |
+| Linux ARM64 | `doubleslash-supernode-<version>-linux-aarch64.tar.gz` |
+| Windows x86_64 | `doubleslash-supernode-<version>-win64.zip` |
 
-See [`docs/SUPERNODE.md`](docs/SUPERNODE.md) for install examples. Nightly builds use the `conquerd-supernode-nightly-<platform>.*` naming on the rolling `nightly` release.
+See [`docs/SUPERNODE.md`](docs/SUPERNODE.md) for install examples. Nightly builds use the `doubleslash-supernode-nightly-<platform>.*` naming on the rolling `nightly` release.
 
 ### Basic Setup (build from source)
 
 Build the Rust supernode binary (one time):
 
 ```bash
-cd rust/conquerd-supernode
+cd rust/doubleslash-supernode
 cargo build --release
 ```
 
@@ -601,7 +599,7 @@ set CONQUERD_HOME=%USERPROFILE%\.conquerd
 set supernode_invite_ttl=-1
 set supernode_port=3478
 set supernode_signaling_port=34935
-rust\target\release\conquerd-supernode.exe
+rust\target\release\doubleslash-supernode.exe
 ```
 
 Or use the bundled helper:
@@ -615,7 +613,7 @@ export CONQUERD_HOME="$HOME/.conquerd"
 export supernode_invite_ttl=-1
 export supernode_port=3478
 export supernode_signaling_port=34935
-./rust/target/release/conquerd-supernode
+./rust/target/release/doubleslash-supernode
 ```
 
 Or use the bundled helper:
@@ -686,7 +684,7 @@ sudo ufw allow 3478/udp
 sudo ufw allow 34935/tcp
 ```
 
-**Windows Firewall**: The first launch will prompt you to allow `conquerd-supernode.exe` through the firewall. Accept both private and public network access.
+**Windows Firewall**: The first launch will prompt you to allow `doubleslash-supernode.exe` through the firewall. Accept both private and public network access.
 
 ### Running as a systemd Service (Linux)
 
@@ -705,20 +703,20 @@ Install from a GitHub Release tarball (no Rust toolchain on the server):
 
 ```bash
 # x86_64 VPS example
-tar -xzf conquerd-supernode-1.0.0-linux-x86_64.tar.gz
-sudo install -m 755 conquerd-supernode-1.0.0-linux-x86_64/conquerd-supernode /usr/local/bin/
+tar -xzf doubleslash-supernode-1.0.0-linux-x86_64.tar.gz
+sudo install -m 755 doubleslash-supernode-1.0.0-linux-x86_64/doubleslash-supernode /usr/local/bin/
 ```
 
 Or build from source once:
 
 ```bash
 . "$HOME/.cargo/env"
-cd /opt/conquerd/app/rust/conquerd-supernode
+cd /opt/conquerd/app/rust/doubleslash-supernode
 cargo build --release
-sudo cp target/release/conquerd-supernode /usr/local/bin/
+sudo cp target/release/doubleslash-supernode /usr/local/bin/
 ```
 
-Create `/etc/systemd/system/conquerd-supernode.service`:
+Create `/etc/systemd/system/doubleslash-supernode.service`:
 
 ```ini
 [Unit]
@@ -742,7 +740,7 @@ Environment=supernode_signaling_port=34935
 # Required so remote peers get routable invite/relay tickets:
 #Environment=supernode_host=relay.example.com
 
-ExecStart=/usr/local/bin/conquerd-supernode
+ExecStart=/usr/local/bin/doubleslash-supernode
 Restart=on-failure
 RestartSec=5
 
@@ -760,13 +758,13 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable conquerd-supernode
-sudo systemctl start conquerd-supernode
+sudo systemctl enable doubleslash-supernode
+sudo systemctl start doubleslash-supernode
 ```
 
 Retrieve the invite link:
 ```bash
-sudo journalctl -u conquerd-supernode | grep 'Invite URL'
+sudo journalctl -u doubleslash-supernode | grep 'Invite URL'
 ```
 
 ### Portal Customisation
@@ -799,7 +797,7 @@ The in-app QUIC portal exposes a `/health` page with live stats (uptime, version
 
 ## Updates
 
-DoubleSlash checks the GitHub Releases API in the background and offers in-app upgrade prompts when a newer signed release is available. The bundled `conquerd-installer` binary downloads, verifies, and applies the release.
+DoubleSlash checks the GitHub Releases API in the background and offers in-app upgrade prompts when a newer signed release is available. The bundled `doubleslash-installer` binary downloads, verifies, and applies the release.
 
 - Before replacing files, the installer verifies the project Ed25519 release manifest and the archive SHA-256 recorded in it. Platform signatures (Windows SignPath / macOS Apple Developer ID) and Sigstore attestations are additional distribution checks when available.
 - `VERSION_ANNOUNCE` is still exchanged between peers so each side can show the other peer's version in the event log, but application code is **not** pushed peer-to-peer — a connected peer running an older build is informational only.
@@ -876,7 +874,7 @@ All DoubleSlash data is stored under `DOUBLESLASH_HOME` / `CONQUERD_HOME` (defau
 | `chat_history.db` | Chat messages (SQLite; message bodies encrypted at rest) |
 | `settings.json` | All preferences |
 | `my_rooms.dat` | Client-owned SFU room definitions per supernode (encrypted); used to rematerialize rooms on reconnect. Sidebar hide list is stored here too. |
-| `installer.log` | Installer/updater activity (when `conquerd-installer` runs) |
+| `installer.log` | Installer/updater activity (when `doubleslash-installer` runs) |
 
 Received files are saved to your OS **Downloads** folder on completion (not under `DOUBLESLASH_HOME`). The desktop client logs through `tracing` to stderr and to the current-session file `~/.doubleslash/logs/doubleslash-client.log` (truncated on each launch). The **Verbose debug logging** setting changes the runtime/file filter immediately; an explicit `RUST_LOG` overrides it. An optional OS keyring entry (`doubleslash` service, with a pre-rebrand `conquerd` fallback) caches your unlock key locally.
 
@@ -909,14 +907,14 @@ SFU **room state is not persisted** on the supernode — rooms exist in memory w
 - Check audio input/output device selection in Settings.
 - Verify microphone permissions (Windows: Settings → Privacy → Microphone).
 - Try toggling between PTT and voice activation.
-- Set `RUST_LOG=conquerd_client=debug` for detailed pipeline logging.
+- Set `RUST_LOG=doubleslash_client=debug` for detailed pipeline logging.
 
 ### Crash dumps
 - Rust panic backtraces are written to `doubleslash-client.log` in the working directory; set `RUST_BACKTRACE=1` for full traces.
 - The `.bat`/`.sh` launchers keep the console window open after a crash so the trace is visible.
 
 ### Supernode troubleshooting
-- **Desktop portal fails with `file:///D://...`**: Chromium's Windows URL fixup reads the one-letter `d:` as a drive path. The portal works around it by navigating with the `conquerd://` alias internally, over the same authenticated QUIC connection — rebuild or update the desktop client if you see this. For the same reason, anything outside the app (an invite page opening the client) uses `doubleslash://`, never `d://`.
+- **Desktop portal fails with `file:///D://...`**: Chromium's Windows URL fixup reads the one-letter `d:` as a drive path. The portal works around it by navigating with the `doubleslash://` alias internally, over the same authenticated QUIC connection — rebuild or update the desktop client if you see this. For the same reason, anything outside the app (an invite page opening the client) uses `doubleslash://`, never `d://`.
 - **Peers can't connect**: Verify both `supernode_port` (UDP) and `supernode_signaling_port` (TCP) are forwarded and open. Set `supernode_host` to the public DNS name or IP when remote peers need to connect.
 - **Port changes on restart**: Always set `supernode_signaling_port` to a fixed value (e.g. `34935`). Changing it breaks firewall rules and stored peer endpoints.
 - **Service fails with exit code 226/NAMESPACE**: LXC, OpenVZ, or some VPS hosts don't support mount namespaces. Comment out the hardening block in the systemd unit file and restart.
@@ -930,23 +928,23 @@ SFU **room state is not persisted** on the supernode — rooms exist in memory w
 
 | File | Purpose |
 |---|---|
-| `rust/conquerd-client/src/main.rs` | Desktop client entry. Initialises identity (keyring + passphrase), Qt `QGuiApplication`, the `AppBridge` QObject, and the QML engine. Handles `d://` URIs on argv and single-instance forwarding. |
-| `rust/conquerd-supernode/src/main.rs` | Headless relay binary. Reads env / `supernode.toml`, starts QUIC relay + WebSocket signaling + in-app portal (`web.host.app.v1`) + game session fan-out. |
-| `rust/conquerd-installer/src/main.rs` | Standalone updater. Downloads and applies signed releases from GitHub. |
+| `rust/doubleslash-client/src/main.rs` | Desktop client entry. Initialises identity (keyring + passphrase), Qt `QGuiApplication`, the `AppBridge` QObject, and the QML engine. Handles `d://` URIs on argv and single-instance forwarding. |
+| `rust/doubleslash-supernode/src/main.rs` | Headless relay binary. Reads env / `supernode.toml`, starts QUIC relay + WebSocket signaling + in-app portal (`web.host.app.v1`) + game session fan-out. |
+| `rust/doubleslash-installer/src/main.rs` | Standalone updater. Downloads and applies signed releases from GitHub. |
 
 ### Building from Source
 ```powershell
 # Desktop client (Qt UI)
-cd rust\conquerd-client
+cd rust\doubleslash-client
 cargo build --release --features qt-ui            # optionally: ,webengine,console
 
 # Supernode + installer (server-side workspace)
 cd ..
-cargo build --release -p conquerd-supernode
-cargo build --release -p conquerd-installer
+cargo build --release -p doubleslash-supernode
+cargo build --release -p doubleslash-installer
 ```
 
-`conquerd-client` lives in its own Cargo workspace (`rust/conquerd-client/Cargo.toml`) so Qt/CXX-Qt dependencies stay isolated from server-side builds. The outer workspace (`rust/Cargo.toml`) contains `conquerd-features`, `conquerd-supernode`, `conquerd-installer`, `conquerd-opus`, and `conquerd-vpx`. The cluster-operations tool is a third workspace at `rust/conquerd-supernode-manager/`.
+`doubleslash-client` lives in its own Cargo workspace (`rust/doubleslash-client/Cargo.toml`) so Qt/CXX-Qt dependencies stay isolated from server-side builds. The outer workspace (`rust/Cargo.toml`) contains `doubleslash-features`, `doubleslash-supernode`, `doubleslash-installer`, `doubleslash-opus`, and `doubleslash-vpx`. The cluster-operations tool is a third workspace at `rust/doubleslash-supernode-manager/`.
 
 ### Run Tests
 ```powershell
@@ -955,11 +953,11 @@ cd rust
 cargo test --workspace
 
 # DoubleSlash-client (binary crate; tests run from its own workspace)
-cd conquerd-client
+cd doubleslash-client
 cargo test
 
 # Supernode manager (separate cluster-ops workspace)
-cd ..\conquerd-supernode-manager
+cd ..\doubleslash-supernode-manager
 cargo test --workspace
 ```
 
@@ -967,7 +965,7 @@ See `agents.md` (Roadmap & Status) for current coverage areas and P0–P2 delive
 
 ### Coverage % (line / region)
 
-LLVM source coverage via [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) for the high-ROI packages (`conquerd-features`, `conquerd-supernode`, headless `conquerd-client`). Native Opus/DNN and Qt/QML UI are out of scope for the default report.
+LLVM source coverage via [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) for the high-ROI packages (`doubleslash-features`, `doubleslash-supernode`, headless `doubleslash-client`). Native Opus/DNN and Qt/QML UI are out of scope for the default report.
 
 ```powershell
 # Windows — default "hot" scope; writes coverage/summary.md + .lcov/.json
@@ -1036,21 +1034,21 @@ $env:USERPROFILE = "$PWD\.clientB"
 
 # Supernode (standalone relay binary — no Qt)
 $env:CONQUERD_RELEASE = '1'
-.\scripts\build_supernode.ps1    # dist\conquerd-supernode-<version>-win64.zip
+.\scripts\build_supernode.ps1    # dist\doubleslash-supernode-<version>-win64.zip
 ```
 
 ```bash
 # Supernode on Linux / macOS
-CONQUERD_RELEASE=1 ./scripts/build_supernode.sh   # dist/conquerd-supernode-<version>-<platform>.tar.gz
+CONQUERD_RELEASE=1 ./scripts/build_supernode.sh   # dist/doubleslash-supernode-<version>-<platform>.tar.gz
 ```
 
 Release CI builds client artifacts plus supernode packages for **linux-x86_64**, **linux-aarch64**, and **win64** (see `.github/workflows/release.yml`).
 
-`build_win64.ps1` runs `cargo build --release --features qt-ui[,webengine]` for `conquerd-client`, `cargo build --release -p conquerd-installer`, then invokes `windeployqt6` to gather the Qt runtime DLLs into `dist\DoubleSlash\`. Set `QT_DIR` if Qt is not in one of the auto-detected default locations. Set `CONQUERD_DEBUG=1` for a debug build, or `CONQUERD_DEBUG_CONSOLE=1` to keep a console window attached.
+`build_win64.ps1` runs `cargo build --release --features qt-ui[,webengine]` for `doubleslash-client`, `cargo build --release -p doubleslash-installer`, then invokes `windeployqt6` to gather the Qt runtime DLLs into `dist\DoubleSlash\`. Set `QT_DIR` if Qt is not in one of the auto-detected default locations. Set `CONQUERD_DEBUG=1` for a debug build, or `CONQUERD_DEBUG_CONSOLE=1` to keep a console window attached.
 
 #### Code Signing (Windows, optional)
 
-The build script automatically signs `conquerd-client.exe` and `conquerd-installer.exe` when a certificate is configured. Signing is **optional** — the build completes without it.
+The build script automatically signs `doubleslash-client.exe` and `doubleslash-installer.exe` when a certificate is configured. Signing is **optional** — the build completes without it.
 
 `signtool.exe` must be on `PATH`. Install it via:
 - **Visual Studio Installer** → Modify → Individual Components → search "Windows SDK" (e.g. Windows 11 SDK 10.0.26100.x) — signing tools are included.
@@ -1072,7 +1070,7 @@ If none of these are set the signing step is silently skipped.
 
 ### Version Bumping
 
-Version is set in `rust/conquerd-client/Cargo.toml`. **Keep `rust/conquerd-installer/Cargo.toml` in sync** — SignPath requires consistent `ProductVersion` across all signed PE files. `scripts/check_version_sync.ps1` verifies the two values match.
+Version is set in `rust/doubleslash-client/Cargo.toml`. **Keep `rust/doubleslash-installer/Cargo.toml` in sync** — SignPath requires consistent `ProductVersion` across all signed PE files. `scripts/check_version_sync.ps1` verifies the two values match.
 
 **When to bump:**
 - Sprint / feature-batch complete → bump **minor** (or **major** for breaking protocol changes)
@@ -1085,7 +1083,7 @@ Version is set in `rust/conquerd-client/Cargo.toml`. **Keep `rust/conquerd-insta
 ```
 ├── rust/
 │   ├── Cargo.toml                 # Outer workspace: features + supernode + installer + Opus + VP8
-│   ├── conquerd-client/           # Native desktop binary (own workspace; Qt 6 / QML via CXX-Qt)
+│   ├── doubleslash-client/           # Native desktop binary (own workspace; Qt 6 / QML via CXX-Qt)
 │   │   ├── Cargo.toml             # features: qt-ui, webengine, console
 │   │   ├── build.rs               # CXX-Qt codegen + windres icon embedding
 │   │   ├── assets.qrc / icons.qrc # Qt resource bundles (QML + icons)
@@ -1119,18 +1117,18 @@ Version is set in `rust/conquerd-client/Cargo.toml`. **Keep `rust/conquerd-insta
 │   │       ├── github_updater.rs  # GitHub Releases API poll + installer spawn
 │   │       ├── platform.rs / taskbar_badge.rs / upnp.rs / uri_scheme.rs / web_app_client.rs
 │   │       └── ui/                # AppBridge QObject + QML models (Peer/Chat/Call/Room/Settings/FileTransfer)
-│   ├── conquerd-features/         # rlib: capability registry, FeatureModule trait, quota enforcement
-│   ├── conquerd-supernode/        # Standalone binary: QUIC relay, ephemeral SFU, WS signaling, in-app portal
-│   ├── conquerd-installer/        # Standalone binary: signed-release download + apply
-│   ├── conquerd-opus/             # First-party libopus wrapper (DRED + OSCE)
-│   ├── conquerd-vpx/              # First-party VP8 wrapper over vendored libvpx (cross-platform video)
-│   └── conquerd-supernode-manager/ # Separate workspace: provisioning, cluster sync, deploy, remote exec
-├── web-sdk/conquerd.mjs           # In-app portal game SDK (identity QUIC channel; no WebTransport)
+│   ├── doubleslash-features/         # rlib: capability registry, FeatureModule trait, quota enforcement
+│   ├── doubleslash-supernode/        # Standalone binary: QUIC relay, ephemeral SFU, WS signaling, in-app portal
+│   ├── doubleslash-installer/        # Standalone binary: signed-release download + apply
+│   ├── doubleslash-opus/             # First-party libopus wrapper (DRED + OSCE)
+│   ├── doubleslash-vpx/              # First-party VP8 wrapper over vendored libvpx (cross-platform video)
+│   └── doubleslash-supernode-manager/ # Separate workspace: provisioning, cluster sync, deploy, remote exec
+├── web-sdk/doubleslash.mjs           # In-app portal game SDK (identity QUIC channel; no WebTransport)
 ├── games/                         # Example portal games (d:// only)
 ├── packaging/                     # Linux .desktop file, macOS Info.plist template, AppRun
 ├── scripts/check_version_sync.ps1 # Verify Cargo.toml versions stay aligned (PowerShell)
-├── scripts/build_supernode.sh     # Package conquerd-supernode (.tar.gz; Linux/macOS hosts)
-├── scripts/build_supernode.ps1    # Package conquerd-supernode (.zip; Windows hosts)
+├── scripts/build_supernode.sh     # Package doubleslash-supernode (.tar.gz; Linux/macOS hosts)
+├── scripts/build_supernode.ps1    # Package doubleslash-supernode (.zip; Windows hosts)
 ├── scripts/ci_local.ps1 / ci_local.sh  # Local mirror of .github/workflows/ci.yml
 ├── build_win64.ps1                # Portable Windows build (cargo + windeployqt6 + optional sign + 7z)
 ├── build_linux.sh / build_macos.sh
@@ -1181,8 +1179,8 @@ Version is set in `rust/conquerd-client/Cargo.toml`. **Keep `rust/conquerd-insta
 | UI | Qt 6 / QML via [CXX-Qt](https://kdab.github.io/cxx-qt/) |
 | QUIC transport | `quinn` + `tokio` + `rustls` |
 | Audio capture / playback | `cpal` + `ringbuf` |
-| Audio codec | `conquerd-opus` — first-party libopus 1.6.x wrapper (vendored submodule) with DRED (Deep Redundancy Encoding) and OSCE (Opus Speech Coding Enhancement) neural voice enhancement. DNN model data compiled in from Xiph.Org source arrays; no third-party crate dependency. |
-| Video codecs | `conquerd-vpx` — first-party VP8 wrapper over a vendored libvpx submodule, built without libvpx's own `configure`/`make` (needs **perl** for RTCD codegen). Available on every platform. Media Foundation H.264 on Windows via the `windows` crate, using the codec licence the OS already holds. |
+| Audio codec | `doubleslash-opus` — first-party libopus 1.6.x wrapper (vendored submodule) with DRED (Deep Redundancy Encoding) and OSCE (Opus Speech Coding Enhancement) neural voice enhancement. DNN model data compiled in from Xiph.Org source arrays; no third-party crate dependency. |
+| Video codecs | `doubleslash-vpx` — first-party VP8 wrapper over a vendored libvpx submodule, built without libvpx's own `configure`/`make` (needs **perl** for RTCD codegen). Available on every platform. Media Foundation H.264 on Windows via the `windows` crate, using the codec licence the OS already holds. |
 | DSP | `rustfft` (spectral-gate noise suppression), in-house VAD + jitter buffer |
 | Cryptography | `ed25519-dalek`, `x25519-dalek`, `aes-gcm`, `argon2`, `hkdf` |
 | Signaling serialisation | JSON over WebSocket (`tokio-tungstenite`) and length-prefixed QUIC streams |
@@ -1198,28 +1196,28 @@ Free code signing provided by [SignPath.io](https://signpath.io), certificate by
 
 | Role | Members |
 |---|---|
-| **Authors** (trusted committers) | [Members](https://github.com/orgs/ConquerD/teams/conquerd-authors) |
-| **Reviewers** (PR reviewers) | [Members](https://github.com/orgs/ConquerD/teams/conquerd-reviewers) |
-| **Approvers** (release signing) | [Owners](https://github.com/orgs/ConquerD/teams/conquerd-approvers) |
+| **Authors** (trusted committers) | [Members](https://github.com/orgs/DoubleSlashSpace/teams/doubleslash-authors) |
+| **Reviewers** (PR reviewers) | [Members](https://github.com/orgs/DoubleSlashSpace/teams/doubleslash-reviewers) |
+| **Approvers** (release signing) | [Owners](https://github.com/orgs/DoubleSlashSpace/teams/doubleslash-approvers) |
 
 ### Bootstrap for Free OSS Code Signing
 
 DoubleSlash uses a project-controlled Ed25519 key for signing `releases_manifest.json` (verified by the installer for update integrity and build hashes). This key was generated locally with `openssl genpkey -algorithm Ed25519`.
 
-The public key is committed in source (see `keys/release-signer-public.pem` and the hex constant in `rust/conquerd-installer/src/release_manifest.rs`).
+The public key is committed in source (see `keys/release-signer-public.pem` and the hex constant in `rust/doubleslash-installer/src/release_manifest.rs`).
 
 A helper binary to produce signed manifests lives in the installer crate:
 
 ```
 # 1. Generate a skeleton for the current version (no private key needed)
-cargo run -p conquerd-installer --bin sign-release-manifest -- --generate-unsigned
+cargo run -p doubleslash-installer --bin sign-release-manifest -- --generate-unsigned
 
 # 2. Edit the generated releases_manifest.json: fill real build_hash (from the .sha256
 #    asset or `sha256sum` of the final archive) + build_id (the value of CONQUERD_BUILD_ID
 #    that was baked into the binaries for that release, visible via `--version` or attestation).
 
 # 3. Sign it (approver only, with the offline private seed)
-cargo run -p conquerd-installer --bin sign-release-manifest -- \
+cargo run -p doubleslash-installer --bin sign-release-manifest -- \
   -i releases_manifest.json -o releases_manifest.json \
   --private-key /path/to/secure/release-signer-private.pem
 ```
@@ -1240,7 +1238,7 @@ Users downloading the very first release should verify the GitHub release page, 
 
 See [PRIVACY.md](PRIVACY.md) for the full privacy policy (desktop and Android).
 The public URL for store listings is
-https://github.com/ConquerD/DoubleSlash/blob/develop/PRIVACY.md.
+https://github.com/DoubleSlashSpace/DoubleSlash/blob/develop/PRIVACY.md.
 User-generated content (chat, files, rooms, portal pages) is covered by
 [TERMS.md](TERMS.md). The Android client requires accepting those terms before
 the home screen, and offers an in-app report that sends identifiers — there is
@@ -1253,7 +1251,7 @@ The following network contacts occur automatically or on user action (see [PRIVA
 | Feature | External service contacted | When | How to disable |
 |---|---|---|---|
 | **UPnP port mapping** | Your local router only (LAN multicast) | On startup when *Enable UPnP port mapping* is on (default) | Uncheck UPnP in Settings (`upnp_enabled` in `settings.json`) |
-| **GitHub update check** | GitHub Releases API (`api.github.com/repos/vbawol/ConquerD/releases/latest`) | At startup and hourly, only while *Check for updates automatically* is enabled | Turn off *Check for updates automatically* in Settings (`update_check_enabled` in `settings.json`) |
+| **GitHub update check** | GitHub Releases API (`api.github.com/repos/DoubleSlashSpace/DoubleSlash/releases/latest`) | At startup and hourly, only while *Check for updates automatically* is enabled | Turn off *Check for updates automatically* in Settings (`update_check_enabled` in `settings.json`) |
 | **YouTube / Vimeo inline preview** | Video host CDNs (e.g. `youtube.com`, `googlevideo.com`, `vimeo.com`) | Only when you expand an inline player or open a preview link — Qt WebEngine embed, not yt-dlp | Uncheck *Show YouTube preview cards in chat* in Settings |
 | **Ollama assistant** (optional) | Your configured Ollama URL (default `http://127.0.0.1:11434`) | When the AI plugin is enabled and you use it | Turn off *Enable AI assistant* in Settings |
 | **Supernode portal / gated relay** | The supernode operator you chose | When you open their portal or complete an access gate | Do not connect to that supernode |
@@ -1265,7 +1263,7 @@ No account credentials, message content, or contact lists are transmitted to Dou
 
 ## Release Notes
 
-Detailed, per-version release notes are published with each [GitHub release](https://github.com/ConquerD/ConquerD/releases). The summary below covers the **1.0** milestone.
+Detailed, per-version release notes are published with each [GitHub release](https://github.com/DoubleSlashSpace/DoubleSlash/releases). The summary below covers the **1.0** milestone.
 
 ### 1.0 — Highlights
 

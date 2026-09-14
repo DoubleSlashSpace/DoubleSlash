@@ -1,0 +1,71 @@
+//! doubleslash-features — capability registry and feature module spine.
+//!
+//! This crate is the language-agnostic core of the DoubleSlash (D://)
+//! peer-connectivity framework. It defines:
+//!
+//! * [`CapabilityDescriptor`] — a self-describing, on-wire feature record
+//!   advertised by peers and supernodes after handshake.
+//! * [`FeatureRegistry`] — an in-process registry that owns the set of
+//!   advertised capabilities.
+//! * Reverse-DNS-style namespace helpers for the reserved `core.*`,
+//!   `transport.*`, `room.*`, `web.*`, `game.*`, and `x.<vendor>.*` prefixes.
+//!
+//! The crate is intentionally transport-agnostic: it does not depend on
+//! `quinn` or any I/O. Higher-level crates (`conquerd-quic`,
+//! `doubleslash-supernode`, the desktop client) consume it to wire feature
+//! negotiation onto their own message pipelines.
+//!
+//! See `FRAMEWORK_PLAN.md` at the repo root for the full design.
+
+pub mod brand;
+pub mod channel_frame;
+pub mod channel_tag;
+pub mod client_modules;
+pub mod descriptor;
+pub mod device;
+pub mod examples;
+pub mod loader;
+pub mod module;
+pub mod quota;
+pub mod registry;
+pub mod replay;
+pub mod signing;
+pub mod video_codec;
+pub mod web_app;
+pub mod wellknown;
+
+pub use brand::{
+    find_app_url, first_env, looks_like_app_url, mint_invite_https, mint_uri, normalize_app_url,
+    strip_scheme, uri_prefix, DEFAULT_PROFILE_DIR, ENV_HOME, ENV_KEY_DIR, INVITE_HTTPS_HOST,
+    PRODUCT_NAME, PROTOCOL_NAME, URI_SCHEME, URI_SCHEMES, URI_SCHEME_ALT, WEBSITE, WINDOWS_EXE,
+    WINDOWS_INSTALL_DIR,
+};
+pub use channel_frame::{
+    classify, decode_frame, encode_frame, feature_for_fixed_tag, fixed_tag_for, FrameClass,
+    AUDIO_TAG, CHAT_TAG, CONTROL_TAG, FILE_TAG, GAME_RELAY_TAG, MAX_FIRST_PARTY_TAG,
+    ROOM_AUDIO_TAG,
+};
+pub use channel_tag::{ChannelTagError, ChannelTagRegistry};
+pub use client_modules::register_client_modules;
+pub use descriptor::{AuthTier, CapabilityDescriptor, ChannelKind, FeatureError};
+pub use device::DeviceId;
+pub use examples::{
+    register_example_modules, x_doubleslash_matchmaker_v1, Matchmaker, MATCHMAKER_ID,
+};
+pub use loader::{
+    DoubleSlashModuleVtable, LoadError, NativeModuleLoader, TrustRequest, ABI_VERSION,
+};
+pub use module::{
+    FeatureModule, InvocationContext, ModuleError, ModuleResult, PeerId, SharedModule,
+};
+pub use quota::{QuotaParams, QuotaRegistry, DEFAULT_BYTES_PER_SEC, DEFAULT_DATAGRAMS_PER_SEC};
+pub use registry::FeatureRegistry;
+pub use replay::{ReplayGuard, DEFAULT_REPLAY_WINDOW_SECS};
+pub use signing::{
+    sign_manifest, ManifestCapability, ModuleManifest, SigningError, TrustedKeyStore,
+    MANIFEST_SCHEMA_VERSION,
+};
+pub use video_codec::{
+    advertised_codecs, codec_names, codecs_from_params, negotiate as negotiate_video_codec,
+    VideoCodec,
+};

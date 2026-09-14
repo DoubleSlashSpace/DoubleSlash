@@ -608,101 +608,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "conquerd-features"
-version = "1.0.0"
-dependencies = [
- "base64 0.22.1",
- "ed25519-dalek",
- "libloading",
- "parking_lot",
- "rand 0.8.6",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 1.0.69",
- "toml 0.8.23",
-]
-
-[[package]]
-name = "conquerd-installer"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "clap",
- "dirs",
- "ed25519-dalek",
- "eframe",
- "egui",
- "egui_extras",
- "hex",
- "image",
- "open",
- "pem",
- "serde",
- "serde_json",
- "sevenz-rust2",
- "sha2 0.10.9",
- "tempfile",
- "ureq",
- "windows-sys 0.59.0",
- "winreg",
- "winresource",
-]
-
-[[package]]
-name = "conquerd-opus"
-version = "1.0.0"
-dependencies = [
- "cc",
- "cmake",
-]
-
-[[package]]
-name = "conquerd-supernode"
-version = "1.0.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "base64 0.22.1",
- "bytes",
- "conquerd-features",
- "dashmap",
- "ed25519-dalek",
- "futures-util",
- "hex",
- "hkdf",
- "parking_lot",
- "quinn",
- "rand 0.8.6",
- "rcgen",
- "ring",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 1.0.69",
- "time",
- "tokio",
- "tokio-tungstenite",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "winresource",
- "x25519-dalek",
-]
-
-[[package]]
-name = "conquerd-vpx"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "cc",
-]
-
-[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1003,6 +908,101 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
 dependencies = [
  "litrs",
+]
+
+[[package]]
+name = "doubleslash-features"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "libloading",
+ "parking_lot",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "doubleslash-installer"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "clap",
+ "dirs",
+ "ed25519-dalek",
+ "eframe",
+ "egui",
+ "egui_extras",
+ "hex",
+ "image",
+ "open",
+ "pem",
+ "serde",
+ "serde_json",
+ "sevenz-rust2",
+ "sha2 0.10.9",
+ "tempfile",
+ "ureq",
+ "windows-sys 0.59.0",
+ "winreg",
+ "winresource",
+]
+
+[[package]]
+name = "doubleslash-opus"
+version = "1.0.0"
+dependencies = [
+ "cc",
+ "cmake",
+]
+
+[[package]]
+name = "doubleslash-supernode"
+version = "1.0.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "base64 0.22.1",
+ "bytes",
+ "dashmap",
+ "doubleslash-features",
+ "ed25519-dalek",
+ "futures-util",
+ "hex",
+ "hkdf",
+ "parking_lot",
+ "quinn",
+ "rand 0.8.6",
+ "rcgen",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "tokio-tungstenite",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "winresource",
+ "x25519-dalek",
+]
+
+[[package]]
+name = "doubleslash-vpx"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "cc",
 ]
 
 [[package]]

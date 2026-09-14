@@ -3,7 +3,7 @@
     Build DoubleSlash into a portable Windows distribution (Rust + Qt).
 
 .DESCRIPTION
-    Builds conquerd-client (--features qt-ui,webengine) and conquerd-installer with
+    Builds doubleslash-client (--features qt-ui,webengine) and doubleslash-installer with
     cargo, runs windeployqt6 to gather Qt runtime DLLs, optionally signs
     all binaries, then produces:
 
@@ -36,7 +36,7 @@ $ErrorActionPreference = "Stop"
 
 $ROOT      = $PSScriptRoot
 $RUST_DIR  = Join-Path $ROOT "rust"
-$CLIENT_DIR = Join-Path $RUST_DIR "conquerd-client"
+$CLIENT_DIR = Join-Path $RUST_DIR "doubleslash-client"
 $QML_DIR   = Join-Path $CLIENT_DIR "qml"
 $DIST      = Join-Path $ROOT "dist"
 $BUNDLE    = Join-Path $DIST "DoubleSlash"
@@ -52,7 +52,7 @@ if ($env:CONQUERD_DEBUG_CONSOLE -eq "1") {
     Write-Host "    [debug] Console window enabled (CONQUERD_DEBUG_CONSOLE=1)"
 }
 # ── Version ──────────────────────────────────────────────────────────────────
-$_cargoToml = Join-Path $RUST_DIR "conquerd-client\Cargo.toml"
+$_cargoToml = Join-Path $RUST_DIR "doubleslash-client\Cargo.toml"
 $_vLine = Select-String -Path $_cargoToml -Pattern '^version\s*=\s*"([^"]+)"' |
     Select-Object -First 1
 if (-not $_vLine) { Write-Error "Could not parse version from $_cargoToml" }
@@ -112,7 +112,7 @@ function Resolve-VcInstallDir {
 }
 
 # Include the Qt WebEngine (Chromium) scheme handler for the in-app node portal
-# (conquerd:// custom scheme). Auto-detected from the Qt install. Override with
+# (doubleslash:// custom scheme). Auto-detected from the Qt install. Override with
 # CONQUERD_NO_WEBENGINE=1 to force-disable (e.g. Qt WebEngine not installed).
 $_weProbe = Join-Path $QT_ROOT "include\QtWebEngineCore\QWebEngineProfile.h"
 if ($env:CONQUERD_NO_WEBENGINE -ne "1" -and (Test-Path $_weProbe)) {
@@ -132,9 +132,9 @@ Install the module, e.g.:
     }
 }
 
-# ── Build conquerd-client (Qt UI) ─────────────────────────────────────────────
-Write-Host "`n==> Building conquerd-client ($PROFILE_NAME)..."
-# conquerd-client is its own workspace root (rust/conquerd-client/) so that the
+# ── Build doubleslash-client (Qt UI) ─────────────────────────────────────────────
+Write-Host "`n==> Building doubleslash-client ($PROFILE_NAME)..."
+# doubleslash-client is its own workspace root (rust/doubleslash-client/) so that the
 # Windows-local cxx-qt patch does not affect server-side builds on Linux.
 # Wrap in try/catch to absorb the spurious NativeCommandError PS 7+ raises
 # when any native process writes to stderr, even on success.
@@ -144,10 +144,10 @@ $_prevPref = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 $_clientExit = $LASTEXITCODE
 $ErrorActionPreference = $_prevPref
 Pop-Location
-if ($_clientExit -ne 0) { Write-Error "cargo build conquerd-client failed (exit $_clientExit)" }
+if ($_clientExit -ne 0) { Write-Error "cargo build doubleslash-client failed (exit $_clientExit)" }
 
 function Get-ClientSourceHash {
-    $outGlob = Join-Path $RUST_DIR "target\$PROFILE_NAME\build\conquerd-client-*\output"
+    $outGlob = Join-Path $RUST_DIR "target\$PROFILE_NAME\build\doubleslash-client-*\output"
     $outFile = Get-ChildItem -Path $outGlob -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $outFile) { return $null }
     foreach ($line in Get-Content $outFile.FullName) {
@@ -170,7 +170,7 @@ if ($env:CONQUERD_RELEASE_SIGN_KEY -and (Test-Path $env:CONQUERD_RELEASE_SIGN_KE
     }
     Write-Host "`n==> Signing release build claim (build_id=$buildId)..."
     $claimArgs = @(
-        "run", "-p", "conquerd-installer", "--manifest-path", (Join-Path $RUST_DIR "Cargo.toml"),
+        "run", "-p", "doubleslash-installer", "--manifest-path", (Join-Path $RUST_DIR "Cargo.toml"),
         "--bin", "sign-release-manifest", "--",
         "--sign-build-claim",
         "--private-key", $env:CONQUERD_RELEASE_SIGN_KEY,
@@ -188,7 +188,7 @@ if ($env:CONQUERD_RELEASE_SIGN_KEY -and (Test-Path $env:CONQUERD_RELEASE_SIGN_KE
         Write-Error "Failed to sign release build claim (exit $_claimExit)"
     }
     $env:CONQUERD_RELEASE_PROOF = $proof.Trim()
-    Write-Host "    Rebuilding conquerd-client with CONQUERD_RELEASE_PROOF..."
+    Write-Host "    Rebuilding doubleslash-client with CONQUERD_RELEASE_PROOF..."
     Push-Location $CLIENT_DIR
     $_prevPref4 = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     & cargo build @CARGO_ARGS --features $_features
@@ -198,24 +198,24 @@ if ($env:CONQUERD_RELEASE_SIGN_KEY -and (Test-Path $env:CONQUERD_RELEASE_SIGN_KE
     if ($_clientExit2 -ne 0) { Write-Error "cargo rebuild with release proof failed (exit $_clientExit2)" }
 }
 
-$CLIENT_EXE = Join-Path $RUST_DIR "target\$PROFILE_NAME\conquerd-client.exe"
+$CLIENT_EXE = Join-Path $RUST_DIR "target\$PROFILE_NAME\doubleslash-client.exe"
 if (-not (Test-Path $CLIENT_EXE)) {
-    Write-Error "conquerd-client.exe not found at $CLIENT_EXE"
+    Write-Error "doubleslash-client.exe not found at $CLIENT_EXE"
 }
 
-# ── Build conquerd-installer ──────────────────────────────────────────────────
-Write-Host "`n==> Building conquerd-installer ($PROFILE_NAME)..."
+# ── Build doubleslash-installer ──────────────────────────────────────────────────
+Write-Host "`n==> Building doubleslash-installer ($PROFILE_NAME)..."
 Push-Location $RUST_DIR
 $_prevPref2 = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-& cargo build @CARGO_ARGS -p conquerd-installer
+& cargo build @CARGO_ARGS -p doubleslash-installer
 $_installerExit = $LASTEXITCODE
 $ErrorActionPreference = $_prevPref2
 Pop-Location
-if ($_installerExit -ne 0) { Write-Error "cargo build conquerd-installer failed (exit $_installerExit)" }
+if ($_installerExit -ne 0) { Write-Error "cargo build doubleslash-installer failed (exit $_installerExit)" }
 
-$INSTALLER_EXE = Join-Path $RUST_DIR "target\$PROFILE_NAME\conquerd-installer.exe"
+$INSTALLER_EXE = Join-Path $RUST_DIR "target\$PROFILE_NAME\doubleslash-installer.exe"
 if (-not (Test-Path $INSTALLER_EXE)) {
-    Write-Error "conquerd-installer.exe not found at $INSTALLER_EXE"
+    Write-Error "doubleslash-installer.exe not found at $INSTALLER_EXE"
 }
 
 # ── Prepare dist folder ───────────────────────────────────────────────────────
@@ -234,7 +234,7 @@ if (Test-Path $BUNDLE) {
 New-Item -ItemType Directory -Path $BUNDLE | Out-Null
 
 $BUNDLE_EXE       = Join-Path $BUNDLE "DoubleSlash.exe"
-$BUNDLE_INSTALLER = Join-Path $BUNDLE "conquerd-installer.exe"
+$BUNDLE_INSTALLER = Join-Path $BUNDLE "doubleslash-installer.exe"
 Copy-Item $CLIENT_EXE    $BUNDLE_EXE
 Copy-Item $INSTALLER_EXE $BUNDLE_INSTALLER
 Write-Host "    Copied binaries"
@@ -334,9 +334,9 @@ if ($_doSign) {
 }
 
 # ── Copy installer to dist\ root (run-alongside-archive entry point) ──────────
-$DIST_INSTALLER = Join-Path $DIST "conquerd-installer.exe"
+$DIST_INSTALLER = Join-Path $DIST "doubleslash-installer.exe"
 Copy-Item $INSTALLER_EXE $DIST_INSTALLER -Force
-Write-Host "`n    Copied conquerd-installer.exe to dist\ (detect-archive entry point)"
+Write-Host "`n    Copied doubleslash-installer.exe to dist\ (detect-archive entry point)"
 
 # ── Create .7z archive ────────────────────────────────────────────────────────
 # The installer downloads this 7z from GitHub Releases for updates.

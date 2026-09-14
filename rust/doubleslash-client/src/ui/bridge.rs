@@ -1,0 +1,10264 @@
+//! Qt/QML bridge — the AppBridge QObject singleton that QML binds to.
+//!
+//! Compiled only when the `qt-ui` Cargo feature is enabled.
+//!
+//! Lifecycle:
+//! 1. QML instantiates `AppBridge { id: backend }`.
+//! 2. QML calls `backend.initializeBackend()` from `Component.onCompleted`.
+//! 3. `initializeBackend` unlocks the identity, opens stores, starts a
+//!    multi-thread tokio runtime on a dedicated OS thread, and spawns all
+//!    DoubleSlash background tasks there.
+//! 4. Background tasks post UI updates back to the Qt thread via
+//!    `CxxQtThread::queue`.
+//! 5. QML user actions call invokables which `try_send` on tokio channels.
+
+use std::collections::{HashMap, HashSet};
+use std::pin::Pin;
+use std::sync::Arc;
+
+use cxx_qt::CxxQtType;
+use cxx_qt::Threading;
+use parking_lot::RwLock;
+use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, error, info, warn};
+
+use cxx_qt_lib::QString;
+
+use crate::call_controller::CallCommand;
+use crate::connection_manager::{ConnectionCommand, ConnectionEvent};
+use crate::sfu_client::SfuCommand;
+
+/// The main QObject singleton exposed to QML as `DoubleSlash.Client::AppBridge`.
+#[cxx_qt::bridge]
+pub mod ffi {
+    unsafe extern "C++" {
+        include!("cxx-qt-lib/qstring.h");
+        type QString = cxx_qt_lib::QString;
+    }
+
+    extern "RustQt" {
+        #[qobject]
+        #[qml_element]
+        #[qproperty(i32, peer_count)]
+        #[qproperty(bool, in_room)]
+        /// True when local audio capture is active (direct call OR room voice).
+        /// Distinguishes "chat-only room join" from "voice room join".
+        #[qproperty(bool, voice_active)]
+        /// True only when the *active voice session* is a room.
+        ///
+        /// Not the same question as `in_room`, which a chat-only room join also
+        /// sets and nothing clears until that room is left. Keying voice UI off
+        /// `voice_active && in_room` therefore mistakes "a text room is open"
+        /// for "the voice session is that room" — which pointed the voice rail
+        /// at the text room's roster during a 1:1 call, and pointed hang-up at
+        /// `leaveRoom()` instead of `endCall()`.
+        #[qproperty(bool, voice_in_room)]
+        #[qproperty(QString, session_banner)]
+        #[qproperty(QString, call_state)]
+        #[qproperty(QString, public_id)]
+        /// Our embedded build ID (for reproducible build attestation).
+        #[qproperty(QString, build_id)]
+        #[qproperty(QString, invite_url)]
+        /// One of "direct", "relay", "offline", "error" — drives SessionBanner colour.
+        #[qproperty(QString, connection_mode)]
+        /// Elapsed seconds for the current call (0 when idle).
+        #[qproperty(i32, call_duration_secs)]
+        /// Number of missed inbound calls since last cleared.
+        #[qproperty(i32, missed_calls)]
+        /// True when the x.ollama.v1 plugin is enabled and its task is running.
+        #[qproperty(bool, ollama_available)]
+        /// Latest Ollama model-list JSON array (e.g. `["llama3.2:latest"]`).
+        /// Updated by `fetchOllamaModels`; QML should watch this property (more
+        /// reliable than the signal alone with cxx-qt Connections).
+        #[qproperty(QString, ollama_models_json)]
+        /// Last model-list error (empty on success). Pair with `ollama_models_json`.
+        #[qproperty(QString, ollama_models_error)]
+        /// Normalized audio input level (0.0–1.0), updated each Opus frame.
+        /// Non-zero only while a call or mic test is active.
+        #[qproperty(f32, mic_level)]
+        /// True while a microphone test is in progress.
+        #[qproperty(bool, mic_test_active)]
+        /// True while the local camera is capturing and sending.
+        #[qproperty(bool, video_active)]
+        /// True while system/application audio is being captured and sent.
+        ///
+        /// Independent of `video_active` in both directions: sharing a screen
+        /// silently is legitimate, and so is sharing audio while the camera is
+        /// off. It does require a media session, since the stream is
+        /// timestamped against that session's clock.
+        #[qproperty(bool, content_audio_active)]
+        /// True while the settings preview owns the camera.
+        ///
+        /// Never true at the same time as `video_active`: one capture holds the
+        /// device, and a call takes it over. The settings surface is fed by
+        /// whichever is running, so it should watch both.
+        #[qproperty(bool, video_preview_active)]
+        #[qproperty(bool, backup_busy)]
+        #[qproperty(QString, backup_result)]
+        type AppBridge = super::AppBridgeRust;
+
+        #[qinvokable]
+        #[rust_name = "backup_command"]
+        fn backupCommand(self: Pin<&mut AppBridge>, request: &QString);
+
+        // ── Signals ───────────────────────────────────────────────────────
+
+        // ── Signals ───────────────────────────────────────────────────────
+
+        /// Emitted when the peer list changes. `peers_json` is a JSON array
+        /// of `{peer_id, handle, online, in_call, blocked}` objects.
+        #[qsignal]
+        #[rust_name = "peers_updated"]
+        fn peersUpdated(self: Pin<&mut AppBridge>, peers_json: QString);
+
+        /// Emitted for each inbound chat message. `msg_json` is a single
+        /// `{msg_id, sender, body, timestamp, kind, mine, status}` JSON object.
+        #[qsignal]
+        #[rust_name = "chat_message_received"]
+        fn chatMessageReceived(self: Pin<&mut AppBridge>, msg_json: QString);
+
+        /// Emitted when a locally-authored message delivery status changes.
+        #[qsignal]
+        #[rust_name = "message_status_changed"]
+        fn messageStatusChanged(self: Pin<&mut AppBridge>, msg_id: QString, status: QString);
+
+        /// Emitted when a peer is selected to load its full chat history.
+        /// `msgs_json` is a JSON array of `{msg_id, sender, body, timestamp, kind, mine, status}`
+        /// objects. Consumers should call `chatModel.setMessages()` to atomically
+        /// replace the model contents.
+        #[qsignal]
+        #[rust_name = "chat_history_loaded"]
+        fn chatHistoryLoaded(self: Pin<&mut AppBridge>, msgs_json: QString);
+
+        /// Emitted when the **voice** room participant list changes. `json` is a
+        /// JSON array of `{peer_id, handle, speaking, muted}` objects. Drives the
+        /// voice rail only — never the text-room members panel.
+        #[qsignal]
+        #[rust_name = "participants_updated"]
+        fn participantsUpdated(self: Pin<&mut AppBridge>, json: QString);
+
+        /// Emitted when the **text** room members list changes for the currently
+        /// selected chat room. `json` is the same row shape as
+        /// `participantsUpdated` (no audio fields required). Peers are the
+        /// room's chat recipients (voice participants + text subscribers).
+        #[qsignal]
+        #[rust_name = "text_members_updated"]
+        fn textMembersUpdated(self: Pin<&mut AppBridge>, json: QString);
+
+        /// Emitted when a remote peer requests an audio call.
+        #[qsignal]
+        #[rust_name = "incoming_call"]
+        fn incomingCall(self: Pin<&mut AppBridge>, peer_id: QString);
+
+        /// Emitted when the available SFU room list updates. `rooms_json` is a
+        /// JSON object `{supernode_id, rooms: [{room_id, name, kind, count}]}`.
+        #[qsignal]
+        #[rust_name = "sfu_rooms_updated"]
+        fn sfuRoomsUpdated(self: Pin<&mut AppBridge>, rooms_json: QString);
+
+        /// Emitted when a supernode connects or disconnects. `nodes_json` is a
+        /// JSON array of `{node_id, connected, homepage_url, title, sfu_enabled}` patch objects.
+        #[qsignal]
+        #[rust_name = "nodes_updated"]
+        fn nodesUpdated(self: Pin<&mut AppBridge>, nodes_json: QString);
+
+        /// Emitted after a supernode is removed from the trusted peer store.
+        #[qsignal]
+        #[rust_name = "supernode_removed"]
+        fn supernodeRemoved(self: Pin<&mut AppBridge>, node_id: QString);
+
+        /// Full Rooms sidebar rebuild from the trusted peer store. `nodes_json`
+        /// is a JSON array of `{node_id, connected, homepage_url, title, sfu_enabled}`.
+        #[qsignal]
+        #[rust_name = "rooms_sidebar_sync"]
+        fn roomsSidebarSync(self: Pin<&mut AppBridge>, nodes_json: QString);
+
+        /// Emitted when a supernode sends its homepage / portal info.
+        /// Open `url` in the system browser to show the portal.
+        #[qsignal]
+        #[rust_name = "supernode_info_received"]
+        fn supernodeInfoReceived(
+            self: Pin<&mut AppBridge>,
+            node_id: QString,
+            url: QString,
+            title: QString,
+        );
+
+        /// Emitted when the embedded browser panel should navigate to a
+        /// `doubleslash://` supernode portal. `url` is the full `doubleslash://`
+        /// URL to load; the panel sets `nodeMode: true` and calls `navigateTo`.
+        #[qsignal]
+        #[rust_name = "navigate_node_portal"]
+        fn navigateNodePortal(self: Pin<&mut AppBridge>, supernode_id: QString, url: QString);
+
+        /// Emitted when a supernode requires a portal visit before granting relay.
+        /// The UI should open `portal_url` in the system browser and switch to
+        /// the Nodes tab so the user understands what is happening.
+        #[qsignal]
+        #[rust_name = "relay_portal_required"]
+        fn relayPortalRequired(
+            self: Pin<&mut AppBridge>,
+            supernode_id: QString,
+            portal_url: QString,
+        );
+
+        // ── Invokables ────────────────────────────────────────────────────
+
+        /// Bootstrap identity, stores, and background runtime.
+        /// Call once from `Component.onCompleted` in QML.
+        #[qinvokable]
+        #[rust_name = "initialize_backend"]
+        fn initializeBackend(self: Pin<&mut AppBridge>);
+
+        /// Stop the current audio call.
+        #[qinvokable]
+        #[rust_name = "end_call"]
+        fn endCall(self: Pin<&mut AppBridge>);
+
+        /// Leave the current SFU voice room.
+        #[qinvokable]
+        #[rust_name = "leave_room"]
+        fn leaveRoom(self: Pin<&mut AppBridge>);
+
+        /// Send a text chat message to `peer_id`.
+        #[qinvokable]
+        #[rust_name = "send_chat"]
+        fn sendChat(self: Pin<&mut AppBridge>, peer_id: &QString, message: &QString);
+
+        /// Initiate an audio call to `peer_id`.
+        #[qinvokable]
+        #[rust_name = "start_call"]
+        fn startCall(self: Pin<&mut AppBridge>, peer_id: &QString);
+
+        /// Generate an invite link and copy it to the system clipboard.
+        /// Also sets the `invite_url` property to the generated URL.
+        #[qinvokable]
+        #[rust_name = "copy_invite"]
+        fn copyInvite(self: Pin<&mut AppBridge>);
+
+        /// Accept an invite URL (https://doubleslash.space/i#… or the
+        /// `d://`/`doubleslash://` scheme forms) or peer ID pasted by the user.
+        #[qinvokable]
+        #[rust_name = "paste_invite"]
+        fn pasteInvite(self: Pin<&mut AppBridge>, url: &QString);
+
+        /// Append a QML-originated diagnostic line to the client log (visible in
+        /// `~/.doubleslash/logs/doubleslash-client.log` at info level).
+        #[qinvokable]
+        #[rust_name = "log_event"]
+        fn logEvent(self: Pin<&mut AppBridge>, message: &QString);
+
+        /// Apply the onboarding direct-P2P listener choice.
+        #[qinvokable]
+        #[rust_name = "configure_direct_p2p"]
+        fn configureDirectP2p(self: Pin<&mut AppBridge>, enabled: bool, port: i32);
+
+        /// Accept an incoming call from `peer_id`.
+        #[qinvokable]
+        #[rust_name = "accept_call"]
+        fn acceptCall(self: Pin<&mut AppBridge>, peer_id: &QString);
+
+        /// Reject / hang up an incoming call from `peer_id`.
+        #[qinvokable]
+        #[rust_name = "reject_call"]
+        fn rejectCall(self: Pin<&mut AppBridge>, peer_id: &QString);
+
+        /// Join an SFU room for text chat only (no audio pipeline started).
+        #[qinvokable]
+        #[rust_name = "join_room"]
+        fn joinRoom(self: Pin<&mut AppBridge>, supernode_id: &QString, room_id: &QString);
+
+        /// Validate a private-room invite token and join the SFU room.
+        #[qinvokable]
+        #[rust_name = "join_room_with_invite"]
+        fn joinRoomWithInvite(
+            self: Pin<&mut AppBridge>,
+            supernode_id: &QString,
+            room_id: &QString,
+            invite_token: &QString,
+        );
+
+        /// Subscribe to an SFU room's text chat without joining voice or
+        /// leaving the current voice room. Single-clicking a room in the sidebar
+        /// calls this so the user can browse chat across rooms freely.
+        #[qinvokable]
+        #[rust_name = "subscribe_room_chat"]
+        fn subscribeRoomChat(self: Pin<&mut AppBridge>, supernode_id: &QString, room_id: &QString);
+
+        /// Join an SFU room for both text chat AND voice (starts audio pipeline).
+        #[qinvokable]
+        #[rust_name = "join_room_with_voice"]
+        fn joinRoomWithVoice(self: Pin<&mut AppBridge>, supernode_id: &QString, room_id: &QString);
+
+        /// Create and immediately join a new SFU voice room on a supernode.
+        /// `room_type` is `"public"` or `"private"` (supernode wire shape).
+        /// `invite_policy` is `"owner"` (default; only the creator/admin can
+        /// mint invite tokens) or `"members"` (any current member can mint).
+        #[qinvokable]
+        #[rust_name = "create_room"]
+        fn createRoom(
+            self: Pin<&mut AppBridge>,
+            supernode_id: &QString,
+            room_name: &QString,
+            room_type: &QString,
+            invite_policy: &QString,
+        );
+
+        /// Create a room nested under `parent_room_id` in the Space tree. Behaves
+        /// like `createRoom` on the wire (the SFU namespace is flat); the parent
+        /// is remembered client-side and applied when the room is adopted.
+        #[qinvokable]
+        #[rust_name = "create_sub_room"]
+        fn createSubRoom(
+            self: Pin<&mut AppBridge>,
+            supernode_id: &QString,
+            room_name: &QString,
+            room_type: &QString,
+            parent_room_id: &QString,
+            invite_policy: &QString,
+        );
+
+        /// Emitted when the supernode acknowledges a room we created.
+        #[qsignal]
+        #[rust_name = "room_created"]
+        fn roomCreated(
+            self: Pin<&mut AppBridge>,
+            supernode_id: QString,
+            room_id: QString,
+            room_name: QString,
+            room_type: QString,
+            invite_token: QString,
+        );
+
+        /// Build a self-contained room invite URL (`doubleslash://room#…`) that
+        /// embeds the host supernode's address, the room, and (for private
+        /// rooms) the token — so a joiner on any (or no) supernode can paste it.
+        /// The room's type and invite token are looked up from the local room
+        /// store; `room_name` is a fallback for rooms not yet in the store.
+        /// Also stores the URL in `invite_url` so it can be shown in the popup.
+        /// Returns an empty string if the host supernode address is unknown.
+        #[qinvokable]
+        #[rust_name = "generate_room_invite"]
+        fn generateRoomInvite(
+            self: Pin<&mut AppBridge>,
+            supernode_id: &QString,
+            room_id: &QString,
+            room_name: &QString,
+        ) -> QString;
+
+        /// Like `generateRoomInvite`, but binds the invite to a specific peer by
+        /// embedding an owner-signed `SpaceGrant(node_id=room, grantee_pub)`.
+        /// A private Space room then admits that peer durably by proof+grant —
+        /// no server-side invite-token state, so it survives supernode restarts.
+        /// Use for inviting a known contact; `generateRoomInvite` stays the
+        /// shareable (token-gated) variant. Returns "" if we don't own the room's
+        /// Space or the host address is unknown.
+        #[qinvokable]
+        #[rust_name = "generate_room_invite_for_peer"]
+        fn generateRoomInviteForPeer(
+            self: Pin<&mut AppBridge>,
+            supernode_id: &QString,
+            room_id: &QString,
+            room_name: &QString,
+            grantee_pub: &QString,
+        ) -> QString;
+
+        /// Emitted when a pasted room invite's host supernode has connected and
+        /// the room is ready to enter. The token is already persisted, so the
+        /// normal join path validates it.
+        #[qsignal]
+        #[rust_name = "room_invite_ready"]
+        fn roomInviteReady(
+            self: Pin<&mut AppBridge>,
+            supernode_id: QString,
+            room_id: QString,
+            room_name: QString,
+        );
+
+        /// Hide an SFU room from the local Rooms sidebar (not deleted on the supernode).
+        #[qinvokable]
+        #[rust_name = "remove_room"]
+        fn removeRoom(self: Pin<&mut AppBridge>, supernode_id: &QString, room_id: &QString);
+
+        /// Emitted when a room is hidden from the local Rooms sidebar.
+        #[qsignal]
+        #[rust_name = "room_removed"]
+        fn roomRemoved(self: Pin<&mut AppBridge>, supernode_id: QString, room_id: QString);
+
+        /// Register the doubleslash:// URI scheme handler (Windows only, no-op elsewhere).
+        #[qinvokable]
+        #[rust_name = "register_uri_scheme"]
+        fn registerUriScheme(self: Pin<&mut AppBridge>);
+
+        /// Unregister the doubleslash:// URI scheme handler (Windows only, no-op elsewhere).
+        #[qinvokable]
+        #[rust_name = "unregister_uri_scheme"]
+        fn unregisterUriScheme(self: Pin<&mut AppBridge>);
+
+        /// Open a supernode's in-app portal in the embedded browser panel.
+        ///
+        /// Requests a relay slot from the supernode (needed to open the QUIC
+        /// connection) and then emits [`navigateNodePortal`] with the
+        /// `doubleslash://<supernode_id>/` URL so QML can load it.
+        /// The relay request is fire-and-forget; the QUIC connection is set up
+        /// asynchronously and the first page load will block until it is ready.
+        #[qinvokable]
+        #[rust_name = "open_node_portal"]
+        fn openNodePortal(self: Pin<&mut AppBridge>, supernode_id: &QString);
+
+        /// Apply a pending update (launch installer with --update-and-relaunch).
+        #[qinvokable]
+        #[rust_name = "apply_update"]
+        fn applyUpdate(self: Pin<&mut AppBridge>);
+
+        /// Apply the live automatic-update preference. Enabling it triggers an
+        /// immediate check; disabling it prevents startup and hourly checks.
+        #[qinvokable]
+        #[rust_name = "set_automatic_update_checks"]
+        fn setAutomaticUpdateChecks(self: Pin<&mut AppBridge>, enabled: bool);
+
+        /// Mute or unmute the local microphone.
+        #[qinvokable]
+        #[rust_name = "set_muted"]
+        fn setMuted(self: Pin<&mut AppBridge>, muted: bool);
+
+        /// Attempt to unlock the identity using a text passphrase and/or a keyfile.
+        /// Either `passphrase` or `file_path` may be empty; at least one must be set.
+        /// `file_path` must be a local OS file path (not a URL).
+        /// Called from QML after the user submits the passphrase dialog.
+        ///
+        /// `remember` opts into OS keyring auto-unlock for this identity. It is
+        /// always the user's explicit choice, and unchecking it forgets a key
+        /// stored earlier, so the checkbox state and the keyring agree after
+        /// every unlock.
+        #[qinvokable]
+        #[rust_name = "unlock_with_passphrase_and_file"]
+        fn unlockWithPassphraseAndFile(
+            self: Pin<&mut AppBridge>,
+            passphrase: &QString,
+            file_path: &QString,
+            remember: bool,
+        );
+
+        /// Emitted when the identity requires a passphrase to unlock.
+        /// `is_new` is true when creating a new identity (no existing file).
+        #[qsignal]
+        #[rust_name = "passphrase_required"]
+        fn passphraseRequired(self: Pin<&mut AppBridge>, is_new: bool);
+
+        /// Emitted when a newer release is available. `tag` is the version
+        /// string (e.g. "v1.2.0") and `url` is the GitHub release URL.
+        #[qsignal]
+        #[rust_name = "update_available"]
+        fn updateAvailable(self: Pin<&mut AppBridge>, tag: QString, url: QString);
+
+        /// Emitted when the updater could not be started. The update remains
+        /// pending so the user can retry from the title-bar indicator.
+        #[qsignal]
+        #[rust_name = "update_install_failed"]
+        fn updateInstallFailed(self: Pin<&mut AppBridge>, message: QString);
+
+        /// Clear the unread message count (call when the user views chat).
+        #[qinvokable]
+        #[rust_name = "clear_unread"]
+        fn clearUnread(self: Pin<&mut AppBridge>);
+
+        /// Remove a peer from the peer store and disconnect them.
+        #[qinvokable]
+        #[rust_name = "remove_peer"]
+        fn removePeer(self: Pin<&mut AppBridge>, peer_id: &QString);
+
+        /// Remove a trusted supernode from the store and tear down its WS session.
+        #[qinvokable]
+        #[rust_name = "remove_supernode"]
+        fn removeSupernode(self: Pin<&mut AppBridge>, node_id: &QString);
+
+        /// Block a peer — prevents further inbound messages.
+        #[qinvokable]
+        #[rust_name = "block_peer"]
+        fn blockPeer(self: Pin<&mut AppBridge>, peer_id: &QString);
+
+        /// Unblock a previously blocked peer.
+        #[qinvokable]
+        #[rust_name = "unblock_peer"]
+        fn unblockPeer(self: Pin<&mut AppBridge>, peer_id: &QString);
+
+        /// Copy a peer's public ID to the system clipboard.
+        #[qinvokable]
+        #[rust_name = "copy_peer_id"]
+        fn copyPeerId(self: Pin<&mut AppBridge>, peer_id: &QString);
+
+        /// Load and emit chat history for the selected peer.
+        #[qinvokable]
+        #[rust_name = "select_peer"]
+        fn selectPeer(self: Pin<&mut AppBridge>, peer_id: &QString);
+
+        /// Load an older page of chat history for the selected peer.
+        /// Emits `chatHistoryPrepended` with a JSON array (oldest-first within the page).
+        #[qinvokable]
+        #[rust_name = "load_more_history"]
+        fn loadMoreHistory(self: Pin<&mut AppBridge>, peer_id: &QString, page: i32);
+
+        /// Emitted when an older history page is loaded. `msgs_json` is a JSON array
+        /// of message objects to prepend to the active conversation.
+        #[qsignal]
+        #[rust_name = "chat_history_prepended"]
+        fn chatHistoryPrepended(self: Pin<&mut AppBridge>, msgs_json: QString);
+
+        /// Send a typing indicator to a peer.
+        #[qinvokable]
+        #[rust_name = "send_typing"]
+        fn sendTyping(self: Pin<&mut AppBridge>, peer_id: &QString, is_typing: bool);
+
+        /// Send a text chat message to the current SFU room.
+        #[qinvokable]
+        #[rust_name = "send_room_chat"]
+        fn sendRoomChat(self: Pin<&mut AppBridge>, body: &QString);
+
+        /// Start PTT polling for the given key name (e.g. "space", "f1").
+        /// Replaces any previously running PTT thread.
+        #[qinvokable]
+        #[rust_name = "enable_ptt"]
+        fn enablePtt(self: Pin<&mut AppBridge>, key: &QString);
+
+        /// Stop the PTT polling thread (call when PTT is disabled in settings).
+        #[qinvokable]
+        #[rust_name = "disable_ptt"]
+        fn disablePtt(self: Pin<&mut AppBridge>);
+
+        /// Switch the active audio pipeline between PTT (false) and
+        /// voice-activation (true). Takes effect immediately when a call
+        /// is in progress; otherwise the next `StartAudio` picks it up.
+        #[qinvokable]
+        #[rust_name = "set_voice_activation"]
+        fn setVoiceActivation(self: Pin<&mut AppBridge>, enabled: bool);
+
+        /// Update the jitter buffer depth (1–20 Opus frames = 20–400 ms).
+        /// Takes effect immediately for the current and future calls.
+        #[qinvokable]
+        #[rust_name = "set_jitter_depth"]
+        fn setJitterDepth(self: Pin<&mut AppBridge>, depth: i32);
+
+        /// Emitted when a peer starts or stops typing.
+        #[qsignal]
+        #[rust_name = "typing_changed"]
+        fn typingChanged(self: Pin<&mut AppBridge>, peer_id: QString, is_typing: bool);
+
+        /// Emitted when a room text chat message arrives.
+        #[qsignal]
+        #[rust_name = "room_chat_received"]
+        fn roomChatReceived(self: Pin<&mut AppBridge>, msg_json: QString);
+
+        /// Emitted when a new peer is added via invite handshake.
+        #[qsignal]
+        #[rust_name = "peer_added"]
+        fn peerAdded(self: Pin<&mut AppBridge>, peer_id: QString, handle: QString);
+
+        /// Emitted when a remote peer sends a file offer.
+        /// `json` = `{transfer_id, peer_id, rel_path, size, purpose}`.
+        #[qsignal]
+        #[rust_name = "file_offered"]
+        fn fileOffered(self: Pin<&mut AppBridge>, json: QString);
+
+        /// Emitted during an active file transfer with progress 0.0–1.0.
+        #[qsignal]
+        #[rust_name = "file_progress"]
+        fn fileProgress(self: Pin<&mut AppBridge>, transfer_id: QString, progress: f64);
+
+        /// Emitted when a file transfer is verified complete.
+        /// The caller should move the file from the temp path to downloads.
+        /// `json` = `{transfer_id, rel_path}` (data is saved to downloads dir).
+        #[qsignal]
+        #[rust_name = "file_complete"]
+        fn fileComplete(self: Pin<&mut AppBridge>, json: QString);
+
+        /// Emitted when a file transfer fails or is rejected.
+        /// `json` = `{transfer_id, reason}`.
+        #[qsignal]
+        #[rust_name = "file_failed"]
+        fn fileFailed(self: Pin<&mut AppBridge>, json: QString);
+
+        // ── Ollama AI signals ─────────────────────────────────────────────
+
+        /// Emitted for each streamed token chunk from Ollama.
+        /// `request_id` lets QML correlate chunks to a specific query.
+        #[qsignal]
+        #[rust_name = "ollama_chunk"]
+        fn ollamaChunk(self: Pin<&mut AppBridge>, request_id: QString, text: QString);
+
+        /// Emitted when an Ollama query stream finishes successfully.
+        #[qsignal]
+        #[rust_name = "ollama_done"]
+        fn ollamaDone(self: Pin<&mut AppBridge>, request_id: QString);
+
+        /// Emitted when an Ollama query fails (HTTP error, timeout, etc.).
+        #[qsignal]
+        #[rust_name = "ollama_error"]
+        fn ollamaError(self: Pin<&mut AppBridge>, request_id: QString, error: QString);
+
+        /// Emitted when a `fetchOllamaModels` call completes.
+        /// `models` is a JSON array of sorted model-name strings, e.g. `["llama3","mistral"]`.
+        /// `error` is empty on success.
+        #[qsignal]
+        #[rust_name = "ollama_models_ready"]
+        fn ollamaModelsReady(self: Pin<&mut AppBridge>, models: QString, error: QString);
+
+        /// Emitted when a trusted peer's avatar config arrives or updates.
+        /// QML Avatar components for `peer_id` should re-render.
+        #[qsignal]
+        #[rust_name = "avatar_config_updated"]
+        fn avatarConfigUpdated(self: Pin<&mut AppBridge>, peer_id: QString);
+
+        // ── Ollama AI invokables ──────────────────────────────────────────
+
+        /// Send a prompt to the local Ollama instance.
+        /// `request_id` is caller-chosen and echoed in every chunk/done/error.
+        /// No-op when `ollama_available` is false.
+        #[qinvokable]
+        #[rust_name = "ask_ollama"]
+        fn askOllama(
+            self: Pin<&mut AppBridge>,
+            request_id: &QString,
+            prompt: &QString,
+            system_prompt: &QString,
+        );
+
+        /// Cancel an in-flight Ollama query by `request_id`.
+        #[qinvokable]
+        #[rust_name = "cancel_ollama"]
+        fn cancelOllama(self: Pin<&mut AppBridge>, request_id: &QString);
+
+        /// Fetch the list of models available in the local Ollama instance.
+        /// Pass `base_url` as an empty string to use the default (`http://localhost:11434`).
+        /// Result is delivered asynchronously via `ollamaModelsReady`.
+        #[qinvokable]
+        #[rust_name = "fetch_ollama_models"]
+        fn fetchOllamaModels(self: Pin<&mut AppBridge>, base_url: &QString);
+
+        /// Accept an inbound file offer by transfer ID.
+        #[qinvokable]
+        #[rust_name = "accept_file"]
+        fn acceptFile(self: Pin<&mut AppBridge>, transfer_id: &QString);
+
+        /// Reject an inbound file offer by transfer ID.
+        #[qinvokable]
+        #[rust_name = "reject_file"]
+        fn rejectFile(self: Pin<&mut AppBridge>, transfer_id: &QString);
+
+        /// Accept a room file offer, asking its sender to stream it. Room file
+        /// offers are advertisements — nothing downloads until this is called.
+        #[qinvokable]
+        #[rust_name = "accept_room_file"]
+        fn acceptRoomFile(self: Pin<&mut AppBridge>, transfer_id: &QString);
+
+        /// Decline a room file offer. Purely local; the sender uploads nothing.
+        #[qinvokable]
+        #[rust_name = "decline_room_file"]
+        fn declineRoomFile(self: Pin<&mut AppBridge>, transfer_id: &QString);
+
+        /// Send a file at `file_url` (a local file:// URI or absolute path) to `peer_id`.
+        /// Reads the file synchronously then dispatches a SendFile command.
+        #[qinvokable]
+        #[rust_name = "send_file"]
+        fn sendFile(self: Pin<&mut AppBridge>, peer_id: &QString, file_url: &QString);
+
+        /// Send a file at `file_url` to the currently selected SFU room.
+        #[qinvokable]
+        #[rust_name = "send_room_file"]
+        fn sendRoomFile(self: Pin<&mut AppBridge>, file_url: &QString);
+
+        /// Generate an invite URL and return it as a QString.
+        /// Does NOT copy to clipboard — call copyToClipboard separately if desired.
+        #[qinvokable]
+        #[rust_name = "generate_invite"]
+        fn generateInvite(self: Pin<&mut AppBridge>) -> QString;
+
+        /// Write `text` to the system clipboard.
+        #[qinvokable]
+        #[rust_name = "copy_to_clipboard"]
+        fn copyToClipboard(self: Pin<&mut AppBridge>, text: &QString);
+
+        /// Reveal a local file in the system file manager (selects the file).
+        #[qinvokable]
+        #[rust_name = "open_containing_folder"]
+        fn openContainingFolder(self: Pin<&mut AppBridge>, path: &QString);
+
+        /// Emitted when the unread count for a peer changes.
+        #[qsignal]
+        #[rust_name = "unread_changed"]
+        fn unreadChanged(self: Pin<&mut AppBridge>, peer_id: QString, count: i32);
+
+        /// Emitted when the last-message preview for a peer changes.
+        #[qsignal]
+        #[rust_name = "preview_changed"]
+        fn previewChanged(self: Pin<&mut AppBridge>, peer_id: QString, text: QString);
+
+        /// Emitted periodically (or on demand) with active session statistics.
+        /// `json` = `{rtt_ms, packet_loss_pct, jitter_ms, relay, bandwidth_kbps}`.
+        #[qsignal]
+        #[rust_name = "connection_stats"]
+        fn connectionStats(self: Pin<&mut AppBridge>, json: QString);
+
+        /// Emitted when the local user's speaking state changes (VAD/PTT).
+        /// `speaking` is `true` while voice activity is detected and `false`
+        /// immediately when muted or after the VAD hold-off expires.
+        #[qsignal]
+        #[rust_name = "local_speaking_changed"]
+        fn localSpeakingChanged(self: Pin<&mut AppBridge>, speaking: bool);
+
+        /// Emitted when a remote room peer's speaking state changes.
+        /// `speaking` is `true` when audio frames arrive from the peer and
+        /// `false` after ~600 ms of silence.
+        #[qsignal]
+        #[rust_name = "peer_speaking_changed"]
+        fn peerSpeakingChanged(self: Pin<&mut AppBridge>, peer_id: QString, speaking: bool);
+
+        /// Emitted when a remote room peer's audio level changes.
+        /// `level` is normalised RMS (0.0–1.0), emitted at ≤10 Hz per peer.
+        #[qsignal]
+        #[rust_name = "peer_level_changed"]
+        fn peerLevelChanged(self: Pin<&mut AppBridge>, peer_id: QString, level: f32);
+
+        /// Emitted when a room peer's camera turns on or off. Drives the
+        /// voice-rail streaming indicator.
+        #[qsignal]
+        #[rust_name = "peer_video_state_changed"]
+        fn peerVideoStateChanged(self: Pin<&mut AppBridge>, peer_id: QString, active: bool);
+
+        /// Emitted when a peer's video stops arriving while their camera is
+        /// still announced as on, and again when it comes back.
+        ///
+        /// Distinct from `peerVideoStateChanged`: that one carries what the
+        /// sender *says*, this one carries what actually reaches us. A tile
+        /// keeps showing its last frame either way, so without this a frozen
+        /// picture is indistinguishable from a very still room.
+        #[qsignal]
+        #[rust_name = "peer_video_stalled_changed"]
+        fn peerVideoStalledChanged(self: Pin<&mut AppBridge>, peer_id: QString, stalled: bool);
+
+        /// Emitted when local capture stops on its own — the device was
+        /// unplugged, taken by another application, or the captured window
+        /// closed. The camera toggle has already been turned off by the time
+        /// this arrives; `reason` is for display.
+        #[qsignal]
+        #[rust_name = "camera_capture_failed"]
+        fn cameraCaptureFailed(self: Pin<&mut AppBridge>, reason: QString);
+
+        /// Start a microphone test: starts audio capture and emits live level
+        /// updates via the `mic_level` property.
+        #[qinvokable]
+        #[rust_name = "start_mic_test"]
+        fn startMicTest(self: Pin<&mut AppBridge>);
+
+        /// Stop the microphone test started by `startMicTest()`.
+        #[qinvokable]
+        #[rust_name = "stop_mic_test"]
+        fn stopMicTest(self: Pin<&mut AppBridge>);
+
+        /// Update the preferred audio capture / playback device names.
+        /// Pass an empty string for either argument to mean "use system default".
+        /// Takes effect on the next mic test or call start.
+        #[qinvokable]
+        #[rust_name = "set_audio_devices"]
+        fn setAudioDevices(self: Pin<&mut AppBridge>, input: &QString, output: &QString);
+
+        /// Play a short speaker test tone on the default output device.
+        #[qinvokable]
+        #[rust_name = "test_speaker"]
+        fn testSpeaker(self: Pin<&mut AppBridge>);
+
+        /// Set the noise gate suppression level. Accepted values (case-insensitive):
+        /// "off", "mild", "moderate", "aggressive", "max".
+        /// Takes effect immediately mid-call.
+        #[qinvokable]
+        #[rust_name = "set_noise_strength"]
+        fn setNoiseStrength(self: Pin<&mut AppBridge>, level: &QString);
+
+        /// Set the microphone input gain (0–200, where 100 = unity).
+        /// Takes effect immediately mid-call.
+        #[qinvokable]
+        #[rust_name = "set_input_volume"]
+        fn setInputVolume(self: Pin<&mut AppBridge>, pct: i32);
+
+        /// Set the speaker output gain (0–200, where 100 = unity).
+        /// Takes effect immediately mid-call.
+        #[qinvokable]
+        #[rust_name = "set_output_volume"]
+        fn setOutputVolume(self: Pin<&mut AppBridge>, pct: i32);
+
+        /// Set outgoing voice bitrate preset: "low", "balanced", "high", or "ultra".
+        /// Takes effect immediately for direct and SFU room audio.
+        #[qinvokable]
+        #[rust_name = "set_voice_bitrate"]
+        fn setVoiceBitrate(self: Pin<&mut AppBridge>, preset: &QString);
+
+        /// Create Start Menu and Desktop `.lnk` shortcuts for this executable.
+        /// Windows only — no-op on other platforms.
+        #[qinvokable]
+        #[rust_name = "create_desktop_shortcuts"]
+        fn createDesktopShortcuts(self: Pin<&mut AppBridge>);
+
+        /// Remove Start Menu and Desktop shortcuts created by
+        /// `createDesktopShortcuts`.  Windows only — no-op on other platforms.
+        #[qinvokable]
+        #[rust_name = "remove_desktop_shortcuts"]
+        fn removeDesktopShortcuts(self: Pin<&mut AppBridge>);
+
+        /// Returns `true` if at least one DoubleSlash shortcut (Desktop or Start
+        /// Menu) currently exists.  Windows only — always `false` elsewhere.
+        #[qinvokable]
+        #[rust_name = "has_desktop_shortcuts"]
+        fn hasDesktopShortcuts(self: Pin<&mut AppBridge>) -> bool;
+
+        /// Enumerate available CPAL audio devices.
+        /// Returns a JSON object: `{"inputs": ["Default", ...], "outputs": ["Default", ...]}`.
+        /// The string "Default" (index 0) means use the OS default; all other entries
+        /// are device names that can be written to `SettingsModel::audio_input_device` /
+        /// `audio_output_device`.
+        #[qinvokable]
+        #[rust_name = "list_audio_devices"]
+        fn listAudioDevices(self: Pin<&mut AppBridge>) -> QString;
+
+        /// Return available cameras as `{"cameras":[{"id":..,"name":..}]}`.
+        ///
+        /// Empty on platforms without a capture backend, so the settings UI can
+        /// show "no cameras found" rather than failing.
+        #[qinvokable]
+        #[rust_name = "list_video_devices"]
+        fn listVideoDevices(self: Pin<&mut AppBridge>) -> QString;
+
+        /// Turn adaptive bitrate control on or off on a running share.
+        ///
+        /// Applied live rather than through a capture restart: every other
+        /// encoder setting is fixed at construction, but this one only steers
+        /// the rate controller — and restarting the camera to flip a boolean
+        /// would drop frames and re-open the device for nothing.
+        ///
+        /// A no-op when nothing is being shared; the value is passed with the
+        /// rest of the settings when the next share starts.
+        #[qinvokable]
+        #[rust_name = "set_video_adaptive_bitrate"]
+        fn setVideoAdaptiveBitrate(self: Pin<&mut AppBridge>, on: bool);
+
+        /// Codecs this build can encode, most preferred first, as
+        /// `{"codecs":[{"id":"h264","name":"H.264"}]}`.
+        ///
+        /// A *build* capability, not a live probe — the same set advertised to
+        /// peers. The settings page offers these as the codec preference, so a
+        /// user can never select a codec this binary has no encoder for.
+        #[qinvokable]
+        #[rust_name = "list_video_codecs"]
+        fn listVideoCodecs(self: Pin<&mut AppBridge>) -> QString;
+
+        /// Start or stop sharing the machine's audio output.
+        ///
+        /// This is the audio the computer is *playing* — a game, a video, a
+        /// browser tab — not the call microphone, which is unaffected and keeps
+        /// its own path. Returns false when the platform has no loopback
+        /// backend or the device could not be opened.
+        ///
+        /// Requires an active media session: the stream carries timestamps on
+        /// that session's clock, which is what lets a receiver line it up with
+        /// video.
+        ///
+        /// `device_id` is the current `video_input_device` and `mode` the
+        /// `content_audio_mode` setting — the audio source is derived from the
+        /// video source unless the mode overrides it.
+        #[qinvokable]
+        #[rust_name = "set_content_audio_enabled"]
+        fn setContentAudioEnabled(
+            self: Pin<&mut AppBridge>,
+            on: bool,
+            device_id: &QString,
+            mode: &QString,
+        ) -> bool;
+
+        /// Turn the local camera on or off.
+        ///
+        /// Starts (or stops) capture+encode on a dedicated thread and announces
+        /// the change to the room so other members' indicators update. Returns
+        /// the resulting state, which may be `false` even when `on` was `true`
+        /// if no camera could be opened.
+        ///
+        /// `overlays_json` is the `video_overlays_json` setting: a JSON array of
+        /// picture-in-picture insets drawn over `device_id`. Empty or `[]` gives
+        /// plain single-source capture. Only one stream ever leaves this client,
+        /// composited or not — see [`CaptureLayout`](crate::video::sender::CaptureLayout).
+        ///
+        /// `encoder_json` is `SettingsModel::videoEncoderJson()`: the size,
+        /// rate, bitrate, keyframe interval, codec preference, and adaptation
+        /// switch from Settings → Video. Empty or unparseable means "the preset
+        /// alone", which is what this did before those settings existed.
+        #[qinvokable]
+        #[rust_name = "set_video_enabled"]
+        fn setVideoEnabled(
+            self: Pin<&mut AppBridge>,
+            on: bool,
+            device_id: &QString,
+            quality: &QString,
+            overlays_json: &QString,
+            encoder_json: &QString,
+        ) -> bool;
+
+        /// Tell the supernode which peers' video we are actually displaying.
+        ///
+        /// `peer_ids_json` is a JSON array of peer ids — the tiles currently on
+        /// screen, in the centre region and any popouts. The supernode forwards
+        /// only these senders' frames to us, so a member who opens no tiles
+        /// pays no downlink for a room full of 1080p streams.
+        ///
+        /// Safe to call on every change: an unchanged set is dropped before it
+        /// reaches the wire. Call it with an empty array when the last tile
+        /// closes — that is the case the whole feature exists for, and it is
+        /// meaningfully different from never calling at all, which leaves the
+        /// supernode forwarding everything.
+        #[qinvokable]
+        #[rust_name = "set_video_subscriptions"]
+        fn setVideoSubscriptions(self: Pin<&mut AppBridge>, peer_ids_json: &QString);
+
+        /// Show or hide the settings preview of `device_id` plus `overlays_json`.
+        ///
+        /// Captures without encoding or transmitting anything, so it works with
+        /// no call and no room. Frames land on the sinks bound to our own
+        /// `public_id` — the same surface self-preview uses — so the caller
+        /// renders it exactly like any other tile. The layout is built the same
+        /// way the call path builds it, so the preview shows the composite
+        /// exactly as peers would receive it.
+        ///
+        /// Returns whether that surface will now receive frames. Starting a
+        /// preview while a call is already sending is a no-op that returns
+        /// `true`: the call's capture already feeds the same surface, and
+        /// opening the device a second time would simply fail. `false` means
+        /// nothing could be opened.
+        ///
+        /// `encoder_json` is the same blob `setVideoEnabled` takes. Only its
+        /// size and frame rate can matter here — a preview encodes nothing — but
+        /// those are exactly what makes the preview show the framing peers would
+        /// actually receive.
+        #[qinvokable]
+        #[rust_name = "set_video_preview_enabled"]
+        fn setVideoPreviewEnabled(
+            self: Pin<&mut AppBridge>,
+            on: bool,
+            device_id: &QString,
+            quality: &QString,
+            overlays_json: &QString,
+            encoder_json: &QString,
+        ) -> bool;
+
+        /// Set this listener's local mute / volume for one peer.
+        ///
+        /// Local only: the peer is never told and keeps transmitting. Writes
+        /// through to the audio mixer, mirrors into the room model so the menu
+        /// stays consistent, and persists so the choice survives a restart.
+        #[qinvokable]
+        #[rust_name = "set_peer_audio_pref"]
+        fn setPeerAudioPref(
+            self: Pin<&mut AppBridge>,
+            peer_id: &QString,
+            muted: bool,
+            volume_pct: i32,
+        );
+
+        /// Level and mute for one peer's *shared application* audio, separate
+        /// from their voice. Muting the peer themselves still silences both.
+        #[qinvokable]
+        #[rust_name = "set_content_audio_pref"]
+        fn setContentAudioPref(
+            self: Pin<&mut AppBridge>,
+            peer_id: &QString,
+            muted: bool,
+            volume_pct: i32,
+        );
+
+        /// Declare whose video is currently on screen, as a JSON array of peer
+        /// ids (expanded tiles plus popouts).
+        ///
+        /// Shared audio only plays for peers in this set: it is half of a
+        /// picture, and a listener who never opened the tile has neither the
+        /// context for the noise nor a visible control to stop it. The whole set
+        /// is sent on every change so one missed removal cannot leave a closed
+        /// tile audible.
+        #[qinvokable]
+        #[rust_name = "set_content_audio_viewers"]
+        fn setContentAudioViewers(self: Pin<&mut AppBridge>, peer_ids_json: &QString);
+
+        /// Replay a stored preference blob (`{"<peer>":{"muted":..,"volume":..}}`)
+        /// into the mixer, so choices saved in an earlier session take effect
+        /// when a call starts.
+        #[qinvokable]
+        #[rust_name = "apply_peer_audio_prefs"]
+        fn applyPeerAudioPrefs(self: Pin<&mut AppBridge>, prefs_json: &QString);
+
+        /// Return a deterministic SVG identicon for `peer_id`.
+        ///
+        /// - If `config_json` is non-empty, use it directly (own-avatar preview).
+        /// - Otherwise resolve trust tier from the peer store:
+        ///   - Unknown / no handshake → `AvatarConfig::untrusted()` (8×8 flat)
+        ///   - Known peer, no config yet → `AvatarConfig::default()` (16×16 full)
+        ///   - Known peer with config → peer's exact config
+        ///
+        /// Returns a bare SVG string (not a data URI). QML wraps it with btoa.
+        #[qinvokable]
+        #[rust_name = "avatar_svg"]
+        fn avatarSvg(
+            self: Pin<&mut AppBridge>,
+            peer_id: &QString,
+            config_json: &QString,
+        ) -> QString;
+
+        /// Return the identity-derived background tint colour for `peer_id` as a
+        /// `#rrggbb` hex string. Uses the same trust-tier / config lookup as
+        /// `avatarSvg`. QML uses this to colour the resting-state avatar ring.
+        #[qinvokable]
+        #[rust_name = "avatar_tint_color"]
+        fn avatarTintColor(
+            self: Pin<&mut AppBridge>,
+            peer_id: &QString,
+            config_json: &QString,
+        ) -> QString;
+
+        /// Whether Qt should bilinear-filter the rasterized avatar (`Image.smooth`).
+        /// Returns false when `svg_crisp` is enabled so cell edges stay sharp.
+        #[qinvokable]
+        #[rust_name = "avatar_image_smooth"]
+        fn avatarImageSmooth(
+            self: Pin<&mut AppBridge>,
+            peer_id: &QString,
+            config_json: &QString,
+        ) -> bool;
+
+        /// Broadcast the user's avatar config (as JSON) to a specific trusted peer.
+        /// Silently does nothing if `config_json` is empty or peer is not trusted.
+        #[qinvokable]
+        #[rust_name = "broadcast_avatar_config"]
+        fn broadcastAvatarConfig(
+            self: Pin<&mut AppBridge>,
+            peer_id: &QString,
+            config_json: &QString,
+        );
+
+        /// Broadcast the user's avatar config to every currently-connected peer.
+        /// Call after setAvatarConfigJson whenever the user changes their avatar.
+        #[qinvokable]
+        #[rust_name = "broadcast_avatar_config_to_all"]
+        fn broadcastAvatarConfigToAll(self: Pin<&mut AppBridge>, config_json: &QString);
+
+        /// Store `config_json` in the bridge so it is auto-broadcast to newly
+        /// connected peers. Call whenever the user changes avatar settings.
+        #[qinvokable]
+        #[rust_name = "set_avatar_config_json"]
+        fn setAvatarConfigJson(self: Pin<&mut AppBridge>, config_json: &QString);
+
+        /// Broadcast our display handle to every currently-connected peer.
+        /// Call after the user saves Identity → Display name.
+        #[qinvokable]
+        #[rust_name = "broadcast_handle_to_all"]
+        fn broadcastHandleToAll(self: Pin<&mut AppBridge>, handle: &QString);
+
+        /// Re-emit previously received room chat messages as individual
+        /// `roomChatReceived` signals so QML can repopulate after a room switch.
+        /// History is session-scoped (not persisted to disk).
+        #[qinvokable]
+        #[rust_name = "load_room_chat_history"]
+        fn loadRoomChatHistory(
+            self: Pin<&mut AppBridge>,
+            supernode_id: &QString,
+            room_id: &QString,
+        );
+
+        /// Normalize a supernode sidebar id (hex `peer_id` or base64url
+        /// `identity_pub`) to the canonical `identity_pub` used on the wire.
+        /// Returns an empty string for ordinary peers.
+        #[qinvokable]
+        #[rust_name = "resolve_supernode_node_id"]
+        fn resolveSupernodeNodeId(self: Pin<&mut AppBridge>, node_id: &QString) -> QString;
+
+        /// Map a supernode id to its cluster's stable representative id (the
+        /// smallest member id in the verified roster), so the sidebar collapses
+        /// all members of a cluster into one logical node. Returns `node_id`
+        /// unchanged for a standalone supernode or an unknown id.
+        #[qinvokable]
+        #[rust_name = "cluster_representative_id"]
+        fn clusterRepresentative(self: Pin<&mut AppBridge>, node_id: &QString) -> QString;
+
+        /// JSON array describing every node supporting a room: one row per
+        /// member of `supernode_id`'s cluster (a standalone node is a cluster
+        /// of one) with its live state, last transport stats, relay address,
+        /// and whether it is the member currently serving the room. The
+        /// sidebar folds a cluster onto one row, so this is the only per-member
+        /// view.
+        #[qinvokable]
+        #[rust_name = "room_node_status"]
+        fn roomNodeStatus(
+            self: Pin<&mut AppBridge>,
+            supernode_id: &QString,
+            room_id: &QString,
+        ) -> QString;
+
+        /// True when `node_id` belongs to a trusted supernode in the peer store.
+        #[qinvokable]
+        #[rust_name = "is_known_supernode"]
+        fn isKnownSupernode(self: Pin<&mut AppBridge>, node_id: &QString) -> bool;
+
+        /// Resolve a peer's display handle from the trust store (`peer_id` or
+        /// `identity_pub`). Falls back to a truncated id when unknown.
+        #[qinvokable]
+        #[rust_name = "peer_display_name"]
+        fn peerDisplayName(self: Pin<&mut AppBridge>, peer_id: &QString) -> QString;
+
+        /// Delete a single chat message from the store by ID.
+        /// Emits `messageDeleted(msg_id)` on success.
+        #[qinvokable]
+        #[rust_name = "delete_message"]
+        fn deleteMessage(self: Pin<&mut AppBridge>, msg_id: &QString);
+
+        /// Retry a failed locally-authored peer chat message by ID.
+        #[qinvokable]
+        #[rust_name = "retry_message"]
+        fn retryMessage(self: Pin<&mut AppBridge>, msg_id: &QString);
+
+        /// Delete all messages for a peer from the store.
+        /// Emits `peerHistoryCleared(peer_id)` on success.
+        #[qinvokable]
+        #[rust_name = "clear_peer_history"]
+        fn clearPeerHistory(self: Pin<&mut AppBridge>, peer_id: &QString);
+
+        /// Return recent diagnostic log lines as a newline-delimited string.
+        /// QML can call this on demand or poll with a timer.
+        #[qinvokable]
+        #[rust_name = "get_event_logs"]
+        fn getEventLogs(self: Pin<&mut AppBridge>) -> QString;
+
+        /// Clear the in-memory event log buffer.
+        #[qinvokable]
+        #[rust_name = "clear_event_logs"]
+        fn clearEventLogs(self: Pin<&mut AppBridge>);
+
+        // ── Privacy & Data invokables ─────────────────────────────────────
+
+        /// Return the total number of chat messages stored on disk.
+        #[qinvokable]
+        #[rust_name = "get_stored_message_count"]
+        fn getStoredMessageCount(self: Pin<&mut AppBridge>) -> i64;
+
+        /// Delete all messages older than `days` days.
+        #[qinvokable]
+        #[rust_name = "trim_messages_by_age"]
+        fn trimMessagesByAge(self: Pin<&mut AppBridge>, days: i32);
+
+        /// For each conversation, keep only the most recent `keep` messages.
+        #[qinvokable]
+        #[rust_name = "trim_messages_by_count"]
+        fn trimMessagesByCount(self: Pin<&mut AppBridge>, keep: i32);
+
+        /// Delete all chat messages across every peer.
+        #[qinvokable]
+        #[rust_name = "purge_all_chat_history"]
+        fn purgeAllChatHistory(self: Pin<&mut AppBridge>);
+
+        /// Remove the identity AES key from the OS keyring, then quit.
+        /// The user will be prompted for their passphrase on next launch.
+        #[qinvokable]
+        #[rust_name = "lock_identity_and_quit"]
+        fn lockIdentityAndQuit(self: Pin<&mut AppBridge>);
+
+        /// Emitted after a message is deleted so QML can remove it from the ChatModel.
+        #[qsignal]
+        #[rust_name = "message_deleted"]
+        fn messageDeleted(self: Pin<&mut AppBridge>, msg_id: QString);
+
+        /// Emitted after all messages for a peer are cleared.
+        #[qsignal]
+        #[rust_name = "peer_history_cleared"]
+        fn peerHistoryCleared(self: Pin<&mut AppBridge>, peer_id: QString);
+    }
+
+    // Enable CxxQtThread so background tasks can post back to the Qt thread.
+    impl cxx_qt::Threading for AppBridge {}
+}
+
+// ---------------------------------------------------------------------------
+// Rust-side state backing AppBridge
+// ---------------------------------------------------------------------------
+
+pub struct AppBridgeRust {
+    backup_busy: bool,
+    backup_result: QString,
+    backup_service: Arc<crate::backup::BackupService>,
+    // QML property backing fields
+    peer_count: i32,
+    in_room: bool,
+    voice_in_room: bool,
+    voice_active: bool,
+    session_banner: QString,
+    call_state: QString,
+    public_id: QString,
+    /// Build ID exposed as qproperty for QML (e.g. Settings or status display).
+    build_id: QString,
+    invite_url: QString,
+    connection_mode: QString,
+    call_duration_secs: i32,
+    /// Number of missed inbound calls since last cleared. Mirrors the `missed_calls` qproperty.
+    missed_calls: i32,
+
+    // Channels to background tasks (populated during initialize_backend)
+    conn_cmd_tx: Option<mpsc::Sender<ConnectionCommand>>,
+    call_cmd_tx: Option<mpsc::Sender<CallCommand>>,
+    /// Backing field for the `video_active` Q_PROPERTY.
+    video_active: bool,
+    /// Room members whose camera is on, as last announced by each.
+    ///
+    /// `RoomModel::setParticipants` resets the model, so the streaming flag it
+    /// carries has to be re-supplied on every roster emission — and a roster
+    /// emission is exactly what a join produces. Without this the indicator was
+    /// cleared for everyone the moment anyone joined or left.
+    peer_video_active: HashSet<String>,
+    /// Peers whose video the UI last said it is displaying.
+    ///
+    /// Kept here only to spot *newly* watched senders, so a keyframe is
+    /// requested exactly when a tile opens rather than on every unrelated
+    /// change to the set. The authoritative copy — the one compared against
+    /// before anything goes on the wire — lives in the connection manager.
+    video_subscribed: HashSet<String>,
+    /// Video codecs each peer advertised in `CAPABILITY_ANNOUNCE`.
+    ///
+    /// Mirrored here rather than queried from the manager because the codec has
+    /// to be chosen *before* the encoder is built, on the same thread that
+    /// builds it. Cleared with the rest of a peer's state on disconnect.
+    peer_video_codecs: HashMap<String, Vec<doubleslash_features::video_codec::VideoCodec>>,
+    /// Timeline that synchronised media is stamped against, for the life of one
+    /// video session.
+    ///
+    /// `Some` exactly while a local video session is running. Content audio and
+    /// video must both stamp from *this* handle — two separately started clocks
+    /// would each look self-consistent while being mutually meaningless, which
+    /// presents as a fixed A/V offset rather than an error. See
+    /// [`crate::media_clock`] and the media-layer item in `backlog.md`.
+    ///
+    /// Video capture stamps `pts_us` from this clock on every frame; content
+    /// audio stamps from the same handle. Device/quality restarts **reuse**
+    /// the existing clock so a share already in progress does not desync.
+    media_clock: Option<crate::media_clock::SessionMediaClock>,
+    /// Decode thread for inbound video, created lazily on the first frame so
+    /// a client that never receives video never spawns it.
+    video_receiver: Option<crate::video::receiver::VideoReceiver>,
+    /// Running camera capture+encode thread, `None` when the camera is off.
+    ///
+    /// Dropping this stops the thread and releases the device, which is what
+    /// turns the hardware capture light off — so it must not be leaked.
+    video_sender: Option<crate::video::sender::VideoSender>,
+    /// Backing field for the `video_preview_active` Q_PROPERTY.
+    video_preview_active: bool,
+    /// Backing field for the `content_audio_active` Q_PROPERTY.
+    content_audio_active: bool,
+    /// Running system-audio capture thread, `None` when not sharing.
+    ///
+    /// Dropping this stops the thread and releases the loopback endpoint, which
+    /// must happen: leaving it open holds a WASAPI client against the render
+    /// device for the life of the process.
+    content_audio_sender: Option<crate::content_sender::ContentAudioSender>,
+    /// Capture thread behind the settings preview, `None` when it is off.
+    ///
+    /// Separate from `video_sender` so a preview can never be mistaken for a
+    /// call that is sending: this one encodes nothing and reaches no peer. Only
+    /// one of the two is ever `Some` — the device cannot be opened twice.
+    video_preview: Option<crate::video::sender::VideoSender>,
+    sfu_cmd_tx: Option<mpsc::Sender<SfuCommand>>,
+    updater_cmd_tx: Option<mpsc::Sender<crate::github_updater::UpdaterCommand>>,
+    automatic_update_checks_enabled: bool,
+
+    /// Our own peer_id (hex SHA-256 of public key) — used for peer_store lookups.
+    my_peer_id: String,
+    /// Our own public_id (base64url Ed25519 pubkey) — used as `sender` in signaling messages.
+    my_public_id: String,
+
+    /// The Ed25519 identity — held after unlock so invite generation works.
+    identity: Option<Arc<crate::identity::Identity>>,
+
+    /// Pending update release info (set when updateAvailable is emitted).
+    pending_release: Option<crate::github_updater::ReleaseInfo>,
+
+    /// Keep the background OS thread (and the tokio Runtime inside it) alive.
+    rt_thread: Option<std::thread::JoinHandle<()>>,
+
+    /// Clone of the background tokio runtime handle. Used by Qt-thread invokables
+    /// (e.g. `fetchOllamaModels`) that must spawn work without being *inside*
+    /// the runtime — `Handle::try_current()` is always `None` on the GUI thread.
+    rt_handle: Option<tokio::runtime::Handle>,
+
+    /// Unread inbound chat message count (cleared by clearUnread()).
+    unread_chat: u32,
+
+    /// Peer store shared reference — used by removePeer/blockPeer invokables.
+    peer_store: Option<Arc<RwLock<crate::peer_store::PeerStore>>>,
+
+    /// Chat store shared reference — used by selectPeer to load history.
+    chat_store: Option<Arc<crate::chat_store::ChatStore>>,
+
+    /// Local room hide-list (sidebar removals do not touch the supernode).
+    room_store: Option<Arc<RwLock<crate::room_store::RoomStore>>>,
+
+    /// Pending sub-room parents, keyed `supernode_id:room_name`. Set by
+    /// `create_sub_room` and consumed in the `RoomCreated` handler to nest the
+    /// new room under the parent room in the Space tree. Client-side only.
+    pending_sub_room_parent: std::collections::HashMap<String, String>,
+
+    /// Pending invite-policy choice for a room create in flight, keyed
+    /// `supernode_id:room_name`. Set by `create_room_impl` and consumed in the
+    /// `RoomCreated` handler to persist the creator's chosen policy into
+    /// `RoomStore` (the supernode does not echo it back, and does not persist
+    /// it either — the client must remember it to replay on reconnect).
+    pending_room_invite_policy: std::collections::HashMap<String, String>,
+
+    /// Currently selected peer (for per-peer chat loading).
+    selected_peer_id: String,
+
+    /// Current SFU room supernode ID (for sendRoomChat).
+    current_supernode_id: String,
+
+    /// Current SFU room ID (for sendRoomChat).
+    current_room_id: String,
+
+    /// Active SFU voice session (may differ from chat `current_*` after subscribe).
+    voice_supernode_id: String,
+    voice_room_id: String,
+
+    /// PTT polling thread stop signal. Set `true` to stop the thread.
+    ptt_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
+
+    /// PTT polling thread handle (kept alive as long as PTT is enabled).
+    ptt_thread: Option<std::thread::JoinHandle<()>>,
+
+    /// Command channel to the x.ollama.v1 plugin task (None when disabled).
+    ollama_cmd_tx: Option<mpsc::Sender<crate::ollama_module::OllamaCommand>>,
+
+    /// True when the Ollama plugin is running. Mirrors the `ollama_available` qproperty.
+    ollama_available: bool,
+
+    /// Latest model-list JSON. Mirrors the `ollama_models_json` qproperty.
+    ollama_models_json: QString,
+
+    /// Latest model-list error. Mirrors the `ollama_models_error` qproperty.
+    ollama_models_error: QString,
+
+    /// In-flight auto-reply streams: request_id → reply target.
+    auto_reply_pending: std::collections::HashMap<String, AutoReplyTarget>,
+
+    /// Accumulated auto-reply text per request_id (streamed chunks).
+    auto_reply_buf: std::collections::HashMap<String, String>,
+
+    /// Normalized audio input level (0.0–1.0). Updated each Opus frame while
+    /// a call or mic test is active. Mirrors the `mic_level` qproperty.
+    mic_level: f32,
+
+    /// True while a mic test is in progress. Mirrors the `mic_test_active` qproperty.
+    mic_test_active: bool,
+
+    /// Session-scoped room chat history.
+    /// Key: room_id string.  Value: ordered list of message JSON strings
+    /// (same format as the `roomChatReceived` signal payload).
+    room_chat_history: std::collections::HashMap<String, Vec<String>>,
+
+    /// Local cache of the **active voice room** participant IDs (voice rail).
+    /// Updated only from voice-scoped roster events so browsing another room's
+    /// text chat never overwrites who is in the call.
+    room_participant_ids: Vec<String>,
+
+    /// Per-room **voice** participant IDs for sidebar peer counts.
+    /// Key: `supernode_id:room_id`. Value: voice `members` only — never text
+    /// chat subscribers. Each room's headphone count is derived from this
+    /// roster (or from `SfuRoomList.participant_ids` when no live roster yet).
+    room_voice_rosters: std::collections::HashMap<String, Vec<String>>,
+
+    /// Local cache of the **selected text room** chat members (members panel).
+    /// Populated from `chat_members` (participants + subscribers) for
+    /// `current_supernode_id` / `current_room_id`.
+    text_member_ids: Vec<String>,
+
+    /// Display handles learned from room chat (and similar) for room UI labels.
+    /// Keyed by SFU member id (`public_id`). Not a trust store — room membership
+    /// alone must not promote someone into the Peers rail; this only names the
+    /// members panel when PeerStore has no handle yet.
+    room_display_handles: std::collections::HashMap<String, String>,
+
+    /// Authoritative SfuMembers snapshots that arrived before the voice rail
+    /// scope was stamped (e.g. the connection manager's eager join on create).
+    /// Key: `supernode_id:room_id`. Value: voice `members` list.
+    pending_room_rosters: std::collections::HashMap<String, Vec<String>>,
+
+    /// Pending chat-member rosters keyed `supernode_id:room_id` for rooms we
+    /// are not currently viewing (applied when that text room is selected).
+    pending_chat_rosters: std::collections::HashMap<String, Vec<String>>,
+    /// Last chat roster seen from each node, keyed `supernode_id:room_id`.
+    ///
+    /// A supernode's `chat_count` counts only the subscribers on *that* node,
+    /// but a cluster hosts one logical room on several members and two peers
+    /// routinely subscribe on different ones — so no single node ever sees
+    /// them both. The sidebar badge unions these instead, the same way
+    /// `union_members_for_room` does for keyer election.
+    chat_roster_by_node: std::collections::HashMap<String, Vec<String>>,
+
+    /// Canonical peer-list keys (`PeerRecord::peer_id`) currently considered online.
+    online_peer_ids: HashSet<String>,
+    /// Canonical peer-list keys with an active voice session (room or direct call).
+    in_call_peer_ids: HashSet<String>,
+    /// Peers with a live direct QUIC session.
+    direct_connected_peer_ids: HashSet<String>,
+    /// Peers currently in the same SFU voice room as us.
+    room_present_peer_ids: HashSet<String>,
+    /// Peers whose relayed presence announce is still fresh.
+    ///
+    /// The third, independent source of "online". A direct session and a
+    /// shared voice room both prove liveness but neither exists on a
+    /// relay-only path, which is every pair behind CGNAT.
+    relay_present_peer_ids: HashSet<String>,
+    /// Remote peer id for an active direct P2P call (identity_pub or peer_id).
+    active_direct_call_peer_id: String,
+
+    /// Session-scoped set of rooms whose roster has confirmed us as a member,
+    /// keyed `supernode_id:room_id`. Once admitted we are in the supernode's
+    /// `allowed` set, so re-entry can use a plain `SfuJoin`; re-sending the
+    /// single-use invite token would be a redundant round-trip (it is spent on
+    /// first use). Not persisted: after a restart we re-send the invite once —
+    /// the supernode accepts it via its already-allowed check — then re-mark here.
+    admitted_rooms: HashSet<String>,
+
+    /// Rolling in-memory diagnostic log buffer (max 300 entries).
+    event_log: std::collections::VecDeque<String>,
+
+    /// Set to true when an inbound call arrives; cleared on accept or end.
+    /// Used to detect missed calls (CallEnded while flag is still set).
+    has_incoming_call: bool,
+
+    /// True while the active direct call's audio is riding a temporary private
+    /// SFU room because direct QUIC never formed. Teardown then has to *leave
+    /// that room* rather than just stop audio, and this flag is what tells the
+    /// two apart from an ordinary room the user joined on their own.
+    call_via_fallback_room: bool,
+
+    /// Direct-call fallback room carried by the last incoming `CallRequest`:
+    /// `(peer_id, supernode_id, room_id, invite_token)`. When set, `accept_call`
+    /// joins this temporary private SFU room instead of dialing direct QUIC.
+    /// Cleared on accept or call end.
+    incoming_call_fallback: Option<(String, String, String, String)>,
+
+    /// User's own avatar config as JSON (saved in settings, broadcast to peers).
+    avatar_config_json: String,
+
+    /// Verified cluster siblings per supernode, learned from each supernode's
+    /// own signed `SUPERNODE_INFO` roster (`ConnectionEvent::ClusterMembersUpdated`).
+    /// Used so `replay_saved_rooms_on_supernode_connect` can also materialize
+    /// rooms saved under a sibling's identity onto the node we just connected
+    /// to — a cluster presents as one logical supernode, so a room known on
+    /// one member should be replayed on any other member we're already
+    /// connected to (see backlog.md-adjacent cluster failover notes).
+    cluster_siblings: std::collections::HashMap<String, Vec<String>>,
+
+    /// Live WS state per cluster member (canonical id → connected), the source
+    /// of truth for the cluster "green if ANY member reachable" rollup. A
+    /// cluster presents as one logical node keyed by its stable representative
+    /// (the smallest member id), so per-member connect/disconnect patches are
+    /// folded here rather than pushed to the sidebar individually.
+    supernode_connected: std::collections::HashMap<String, bool>,
+
+    /// Last `connectionStats` row per supernode, keyed by pad-normalized
+    /// cluster member id. QML folds a cluster's rows onto its representative
+    /// (and drops roster-learned siblings entirely), so the room connection
+    /// panel's per-node detail is served from here instead.
+    supernode_stats: std::collections::HashMap<String, serde_json::Value>,
+
+    /// Relay attach address per cluster member (pad-normalized id), merged from
+    /// every verified roster — a member's own roster omits itself, a sibling's
+    /// does not.
+    cluster_member_addrs: std::collections::HashMap<String, String>,
+
+    /// Hosts (pad-normalized) already rematerialized this session. Cleared on
+    /// disconnect so a later reconnect still replays rooms. Stops
+    /// ClusterMembersUpdated from re-firing CreateRoom → tray spam.
+    rematerialized_hosts: HashSet<String>,
+}
+
+fn request_invite_url(rust: &AppBridgeRust) -> Option<String> {
+    let tx = rust.conn_cmd_tx.as_ref()?;
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    tx.try_send(ConnectionCommand::GenerateInvite { reply_tx })
+        .ok()?;
+    reply_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .ok()
+        .flatten()
+}
+
+fn request_room_invite_url(
+    rust: &AppBridgeRust,
+    supernode_id: String,
+    room_id: String,
+    room_name: String,
+    room_type: String,
+    invite_token: String,
+) -> Option<String> {
+    let tx = rust.conn_cmd_tx.as_ref()?;
+    // Attach a Space inclusion proof + current signed root so the invite admits
+    // roster-free by proof (and materializes the room on any cluster member). A
+    // shareable link has no known grantee, so no grant — private rooms still gate
+    // entry on the legacy token, which now validates against the materialized room.
+    let (space_root, space_proof) = build_space_invite_fields(rust, &supernode_id, &room_id);
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    tx.try_send(ConnectionCommand::GenerateRoomInvite {
+        supernode_id,
+        room_id,
+        room_name,
+        room_type,
+        invite_token,
+        space_root,
+        space_proof,
+        space_grant: String::new(),
+        reply_tx,
+    })
+    .ok()?;
+    reply_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .ok()
+        .flatten()
+}
+
+/// Per-peer variant of [`request_room_invite_url`]: also embeds an owner-signed
+/// [`crate::space::SpaceGrant`] bound to `grantee_pub`, so a private Space room
+/// admits that peer by proof+grant — durable across supernode restarts with no
+/// server-side token state (see `space_admission_ok` on the supernode).
+fn request_room_invite_url_for_peer(
+    rust: &AppBridgeRust,
+    supernode_id: String,
+    room_id: String,
+    room_name: String,
+    room_type: String,
+    invite_token: String,
+    grantee_pub: String,
+) -> Option<String> {
+    let tx = rust.conn_cmd_tx.as_ref()?;
+    let (space_root, space_proof) = build_space_invite_fields(rust, &supernode_id, &room_id);
+    let space_grant = build_space_grant_field(rust, &supernode_id, &room_id, &grantee_pub);
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    tx.try_send(ConnectionCommand::GenerateRoomInvite {
+        supernode_id,
+        room_id,
+        room_name,
+        room_type,
+        invite_token,
+        space_root,
+        space_proof,
+        space_grant,
+        reply_tx,
+    })
+    .ok()?;
+    reply_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .ok()
+        .flatten()
+}
+
+/// Sign an owner `SpaceGrant` admitting `grantee_pub` to `room_id`, returning its
+/// JSON — or `""` if `grantee_pub` is empty or we don't own the room's Space.
+/// `expires_at = 0` (valid until epoch exclusion/revocation) so the grant is not
+/// time-bound and survives restarts for the room's lifetime in the Space.
+fn build_space_grant_field(
+    rust: &AppBridgeRust,
+    supernode_id: &str,
+    room_id: &str,
+    grantee_pub: &str,
+) -> String {
+    if grantee_pub.is_empty() {
+        return String::new();
+    }
+    let (Some(rs), Some(identity)) = (rust.room_store.as_ref(), rust.identity.as_ref()) else {
+        return String::new();
+    };
+    let space_id = crate::room_store::RoomStore::space_id_for(&rust.my_public_id, supernode_id);
+    let Some(space) = rs.read().get_space(&space_id) else {
+        return String::new();
+    };
+    let grant = space.grant(room_id, grantee_pub, 0, |b| identity.sign(b));
+    serde_json::to_string(&grant).unwrap_or_default()
+}
+
+/// Build `(space_root_json, space_proof_json)` for a room from the owner's local
+/// Space, or `("","")` if we don't own a Space for it. The root is freshly signed
+/// with the owner identity so it carries the current epoch the proof is built at.
+fn build_space_invite_fields(
+    rust: &AppBridgeRust,
+    supernode_id: &str,
+    room_id: &str,
+) -> (String, String) {
+    let (Some(rs), Some(identity)) = (rust.room_store.as_ref(), rust.identity.as_ref()) else {
+        return (String::new(), String::new());
+    };
+    let space_id = crate::room_store::RoomStore::space_id_for(&rust.my_public_id, supernode_id);
+    let Some(space) = rs.read().get_space(&space_id) else {
+        return (String::new(), String::new());
+    };
+    let Some(proof) = space.prove(room_id) else {
+        return (String::new(), String::new());
+    };
+    let issued_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let root = space.signed_root(issued_at, |b| identity.sign(b));
+    (
+        serde_json::to_string(&root).unwrap_or_default(),
+        serde_json::to_string(&proof).unwrap_or_default(),
+    )
+}
+
+impl Default for AppBridgeRust {
+    fn default() -> Self {
+        Self {
+            peer_count: 0,
+            in_room: false,
+            voice_in_room: false,
+            voice_active: false,
+            session_banner: QString::default(),
+            call_state: QString::from("idle"),
+            public_id: QString::default(),
+            build_id: QString::from(env!("CONQUERD_BUILD_ID")),
+            invite_url: QString::default(),
+            connection_mode: QString::from("offline"),
+            call_duration_secs: 0,
+            missed_calls: 0,
+            has_incoming_call: false,
+            call_via_fallback_room: false,
+            incoming_call_fallback: None,
+            conn_cmd_tx: None,
+            call_cmd_tx: None,
+            video_active: false,
+            peer_video_active: HashSet::new(),
+            video_subscribed: HashSet::new(),
+            peer_video_codecs: HashMap::new(),
+            media_clock: None,
+            content_audio_active: false,
+            content_audio_sender: None,
+            video_receiver: None,
+            video_sender: None,
+            video_preview_active: false,
+            video_preview: None,
+            sfu_cmd_tx: None,
+            updater_cmd_tx: None,
+            automatic_update_checks_enabled: true,
+            my_peer_id: String::new(),
+            my_public_id: String::new(),
+            identity: None,
+            backup_busy: false,
+            backup_result: QString::default(),
+            backup_service: Arc::default(),
+            pending_release: None,
+            rt_thread: None,
+            rt_handle: None,
+            unread_chat: 0,
+            peer_store: None,
+            chat_store: None,
+            room_store: None,
+            pending_sub_room_parent: std::collections::HashMap::new(),
+            pending_room_invite_policy: std::collections::HashMap::new(),
+            selected_peer_id: String::new(),
+            current_supernode_id: String::new(),
+            current_room_id: String::new(),
+            voice_supernode_id: String::new(),
+            voice_room_id: String::new(),
+            ptt_stop: None,
+            ptt_thread: None,
+            ollama_cmd_tx: None,
+            ollama_available: false,
+            ollama_models_json: QString::from("[]"),
+            ollama_models_error: QString::from(""),
+            auto_reply_pending: std::collections::HashMap::new(),
+            auto_reply_buf: std::collections::HashMap::new(),
+            mic_level: 0.0,
+            mic_test_active: false,
+            room_chat_history: std::collections::HashMap::new(),
+            room_participant_ids: Vec::new(),
+            room_voice_rosters: std::collections::HashMap::new(),
+            text_member_ids: Vec::new(),
+            room_display_handles: std::collections::HashMap::new(),
+            pending_room_rosters: std::collections::HashMap::new(),
+            pending_chat_rosters: std::collections::HashMap::new(),
+            chat_roster_by_node: std::collections::HashMap::new(),
+            online_peer_ids: HashSet::new(),
+            in_call_peer_ids: HashSet::new(),
+            direct_connected_peer_ids: HashSet::new(),
+            room_present_peer_ids: HashSet::new(),
+            relay_present_peer_ids: HashSet::new(),
+            active_direct_call_peer_id: String::new(),
+            admitted_rooms: HashSet::new(),
+            event_log: std::collections::VecDeque::with_capacity(300),
+            avatar_config_json: String::new(),
+            cluster_siblings: std::collections::HashMap::new(),
+            supernode_connected: std::collections::HashMap::new(),
+            supernode_stats: std::collections::HashMap::new(),
+            cluster_member_addrs: std::collections::HashMap::new(),
+            rematerialized_hosts: HashSet::new(),
+        }
+    }
+}
+
+impl AppBridgeRust {
+    fn resolve_supernode_node_id_str(&self, id: &str) -> Option<String> {
+        self.peer_store
+            .as_ref()
+            .and_then(|ps| ps.read().resolve_supernode_identity_pub(id))
+    }
+
+    fn cluster_full_set(&self, member: &str) -> Vec<String> {
+        cluster_full_set(&self.cluster_siblings, member)
+    }
+
+    /// The cluster's display identity. Pinned to the member the user joined
+    /// through — the invite supernode (e.g. node A) — because it is stable and,
+    /// crucially, always a KNOWN supernode. Roster-learned siblings are not in
+    /// the peer store, so folding onto one would make the sidebar prune the row
+    /// (`pruneNonSupernodeEntries`) and the whole cluster would vanish. Falls
+    /// back to the smallest known supernode, then to `member`.
+    fn cluster_representative(&self, member: &str) -> String {
+        let full = cluster_full_set(&self.cluster_siblings, member);
+        if let Some(ps) = self.peer_store.as_ref() {
+            let store = ps.read();
+            if let Some(rep) = full
+                .iter()
+                .filter(|m| store.is_invite_supernode_id(m))
+                .min()
+            {
+                return rep.clone();
+            }
+            if let Some(rep) = full.iter().filter(|m| store.is_supernode_id(m)).min() {
+                return rep.clone();
+            }
+        }
+        cluster_representative(&self.cluster_siblings, member)
+    }
+
+    /// A stable key under which to record a supernode's live state for the
+    /// cluster rollup: the canonical id when it's a known supernode, else the
+    /// normalized id when it's a verified cluster member (a roster-learned
+    /// sibling we hold a session with but haven't promoted to a trusted
+    /// supernode). `None` for an id that is neither — nothing to roll up.
+    fn cluster_member_key(&self, id: &str) -> Option<String> {
+        if let Some(canon) = self.resolve_supernode_node_id_str(id) {
+            return Some(canon);
+        }
+        let norm = id.trim_end_matches('=').to_owned();
+        let is_member = self.cluster_siblings.contains_key(&norm)
+            || self
+                .cluster_siblings
+                .values()
+                .any(|v| v.iter().any(|s| s == &norm));
+        is_member.then_some(norm)
+    }
+
+    fn cluster_rollup_connected(&self, member: &str) -> bool {
+        cluster_rollup_connected(&self.cluster_siblings, &self.supernode_connected, member)
+    }
+
+    fn pick_live_cluster_member(&self, member: &str) -> Option<String> {
+        pick_live_cluster_member(&self.cluster_siblings, &self.supernode_connected, member)
+    }
+}
+
+type ClusterSiblings = std::collections::HashMap<String, Vec<String>>;
+type MemberConnected = std::collections::HashMap<String, bool>;
+
+/// Every member of `member`'s cluster, including `member` itself. Built from the
+/// verified sibling rosters, unioning any roster that mentions `member` as a key
+/// or a value so the set converges no matter which member's `SUPERNODE_INFO`
+/// arrived first. Returns just `[member]` for a standalone supernode.
+fn cluster_full_set(siblings: &ClusterSiblings, member: &str) -> Vec<String> {
+    let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    set.insert(member.to_owned());
+    for (key, sibs) in siblings {
+        if key == member || sibs.iter().any(|s| s == member) {
+            set.insert(key.clone());
+            set.extend(sibs.iter().cloned());
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// The cluster's stable representative id = the smallest member id in the full
+/// set. Identical on every client (deterministic over the same roster) and
+/// unchanging across failover, so it's the logical node's identity for
+/// avatar/name/grouping. Returns `member` unchanged when standalone.
+fn cluster_representative(siblings: &ClusterSiblings, member: &str) -> String {
+    cluster_full_set(siblings, member)
+        .into_iter()
+        .min()
+        .unwrap_or_else(|| member.to_owned())
+}
+
+/// Whether ANY member of `member`'s cluster currently has a live WS session —
+/// the "green if any reachable" rollup for the logical node.
+fn cluster_rollup_connected(
+    siblings: &ClusterSiblings,
+    connected: &MemberConnected,
+    member: &str,
+) -> bool {
+    cluster_full_set(siblings, member)
+        .iter()
+        .any(|m| connected.get(m).copied().unwrap_or(false))
+}
+
+/// A currently-connected member of `member`'s cluster to serve node-scoped work
+/// (e.g. the portal): the representative when it's live, else any live member,
+/// else `None` when the whole cluster is down.
+fn pick_live_cluster_member(
+    siblings: &ClusterSiblings,
+    connected: &MemberConnected,
+    member: &str,
+) -> Option<String> {
+    let set = cluster_full_set(siblings, member);
+    if let Some(rep) = set.iter().min() {
+        if connected.get(rep).copied().unwrap_or(false) {
+            return Some(rep.clone());
+        }
+    }
+    set.into_iter()
+        .find(|m| connected.get(m).copied().unwrap_or(false))
+}
+
+/// Bridge state a room's node rows are built from, borrowed together so
+/// [`cluster_node_rows`] stays testable without a live bridge.
+struct ClusterNodeSources<'a> {
+    siblings: &'a ClusterSiblings,
+    connected: &'a MemberConnected,
+    stats: &'a std::collections::HashMap<String, serde_json::Value>,
+    addrs: &'a std::collections::HashMap<String, String>,
+    /// Per-node chat rosters keyed `"{supernode_id}:{room_id}"`.
+    rosters: &'a std::collections::HashMap<String, Vec<String>>,
+}
+
+/// One JSON row per member of `member`'s cluster for the room connection
+/// panel: the member serving the room (`active`) first, then reachable
+/// members, then by id.
+///
+/// Ids are pad-normalized and de-duplicated, because the full set can hold
+/// both the padded canonical id of a known supernode and the unpadded roster
+/// form of the same member. Stats and the per-node room roster are reported
+/// only for a connected member — both outlive a disconnect and would read as
+/// live.
+fn cluster_node_rows(
+    src: &ClusterNodeSources<'_>,
+    member: &str,
+    room_id: &str,
+    active: &str,
+) -> Vec<serde_json::Value> {
+    let active = active.trim_end_matches('=');
+    let mut ids: Vec<String> = cluster_full_set(src.siblings, member)
+        .iter()
+        .map(|m| m.trim_end_matches('=').to_owned())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    let is_up = |id: &str| {
+        src.connected
+            .iter()
+            .any(|(k, up)| *up && k.trim_end_matches('=') == id)
+    };
+    let roster_len = |id: &str| {
+        src.rosters.iter().find_map(|(key, roster)| {
+            let (node, rid) = key.split_once(':')?;
+            (rid == room_id && node.trim_end_matches('=') == id).then_some(roster.len())
+        })
+    };
+    // Stable sort over the id-ordered list keeps ties in id order.
+    ids.sort_by_key(|id| (*id != active, !is_up(id)));
+    ids.iter()
+        .map(|id| {
+            let up = is_up(id);
+            let is_active = !active.is_empty() && *id == active;
+            let stats = if up { src.stats.get(id).cloned() } else { None };
+            let room_members = if up { roster_len(id) } else { None };
+            serde_json::json!({
+                "node_id": id,
+                "connected": up,
+                "active": is_active,
+                "relay_addr": src.addrs.get(id).cloned().unwrap_or_default(),
+                "stats": stats,
+                "room_members": room_members,
+            })
+        })
+        .collect()
+}
+
+impl Drop for AppBridgeRust {
+    fn drop(&mut self) {
+        // Signal the PTT polling thread to exit before channels close.
+        if let Some(ref flag) = self.ptt_stop {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        // Dropping the cmd_tx senders propagates channel closure to the tokio
+        // tasks (connection manager, call controller, etc.), which lets the
+        // rt_thread's event loop exit via its `else => break` arm.
+        // The JoinHandle in rt_thread is then dropped (detached), and the
+        // caller (main.rs) follows up with process::exit(0) to guarantee
+        // termination even if a task is blocked on I/O.
+        drop(self.conn_cmd_tx.take());
+        drop(self.call_cmd_tx.take());
+        drop(self.sfu_cmd_tx.take());
+        drop(self.updater_cmd_tx.take());
+        drop(self.ollama_cmd_tx.take());
+    }
+}
+
+fn room_chat_history_key(supernode_id: &str, room_id: &str) -> String {
+    format!("{supernode_id}:{room_id}")
+}
+
+/// Conversation key for a room's chat history.
+///
+/// Delegates to the core so the Qt bridge and the Android JNI layer cannot
+/// drift apart — two clients sharing a profile must agree byte-for-byte.
+/// Deliberately takes no supernode: see [`crate::chat_store::room_conversation_id`].
+fn room_chat_store_peer_id(room_id: &str) -> String {
+    crate::chat_store::room_conversation_id(room_id)
+}
+
+// ---------------------------------------------------------------------------
+// Invokable implementations
+// ---------------------------------------------------------------------------
+
+impl ffi::AppBridge {
+    fn initialize_backend(mut self: Pin<&mut Self>) {
+        if self.rust().rt_thread.is_some() {
+            warn!("initialize_backend called more than once — ignoring");
+            return;
+        }
+
+        // ── Identity unlock ───────────────────────────────────────────────
+        let key_dir = crate::identity::Identity::default_key_dir();
+        let dat = key_dir.join(crate::identity::IDENTITY_FILENAME);
+        let env_pass = std::env::var("CONQUERD_PASSPHRASE").unwrap_or_default();
+        let env_file = std::env::var("CONQUERD_PASSPHRASE_FILE").unwrap_or_default();
+
+        // Try passphrase/keyfile from env vars first
+        if !env_pass.is_empty() || !env_file.is_empty() {
+            match crate::crypto::build_passphrase_material(&env_pass, &env_file) {
+                Ok(material) => {
+                    match crate::identity::Identity::load_with_passphrase(&material, &key_dir) {
+                        Ok(id) => {
+                            self.continue_initialization(Arc::new(id));
+                            return;
+                        }
+                        Err(e) => {
+                            error!("Identity unlock with CONQUERD_PASSPHRASE/FILE failed: {e}");
+                            // Fall through to ask user
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Invalid env passphrase/keyfile: {e}");
+                }
+            }
+        }
+
+        // Try keyring (no passphrase needed)
+        if dat.exists() {
+            if let Ok((id, _)) =
+                crate::identity::Identity::load_with_keyring_or_passphrase(b"", &key_dir)
+            {
+                // Keyring succeeded
+                self.continue_initialization(Arc::new(id));
+                return;
+            }
+            // Keyring not available / stale — need passphrase from user
+            info!("Identity locked — requesting passphrase from user");
+            self.as_mut().passphrase_required(false);
+            return;
+        }
+
+        // No identity file — ask user for a passphrase to create one
+        info!("No identity found — requesting passphrase from user to create new identity");
+        self.as_mut().passphrase_required(true);
+    }
+
+    fn backup_command(mut self: Pin<&mut Self>, request: &QString) {
+        if self.rust().backup_busy {
+            return;
+        }
+        self.as_mut().set_backup_busy(true);
+        self.as_mut().set_backup_result(QString::default());
+        let request = zeroize::Zeroizing::new(request.to_string());
+        let service = Arc::clone(&self.rust().backup_service);
+        let identity = self.rust().identity.clone();
+        let peers = self.rust().peer_store.clone();
+        let rooms = self.rust().room_store.clone();
+        let chat = self.rust().chat_store.clone();
+        let directory = crate::identity::Identity::default_key_dir();
+        let root = crate::identity::Identity::default_profile_root();
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let reply = service.run(&request, &root, identity.is_some(), |attachments| {
+                let (Some(identity), Some(peers), Some(rooms), Some(chat)) = (
+                    identity.as_ref(),
+                    peers.as_ref(),
+                    rooms.as_ref(),
+                    chat.as_ref(),
+                ) else {
+                    return Err(crate::error::ClientError::Identity(
+                        "Unlock your identity before creating a backup".into(),
+                    ));
+                };
+                crate::backup::BackupSnapshot::capture(
+                    crate::backup::BackupSource {
+                        identity,
+                        peers: &peers.read(),
+                        rooms: &rooms.read(),
+                        chat,
+                        directory: &directory,
+                    },
+                    attachments,
+                )
+            });
+            let reply = reply.to_string();
+            let _ = thread.queue(move |mut bridge| {
+                bridge.as_mut().set_backup_busy(false);
+                bridge
+                    .as_mut()
+                    .set_backup_result(QString::from(reply.as_str()));
+            });
+        });
+    }
+
+    fn unlock_with_passphrase_and_file(
+        mut self: Pin<&mut Self>,
+        passphrase: &QString,
+        file_path: &QString,
+        remember: bool,
+    ) {
+        if self.rust().backup_busy {
+            return;
+        }
+        let key_dir = crate::identity::Identity::default_key_dir();
+        let dat = key_dir.join(crate::identity::IDENTITY_FILENAME);
+        let text = passphrase.to_string();
+        let path = file_path.to_string();
+
+        let key_material = match crate::crypto::build_passphrase_material(&text, &path) {
+            Ok(m) => m,
+            Err(e) => {
+                self.as_mut()
+                    .set_session_banner(QString::from(e.to_string().as_str()));
+                self.as_mut().passphrase_required(false);
+                return;
+            }
+        };
+
+        if dat.exists() {
+            // Unlock existing identity
+            match crate::identity::Identity::load_with_passphrase_keyed(&key_material, &key_dir) {
+                Ok((id, aes_key)) => {
+                    apply_auto_unlock_choice(&id.public_id(), &aes_key, remember);
+                    self.continue_initialization(Arc::new(id));
+                }
+                Err(e) => {
+                    error!("Passphrase/keyfile incorrect: {e}");
+                    self.as_mut()
+                        .set_session_banner(QString::from("Incorrect passphrase — try again."));
+                    self.as_mut().passphrase_required(false);
+                }
+            }
+        } else {
+            // Create new identity with this key material
+            std::fs::create_dir_all(&key_dir).ok();
+            let id = crate::identity::Identity::generate();
+            let aes_key = match id.save_encrypted_keyed(&key_material, &key_dir) {
+                Ok((_, key)) => key,
+                Err(e) => {
+                    error!("Failed to save new identity: {e}");
+                    self.as_mut()
+                        .set_session_banner(QString::from("Failed to create identity."));
+                    return;
+                }
+            };
+            apply_auto_unlock_choice(&id.public_id(), &aes_key, remember);
+            self.continue_initialization(Arc::new(id));
+        }
+    }
+
+    fn continue_initialization(mut self: Pin<&mut Self>, identity: Arc<crate::identity::Identity>) {
+        if self.rust().rt_thread.is_some() {
+            warn!("continue_initialization: already running");
+            return;
+        }
+
+        self.as_mut()
+            .rust_mut()
+            .my_peer_id
+            .clone_from(&identity.peer_id().to_owned());
+        self.as_mut()
+            .rust_mut()
+            .my_public_id
+            .clone_from(&identity.public_id().to_owned());
+        self.as_mut()
+            .set_public_id(QString::from(identity.public_id().as_str()));
+
+        // Make our peer ID available to the doubleslash:// portal bridge so
+        // window.doubleslash.ready resolves with the correct myPeerId value.
+        #[cfg(feature = "webengine")]
+        crate::ui::scheme::set_portal_peer_id(identity.public_id().as_str());
+
+        info!(
+            "AppBridge: identity {} ({})",
+            identity.public_id(),
+            identity.peer_id()
+        );
+
+        // ── Stores ────────────────────────────────────────────────────────
+        let peer_store = match crate::peer_store::PeerStore::open(&identity, None) {
+            Ok(s) => Arc::new(RwLock::new(s)),
+            Err(e) => {
+                error!("Peer store error: {e}");
+                return;
+            }
+        };
+        let _chat_store_arc = match crate::chat_store::ChatStore::open(&identity, None) {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                error!("Chat store error: {e}");
+                return;
+            }
+        };
+        let chat_store = Arc::clone(&_chat_store_arc);
+        let room_store = match crate::room_store::RoomStore::open(&identity, None) {
+            Ok(s) => Arc::new(RwLock::new(s)),
+            Err(e) => {
+                error!("Room store error: {e}");
+                return;
+            }
+        };
+
+        // Re-promote supernodes that were demoted by an older repair pass but
+        // are still referenced by saved room definitions (relay_hints intact).
+        {
+            let room_supernode_ids: Vec<String> = {
+                let rs = room_store.read();
+                let mut ids = std::collections::HashSet::new();
+                for entry in rs.list() {
+                    if !entry.supernode_id.is_empty() {
+                        ids.insert(entry.supernode_id.clone());
+                    }
+                }
+                ids.into_iter().collect()
+            };
+            if !room_supernode_ids.is_empty() {
+                let mut store = peer_store.write();
+                if store.restore_supernodes_referenced_by_ids(&room_supernode_ids) {
+                    if let Err(e) = store.save() {
+                        warn!("Failed to persist restored supernode flags: {e}");
+                    }
+                }
+            }
+            if let Err(e) = room_store
+                .write()
+                .normalize_supernode_ids(&peer_store.read())
+            {
+                warn!("RoomStore supernode id normalize failed: {e}");
+            }
+        }
+
+        // ── Split subsystems ──────────────────────────────────────────────
+        // Build a shared FeatureRegistry so plugin descriptors registered
+        // by `PluginRuntime::start` are visible in the manager's
+        // CAPABILITY_ANNOUNCE snapshot.
+        let feature_registry = std::sync::Arc::new(doubleslash_features::FeatureRegistry::new());
+        if let Err(e) =
+            doubleslash_features::client_modules::register_client_modules_with_video_codecs(
+                &feature_registry,
+                crate::video::codec::available_codecs(),
+            )
+        {
+            error!("failed to seed feature registry: {e}");
+        }
+
+        let (conn_cmd_tx, conn_event_rx, conn_fut) =
+            crate::connection_manager::ConnectionManager::split_with_registry(
+                Arc::clone(&identity),
+                Arc::clone(&peer_store),
+                Arc::clone(&feature_registry),
+            );
+        let (call_cmd_tx, call_event_rx, call_fut) =
+            crate::call_controller::CallController::split(Some(conn_cmd_tx.clone()));
+        let (sfu_cmd_tx, _sfu_event_rx, sfu_fut) =
+            crate::sfu_client::SfuClient::split(Some(conn_cmd_tx.clone()));
+        let installer_path = crate::github_updater::installed_installer_path();
+        let (updater_cmd_tx, updater_event_rx, updater_fut) = crate::github_updater::Updater::split(
+            env!("CARGO_PKG_VERSION"),
+            crate::github_updater::DEFAULT_REPO,
+            installer_path,
+            self.rust().automatic_update_checks_enabled,
+        );
+
+        // ── Plugin runtime: load enabled bespoke modules from settings ───
+        // `PluginRuntime::start` does NOT spawn — it builds channels + futures
+        // so we can store cmd_tx on the bridge before entering the tokio thread.
+        let mut plugin_manager = crate::plugin_manager::PluginManager::new();
+        {
+            let s = read_plugin_settings();
+            plugin_manager.load_from_settings(
+                s.ollama_enabled,
+                &s.ollama_base_url,
+                &s.ollama_model,
+            );
+        }
+        let started_plugins =
+            crate::plugin_runtime::PluginRuntime::start(&plugin_manager, &feature_registry);
+
+        // Destructure Ollama handles before any moves.
+        let (maybe_ollama_cmd, ollama_event_rx, ollama_task) = match started_plugins.ollama {
+            Some(h) => (Some(h.cmd_tx), Some(h.event_rx), Some(h.task)),
+            None => (None, None, None),
+        };
+        let ollama_is_available = maybe_ollama_cmd.is_some();
+
+        {
+            let mut r = self.as_mut().rust_mut();
+            r.conn_cmd_tx = Some(conn_cmd_tx.clone());
+            r.call_cmd_tx = Some(call_cmd_tx);
+            r.sfu_cmd_tx = Some(sfu_cmd_tx);
+            r.updater_cmd_tx = Some(updater_cmd_tx.clone());
+            r.identity = Some(Arc::clone(&identity));
+            r.peer_store = Some(Arc::clone(&peer_store));
+            r.chat_store = Some(Arc::clone(&chat_store));
+            r.room_store = Some(Arc::clone(&room_store));
+            r.ollama_cmd_tx = maybe_ollama_cmd;
+            r.ollama_available = ollama_is_available;
+        }
+        if ollama_is_available {
+            self.as_mut().set_ollama_available(true);
+        }
+
+        // ── PTT: start if enabled in persisted settings ───────────────────
+        {
+            let snap = read_settings_for_ptt();
+            if snap.0 {
+                // push_to_talk enabled — start polling thread
+                let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let stop2 = Arc::clone(&stop);
+                let (ptt_tx, ptt_rx) = std::sync::mpsc::sync_channel::<bool>(4);
+                let call_tx = self.rust().call_cmd_tx.clone();
+                std::thread::spawn(move || {
+                    while let Ok(muted) = ptt_rx.recv() {
+                        if let Some(ref tx) = call_tx {
+                            let _ = tx.try_send(CallCommand::SetMuted(muted));
+                        }
+                    }
+                });
+                let handle = crate::platform::start_ptt_polling(snap.1, ptt_tx, stop2);
+                let mut r = self.as_mut().rust_mut();
+                r.ptt_stop = Some(stop);
+                r.ptt_thread = Some(handle);
+            }
+        }
+
+        // ── Apply persisted jitter depth to the call controller ───────────
+        {
+            let depth = read_jitter_depth_setting();
+            if depth != 3 {
+                if let Some(ref tx) = self.rust().call_cmd_tx {
+                    let _ = tx.try_send(CallCommand::SetJitterDepth(depth));
+                }
+            }
+        }
+
+        // Apply persisted outgoing voice bitrate to the call controller.
+        {
+            let bitrate = read_voice_bitrate_setting();
+            if let Some(ref tx) = self.rust().call_cmd_tx {
+                let _ = tx.try_send(CallCommand::SetOutgoingBitrate(bitrate));
+            }
+        }
+
+        self.as_mut()
+            .set_session_banner(QString::from("Connecting\u{2026}"));
+
+        // ── Emit initial peer list from store ─────────────────────────────
+        {
+            emit_peers_updated(self.as_mut());
+            emit_rooms_sidebar_sync(self.as_mut());
+            emit_local_rooms_for_all_supernodes(self.as_mut());
+        }
+
+        let qt_thread = self.qt_thread();
+
+        // Hand the runtime Handle back to the Qt thread so invokables can
+        // spawn work (model list, etc.) without relying on try_current().
+        let (handle_tx, handle_rx) = std::sync::mpsc::sync_channel::<tokio::runtime::Handle>(1);
+
+        let rt_thread = match std::thread::Builder::new()
+            .name("conquerd-tokio".into())
+            .spawn(move || {
+                let rt = match tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        error!("failed to create conquerd tokio runtime: {e}");
+                        return;
+                    }
+                };
+
+                let _ = handle_tx.send(rt.handle().clone());
+
+                // Register the scheme handler callback so doubleslash:// URL
+                // fetches can be routed through the ConnectionManager.
+                // Must be done before any doubleslash:// URL is loaded; the
+                // runtime handle lets the C++ handler thread call block_on.
+                #[cfg(feature = "webengine")]
+                crate::ui::scheme::register_fetch_callback(
+                    conn_cmd_tx.clone(),
+                    rt.handle().clone(),
+                );
+
+                rt.block_on(async move {
+                    tokio::spawn(conn_fut);
+                    tokio::spawn(call_fut);
+                    tokio::spawn(sfu_fut);
+                    tokio::spawn(updater_fut);
+
+                    // Spawn Ollama task if the plugin is enabled.
+                    if let Some(task) = ollama_task {
+                        tokio::spawn(task);
+                        info!("[plugins] x.ollama.v1 task spawned");
+                    }
+
+                    crate::platform::register_uri_scheme();
+
+                    // Drive connection events, updater events, and Ollama events.
+                    let mut ev_rx = conn_event_rx;
+                    let mut up_rx = updater_event_rx;
+                    let mut ol_rx = ollama_event_rx;
+                    let mut call_rx = call_event_rx;
+                    let mut call_timer_stop: Option<oneshot::Sender<()>> = None;
+                    loop {
+                        tokio::select! {
+                            Some(ev) = ev_rx.recv() => {
+                                dispatch_event(&qt_thread, ev, &chat_store, &mut call_timer_stop);
+                            }
+                            Some(ev) = up_rx.recv() => {
+                                dispatch_update_event(&qt_thread, ev);
+                            }
+                            Some(ev) = async {
+                                match ol_rx.as_mut() {
+                                    Some(rx) => rx.recv().await,
+                                    None => std::future::pending().await,
+                                }
+                            } => {
+                                dispatch_ollama_event(&qt_thread, ev);
+                            }
+                            Some(ev) = call_rx.recv() => {
+                                dispatch_call_event(&qt_thread, ev);
+                            }
+                            else => break,
+                        }
+                    }
+                    info!("AppBridge event loop exited");
+                });
+            }) {
+            Ok(thread) => thread,
+            Err(e) => {
+                error!("failed to spawn conquerd-tokio thread: {e}");
+                return;
+            }
+        };
+
+        match handle_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(handle) => {
+                self.as_mut().rust_mut().rt_handle = Some(handle);
+            }
+            Err(e) => {
+                warn!("failed to capture tokio runtime handle: {e}");
+            }
+        }
+
+        self.as_mut().rust_mut().rt_thread = Some(rt_thread);
+
+        if ollama_is_available {
+            info!("[plugins] x.ollama.v1 available (enabled in settings)");
+        } else {
+            info!("[plugins] x.ollama.v1 not started (disabled in settings — model list still works via direct HTTP)");
+        }
+    }
+
+    fn end_call(mut self: Pin<&mut Self>) {
+        use crate::protocol::{MessageType, SignalingMessage};
+        // Tell the peer first: a hang-up that only stops local audio leaves the
+        // other side listening to silence with the call still on their screen.
+        let active = self.rust().active_direct_call_peer_id.clone();
+        if !active.is_empty() {
+            let sender = self.rust().my_public_id.clone();
+            if let Some(ref tx) = self.rust().conn_cmd_tx {
+                let mut msg = SignalingMessage::new(MessageType::CallEnd, sender);
+                msg.target = Some(active);
+                let _ = tx.try_send(ConnectionCommand::SendMessage(msg));
+            }
+        }
+        teardown_call_locally(&mut self.as_mut());
+    }
+
+    fn leave_room(mut self: Pin<&mut Self>) {
+        // Announce camera-off *before* LeaveRoom so the CM still has room
+        // membership and can fan the SfuVideoState to remaining members.
+        // Order on the same conn_cmd channel is preserved.
+        self.as_mut().stop_local_video();
+        let (prev_sn, prev_rid) = {
+            let r = self.rust();
+            (r.voice_supernode_id.clone(), r.voice_room_id.clone())
+        };
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            if !prev_sn.is_empty() && !prev_rid.is_empty() {
+                // Voice leave; CM re-subscribes chat when the room is chat-active
+                // (private rooms + any room we still want text for).
+                let _ = tx.try_send(ConnectionCommand::LeaveRoom {
+                    supernode_id: prev_sn.clone(),
+                    room_id: prev_rid,
+                });
+                let _ = tx.try_send(ConnectionCommand::RequestRoomList {
+                    supernode_id: prev_sn,
+                });
+            }
+        }
+        // Clear room audio mode and stop audio in case we were in a voice room.
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(CallCommand::ClearRoomMode);
+            let _ = tx.try_send(CallCommand::StopAudio);
+        }
+        {
+            let mut r = self.as_mut().rust_mut();
+            r.room_participant_ids.clear();
+            r.voice_supernode_id.clear();
+            r.voice_room_id.clear();
+        }
+        // Clear the voice rail model; leave the text members panel alone so a
+        // still-selected chat room keeps showing room-space peers.
+        self.as_mut().participants_updated(QString::from("[]"));
+        clear_room_member_presence(&mut self.as_mut().rust_mut());
+        self.as_mut().set_in_room(false);
+        self.as_mut().set_voice_active(false);
+        sync_voice_in_room(&mut self.as_mut());
+        self.as_mut().reset_inbound_video();
+        emit_peers_updated(self.as_mut());
+    }
+
+    fn send_chat(mut self: Pin<&mut Self>, peer_id: &QString, message: &QString) {
+        use crate::protocol::{MessageType, SignalingMessage};
+
+        let pid = peer_id.to_string();
+        let body = message.to_string();
+        let message_id = uuid::Uuid::new_v4().to_string();
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+
+        // Extract everything we need while the immutable borrow is live.
+        let (_sender_public, handle, chat_store_opt, outbound_msg) = {
+            let r = self.rust();
+            let sender_pub = r.my_public_id.clone();
+            let handle = r
+                .peer_store
+                .as_ref()
+                .and_then(|ps| {
+                    let store = ps.read();
+                    store.get(&r.my_peer_id).map(|rec| rec.display_name())
+                })
+                .unwrap_or_default();
+            let cs = r.chat_store.clone();
+            let mut msg = SignalingMessage::new(MessageType::ChatMessage, sender_pub.clone());
+            msg.target = Some(pid.clone());
+            msg.payload
+                .insert("body".to_string(), serde_json::Value::String(body.clone()));
+            msg.payload.insert(
+                "message_id".to_string(),
+                serde_json::Value::String(message_id.clone()),
+            );
+            msg.payload.insert(
+                "sender_handle".to_string(),
+                serde_json::Value::String(handle.clone()),
+            );
+            (sender_pub, handle, cs, msg)
+        };
+
+        // Send to the peer. If the command channel is missing, full, or
+        // closed, mark the message failed immediately so it never lingers in
+        // "sending" — the user can then retry it explicitly.
+        let sent = match self.rust().conn_cmd_tx {
+            Some(ref tx) => tx
+                .try_send(ConnectionCommand::SendMessage(outbound_msg))
+                .is_ok(),
+            None => false,
+        };
+        let initial_status = if sent {
+            crate::chat_store::MessageStatus::Sending
+        } else {
+            crate::chat_store::MessageStatus::Failed
+        };
+
+        // Persist outbound message so history replay shows it on both sides.
+        let chat_msg = crate::chat_store::ChatMessage {
+            id: message_id.clone(),
+            peer_id: pid.clone(),
+            sender: handle.clone(),
+            recipient: pid.clone(),
+            body: body.clone(),
+            timestamp: now_ts,
+            is_self: true,
+            status: initial_status.clone(),
+            kind: crate::chat_store::MessageKind::Text,
+            attachment_name: String::new(),
+            attachment_path: String::new(),
+            size_str: String::new(),
+            status_note: String::new(),
+            sender_handle: handle.clone(),
+        };
+        if let Some(ref cs) = chat_store_opt {
+            if let Err(e) = cs.insert(&chat_msg) {
+                warn!("chat_store insert (outbound) error: {e}");
+            }
+        }
+
+        // Local echo: emit immediately so the sender sees their own message.
+        let echo_json = serde_json::json!({
+            "msg_id": message_id,
+            "peer_id": pid,
+            "sender": handle,
+            "body": body,
+            "timestamp": now_ts as i64,
+            "kind": "text",
+            "mine": true,
+            "status": initial_status.as_str(),
+        })
+        .to_string();
+        if self.rust().selected_peer_id == pid {
+            self.as_mut()
+                .chat_message_received(QString::from(echo_json.as_str()));
+        }
+    }
+
+    fn start_call(mut self: Pin<&mut Self>, peer_id: &QString) {
+        use crate::protocol::{MessageType, SignalingMessage};
+
+        let pid = peer_id.to_string();
+
+        // Room voice and a 1:1 must not run at once. Leaving is not just
+        // tidiness: the call controller stays in room mode, so the mic would
+        // keep broadcasting to the SFU and the dialled peer would hear
+        // nothing. Same rule join_room_with_voice applies when switching
+        // rooms — leave the old voice session before entering the new one.
+        let in_voice_room = {
+            let r = self.rust();
+            r.voice_active && !r.voice_room_id.is_empty()
+        };
+        if in_voice_room {
+            // Sends ClearRoomMode + StopAudio and tears the room UI down.
+            self.as_mut().leave_room();
+        }
+
+        let sender = self.rust().my_public_id.clone();
+
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let mut msg = SignalingMessage::new(MessageType::CallRequest, sender);
+            msg.target = Some(pid.clone());
+            let _ = tx.try_send(ConnectionCommand::SendMessage(msg));
+        }
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            // Open the direct-mode pipeline the call needs: the room's was
+            // just stopped, and InitiatePeer is dropped while the controller
+            // is idle. Ordered on one channel, so this lands after StopAudio.
+            // StartAudio no-ops unless idle, so a call dialled with no room
+            // behind it still opens exactly one pipeline — as accept_call does.
+            let va = read_voice_activation_setting();
+            let _ = tx.try_send(CallCommand::StartAudio {
+                voice_activation: va,
+            });
+            let _ = tx.try_send(CallCommand::InitiatePeer {
+                peer_id: pid.clone(),
+                host: None,
+                port: None,
+            });
+        }
+        self.as_mut().set_call_state(QString::from("connecting"));
+        self.as_mut().set_voice_active(true);
+        sync_voice_in_room(&mut self.as_mut());
+        {
+            let resolved = lookup_list_peer_id(self.rust(), &pid);
+            set_active_direct_call_presence(&mut self.as_mut().rust_mut(), &pid, true, resolved);
+        }
+        emit_peers_updated(self.as_mut());
+    }
+
+    fn copy_invite(mut self: Pin<&mut Self>) {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+
+        let Some(ref identity) = self.rust().identity else {
+            warn!("copy_invite: identity not yet unlocked");
+            return;
+        };
+        if let Some(url) = request_invite_url(self.rust()) {
+            match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(url.clone())) {
+                Ok(_) => info!("Invite link copied to clipboard: {url}"),
+                Err(e) => warn!("Clipboard write failed: {e} - invite URL: {url}"),
+            }
+            self.as_mut().set_invite_url(QString::from(url.as_str()));
+            return;
+        }
+        let peer_id = identity.peer_id().to_owned();
+        let pub_key = identity.public_id().to_owned();
+
+        // Build a minimal signed invite URL.
+        // Format: https://doubleslash.space/i#<base64url(JSON)>
+        let invite_id = uuid::Uuid::new_v4().to_string();
+        let expires_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            + 900; // 15-minute TTL
+
+        let payload = serde_json::json!({
+            "inviter_peer_id": peer_id,
+            "inviter_identity_pub": pub_key,
+            "invite_id": invite_id,
+            "expires_at": expires_at,
+        });
+        let encoded = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
+        let url = doubleslash_features::mint_invite_https("invite", &encoded);
+
+        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(url.clone())) {
+            Ok(_) => info!("Invite link copied to clipboard: {url}"),
+            Err(e) => warn!("Clipboard write failed: {e} — invite URL: {url}"),
+        }
+        self.as_mut().set_invite_url(QString::from(url.as_str()));
+    }
+
+    fn generate_invite(mut self: Pin<&mut Self>) -> QString {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+
+        let Some(ref identity) = self.rust().identity else {
+            warn!("generate_invite: identity not yet unlocked");
+            return QString::default();
+        };
+        if let Some(url) = request_invite_url(self.rust()) {
+            self.as_mut().set_invite_url(QString::from(url.as_str()));
+            return QString::from(url.as_str());
+        }
+        let peer_id = identity.peer_id().to_owned();
+        let pub_key = identity.public_id().to_owned();
+
+        let invite_id = uuid::Uuid::new_v4().to_string();
+        let expires_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            + 900;
+
+        let inviter_handle = read_local_handle();
+        // Keep the offline/fallback path wire-compatible with ConnectionManager::
+        // generate_invite_url (AcceptInvite rejects invites without this field).
+        let inviter_eph = crate::crypto::generate_ephemeral_keypair();
+        let inviter_ephemeral_pub =
+            crate::crypto::b64url_encode_nopad(inviter_eph.public.as_bytes());
+        let payload = serde_json::json!({
+            "inviter_peer_id": peer_id,
+            "inviter_identity_pub": pub_key,
+            "invite_id": invite_id,
+            "expires_at": expires_at,
+            "inviter_ephemeral_pub": inviter_ephemeral_pub,
+            "inviter_handle": inviter_handle,
+        });
+        let encoded = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
+        let url = doubleslash_features::mint_invite_https("invite", &encoded);
+        self.as_mut().set_invite_url(QString::from(url.as_str()));
+        QString::from(url.as_str())
+    }
+
+    fn generate_room_invite(
+        mut self: Pin<&mut Self>,
+        supernode_id: &QString,
+        room_id: &QString,
+        room_name: &QString,
+    ) -> QString {
+        let sid = self
+            .rust()
+            .resolve_supernode_node_id_str(&supernode_id.to_string())
+            .unwrap_or_else(|| supernode_id.to_string());
+        let rid = room_id.to_string();
+
+        // Pull the room's type + invite token from the local store. Rooms we
+        // created/joined are recorded there; a room the user only discovered in
+        // the sidebar may not be, so fall back to a tokenless public invite.
+        let stored = self
+            .rust()
+            .room_store
+            .as_ref()
+            .and_then(|rs| rs.read().get(&sid, &rid).cloned());
+        let room_type = stored
+            .as_ref()
+            .map(|e| e.room_type.clone())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| "public".to_owned());
+        let invite_token = stored
+            .as_ref()
+            .map(|e| e.invite_token.clone())
+            .unwrap_or_default();
+        let name = stored
+            .as_ref()
+            .map(|e| e.room_name.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| room_name.to_string());
+
+        match request_room_invite_url(self.rust(), sid, rid, name, room_type, invite_token) {
+            Some(url) => {
+                self.as_mut().set_invite_url(QString::from(url.as_str()));
+                QString::from(url.as_str())
+            }
+            None => QString::default(),
+        }
+    }
+
+    fn generate_room_invite_for_peer(
+        mut self: Pin<&mut Self>,
+        supernode_id: &QString,
+        room_id: &QString,
+        room_name: &QString,
+        grantee_pub: &QString,
+    ) -> QString {
+        let sid = self
+            .rust()
+            .resolve_supernode_node_id_str(&supernode_id.to_string())
+            .unwrap_or_else(|| supernode_id.to_string());
+        let rid = room_id.to_string();
+        // The grant's `grantee_pub` must be the invitee's base64url identity_pub
+        // (matched against the joiner's connection id at admission). QML passes a
+        // peer's `peerId`, so resolve it to the canonical identity_pub; fall back
+        // to the raw value when it's already an identity_pub not in the store.
+        let grantee = {
+            let raw = grantee_pub.to_string();
+            self.rust()
+                .peer_store
+                .as_ref()
+                .and_then(|ps| {
+                    let store = ps.read();
+                    store
+                        .get(&raw)
+                        .or_else(|| store.get_by_identity(&raw))
+                        .map(|r| r.identity_pub.clone())
+                })
+                .unwrap_or(raw)
+        };
+
+        let stored = self
+            .rust()
+            .room_store
+            .as_ref()
+            .and_then(|rs| rs.read().get(&sid, &rid).cloned());
+        let room_type = stored
+            .as_ref()
+            .map(|e| e.room_type.clone())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| "public".to_owned());
+        let invite_token = stored
+            .as_ref()
+            .map(|e| e.invite_token.clone())
+            .unwrap_or_default();
+        let name = stored
+            .as_ref()
+            .map(|e| e.room_name.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| room_name.to_string());
+
+        match request_room_invite_url_for_peer(
+            self.rust(),
+            sid,
+            rid,
+            name,
+            room_type,
+            invite_token,
+            grantee,
+        ) {
+            Some(url) => {
+                self.as_mut().set_invite_url(QString::from(url.as_str()));
+                QString::from(url.as_str())
+            }
+            None => QString::default(),
+        }
+    }
+
+    fn copy_to_clipboard(self: Pin<&mut Self>, text: &QString) {
+        let s = text.to_string();
+        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(s.clone())) {
+            Ok(_) => debug!("[bridge] Copied {} bytes to clipboard", s.len()),
+            Err(e) => warn!("[bridge] Clipboard write failed: {e}"),
+        }
+    }
+
+    fn open_containing_folder(self: Pin<&mut Self>, path: &QString) {
+        let native = parse_local_file_path(&path.to_string());
+        if let Err(e) = crate::platform::open_containing_folder(&native) {
+            warn!("[bridge] open containing folder failed: {e}");
+        }
+    }
+
+    fn start_mic_test(mut self: Pin<&mut Self>) {
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            // Push the most recently persisted device selection so the test
+            // uses the same output device the user picked in Settings.
+            let (input, output) = read_audio_device_settings();
+            let _ =
+                tx.try_send(crate::call_controller::CallCommand::SetAudioDevices { input, output });
+            let _ = tx.try_send(crate::call_controller::CallCommand::StartMicTest);
+        }
+        self.as_mut().set_mic_test_active(true);
+    }
+
+    fn stop_mic_test(mut self: Pin<&mut Self>) {
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(crate::call_controller::CallCommand::StopMicTest);
+        }
+        self.as_mut().set_mic_test_active(false);
+        self.as_mut().set_mic_level(0.0);
+    }
+
+    fn set_audio_devices(self: Pin<&mut Self>, input: &QString, output: &QString) {
+        let in_s = input.to_string();
+        let out_s = output.to_string();
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(crate::call_controller::CallCommand::SetAudioDevices {
+                input: Some(in_s),
+                output: Some(out_s),
+            });
+        }
+    }
+
+    fn test_speaker(self: Pin<&mut Self>) {
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(crate::call_controller::CallCommand::TestSpeaker);
+        }
+    }
+
+    fn create_desktop_shortcuts(self: Pin<&mut Self>) {
+        crate::platform::create_desktop_shortcuts();
+    }
+
+    fn remove_desktop_shortcuts(self: Pin<&mut Self>) {
+        crate::platform::remove_desktop_shortcuts();
+    }
+
+    fn has_desktop_shortcuts(self: Pin<&mut Self>) -> bool {
+        crate::platform::has_desktop_shortcuts()
+    }
+
+    fn list_audio_devices(self: Pin<&mut Self>) -> QString {
+        use cpal::traits::{DeviceTrait, HostTrait};
+        let host = cpal::default_host();
+
+        let inputs: Vec<String> = std::iter::once("Default".to_string())
+            .chain(
+                host.input_devices()
+                    .map(|it| it.filter_map(|d| d.name().ok()).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            )
+            .collect();
+
+        let outputs: Vec<String> = std::iter::once("Default".to_string())
+            .chain(
+                host.output_devices()
+                    .map(|it| it.filter_map(|d| d.name().ok()).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            )
+            .collect();
+
+        let json = serde_json::json!({ "inputs": inputs, "outputs": outputs });
+        QString::from(json.to_string().as_str())
+    }
+
+    /// Start or stop sharing system audio. See the bridge declaration.
+    fn set_content_audio_enabled(
+        mut self: Pin<&mut Self>,
+        on: bool,
+        device_id: &QString,
+        mode: &QString,
+    ) -> bool {
+        // Stop first, which also covers the restart case.
+        if let Some(sender) = self.as_mut().rust_mut().content_audio_sender.take() {
+            sender.stop();
+        }
+        if !on {
+            self.as_mut().set_content_audio_active(false);
+            return true;
+        }
+
+        // The stream is timestamped against the media session's clock, so
+        // without a session there is nothing to synchronise it to and the
+        // timestamps would be meaningless.
+        let Some(clock) = self.rust().media_clock.clone() else {
+            warn!("[content-audio] cannot share system audio without an active media session");
+            return false;
+        };
+        let Some(conn_tx) = self.rust().conn_cmd_tx.clone() else {
+            warn!("[content-audio] backend is not initialised");
+            return false;
+        };
+
+        // Derive what to capture from the *video* source, so sharing an app
+        // shares that app's audio rather than the whole desktop. The user's
+        // mode setting can override the derivation entirely.
+        let device_id = device_id.to_string();
+        let mode = crate::content_capture::ContentAudioMode::from_setting(&mode.to_string());
+        let spec = crate::content_capture::resolve_audio_spec(
+            mode,
+            crate::video::sender::source_is_screen(&device_id),
+            crate::video::sender::source_process_id(&device_id),
+        );
+        if spec == crate::content_capture::ContentAudioSpec::None {
+            warn!(
+                "[content-audio] the current video source shares no audio \
+                 (a camera shares none by design). Set Settings > Video > Audio \
+                 to \"This computer's audio\" to share it anyway."
+            );
+            return false;
+        }
+
+        let source = match crate::content_capture::open_for(spec) {
+            Ok(s) => s,
+            Err(e) => {
+                // Expected on Linux and macOS today, so it is a warning rather
+                // than an error: the message names what the platform needs.
+                warn!("[content-audio] {e}");
+                return false;
+            }
+        };
+
+        // Same routing rule as video: room when voice is in a room (including
+        // a direct-call fallback room), otherwise the active 1:1 peer.
+        let direct_target = self.rust().direct_video_target();
+        let sender =
+            crate::content_sender::ContentAudioSender::start(source, clock, move |opus, pts_us| {
+                let cmd = match &direct_target {
+                    Some(peer_id) => ConnectionCommand::SendContentAudio {
+                        peer_id: peer_id.clone(),
+                        opus,
+                        pts_us,
+                    },
+                    None => ConnectionCommand::SendRoomContentAudio { opus, pts_us },
+                };
+                conn_tx.try_send(cmd).is_ok()
+            });
+        self.as_mut().rust_mut().content_audio_sender = Some(sender);
+        self.as_mut().set_content_audio_active(true);
+        info!("[content-audio] sharing system audio");
+        true
+    }
+
+    fn set_video_adaptive_bitrate(mut self: Pin<&mut Self>, on: bool) {
+        if let Some(sender) = self.as_mut().rust_mut().video_sender.as_mut() {
+            sender.set_adaptive_bitrate(on);
+        }
+    }
+
+    fn list_video_codecs(self: Pin<&mut Self>) -> QString {
+        let codecs: Vec<serde_json::Value> = crate::video::codec::available_codecs()
+            .into_iter()
+            .map(|c| serde_json::json!({ "id": c.as_str(), "name": video_codec_label(c) }))
+            .collect();
+        QString::from(serde_json::json!({ "codecs": codecs }).to_string().as_str())
+    }
+
+    fn set_video_enabled(
+        mut self: Pin<&mut Self>,
+        on: bool,
+        device_id: &QString,
+        quality: &QString,
+        overlays_json: &QString,
+        encoder_json: &QString,
+    ) -> bool {
+        // Stopping first also covers the restart case (device or quality
+        // changed while running): the old thread must release the camera
+        // before a new one can open it. The settings preview holds the same
+        // device, so it has to go too — a call always wins over a preview of
+        // one.
+        //
+        // Content audio is deliberately left running across a restart: it
+        // stamps against `media_clock`, which is reused below so A/V stays
+        // aligned. A full stop goes through the `!on` branch (or
+        // `stop_local_video`) and tears both down together.
+        if let Some(sender) = self.as_mut().rust_mut().video_sender.take() {
+            sender.stop();
+        }
+        self.as_mut().stop_video_preview();
+
+        if !on {
+            // Share the full cleanup with leave-room / end-call: content audio
+            // cannot outlive the session clock, and a half-stop that leaves
+            // capture running after the camera is off is a lifecycle leak.
+            self.as_mut().stop_local_video();
+            return false;
+        }
+
+        let Some(conn_tx) = self.rust().conn_cmd_tx.clone() else {
+            warn!("[video] cannot start camera before the backend is initialised");
+            return false;
+        };
+
+        let encoder = VideoEncoderSettings::parse(&encoder_json.to_string());
+        let quality =
+            crate::video::sender::Quality::resolve(&quality.to_string(), encoder.overrides());
+
+        // Pick the codec before anything else: with no mutual codec there is
+        // nothing worth opening the camera for, and failing here keeps the
+        // capture light off rather than streaming into a void.
+        let preferred = encoder.preferred_codec();
+        let direct_target = self.rust().direct_video_target();
+        let codec = match &direct_target {
+            Some(peer_id) => {
+                let peer_codecs = self
+                    .rust()
+                    .peer_video_codecs
+                    .get(peer_id)
+                    .cloned()
+                    .unwrap_or_default();
+                match pick_direct_video_codec(&peer_codecs, preferred) {
+                    Some(c) => c,
+                    None => {
+                        warn!(
+                            "[video] no mutual video codec with {} (they speak {:?}, we speak {:?}); \
+                             not starting the camera",
+                            &peer_id[..8.min(peer_id.len())],
+                            peer_codecs,
+                            crate::video::codec::available_codecs()
+                        );
+                        return false;
+                    }
+                }
+            }
+            None => match pick_room_video_codec(preferred) {
+                Some(c) => c,
+                None => {
+                    warn!("[video] this build has no video encoder; not starting the camera");
+                    return false;
+                }
+            },
+        };
+
+        // Capture is Windows/Media Foundation only for now. Soft-fail
+        // elsewhere so non-Windows builds (CI, mac/linux nightlies) still
+        // compile the rest of the UI; the camera toggle simply reports off.
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (
+                conn_tx,
+                quality,
+                device_id,
+                overlays_json,
+                codec,
+                direct_target,
+                encoder,
+            );
+            warn!("[video] capture/encode is not implemented on this platform");
+            return false;
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let video_encoder = match crate::video::codec::make_encoder(
+                codec,
+                crate::video::codec::EncoderParams {
+                    width: quality.width,
+                    height: quality.height,
+                    bitrate_bps: quality.bitrate_bps,
+                    fps: quality.fps,
+                    keyframe_interval_secs: quality.keyframe_interval_secs,
+                },
+            ) {
+                Ok(e) => {
+                    info!(
+                        "[video] {} encoder ready at {}x{}@{} fps, {} bps, keyframe every {}s",
+                        codec.as_str(),
+                        quality.width,
+                        quality.height,
+                        quality.fps,
+                        quality.bitrate_bps,
+                        quality.keyframe_interval_secs
+                    );
+                    e
+                }
+                Err(e) => {
+                    warn!("[video] no usable {} encoder: {e}", codec.as_str());
+                    return false;
+                }
+            };
+
+            // The wire format allows a peer only one video stream, so several
+            // selected sources become one composited frame rather than several
+            // streams. With no overlays this is the plain single-source capture.
+            let layout = crate::video::sender::CaptureLayout::from_settings(
+                &device_id.to_string(),
+                &overlays_json.to_string(),
+            );
+
+            // Route frames to the room, or to the one peer of a direct 1:1 call.
+            //
+            // Decided once here rather than per frame: the session cannot change
+            // underneath a running capture, because every path that ends a call
+            // or leaves a room calls `stop_local_video` first. A room takes
+            // priority when both look set, since a direct call that fell back to
+            // a temporary room is genuinely a room session by then.
+            let sink = match direct_target {
+                Some(peer_id) => crate::video::sender::ChannelSink::new(
+                    conn_tx,
+                    move |encoded, keyframe, pts_us| ConnectionCommand::SendVideoFrame {
+                        peer_id: peer_id.clone(),
+                        encoded,
+                        keyframe,
+                        codec,
+                        pts_us,
+                    },
+                ),
+                None => crate::video::sender::ChannelSink::new(
+                    conn_tx,
+                    move |encoded, keyframe, pts_us| ConnectionCommand::SendRoomVideo {
+                        encoded,
+                        keyframe,
+                        codec,
+                        pts_us,
+                    },
+                ),
+            };
+
+            // Our own id, so the capture thread can feed the local preview tile.
+            let preview_id = {
+                let id = self.rust().my_public_id.clone();
+                (!id.is_empty()).then_some(id)
+            };
+            // One clock for the whole media session. Reuse across device/quality
+            // restarts so content audio that is already stamping against it does
+            // not get a permanently offset twin; only mint a new one when none
+            // exists (fresh share). Dropped in `stop_local_video` so the next
+            // session starts from zero.
+            let clock = if let Some(existing) = self.rust().media_clock.clone() {
+                existing
+            } else {
+                let clock = crate::media_clock::SessionMediaClock::start();
+                self.as_mut().rust_mut().media_clock = Some(clock.clone());
+                clock
+            };
+
+            // Posted back rather than acted on directly: `on_ended` runs on the
+            // capture thread, and everything it triggers (stopping the sender,
+            // announcing camera-off, touching qproperties) belongs to the Qt
+            // thread.
+            let qt = self.as_mut().qt_thread();
+            let mut sender = crate::video::sender::VideoSender::start(
+                layout,
+                quality,
+                video_encoder,
+                sink,
+                preview_id,
+                Some(clock),
+                move |end| {
+                    let Some(reason) = end.failure().map(str::to_owned) else {
+                        return; // Ordinary stop — the UI asked for it.
+                    };
+                    let _ = qt.queue(move |bridge: Pin<&mut ffi::AppBridge>| {
+                        capture_died(bridge, &reason);
+                    });
+                },
+            );
+            // Applied after start rather than passed in: adaptation is a
+            // property of the rate controller, not of the capture, and the
+            // sender is where the ceiling it would adapt below already lives.
+            sender.set_adaptive_bitrate(encoder.adaptive);
+            self.as_mut().rust_mut().video_sender = Some(sender);
+            self.as_mut().set_video_active(true);
+            self.as_mut().announce_video_state(true);
+            true
+        }
+    }
+
+    fn set_video_preview_enabled(
+        mut self: Pin<&mut Self>,
+        on: bool,
+        device_id: &QString,
+        quality: &QString,
+        overlays_json: &QString,
+        encoder_json: &QString,
+    ) -> bool {
+        // Unconditional stop first, which is also the restart path: the running
+        // thread must release the device before another can open it.
+        self.as_mut().stop_video_preview();
+
+        if !on {
+            return false;
+        }
+
+        // A call already owns the device and is already feeding this surface
+        // with the frames it is sending. Re-opening it would fail, and stopping
+        // the call to preview it would be absurd.
+        if self.rust().video_active {
+            return true;
+        }
+
+        // The surface is keyed by our own id, so there is nowhere to draw until
+        // the identity is unlocked.
+        let preview_id = self.rust().my_public_id.clone();
+        if preview_id.is_empty() {
+            warn!("[video] cannot preview before the identity is unlocked");
+            return false;
+        }
+
+        // Capture-only, so unlike `set_video_enabled` this needs no encoder and
+        // no connection — but it does need a capture backend.
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (device_id, quality, overlays_json, encoder_json);
+            warn!("[video] capture is not implemented on this platform");
+            return false;
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            // Same resolution rules as the call path, so the preview is framed
+            // exactly like the stream it stands in for.
+            let quality = crate::video::sender::Quality::resolve(
+                &quality.to_string(),
+                VideoEncoderSettings::parse(&encoder_json.to_string()).overrides(),
+            );
+            // The same layout the call path would build, so what the user sees
+            // here is what peers would receive — including every overlay.
+            let layout = crate::video::sender::CaptureLayout::from_settings(
+                &device_id.to_string(),
+                &overlays_json.to_string(),
+            );
+            let preview =
+                crate::video::sender::VideoSender::start_preview(layout, quality, preview_id);
+            self.as_mut().rust_mut().video_preview = Some(preview);
+            self.as_mut().set_video_preview_active(true);
+            true
+        }
+    }
+
+    /// Stop the settings preview capture if it is running, and blank what it
+    /// was drawing to.
+    ///
+    /// Idempotent. The blank matters as much as the stop: without it the last
+    /// captured frame stays on the surface, which reads as a camera that is
+    /// still on — the one impression a preview must never leave behind.
+    fn stop_video_preview(mut self: Pin<&mut Self>) {
+        let Some(preview) = self.as_mut().rust_mut().video_preview.take() else {
+            // Nothing of ours is running. Deliberately no clear here: a call's
+            // capture may be feeding the same surface, and blanking that would
+            // wipe live video.
+            self.as_mut().set_video_preview_active(false);
+            return;
+        };
+        preview.stop();
+        let id = self.rust().my_public_id.clone();
+        if !id.is_empty() {
+            crate::video::sink::clear_peer(&id);
+        }
+        self.as_mut().set_video_preview_active(false);
+    }
+
+    /// Stop the local camera if running and announce camera-off to the room.
+    ///
+    /// Idempotent: safe when video is already off. Used by leave-room / end-call
+    /// so the capture light cannot stay on after the session ends, and so other
+    /// members' indicators clear without waiting for the stream to time out.
+    ///
+    /// The announce is queued on `conn_cmd_tx` and must be issued **before**
+    /// `LeaveRoom` on that same channel so the connection manager still has
+    /// room membership when it fans the state out.
+    fn stop_local_video(mut self: Pin<&mut Self>) {
+        let had_sender = self.rust().video_sender.is_some();
+        let was_active = self.rust().video_active;
+        if let Some(sender) = self.as_mut().rust_mut().video_sender.take() {
+            sender.stop();
+        }
+        // Content audio is stamped against this session's clock, so it cannot
+        // outlive it — its timestamps would be relative to a clock nobody
+        // holds. Stopped before the clock is dropped, not after.
+        if let Some(sender) = self.as_mut().rust_mut().content_audio_sender.take() {
+            sender.stop();
+        }
+        self.as_mut().set_content_audio_active(false);
+
+        // Drop the media clock with the session that owned it. A clock must
+        // never outlive its session: the next one has to start from zero, or
+        // the receiver would see a timeline that jumps.
+        self.as_mut().rust_mut().media_clock = None;
+        if had_sender || was_active {
+            self.as_mut().set_video_active(false);
+            self.as_mut().announce_video_state(false);
+        }
+    }
+
+    /// Drop every inbound decoder and blank every video tile.
+    ///
+    /// Called when the local voice/video session ends so a subsequent join
+    /// cannot reuse stale decoder state (or paint a previous peer's last frame).
+    fn reset_inbound_video(mut self: Pin<&mut Self>) {
+        // Announce each one off rather than only dropping the record: the UI
+        // keeps its own streaming map (the video region cannot read model
+        // roles), and nothing else would ever tell it these peers stopped.
+        let streaming: Vec<String> = self.rust().peer_video_active.iter().cloned().collect();
+        self.as_mut().rust_mut().peer_video_active.clear();
+        for id in streaming {
+            self.as_mut()
+                .peer_video_state_changed(QString::from(id.as_str()), false);
+        }
+        if let Some(rx) = self.rust().video_receiver.as_ref() {
+            rx.forget_all();
+        }
+        // Drop the thread entirely: leave is rare relative to frames, and a
+        // fresh decode thread on the next inbound frame is cheaper than
+        // keeping an idle one around with leftover COM state.
+        let _ = self.as_mut().rust_mut().video_receiver.take();
+        // Belt-and-braces blank in case the receiver was never started (no
+        // inbound frames this session) but tiles still hold a last frame from
+        // a prior session that shared the process.
+        crate::video::sink::clear_all();
+    }
+
+    /// Drop one peer's decoder and blank their tile(s).
+    ///
+    /// Used when a remote peer leaves the room or turns their camera off.
+    fn forget_peer_video(mut self: Pin<&mut Self>, peer_id: &str) {
+        if peer_id.is_empty() {
+            return;
+        }
+        // Someone who leaves mid-stream sends no camera-off, so the departure
+        // is the only signal the UI will ever get that they stopped. Skipped
+        // when the record is already gone, which is the camera-off path — it
+        // emitted this itself before calling here.
+        if self.as_mut().rust_mut().peer_video_active.remove(peer_id) {
+            self.as_mut()
+                .peer_video_state_changed(QString::from(peer_id), false);
+        }
+        if let Some(rx) = self.rust().video_receiver.as_ref() {
+            rx.forget(peer_id);
+        } else {
+            // No decode thread yet — still blank any tile that was showing a
+            // stale frame from an earlier session.
+            crate::video::sink::clear_peer(peer_id);
+        }
+    }
+
+    /// Tell the room our camera state so members' indicators update without
+    /// waiting for (or missing) the first frame.
+    ///
+    /// Always queued when a conn channel exists; the connection manager
+    /// no-ops if we are not currently in a room. The bridge deliberately does
+    /// not gate on `current_room_id` here — leave-room announces off while the
+    /// local voice ids are about to clear, and the CM's own membership is the
+    /// source of truth.
+    fn announce_video_state(self: Pin<&mut Self>, active: bool) {
+        let Some(tx) = self.rust().conn_cmd_tx.clone() else {
+            return;
+        };
+        let direct_peer = self.rust().direct_video_target();
+        let _ = tx.try_send(ConnectionCommand::SendVideoState {
+            active,
+            direct_peer,
+        });
+    }
+
+    /// Publish the set of peers whose video is on screen. See the QML
+    /// declaration of `setVideoSubscriptions` for the contract.
+    ///
+    /// Newly-watched senders are asked for a keyframe here rather than left to
+    /// the receiver's starvation timer: the supernode was not forwarding them a
+    /// moment ago, so the next frames to arrive are mid-GOP inter frames the
+    /// decoder cannot start from. Without the nudge the tile stays blank until
+    /// the sender's own keyframe interval comes round — seconds of nothing at
+    /// exactly the moment the user asked to see someone.
+    fn set_video_subscriptions(mut self: Pin<&mut Self>, peer_ids_json: &QString) {
+        let Some(tx) = self.rust().conn_cmd_tx.clone() else {
+            return;
+        };
+        let senders: Vec<String> = serde_json::from_str::<Vec<String>>(&peer_ids_json.to_string())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let added: Vec<String> = {
+            let known = &self.rust().video_subscribed;
+            senders
+                .iter()
+                .filter(|s| !known.contains(*s))
+                .cloned()
+                .collect()
+        };
+        self.as_mut().rust_mut().video_subscribed = senders.iter().cloned().collect();
+
+        let _ = tx.try_send(ConnectionCommand::SetVideoSubscriptions { senders });
+        for peer_id in added {
+            let _ = tx.try_send(ConnectionCommand::RequestVideoKeyframe { peer_id });
+        }
+    }
+
+    fn list_video_devices(self: Pin<&mut Self>) -> QString {
+        let cameras: Vec<serde_json::Value> = crate::video::camera::list_devices()
+            .into_iter()
+            .map(|d| serde_json::json!({ "id": d.id, "name": d.name }))
+            .collect();
+
+        // Screens and windows are enumerated fresh on every call, never cached:
+        // windows open and close constantly, and a stale handle would name a
+        // different window (Windows recycles them) rather than simply failing.
+        #[cfg(target_os = "windows")]
+        let (screens, windows): (Vec<serde_json::Value>, Vec<serde_json::Value>) = {
+            let all = crate::video::screen::list_sources();
+            let to_json = |s: &crate::video::screen::CaptureSource| serde_json::json!({ "id": s.id, "name": s.name });
+            (
+                all.iter().filter(|s| s.is_monitor).map(to_json).collect(),
+                all.iter().filter(|s| !s.is_monitor).map(to_json).collect(),
+            )
+        };
+        #[cfg(not(target_os = "windows"))]
+        let (screens, windows): (Vec<serde_json::Value>, Vec<serde_json::Value>) =
+            (Vec::new(), Vec::new());
+
+        QString::from(
+            serde_json::json!({
+                "cameras": cameras,
+                "screens": screens,
+                "windows": windows,
+            })
+            .to_string()
+            .as_str(),
+        )
+    }
+
+    /// Set the level and mute for one peer's *shared application* audio.
+    ///
+    /// Separate from [`set_peer_audio_pref`](Self::set_peer_audio_pref) so a
+    /// listener can turn a loud game down without losing the person talking
+    /// over it. Muting the *peer* still silences both — see `resolve_mix_gain`.
+    fn set_content_audio_pref(
+        self: Pin<&mut Self>,
+        peer_id: &QString,
+        muted: bool,
+        volume_pct: i32,
+    ) {
+        let id = peer_id.to_string();
+        if id.is_empty() {
+            return;
+        }
+        let volume = volume_pct.clamp(0, 200);
+        if let Some(tx) = self.rust().call_cmd_tx.clone() {
+            let _ = tx.try_send(CallCommand::SetContentMuted {
+                peer_id: id.clone(),
+                muted,
+            });
+            let _ = tx.try_send(CallCommand::SetContentVolume {
+                peer_id: id,
+                pct: volume as u32,
+            });
+        }
+    }
+
+    /// Declare whose video tiles are open. See the bridge declaration.
+    fn set_content_audio_viewers(self: Pin<&mut Self>, peer_ids_json: &QString) {
+        // A malformed blob means an empty set, not "leave it as it was": the
+        // failure that matters here is audio that keeps playing for a tile the
+        // listener closed, so the safe reading of nonsense is "nothing is open".
+        let peer_ids: Vec<String> = serde_json::from_str::<Vec<String>>(&peer_ids_json.to_string())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|id| !id.is_empty())
+            .collect();
+        if let Some(tx) = self.rust().call_cmd_tx.clone() {
+            let _ = tx.try_send(CallCommand::SetContentViewers { peer_ids });
+        }
+    }
+
+    fn set_peer_audio_pref(self: Pin<&mut Self>, peer_id: &QString, muted: bool, volume_pct: i32) {
+        let id = peer_id.to_string();
+        if id.is_empty() {
+            return;
+        }
+        let volume = volume_pct.clamp(0, 200);
+
+        // 1. Drive the mixer.
+        if let Some(tx) = self.rust().call_cmd_tx.clone() {
+            let _ = tx.try_send(CallCommand::SetPeerMuted {
+                peer_id: id.clone(),
+                muted,
+            });
+            let _ = tx.try_send(CallCommand::SetPeerVolume {
+                peer_id: id.clone(),
+                pct: volume as u32,
+            });
+        }
+
+        // Persistence deliberately lives on SettingsModel, which owns the
+        // settings file: QML writes `settingsModel.peer_audio_prefs_json` and
+        // calls save(). Duplicating that here would give two writers for one
+        // piece of state.
+        let _ = (id, volume);
+    }
+
+    /// Apply a whole stored preference blob to the mixer.
+    ///
+    /// Called when a call starts, so preferences saved in a previous session
+    /// take effect rather than only applying to peers touched this run.
+    fn apply_peer_audio_prefs(self: Pin<&mut Self>, prefs_json: &QString) {
+        let Ok(map) = serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(
+            &prefs_json.to_string(),
+        ) else {
+            return;
+        };
+        let Some(tx) = self.rust().call_cmd_tx.clone() else {
+            return;
+        };
+        for (peer_id, entry) in map {
+            let muted = entry
+                .get("muted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let volume = entry
+                .get("volume")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(100)
+                .clamp(0, 200) as u32;
+            let _ = tx.try_send(CallCommand::SetPeerMuted {
+                peer_id: peer_id.clone(),
+                muted,
+            });
+            let _ = tx.try_send(CallCommand::SetPeerVolume {
+                peer_id,
+                pct: volume,
+            });
+        }
+    }
+
+    fn load_room_chat_history(mut self: Pin<&mut Self>, supernode_id: &QString, room_id: &QString) {
+        let Some(sn) = self
+            .rust()
+            .resolve_supernode_node_id_str(&supernode_id.to_string())
+        else {
+            return;
+        };
+        let rid = room_id.to_string();
+        let key = room_chat_history_key(&sn, &rid);
+        if let Some(ref cs) = self.rust().chat_store {
+            let store_key = room_chat_store_peer_id(&rid);
+            let json_msgs: Vec<String> = {
+                let r = self.rust();
+                cs.get_history(&store_key, 0)
+                    .map(|rows| {
+                        rows.iter()
+                            .map(|m| room_chat_message_to_json(r, m).to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            for json in json_msgs {
+                self.as_mut()
+                    .room_chat_received(QString::from(json.as_str()));
+            }
+            return;
+        }
+        let msgs: Vec<String> = self
+            .rust()
+            .room_chat_history
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        for msg in msgs {
+            self.as_mut()
+                .room_chat_received(QString::from(msg.as_str()));
+        }
+    }
+
+    fn resolve_supernode_node_id(self: Pin<&mut Self>, node_id: &QString) -> QString {
+        let resolved = self
+            .rust()
+            .resolve_supernode_node_id_str(&node_id.to_string())
+            .unwrap_or_default();
+        QString::from(resolved.as_str())
+    }
+
+    fn cluster_representative_id(self: Pin<&mut Self>, node_id: &QString) -> QString {
+        // Canonicalize first (peer_id/alias → identity_pub), then fold to the
+        // cluster representative. Unknown ids pass through unchanged so callers
+        // can chain this after `resolveSupernodeNodeId` safely.
+        let id = node_id.to_string();
+        let canon = self.rust().resolve_supernode_node_id_str(&id).unwrap_or(id);
+        let rep = self.rust().cluster_representative(&canon);
+        QString::from(rep.as_str())
+    }
+
+    fn room_node_status(
+        self: Pin<&mut Self>,
+        supernode_id: &QString,
+        room_id: &QString,
+    ) -> QString {
+        let r = self.rust();
+        let id = supernode_id.to_string();
+        let rid = room_id.to_string();
+        if id.is_empty() || rid.is_empty() {
+            return QString::from("[]");
+        }
+        let canon = r.resolve_supernode_node_id_str(&id).unwrap_or(id);
+        // The member actually carrying the room for us: the text host while it
+        // is the selected room, else the voice host while we are voicing it.
+        // Both follow failover (`RoomFailedOver`); the sidebar id does not.
+        let active = if is_selected_text_room(r, &canon, &rid) {
+            r.current_supernode_id.as_str()
+        } else if is_active_voice_room(r, &canon, &rid) {
+            r.voice_supernode_id.as_str()
+        } else {
+            ""
+        };
+        let src = ClusterNodeSources {
+            siblings: &r.cluster_siblings,
+            connected: &r.supernode_connected,
+            stats: &r.supernode_stats,
+            addrs: &r.cluster_member_addrs,
+            rosters: &r.chat_roster_by_node,
+        };
+        let rows = cluster_node_rows(&src, &canon, &rid, active);
+        QString::from(serde_json::Value::Array(rows).to_string().as_str())
+    }
+
+    fn is_known_supernode(self: Pin<&mut Self>, node_id: &QString) -> bool {
+        let id = node_id.to_string();
+        self.rust()
+            .peer_store
+            .as_ref()
+            .map(|ps| ps.read().is_supernode_id(&id))
+            .unwrap_or(false)
+    }
+
+    fn peer_display_name(self: Pin<&mut Self>, peer_id: &QString) -> QString {
+        let r = self.rust();
+        let label = if let Some(ps) = r.peer_store.as_ref() {
+            let store = ps.read();
+            room_participant_label(
+                Some(&store),
+                Some(&r.room_display_handles),
+                &peer_id.to_string(),
+                &r.my_peer_id,
+                &r.my_public_id,
+            )
+        } else {
+            room_participant_label(
+                None,
+                Some(&r.room_display_handles),
+                &peer_id.to_string(),
+                &r.my_peer_id,
+                &r.my_public_id,
+            )
+        };
+        QString::from(label.as_str())
+    }
+
+    fn delete_message(mut self: Pin<&mut Self>, msg_id: &QString) {
+        let id = msg_id.to_string();
+        let cs_opt: Option<Arc<crate::chat_store::ChatStore>> =
+            self.rust().chat_store.as_ref().map(Arc::clone);
+        if let Some(cs) = cs_opt {
+            if let Err(e) = cs.delete_message(&id) {
+                warn!("delete_message: {e}");
+                return;
+            }
+        }
+        // Room chat also replays from `room_chat_history` when no chat store is
+        // open, so a deleted room message has to be dropped there too or it
+        // reappears the next time the room is switched to.
+        {
+            let history = &mut self.as_mut().rust_mut().room_chat_history;
+            for msgs in history.values_mut() {
+                msgs.retain(|m| {
+                    // Parse rather than substring-match: a body containing the
+                    // id's text would otherwise delete the wrong message.
+                    serde_json::from_str::<serde_json::Value>(m)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("msg_id")
+                                .and_then(serde_json::Value::as_str)
+                                .map(|s| s != id)
+                        })
+                        .unwrap_or(true)
+                });
+            }
+        }
+        // A file message is an offer, not a copy: deleting it withdraws the
+        // share. Peers who have not downloaded yet can no longer obtain the
+        // file from anyone — nothing else holds it. `RevokeFile` no-ops unless
+        // we are the originator, so deleting a *received* file message only
+        // removes our own bubble (the downloaded copy on disk is left alone).
+        if let Some(transfer_id) = id.strip_prefix("xfer-") {
+            if let Some(ref tx) = self.rust().conn_cmd_tx {
+                let _ = tx.try_send(ConnectionCommand::RevokeFile {
+                    transfer_id: transfer_id.to_owned(),
+                });
+            }
+        }
+        {
+            let buf = &mut self.as_mut().rust_mut().event_log;
+            if buf.len() >= 300 {
+                buf.pop_front();
+            }
+            buf.push_back(format!("Message deleted: {id}"));
+        }
+        self.as_mut().message_deleted(QString::from(id.as_str()));
+    }
+
+    fn retry_message(mut self: Pin<&mut Self>, msg_id: &QString) {
+        use crate::protocol::{MessageType, SignalingMessage};
+
+        let id = msg_id.to_string();
+        let Some(cs) = self.rust().chat_store.as_ref().map(Arc::clone) else {
+            return;
+        };
+        let Ok(Some(msg)) = cs.get_by_id(&id) else {
+            return;
+        };
+        if !msg.is_self
+            || msg.peer_id.is_empty()
+            || msg.kind != crate::chat_store::MessageKind::Text
+        {
+            return;
+        }
+
+        let mut outbound =
+            SignalingMessage::new(MessageType::ChatMessage, self.rust().my_public_id.clone());
+        outbound.target = Some(msg.peer_id.clone());
+        outbound.payload.insert(
+            "body".to_string(),
+            serde_json::Value::String(msg.body.clone()),
+        );
+        outbound.payload.insert(
+            "message_id".to_string(),
+            serde_json::Value::String(msg.id.clone()),
+        );
+        outbound.payload.insert(
+            "sender_handle".to_string(),
+            serde_json::Value::String(msg.sender_handle.clone()),
+        );
+
+        let sent = match self.rust().conn_cmd_tx {
+            Some(ref tx) => tx
+                .try_send(ConnectionCommand::SendMessage(outbound))
+                .is_ok(),
+            None => false,
+        };
+        let status = if sent {
+            crate::chat_store::MessageStatus::Sending
+        } else {
+            crate::chat_store::MessageStatus::Failed
+        };
+        if let Err(e) = cs.update_status_note(&id, status.clone(), "") {
+            warn!("retry_message: status update failed: {e}");
+        }
+        self.as_mut()
+            .message_status_changed(QString::from(id.as_str()), QString::from(status.as_str()));
+    }
+
+    fn clear_peer_history(mut self: Pin<&mut Self>, peer_id: &QString) {
+        let pid = peer_id.to_string();
+        let cs_opt: Option<Arc<crate::chat_store::ChatStore>> =
+            self.rust().chat_store.as_ref().map(Arc::clone);
+        if let Some(cs) = cs_opt {
+            if let Err(e) = cs.clear_history(&pid) {
+                warn!("clear_peer_history: {e}");
+                return;
+            }
+        }
+        {
+            let buf = &mut self.as_mut().rust_mut().event_log;
+            if buf.len() >= 300 {
+                buf.pop_front();
+            }
+            buf.push_back(format!("Chat history cleared for peer {pid}"));
+        }
+        self.as_mut()
+            .peer_history_cleared(QString::from(pid.as_str()));
+    }
+
+    fn get_event_logs(self: Pin<&mut Self>) -> QString {
+        let text = self
+            .rust()
+            .event_log
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        QString::from(text.as_str())
+    }
+
+    fn clear_event_logs(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().event_log.clear();
+    }
+
+    fn get_stored_message_count(self: Pin<&mut Self>) -> i64 {
+        if let Some(ref cs) = self.rust().chat_store {
+            cs.total_count().unwrap_or(0) as i64
+        } else {
+            0
+        }
+    }
+
+    fn trim_messages_by_age(self: Pin<&mut Self>, days: i32) {
+        if let Some(ref cs) = self.rust().chat_store {
+            match cs.trim_by_age(days) {
+                Ok(n) => info!("Trimmed {n} messages older than {days} days"),
+                Err(e) => warn!("trim_by_age failed: {e}"),
+            }
+        }
+    }
+
+    fn trim_messages_by_count(self: Pin<&mut Self>, keep: i32) {
+        if let Some(ref cs) = self.rust().chat_store {
+            match cs.trim_by_count(keep) {
+                Ok(n) => info!("Trimmed {n} messages (kept {keep} per peer)"),
+                Err(e) => warn!("trim_by_count failed: {e}"),
+            }
+        }
+    }
+
+    fn purge_all_chat_history(self: Pin<&mut Self>) {
+        if let Some(ref cs) = self.rust().chat_store {
+            match cs.purge_all() {
+                Ok(n) => info!("Purged {n} messages"),
+                Err(e) => warn!("purge_all failed: {e}"),
+            }
+        }
+    }
+
+    fn lock_identity_and_quit(self: Pin<&mut Self>) {
+        if let Some(ref id) = self.rust().identity {
+            crate::identity::keyring_delete_aes_key(&id.public_id());
+            info!("Identity locked — keyring entry removed");
+        }
+        std::process::exit(0);
+    }
+
+    fn log_event(self: Pin<&mut Self>, message: &QString) {
+        info!("[qml] {}", message.to_string());
+    }
+
+    fn paste_invite(self: Pin<&mut Self>, url: &QString) {
+        let url_str = url.to_string();
+        if url_str.is_empty() {
+            return;
+        }
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::AcceptInvite {
+                invite_url: url_str,
+            });
+        }
+    }
+
+    fn configure_direct_p2p(self: Pin<&mut Self>, enabled: bool, port: i32) {
+        let port = port.clamp(1, u16::MAX as i32) as u16;
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::ConfigureDirectP2p { enabled, port });
+        }
+    }
+
+    fn accept_call(mut self: Pin<&mut Self>, peer_id: &QString) {
+        use crate::protocol::{MessageType, SignalingMessage};
+        let pid = peer_id.to_string();
+        // Notify the caller that we accepted.
+        let sender = self.rust().my_public_id.clone();
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let mut msg = SignalingMessage::new(MessageType::CallAccept, sender);
+            msg.target = Some(pid.clone());
+            let _ = tx.try_send(ConnectionCommand::SendMessage(msg));
+        }
+        // Direct-call fallback: the caller could not open direct QUIC and sent
+        // temp private-room coordinates — join that room instead of dialing.
+        let fallback = {
+            let mut r = self.as_mut().rust_mut();
+            match r.incoming_call_fallback.take() {
+                Some(f) if f.0 == pid => Some(f),
+                other => {
+                    r.incoming_call_fallback = other;
+                    None
+                }
+            }
+        };
+        if let Some((_, supernode_id, room_id, invite_token)) = fallback {
+            if let Some(ref tx) = self.rust().conn_cmd_tx {
+                let _ = tx.try_send(ConnectionCommand::JoinRoomWithInvite {
+                    supernode_id: supernode_id.clone(),
+                    room_id: room_id.clone(),
+                    invite_token,
+                });
+            }
+            {
+                let mut r = self.as_mut().rust_mut();
+                r.voice_supernode_id = supernode_id.clone();
+                r.voice_room_id = room_id.clone();
+                r.call_via_fallback_room = true;
+                sync_voice_in_room(&mut self.as_mut());
+            }
+            if let Some(ref tx) = self.rust().call_cmd_tx {
+                let _ = tx.try_send(CallCommand::SetRoomMode {
+                    supernode_id,
+                    room_id,
+                });
+                let va = read_voice_activation_setting();
+                let _ = tx.try_send(CallCommand::StartAudio {
+                    voice_activation: va,
+                });
+            }
+        } else if let Some(ref tx) = self.rust().call_cmd_tx {
+            let va = read_voice_activation_setting();
+            let _ = tx.try_send(CallCommand::StartAudio {
+                voice_activation: va,
+            });
+            let _ = tx.try_send(CallCommand::InitiatePeer {
+                peer_id: pid.clone(),
+                host: None,
+                port: None,
+            });
+        }
+        // We answered, so we are no longer ringing. Leaving this set is what
+        // made the peer's later hang-up look like a call we never picked up.
+        self.as_mut().rust_mut().has_incoming_call = false;
+        self.as_mut().set_call_state(QString::from("in_call"));
+        self.as_mut().set_voice_active(true);
+        sync_voice_in_room(&mut self.as_mut());
+        {
+            let resolved = lookup_list_peer_id(self.rust(), &pid);
+            set_active_direct_call_presence(&mut self.as_mut().rust_mut(), &pid, true, resolved);
+        }
+        emit_peers_updated(self.as_mut());
+    }
+
+    fn reject_call(mut self: Pin<&mut Self>, peer_id: &QString) {
+        use crate::protocol::{MessageType, SignalingMessage};
+        let pid = peer_id.to_string();
+        let sender = self.rust().my_public_id.clone();
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let mut msg = SignalingMessage::new(MessageType::CallEnd, sender);
+            msg.target = Some(pid);
+            let _ = tx.try_send(ConnectionCommand::SendMessage(msg));
+        }
+        // Turning a call down is a decision, not a call you failed to reach, so
+        // it must not raise the missed-call badge -- and a flag left set here
+        // would mis-attribute the *next* call's end as missed.
+        self.as_mut().rust_mut().has_incoming_call = false;
+        self.as_mut().rust_mut().incoming_call_fallback = None;
+    }
+
+    fn join_room(mut self: Pin<&mut Self>, supernode_id: &QString, room_id: &QString) {
+        let Some(sid) = self
+            .rust()
+            .resolve_supernode_node_id_str(&supernode_id.to_string())
+        else {
+            warn!(
+                "[bridge] joinRoom: unknown supernode {}",
+                supernode_id.to_string()
+            );
+            return;
+        };
+        let rid = room_id.to_string();
+
+        // Do NOT LeaveRoom on the previous chat selection. Text subscriptions are
+        // multi-room: private rooms stay active while voicing elsewhere.
+        // Voice switches leave the previous *voice* room in join_room_with_voice.
+
+        let stored = self
+            .rust()
+            .room_store
+            .as_ref()
+            .and_then(|rs| rs.read().get(&sid, &rid).cloned());
+        let room_type = stored
+            .as_ref()
+            .map(|e| e.room_type.clone())
+            .unwrap_or_else(|| "public".to_owned());
+        // Skip the invite round-trip once we've already been admitted this
+        // session: the single-use token is spent on first use, and we're now in
+        // the supernode's `allowed` set, so a plain `SfuJoin` is accepted.
+        let already_admitted = self.rust().admitted_rooms.contains(&format!("{sid}:{rid}"));
+        // Same predicate as `connection_manager::should_use_private_room_invite`
+        // (kept inlined here to avoid pulling CM into the QObject surface).
+        let use_invite = crate::connection_manager::should_use_private_room_invite(
+            already_admitted,
+            stored.as_ref().is_some_and(|e| e.room_type == "private"),
+            stored.as_ref().is_some_and(|e| e.is_creator),
+            stored.as_ref().is_some_and(|e| !e.invite_token.is_empty()),
+        );
+        debug!(
+            "join_room rid={} type={} is_creator={} token_len={} -> {}",
+            rid,
+            stored
+                .as_ref()
+                .map(|e| e.room_type.as_str())
+                .unwrap_or("<none>"),
+            stored.as_ref().map(|e| e.is_creator).unwrap_or(false),
+            stored.as_ref().map(|e| e.invite_token.len()).unwrap_or(0),
+            if use_invite {
+                "JoinRoomWithInvite"
+            } else {
+                "JoinRoom"
+            }
+        );
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            if use_invite {
+                let token = stored
+                    .as_ref()
+                    .map(|e| e.invite_token.clone())
+                    .unwrap_or_default();
+                let _ = tx.try_send(ConnectionCommand::JoinRoomWithInvite {
+                    supernode_id: sid.clone(),
+                    room_id: rid.clone(),
+                    invite_token: token,
+                });
+            } else {
+                let _ = tx.try_send(ConnectionCommand::JoinRoom {
+                    supernode_id: sid.clone(),
+                    room_id: rid.clone(),
+                });
+            }
+        }
+        {
+            let mut r = self.as_mut().rust_mut();
+            r.current_supernode_id = sid.clone();
+            r.current_room_id = rid.clone();
+        }
+        remember_room_in_store(
+            &self.rust().room_store,
+            &sid,
+            &rid,
+            "",
+            &room_type,
+            "",
+            false,
+            "",
+            "",
+        );
+
+        // Seed text members for the selected chat room. Seed the voice rail
+        // only when this join is for the active voice room (or there is none)
+        // so chat-context joins of other rooms never wipe the call roster.
+        seed_text_members_self(&mut self.as_mut());
+        let voicing_elsewhere = {
+            let r = self.rust();
+            !r.voice_room_id.is_empty() && (r.voice_room_id != rid || r.voice_supernode_id != sid)
+        };
+        if !voicing_elsewhere {
+            seed_voice_participants_self(&mut self.as_mut());
+        }
+
+        self.as_mut().set_in_room(true);
+    }
+
+    fn join_room_with_invite(
+        mut self: Pin<&mut Self>,
+        supernode_id: &QString,
+        room_id: &QString,
+        invite_token: &QString,
+    ) {
+        let Some(sid) = self
+            .rust()
+            .resolve_supernode_node_id_str(&supernode_id.to_string())
+        else {
+            warn!(
+                "[bridge] joinRoomWithInvite: unknown supernode {}",
+                supernode_id.to_string()
+            );
+            return;
+        };
+        let rid = room_id.to_string();
+        let token = invite_token.to_string();
+        if sid.is_empty() || rid.is_empty() || token.is_empty() {
+            return;
+        }
+
+        // Do not leave other chat-active rooms — multi-room text stays live.
+
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::JoinRoomWithInvite {
+                supernode_id: sid.clone(),
+                room_id: rid.clone(),
+                invite_token: token.clone(),
+            });
+        }
+        {
+            let mut r = self.as_mut().rust_mut();
+            r.current_supernode_id = sid.clone();
+            r.current_room_id = rid.clone();
+        }
+        remember_room_in_store(
+            &self.rust().room_store,
+            &sid,
+            &rid,
+            "",
+            "private",
+            "",
+            false,
+            &token,
+            "",
+        );
+
+        seed_text_members_self(&mut self.as_mut());
+        let voicing_elsewhere = {
+            let r = self.rust();
+            !r.voice_room_id.is_empty() && (r.voice_room_id != rid || r.voice_supernode_id != sid)
+        };
+        if !voicing_elsewhere {
+            seed_voice_participants_self(&mut self.as_mut());
+        }
+
+        self.as_mut().set_in_room(true);
+    }
+
+    fn join_room_with_voice(mut self: Pin<&mut Self>, supernode_id: &QString, room_id: &QString) {
+        let Some(new_sid) = self
+            .rust()
+            .resolve_supernode_node_id_str(&supernode_id.to_string())
+        else {
+            return;
+        };
+        let new_rid = room_id.to_string();
+        if new_sid.is_empty() || new_rid.is_empty() {
+            return;
+        }
+
+        // Voice may still be on a different supernode than the chat selection
+        // (subscribe_room_chat updates `current_*` without leaving voice).
+        let (prev_voice_sn, prev_voice_rid) = {
+            let r = self.rust();
+            (r.voice_supernode_id.clone(), r.voice_room_id.clone())
+        };
+        if self.rust().voice_active
+            && !prev_voice_rid.is_empty()
+            && (prev_voice_sn != new_sid || prev_voice_rid != new_rid)
+        {
+            if let Some(ref tx) = self.rust().conn_cmd_tx {
+                let _ = tx.try_send(ConnectionCommand::LeaveRoom {
+                    supernode_id: prev_voice_sn.clone(),
+                    room_id: prev_voice_rid,
+                });
+                let _ = tx.try_send(ConnectionCommand::RequestRoomList {
+                    supernode_id: prev_voice_sn,
+                });
+            }
+        }
+
+        // Mark this as the active voice room BEFORE join_room. join_room is also
+        // used for chat-context joins of *other* rooms, and its roster seed keys
+        // off `voice_room_id` to avoid wiping this voice roster; setting it first
+        // ensures the seed for a genuine voice entry still runs.
+        {
+            let mut r = self.as_mut().rust_mut();
+            r.voice_supernode_id = new_sid.clone();
+            r.voice_room_id = new_rid.clone();
+            sync_voice_in_room(&mut self.as_mut());
+        }
+
+        // Join signaling for the new room (chat context + voice).
+        self.as_mut().join_room(supernode_id, room_id);
+
+        // Switch call controller to SFU room audio mode so outbound frames
+        // are routed via the supernode WebSocket instead of direct QUIC.
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(CallCommand::SetRoomMode {
+                supernode_id: new_sid.clone(),
+                room_id: new_rid.clone(),
+            });
+        }
+        // Then start the local audio pipeline.
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let va = read_voice_activation_setting();
+            let _ = tx.try_send(CallCommand::StartAudio {
+                voice_activation: va,
+            });
+        }
+
+        // Apply any SfuMembers snapshot that arrived before voice scope was set.
+        let roster_key = room_roster_key(new_sid.as_str(), new_rid.as_str());
+        if let Some(members) = self
+            .as_mut()
+            .rust_mut()
+            .pending_room_rosters
+            .remove(&roster_key)
+        {
+            apply_room_roster_to_bridge(
+                &mut self.as_mut(),
+                &members,
+                new_sid.as_str(),
+                new_rid.as_str(),
+                true,
+            );
+        }
+        // join_room also selected this as the text room — apply cached chat roster.
+        if let Some(chat_members) = self
+            .as_mut()
+            .rust_mut()
+            .pending_chat_rosters
+            .remove(&roster_key)
+        {
+            apply_text_roster_to_bridge(&mut self.as_mut(), &chat_members);
+        }
+
+        self.as_mut().set_voice_active(true);
+        sync_voice_in_room(&mut self.as_mut());
+    }
+
+    fn subscribe_room_chat(mut self: Pin<&mut Self>, supernode_id: &QString, room_id: &QString) {
+        let Some(sid) = self
+            .rust()
+            .resolve_supernode_node_id_str(&supernode_id.to_string())
+        else {
+            return;
+        };
+        let rid = room_id.to_string();
+        if sid.is_empty() || rid.is_empty() {
+            return;
+        }
+        // Send SfuSubscribe so the supernode delivers chat messages to us
+        // without making us a voice participant or leaving the current voice room.
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::SubscribeRoomChat {
+                supernode_id: sid.clone(),
+                room_id: rid.clone(),
+            });
+        }
+        // Point send_room_chat at the newly-selected chat room.
+        {
+            let mut r = self.as_mut().rust_mut();
+            r.current_supernode_id = sid.clone();
+            r.current_room_id = rid.clone();
+        }
+        let room_type = match self.rust().room_store.as_ref() {
+            Some(rs) => rs
+                .read()
+                .get(&sid, &rid)
+                .map(|e| e.room_type.clone())
+                .unwrap_or_else(|| "public".to_owned()),
+            None => "public".to_owned(),
+        };
+        remember_room_in_store(
+            &self.rust().room_store,
+            &sid,
+            &rid,
+            "",
+            &room_type,
+            "",
+            false,
+            "",
+            "",
+        );
+        // Text members panel tracks this room only — never touch the voice rail.
+        let roster_key = room_roster_key(sid.as_str(), rid.as_str());
+        if let Some(members) = self
+            .as_mut()
+            .rust_mut()
+            .pending_chat_rosters
+            .remove(&roster_key)
+        {
+            apply_text_roster_to_bridge(&mut self.as_mut(), &members);
+        } else {
+            seed_text_members_self(&mut self.as_mut());
+        }
+    }
+
+    fn remove_room(mut self: Pin<&mut Self>, supernode_id: &QString, room_id: &QString) {
+        let Some(sid) = self
+            .rust()
+            .resolve_supernode_node_id_str(&supernode_id.to_string())
+        else {
+            return;
+        };
+        let rid = room_id.to_string();
+        if sid.is_empty() || rid.is_empty() || rid == "default" {
+            return;
+        }
+        if let Some(ref rs) = self.rust().room_store {
+            if let Err(e) = rs.write().hide_from_sidebar(&sid, &rid) {
+                warn!("room_store hide_from_sidebar error: {e}");
+            }
+        }
+        // Stop text delivery for this room (and drop keys if not voicing it).
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::UnsubscribeRoomChat {
+                supernode_id: sid.clone(),
+                room_id: rid.clone(),
+            });
+        }
+        let voice_here = self.rust().voice_supernode_id == sid && self.rust().voice_room_id == rid;
+        let chat_here =
+            self.rust().current_supernode_id == sid && self.rust().current_room_id == rid;
+        if voice_here {
+            self.as_mut().leave_room();
+        }
+        if chat_here {
+            {
+                let mut r = self.as_mut().rust_mut();
+                r.current_supernode_id.clear();
+                r.current_room_id.clear();
+                r.text_member_ids.clear();
+            }
+            self.as_mut().text_members_updated(QString::from("[]"));
+            if !self.rust().voice_active {
+                self.as_mut()
+                    .set_session_banner(QString::from("Offline \u{00b7} Room hidden"));
+                self.as_mut().set_connection_mode(QString::from("offline"));
+            }
+        }
+        self.as_mut()
+            .room_removed(QString::from(sid.as_str()), QString::from(rid.as_str()));
+    }
+
+    fn create_room(
+        self: Pin<&mut Self>,
+        supernode_id: &QString,
+        room_name: &QString,
+        room_type: &QString,
+        invite_policy: &QString,
+    ) {
+        self.create_room_impl(
+            supernode_id,
+            room_name,
+            room_type,
+            "",
+            &invite_policy.to_string(),
+        );
+    }
+
+    fn create_sub_room(
+        self: Pin<&mut Self>,
+        supernode_id: &QString,
+        room_name: &QString,
+        room_type: &QString,
+        parent_room_id: &QString,
+        invite_policy: &QString,
+    ) {
+        self.create_room_impl(
+            supernode_id,
+            room_name,
+            room_type,
+            &parent_room_id.to_string(),
+            &invite_policy.to_string(),
+        );
+    }
+
+    /// Shared room-create path. `parent_room_id` (empty for a top-level room) is
+    /// stashed by `supernode_id:room_name` so the `RoomCreated` handler nests the
+    /// new room under that parent in the Space tree. `invite_policy` (`"owner"`
+    /// or `"members"`, empty defaults to `"owner"` supernode-side) is stashed
+    /// the same way so the `RoomCreated` handler can persist the creator's
+    /// chosen policy into `RoomStore` for replay on reconnect.
+    fn create_room_impl(
+        mut self: Pin<&mut Self>,
+        supernode_id: &QString,
+        room_name: &QString,
+        room_type: &QString,
+        parent_room_id: &str,
+        invite_policy: &str,
+    ) {
+        let Some(sid) = self
+            .rust()
+            .resolve_supernode_node_id_str(&supernode_id.to_string())
+        else {
+            return;
+        };
+        let name = room_name.to_string();
+        let normalized = match room_type.to_string().trim().to_ascii_lowercase().as_str() {
+            "private" => "private",
+            _ => "public",
+        };
+        if name.trim().is_empty() {
+            return;
+        }
+        let policy = match invite_policy.trim().to_ascii_lowercase().as_str() {
+            "members" => "members",
+            _ => "owner",
+        };
+        if !parent_room_id.is_empty() {
+            self.as_mut()
+                .rust_mut()
+                .pending_sub_room_parent
+                .insert(format!("{sid}:{name}"), parent_room_id.to_owned());
+        }
+        self.as_mut()
+            .rust_mut()
+            .pending_room_invite_policy
+            .insert(format!("{sid}:{name}"), policy.to_owned());
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::CreateRoom {
+                supernode_id: sid,
+                room_name: name,
+                room_type: normalized.to_owned(),
+                room_id: None,
+                creator_id: None,
+                materialize_only: false,
+                invite_policy: policy.to_owned(),
+                invite_token: String::new(),
+            });
+        }
+    }
+
+    fn register_uri_scheme(self: Pin<&mut Self>) {
+        match crate::uri_scheme::register() {
+            Ok(true) => info!("[bridge] doubleslash:// URI scheme registered"),
+            Ok(false) => info!("[bridge] URI scheme registration not available on this platform"),
+            Err(e) => warn!("[bridge] URI scheme register error: {e}"),
+        }
+    }
+
+    fn unregister_uri_scheme(self: Pin<&mut Self>) {
+        match crate::uri_scheme::unregister() {
+            Ok(true) => info!("[bridge] doubleslash:// URI scheme unregistered"),
+            Ok(false) => {}
+            Err(e) => warn!("[bridge] URI scheme unregister error: {e}"),
+        }
+    }
+
+    fn open_node_portal(mut self: Pin<&mut Self>, supernode_id: &QString) {
+        let Some(canon) = self
+            .rust()
+            .resolve_supernode_node_id_str(&supernode_id.to_string())
+        else {
+            warn!(
+                "[bridge] openNodePortal: unknown supernode {}",
+                supernode_id.to_string()
+            );
+            return;
+        };
+        // The id from the sidebar is the cluster's representative, which may be a
+        // member that is currently down. The portal (identity QUIC + web.host.app.v1)
+        // is served per-member, so open it against any live member of the cluster.
+        // Assumes members serve the same web assets (true for a provisioned
+        // cluster). Falls back to the representative when none are live, degrading
+        // to the existing "portal unavailable" behavior.
+        let sn_id = self
+            .rust()
+            .pick_live_cluster_member(&canon)
+            .unwrap_or(canon);
+        info!("[bridge] open_node_portal called sn={}", sn_id);
+        // Request a relay slot — the ConnectionManager will open the QUIC
+        // relay connection on RelayGranted, making the scheme handler ready.
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::RequestRelay {
+                supernode_id: sn_id.clone(),
+            });
+        }
+        // Emit the navigate signal immediately so the panel is shown and
+        // shows a "Loading…" spinner while the relay connects. The first
+        // real page fetch will block in `doubleslash_fetch_sync` until the
+        // connection is established.
+        //
+        // Chromium lower-cases the authority of any `scheme://` URL, which
+        // would destroy our case-sensitive base64url peer ID.  Register a
+        // `{lowercase → original}` mapping before navigating so the scheme
+        // handler can recover the canonical peer ID at fetch time.
+        #[cfg(feature = "webengine")]
+        crate::ui::scheme::register_portal_peer_id(&sn_id);
+        let url = doubleslash_features::mint_uri(&format!("{}/", sn_id));
+        self.as_mut()
+            .navigate_node_portal(QString::from(sn_id.as_str()), QString::from(url.as_str()));
+    }
+
+    fn apply_update(self: Pin<&mut Self>) {
+        let release = self.rust().pending_release.clone();
+        let updater = self.rust().updater_cmd_tx.clone();
+        let result = match (release, updater) {
+            (Some(release), Some(tx)) => tx
+                .try_send(crate::github_updater::UpdaterCommand::ApplyUpdate(
+                    release.clone(),
+                ))
+                .map(|()| {
+                    info!("Applying update to {}", release.tag_name);
+                })
+                .map_err(|error| format!("Could not start the updater: {error}")),
+            (None, _) => Err("No update is pending".to_string()),
+            (_, None) => Err("The updater is not available".to_string()),
+        };
+
+        if let Err(message) = result {
+            warn!("apply_update: {message}");
+            self.update_install_failed(QString::from(message.as_str()));
+        }
+    }
+
+    fn set_automatic_update_checks(mut self: Pin<&mut Self>, enabled: bool) {
+        self.as_mut().rust_mut().automatic_update_checks_enabled = enabled;
+        if let Some(tx) = self.rust().updater_cmd_tx.clone() {
+            if let Err(error) = tx.try_send(
+                crate::github_updater::UpdaterCommand::SetAutomaticChecks(enabled),
+            ) {
+                warn!("Could not apply automatic update preference: {error}");
+            }
+        }
+    }
+
+    fn set_muted(self: Pin<&mut Self>, muted: bool) {
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(CallCommand::SetMuted(muted));
+        }
+    }
+
+    fn set_voice_activation(self: Pin<&mut Self>, enabled: bool) {
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(CallCommand::SetVoiceActivation(enabled));
+            // VAD mode keeps the mic open; PTT mode mutes until the key is held.
+            let _ = tx.try_send(CallCommand::SetMuted(!enabled));
+        }
+    }
+
+    fn set_jitter_depth(self: Pin<&mut Self>, depth: i32) {
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(CallCommand::SetJitterDepth(depth.max(1) as usize));
+        }
+    }
+
+    fn set_noise_strength(self: Pin<&mut Self>, level: &QString) {
+        let idx = match level.to_string().to_lowercase().as_str() {
+            "off" => 0u32,
+            "mild" => 1,
+            "moderate" => 2,
+            "aggressive" => 3,
+            "max" => 4,
+            _ => 2, // default to moderate for unknown values
+        };
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(CallCommand::SetNoiseStrength(idx));
+        }
+    }
+
+    fn set_input_volume(self: Pin<&mut Self>, pct: i32) {
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(CallCommand::SetInputGain(pct.clamp(0, 200) as u32));
+        }
+    }
+
+    fn set_output_volume(self: Pin<&mut Self>, pct: i32) {
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(CallCommand::SetOutputGain(pct.clamp(0, 200) as u32));
+        }
+    }
+
+    fn set_voice_bitrate(self: Pin<&mut Self>, preset: &QString) {
+        let bitrate = voice_bitrate_preset_to_bps(&preset.to_string());
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(CallCommand::SetOutgoingBitrate(bitrate));
+        }
+    }
+
+    fn clear_unread(mut self: Pin<&mut Self>) {
+        let global = self
+            .rust()
+            .chat_store
+            .as_ref()
+            .and_then(|cs| cs.total_unread_count().ok())
+            .unwrap_or(0);
+        self.as_mut().rust_mut().unread_chat = global as u32;
+        if global == 0 {
+            crate::platform::clear_taskbar_badge();
+        } else {
+            crate::platform::set_taskbar_badge(global as u32);
+        }
+    }
+
+    fn avatar_svg(self: Pin<&mut Self>, peer_id: &QString, config_json: &QString) -> QString {
+        use super::avatar::build_avatar_svg;
+
+        let (id, config) = resolve_avatar_config(self.rust(), peer_id, config_json);
+        QString::from(build_avatar_svg(&id, &config).as_str())
+    }
+
+    fn avatar_tint_color(
+        self: Pin<&mut Self>,
+        peer_id: &QString,
+        config_json: &QString,
+    ) -> QString {
+        use super::avatar::avatar_tint_hex;
+
+        let (id, config) = resolve_avatar_config(self.rust(), peer_id, config_json);
+        QString::from(avatar_tint_hex(&id, &config).as_str())
+    }
+
+    fn avatar_image_smooth(self: Pin<&mut Self>, peer_id: &QString, config_json: &QString) -> bool {
+        let (_, config) = resolve_avatar_config(self.rust(), peer_id, config_json);
+        !config.svg_crisp
+    }
+
+    fn broadcast_avatar_config(self: Pin<&mut Self>, peer_id: &QString, config_json: &QString) {
+        let pid = peer_id.to_string();
+        let cfg = config_json.to_string();
+        if cfg.is_empty() || pid.is_empty() {
+            return;
+        }
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::BroadcastAvatarConfig {
+                peer_id: pid,
+                config_json: cfg,
+            });
+        }
+    }
+
+    fn broadcast_avatar_config_to_all(self: Pin<&mut Self>, config_json: &QString) {
+        let cfg = config_json.to_string();
+        if cfg.is_empty() {
+            return;
+        }
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::BroadcastAvatarConfigToAll { config_json: cfg });
+        }
+    }
+
+    fn set_avatar_config_json(mut self: Pin<&mut Self>, config_json: &QString) {
+        self.as_mut().rust_mut().avatar_config_json = config_json.to_string();
+        let pid = self.rust().public_id.clone();
+        if !pid.is_empty() {
+            self.as_mut().avatar_config_updated(pid);
+        }
+    }
+
+    fn broadcast_handle_to_all(self: Pin<&mut Self>, handle: &QString) {
+        let handle = handle.to_string().trim().to_owned();
+        if handle.is_empty() {
+            return;
+        }
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::BroadcastHandleUpdateToAll { handle });
+        }
+    }
+
+    fn remove_peer(self: Pin<&mut Self>, peer_id: &QString) {
+        let pid = peer_id.to_string();
+        // Remove from in-memory + persisted peer store
+        if let Some(ref ps) = self.rust().peer_store {
+            let mut store = ps.write();
+            if store.remove_by_any_id(&pid).is_some() {
+                let _ = store.save();
+            }
+        }
+        // Disconnect any active audio session
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(CallCommand::RemovePeer {
+                peer_id: pid.clone(),
+            });
+        }
+        info!("Peer removed: {pid}");
+    }
+
+    fn remove_supernode(mut self: Pin<&mut Self>, node_id: &QString) {
+        let id = node_id.to_string();
+        let Some(canon) = self.rust().resolve_supernode_node_id_str(&id) else {
+            warn!("remove_supernode: unknown node {id}");
+            return;
+        };
+
+        {
+            let ps = self.rust().peer_store.clone();
+            let Some(ps) = ps else {
+                warn!("remove_supernode: peer store unavailable");
+                return;
+            };
+            let mut store = ps.write();
+            if !store.is_supernode_id(&canon) {
+                warn!("remove_supernode: not a supernode {canon}");
+                return;
+            }
+            if store.remove_by_any_id(&canon).is_none() {
+                return;
+            }
+            if let Err(e) = store.save() {
+                warn!("remove_supernode: failed to persist peer store: {e}");
+            }
+        }
+
+        let voice_on_removed = self.rust().voice_supernode_id == canon;
+        if voice_on_removed {
+            // Same order as leave_room: announce camera-off while CM still has
+            // the room, then LeaveRoom, then tear inbound video down.
+            self.as_mut().stop_local_video();
+            let leaving_voice = self.rust().voice_room_id.clone();
+            if let Some(ref tx) = self.rust().conn_cmd_tx {
+                if !leaving_voice.is_empty() {
+                    let _ = tx.try_send(ConnectionCommand::LeaveRoom {
+                        supernode_id: canon.clone(),
+                        room_id: leaving_voice,
+                    });
+                }
+            }
+            if let Some(ref tx) = self.rust().call_cmd_tx {
+                let _ = tx.try_send(CallCommand::ClearRoomMode);
+                let _ = tx.try_send(CallCommand::StopAudio);
+            }
+            let mut r = self.as_mut().rust_mut();
+            r.voice_supernode_id.clear();
+            r.voice_room_id.clear();
+            r.room_participant_ids.clear();
+            self.as_mut().set_voice_active(false);
+            sync_voice_in_room(&mut self.as_mut());
+            self.as_mut().reset_inbound_video();
+        }
+        if self.rust().current_supernode_id == canon {
+            let mut r = self.as_mut().rust_mut();
+            r.current_supernode_id.clear();
+            r.current_room_id.clear();
+            self.as_mut().set_in_room(false);
+        }
+
+        {
+            let prefix = format!("{canon}:");
+            self.as_mut()
+                .rust_mut()
+                .room_chat_history
+                .retain(|k, _| !k.starts_with(&prefix));
+        }
+
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::RemoveSupernode {
+                supernode_id: canon.clone(),
+            });
+        }
+
+        self.as_mut()
+            .supernode_removed(QString::from(canon.as_str()));
+        emit_rooms_sidebar_sync(self.as_mut());
+        emit_local_rooms_for_all_supernodes(self.as_mut());
+        info!("Supernode removed: {canon}");
+    }
+
+    fn enable_ptt(mut self: Pin<&mut Self>, key: &QString) {
+        // Stop any existing PTT thread first
+        if let Some(ref stop) = self.rust().ptt_stop {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let key_str = key.to_string();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = Arc::clone(&stop);
+        let (ptt_tx, ptt_rx) = std::sync::mpsc::sync_channel::<bool>(4);
+        let call_tx = self.rust().call_cmd_tx.clone();
+        std::thread::spawn(move || {
+            while let Ok(muted) = ptt_rx.recv() {
+                if let Some(ref tx) = call_tx {
+                    let _ = tx.try_send(CallCommand::SetMuted(muted));
+                }
+            }
+        });
+        let handle = crate::platform::start_ptt_polling(key_str, ptt_tx, stop2);
+        let mut r = self.as_mut().rust_mut();
+        r.ptt_stop = Some(stop);
+        r.ptt_thread = Some(handle);
+        info!("PTT enabled: key={}", key.to_string());
+    }
+
+    fn disable_ptt(mut self: Pin<&mut Self>) {
+        if let Some(ref stop) = self.rust().ptt_stop {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let mut r = self.as_mut().rust_mut();
+        r.ptt_stop = None;
+        r.ptt_thread = None;
+        info!("PTT disabled");
+    }
+
+    fn block_peer(self: Pin<&mut Self>, peer_id: &QString) {
+        let pid = peer_id.to_string();
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::BlockPeer {
+                peer_id: pid.clone(),
+            });
+        }
+        info!("Blocking peer: {pid}");
+    }
+
+    fn unblock_peer(self: Pin<&mut Self>, peer_id: &QString) {
+        let pid = peer_id.to_string();
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::UnblockPeer {
+                peer_id: pid.clone(),
+            });
+        }
+        info!("Unblocking peer: {pid}");
+    }
+
+    fn copy_peer_id(self: Pin<&mut Self>, peer_id: &QString) {
+        let pid = peer_id.to_string();
+        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(pid.clone())) {
+            Ok(_) => info!("Peer ID copied to clipboard"),
+            Err(e) => warn!("Clipboard write failed for peer ID: {e}"),
+        }
+    }
+
+    fn select_peer(mut self: Pin<&mut Self>, peer_id: &QString) {
+        let pid = peer_id.to_string();
+        self.as_mut().rust_mut().selected_peer_id = pid.clone();
+
+        // Clone the Arc so the borrow on self ends before the for-loop below.
+        let cs_opt: Option<Arc<crate::chat_store::ChatStore>> =
+            self.rust().chat_store.as_ref().map(Arc::clone);
+
+        if let Some(ref cs) = cs_opt {
+            if let Err(e) = cs.mark_peer_read(&pid) {
+                warn!("chat_store mark_peer_read error: {e}");
+            }
+            let global = cs.total_unread_count().unwrap_or(0);
+            self.as_mut().rust_mut().unread_chat = global as u32;
+            if global == 0 {
+                crate::platform::clear_taskbar_badge();
+            } else {
+                crate::platform::set_taskbar_badge(global as u32);
+            }
+            self.as_mut().unread_changed(QString::from(pid.as_str()), 0);
+        }
+
+        // Build the full history JSON array then emit a single chatHistoryLoaded
+        // signal. The QML side wires this to chatModel.setMessages() which does
+        // an atomic beginResetModel/clear/endResetModel, preventing stale messages
+        // from the previously-selected peer from persisting in the view.
+        let msgs: Vec<serde_json::Value> = cs_opt
+            .and_then(|cs| cs.get_history(&pid, 0).ok())
+            .unwrap_or_default()
+            .iter()
+            .map(chat_message_to_json)
+            .collect();
+
+        let array_json = serde_json::Value::Array(msgs).to_string();
+        self.as_mut()
+            .chat_history_loaded(QString::from(array_json.as_str()));
+    }
+
+    fn load_more_history(mut self: Pin<&mut Self>, peer_id: &QString, page: i32) {
+        let pid = peer_id.to_string();
+        let page = page.max(0) as usize;
+        let msgs: Vec<serde_json::Value> = self
+            .rust()
+            .chat_store
+            .as_ref()
+            .and_then(|cs| cs.get_history(&pid, page).ok())
+            .unwrap_or_default()
+            .iter()
+            .map(chat_message_to_json)
+            .collect();
+        let array_json = serde_json::Value::Array(msgs).to_string();
+        self.as_mut()
+            .chat_history_prepended(QString::from(array_json.as_str()));
+    }
+
+    fn send_typing(self: Pin<&mut Self>, peer_id: &QString, is_typing: bool) {
+        let pid = peer_id.to_string();
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::SendTyping {
+                peer_id: pid,
+                is_typing,
+            });
+        }
+    }
+
+    fn send_room_chat(mut self: Pin<&mut Self>, body: &QString) {
+        let body_str = body.to_string();
+        let message_id = uuid::Uuid::new_v4().to_string();
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let (sn, rid, handle, sender_id, chat_store_opt) = {
+            let r = self.rust();
+            let sn = r.current_supernode_id.clone();
+            let rid = r.current_room_id.clone();
+            let handle = r
+                .peer_store
+                .as_ref()
+                .and_then(|ps| {
+                    let store = ps.read();
+                    store.get(&r.my_peer_id).map(|rec| rec.display_name())
+                })
+                .unwrap_or_default();
+            let sender_id = r.my_public_id.clone();
+            let cs = r.chat_store.clone();
+            (sn, rid, handle, sender_id, cs)
+        };
+        if sn.is_empty() || rid.is_empty() {
+            return;
+        }
+        let sent = match self.rust().conn_cmd_tx {
+            Some(ref tx) => tx
+                .try_send(ConnectionCommand::SendSfuChat {
+                    supernode_id: sn.clone(),
+                    room_id: rid.clone(),
+                    body: body_str.clone(),
+                    sender_handle: handle.clone(),
+                    message_id: message_id.clone(),
+                })
+                .is_ok(),
+            None => false,
+        };
+        let status = if sent { "sent" } else { "failed" };
+        let message_status = if sent {
+            crate::chat_store::MessageStatus::Sent
+        } else {
+            crate::chat_store::MessageStatus::Failed
+        };
+
+        let json = serde_json::json!({
+            "msg_id": message_id.clone(),
+            "sender": handle.clone(),
+            "sender_id": sender_id.clone(),
+            "body": body_str.clone(),
+            "timestamp": now_ts,
+            "kind": "text",
+            "mine": true,
+            "is_room": true,
+            "status": status,
+            "supernode_id": sn.clone(),
+            "room_id": rid.clone(),
+        })
+        .to_string();
+
+        // Persist outbound message so loadRoomChatHistory can replay it after restart.
+        if let Some(ref cs) = chat_store_opt {
+            let store_key = room_chat_store_peer_id(&rid);
+            let chat_msg = crate::chat_store::ChatMessage {
+                id: message_id.clone(),
+                peer_id: store_key,
+                sender: sender_id,
+                recipient: rid.clone(),
+                body: body_str.clone(),
+                timestamp: now_ts,
+                is_self: true,
+                status: message_status,
+                kind: crate::chat_store::MessageKind::Text,
+                attachment_name: String::new(),
+                attachment_path: String::new(),
+                size_str: String::new(),
+                status_note: String::new(),
+                sender_handle: handle.clone(),
+            };
+            if let Err(e) = cs.insert(&chat_msg) {
+                warn!("chat_store insert (room outbound) error: {e}");
+            }
+        }
+        if !rid.is_empty() && !sn.is_empty() {
+            let key = room_chat_history_key(&sn, &rid);
+            self.as_mut()
+                .rust_mut()
+                .room_chat_history
+                .entry(key)
+                .or_default()
+                .push(json.clone());
+        }
+        self.as_mut()
+            .room_chat_received(QString::from(json.as_str()));
+    }
+
+    fn accept_file(self: Pin<&mut Self>, transfer_id: &QString) {
+        let tid = transfer_id.to_string();
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::AcceptFile { transfer_id: tid });
+        }
+    }
+
+    fn reject_file(self: Pin<&mut Self>, transfer_id: &QString) {
+        let tid = transfer_id.to_string();
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::RejectFile { transfer_id: tid });
+        }
+    }
+
+    /// Accept a room file offer → ask the originator to stream it.
+    fn accept_room_file(self: Pin<&mut Self>, transfer_id: &QString) {
+        let tid = transfer_id.to_string();
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::AcceptRoomFile { transfer_id: tid });
+        }
+    }
+
+    /// Decline a room file offer. Local only — nothing is ever requested, so
+    /// the sender never uploads it.
+    fn decline_room_file(self: Pin<&mut Self>, transfer_id: &QString) {
+        let tid = transfer_id.to_string();
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::DeclineRoomFile { transfer_id: tid });
+        }
+    }
+
+    fn send_file(mut self: Pin<&mut Self>, peer_id: &QString, file_url: &QString) {
+        let pid = peer_id.to_string();
+        let path_str = parse_local_file_path(&file_url.to_string());
+        let path = std::path::Path::new(&path_str);
+        let rel_path = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_owned();
+        let kind = crate::chat_store::message_kind_for_path(&rel_path);
+        // Same as the room path: hand over the path, not the bytes, so a large
+        // file is neither read on the Qt thread nor held in RAM.
+        let byte_len = match std::fs::metadata(path) {
+            Ok(m) => m.len(),
+            Err(e) => {
+                warn!("sendFile: cannot stat {:?}: {e}", path);
+                return;
+            }
+        };
+        if byte_len > crate::file_transfer::MAX_TRANSFER_SIZE as u64 {
+            warn!(
+                "sendFile: {:?} is {byte_len} bytes, over the {} limit",
+                path,
+                crate::file_transfer::MAX_TRANSFER_SIZE
+            );
+            return;
+        }
+        let size_str = crate::chat_store::format_byte_size(byte_len);
+        // Same as the room path: our own bubble is keyed by the transfer id so
+        // deleting it can revoke the offer before the peer accepts.
+        let transfer_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_owned();
+        let sent = match self.rust().conn_cmd_tx {
+            Some(ref tx) => tx
+                .try_send(ConnectionCommand::SendFile {
+                    peer_id: pid.clone(),
+                    rel_path: rel_path.clone(),
+                    path: path_str.clone(),
+                    transfer_id: transfer_id.clone(),
+                    purpose: "file".to_owned(),
+                })
+                .is_ok(),
+            None => false,
+        };
+
+        // Local-echo an attachment bubble so the sender sees the image/video
+        // immediately; receiver embeds on FileComplete after download.
+        let message_id = format!("xfer-{transfer_id}");
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let handle = {
+            let r = self.rust();
+            r.peer_store
+                .as_ref()
+                .and_then(|ps| {
+                    let store = ps.read();
+                    store.get(&r.my_peer_id).map(|rec| rec.display_name())
+                })
+                .unwrap_or_default()
+        };
+        let body = attachment_body_label(&kind, &rel_path);
+        let status = if sent {
+            crate::chat_store::MessageStatus::Sent
+        } else {
+            crate::chat_store::MessageStatus::Failed
+        };
+        let chat_msg = crate::chat_store::ChatMessage {
+            id: message_id.clone(),
+            peer_id: pid.clone(),
+            sender: handle.clone(),
+            recipient: pid.clone(),
+            body: body.clone(),
+            timestamp: now_ts,
+            is_self: true,
+            status: status.clone(),
+            kind: kind.clone(),
+            attachment_name: rel_path.clone(),
+            attachment_path: path_str.clone(),
+            size_str: size_str.clone(),
+            status_note: String::new(),
+            sender_handle: handle.clone(),
+        };
+        if let Some(ref cs) = self.rust().chat_store {
+            if let Err(e) = cs.insert(&chat_msg) {
+                warn!("chat_store insert (outbound file) error: {e}");
+            }
+        }
+        let echo_json = serde_json::json!({
+            "msg_id": message_id,
+            "peer_id": pid,
+            "sender": handle,
+            "body": body,
+            "timestamp": now_ts,
+            "kind": kind.as_str(),
+            "mine": true,
+            "status": status.as_str(),
+            "attachment_name": rel_path,
+            "attachment_path": path_str,
+            "size_str": size_str,
+        })
+        .to_string();
+        if self.rust().selected_peer_id == pid {
+            self.as_mut()
+                .chat_message_received(QString::from(echo_json.as_str()));
+        }
+    }
+
+    fn send_room_file(mut self: Pin<&mut Self>, file_url: &QString) {
+        let (sn, rid, handle, sender_id, chat_store_opt) = {
+            let r = self.rust();
+            let sn = r.current_supernode_id.clone();
+            let rid = r.current_room_id.clone();
+            let handle = r
+                .peer_store
+                .as_ref()
+                .and_then(|ps| {
+                    let store = ps.read();
+                    store.get(&r.my_peer_id).map(|rec| rec.display_name())
+                })
+                .unwrap_or_default();
+            let sender_id = r.my_public_id.clone();
+            let cs = r.chat_store.clone();
+            (sn, rid, handle, sender_id, cs)
+        };
+        if sn.is_empty() || rid.is_empty() {
+            return;
+        }
+        let path_str = parse_local_file_path(&file_url.to_string());
+        let path = std::path::Path::new(&path_str);
+        let rel_path = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_owned();
+        let kind = crate::chat_store::message_kind_for_path(&rel_path);
+        // Send the PATH, not the bytes. This runs on the Qt thread, so reading
+        // a 250 MB file here would block the UI (and cost 250 MB) before the
+        // transfer even starts; the manager streams it off-thread instead.
+        let byte_len = match std::fs::metadata(path) {
+            Ok(m) => m.len(),
+            Err(e) => {
+                warn!("sendRoomFile: cannot stat {:?}: {e}", path);
+                return;
+            }
+        };
+        if byte_len > crate::file_transfer::MAX_TRANSFER_SIZE as u64 {
+            warn!(
+                "sendRoomFile: {:?} is {byte_len} bytes, over the {} limit",
+                path,
+                crate::file_transfer::MAX_TRANSFER_SIZE
+            );
+            return;
+        }
+        let size_str = crate::chat_store::format_byte_size(byte_len);
+        // Choose the transfer id here so our own chat message can be keyed
+        // `xfer-{transfer_id}`, exactly as receivers key theirs. That shared key
+        // is what lets `delete_message` find the offer and revoke it.
+        let transfer_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_owned();
+        let sent = match self.rust().conn_cmd_tx {
+            Some(ref tx) => tx
+                .try_send(ConnectionCommand::SendSfuFile {
+                    supernode_id: sn.clone(),
+                    room_id: rid.clone(),
+                    rel_path: rel_path.clone(),
+                    path: path_str.clone(),
+                    transfer_id: transfer_id.clone(),
+                    purpose: "room_file".to_owned(),
+                })
+                .is_ok(),
+            None => false,
+        };
+
+        let message_id = format!("xfer-{transfer_id}");
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let body = attachment_body_label(&kind, &rel_path);
+        let status = if sent {
+            crate::chat_store::MessageStatus::Sent
+        } else {
+            crate::chat_store::MessageStatus::Failed
+        };
+        let json = serde_json::json!({
+            "msg_id": message_id.clone(),
+            "sender": handle.clone(),
+            "sender_id": sender_id.clone(),
+            "body": body.clone(),
+            "timestamp": now_ts,
+            "kind": kind.as_str(),
+            "mine": true,
+            "is_room": true,
+            "status": status.as_str(),
+            "attachment_name": rel_path.clone(),
+            "attachment_path": path_str.clone(),
+            "size_str": size_str.clone(),
+            "supernode_id": sn.clone(),
+            "room_id": rid.clone(),
+        })
+        .to_string();
+        if let Some(ref cs) = chat_store_opt {
+            let store_key = room_chat_store_peer_id(&rid);
+            let chat_msg = crate::chat_store::ChatMessage {
+                id: message_id.clone(),
+                peer_id: store_key,
+                sender: sender_id,
+                recipient: rid.clone(),
+                body: body.clone(),
+                timestamp: now_ts,
+                is_self: true,
+                status,
+                kind,
+                attachment_name: rel_path,
+                attachment_path: path_str,
+                size_str,
+                status_note: String::new(),
+                sender_handle: handle,
+            };
+            if let Err(e) = cs.insert(&chat_msg) {
+                warn!("chat_store insert (room outbound file) error: {e}");
+            }
+        }
+        let key = room_chat_history_key(&sn, &rid);
+        self.as_mut()
+            .rust_mut()
+            .room_chat_history
+            .entry(key)
+            .or_default()
+            .push(json.clone());
+        self.as_mut()
+            .room_chat_received(QString::from(json.as_str()));
+    }
+
+    // ── Ollama invokables ────────────────────────────────────────────────
+
+    fn ask_ollama(
+        self: Pin<&mut Self>,
+        request_id: &QString,
+        prompt: &QString,
+        system_prompt: &QString,
+    ) {
+        let rid = request_id.to_string();
+        let pr = prompt.to_string();
+        let sys = system_prompt.to_string();
+        if let Some(ref tx) = self.rust().ollama_cmd_tx {
+            // Always push the latest settings (model / base URL) before query —
+            // the plugin task otherwise keeps the startup snapshot forever.
+            let cfg = crate::ollama_module::read_assistant_settings().to_config();
+            let _ = tx.try_send(crate::ollama_module::OllamaCommand::SetConfig(cfg));
+            let _ = tx.try_send(crate::ollama_module::OllamaCommand::Query {
+                request_id: rid,
+                prompt: pr,
+                system_prompt: sys,
+            });
+        } else {
+            warn!("ask_ollama: ollama plugin not available");
+        }
+    }
+
+    fn cancel_ollama(self: Pin<&mut Self>, request_id: &QString) {
+        let rid = request_id.to_string();
+        if let Some(ref tx) = self.rust().ollama_cmd_tx {
+            let _ = tx.try_send(crate::ollama_module::OllamaCommand::Cancel { request_id: rid });
+        }
+    }
+
+    fn fetch_ollama_models(self: Pin<&mut Self>, base_url: &QString) {
+        let url = {
+            let s = base_url.to_string();
+            if s.trim().is_empty() {
+                crate::ollama_module::DEFAULT_BASE_URL.to_owned()
+            } else {
+                s
+            }
+        };
+
+        // Always fetch over direct HTTP on the background runtime handle.
+        // Model-list is a local settings UX path — it must not depend on the
+        // plugin task / event loop (which previously made mid-session enable
+        // and Connections-only delivery flaky). Must NOT use
+        // `Handle::try_current()`: this invokable runs on the Qt GUI thread.
+        let Some(handle) = self.rust().rt_handle.clone() else {
+            warn!("[ollama] fetch_ollama_models: runtime handle not ready yet");
+            publish_ollama_models(
+                self,
+                "[]",
+                "Backend still starting — click refresh in a moment, or re-open the AI settings tab.",
+            );
+            return;
+        };
+
+        info!("[ollama] ListModels fetching {url}/api/tags");
+        let qt_thread = self.qt_thread();
+        // Disable system proxy: localhost Ollama must not go through HTTP_PROXY.
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        handle.spawn(async move {
+            let (models_json, error) =
+                match crate::ollama_module::fetch_model_list(&client, &url).await {
+                    Ok(names) => {
+                        info!("[ollama] ListModels ok: {} model(s)", names.len());
+                        (
+                            serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_owned()),
+                            String::new(),
+                        )
+                    }
+                    Err(e) => {
+                        warn!("[ollama] ListModels failed for {url}: {e}");
+                        ("[]".to_owned(), e)
+                    }
+                };
+            let _ = qt_thread.queue(move |bridge: Pin<&mut ffi::AppBridge>| {
+                publish_ollama_models(bridge, &models_json, &error);
+            });
+        });
+    }
+}
+
+/// Publish a model-list result to QML via qproperties (primary) + signal (compat).
+fn publish_ollama_models(mut bridge: Pin<&mut ffi::AppBridge>, models_json: &str, error: &str) {
+    let models_q = QString::from(models_json);
+    let error_q = QString::from(error);
+    bridge.as_mut().set_ollama_models_json(models_q.clone());
+    bridge.as_mut().set_ollama_models_error(error_q.clone());
+    bridge.as_mut().ollama_models_ready(models_q, error_q);
+}
+
+/// React to a capture thread that stopped on its own.
+///
+/// Runs on the Qt thread, posted from the capture thread. The camera is already
+/// gone by the time this lands; the job here is to make everything else agree
+/// with that. Without it the sender handle stayed in place, the toggle kept
+/// reading "on", and — worst of the three — no camera-off ever reached the
+/// room, so every peer held the last frame on screen indefinitely. A stopped
+/// stream is indistinguishable from a still one at the far end, so the
+/// announcement is the only signal they will ever get.
+///
+/// Deliberately not a restart: a device that was unplugged, or a window that
+/// was closed, is not coming back on its own, and a capture that reopens in a
+/// loop would spin on the failure while the user wonders why the camera light
+/// keeps flickering. Turning the toggle off puts the decision back where it
+/// belongs.
+fn capture_died(mut bridge: Pin<&mut ffi::AppBridge>, reason: &str) {
+    if bridge.rust().video_sender.is_none() {
+        // The normal stop path already tore this down and the thread's report
+        // merely arrived after it — nothing to correct.
+        return;
+    }
+    warn!("[video] capture ended on its own: {reason}");
+    // Stops the (already dead) sender, drops the media clock, and announces
+    // camera-off to the room or the direct peer.
+    bridge.as_mut().stop_local_video();
+    bridge
+        .as_mut()
+        .set_session_banner(QString::from(format!("Camera stopped — {reason}").as_str()));
+    bridge.camera_capture_failed(QString::from(reason));
+}
+
+/// Where an auto-reply should be sent once the Ollama stream finishes.
+#[derive(Debug, Clone)]
+enum AutoReplyTarget {
+    Direct {
+        peer_id: String,
+    },
+    Room {
+        supernode_id: String,
+        room_id: String,
+    },
+}
+
+/// Kick off an Ollama query that will be posted back as chat when complete.
+///
+/// No-op when the plugin is disabled, the matching auto-respond flag is off,
+/// the inbound body is empty, or the Ollama command channel is unavailable.
+fn maybe_start_auto_reply(
+    mut bridge: Pin<&mut ffi::AppBridge>,
+    target: AutoReplyTarget,
+    inbound_body: &str,
+    inbound_message_id: &str,
+) {
+    let body = inbound_body.trim();
+    if body.is_empty() {
+        return;
+    }
+    let settings = crate::ollama_module::read_assistant_settings();
+    if !settings.enabled {
+        return;
+    }
+    let want = match &target {
+        AutoReplyTarget::Direct { .. } => settings.auto_respond_direct,
+        AutoReplyTarget::Room { .. } => settings.auto_respond_room,
+    };
+    if !want {
+        return;
+    }
+    let Some(tx) = bridge.rust().ollama_cmd_tx.clone() else {
+        warn!("[ollama] auto-reply skipped: plugin not running (enable AI assistant and restart)");
+        return;
+    };
+
+    let request_id = match &target {
+        AutoReplyTarget::Direct { peer_id } => {
+            format!("auto-direct-{}-{}", peer_id, inbound_message_id)
+        }
+        AutoReplyTarget::Room {
+            supernode_id,
+            room_id,
+        } => format!("auto-room-{supernode_id}-{room_id}-{inbound_message_id}"),
+    };
+
+    // Cancel any prior in-flight auto-reply to the same target so we don't
+    // flood the peer when messages arrive faster than generation.
+    let stale: Vec<String> = bridge
+        .rust()
+        .auto_reply_pending
+        .iter()
+        .filter(|(_, t)| match (t, &target) {
+            (AutoReplyTarget::Direct { peer_id: a }, AutoReplyTarget::Direct { peer_id: b }) => {
+                a == b
+            }
+            // room_id only — multi-home cluster deliveries share one cancel scope.
+            (
+                AutoReplyTarget::Room { room_id: ra, .. },
+                AutoReplyTarget::Room { room_id: rb, .. },
+            ) => ra == rb,
+            _ => false,
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    for old_id in stale {
+        let _ = tx.try_send(crate::ollama_module::OllamaCommand::Cancel {
+            request_id: old_id.clone(),
+        });
+        bridge
+            .as_mut()
+            .rust_mut()
+            .auto_reply_pending
+            .remove(&old_id);
+        bridge.as_mut().rust_mut().auto_reply_buf.remove(&old_id);
+    }
+
+    let sys = if settings.system_prompt.trim().is_empty() {
+        "You are a helpful assistant in a private peer-to-peer chat. \
+         Remember earlier turns in this conversation and reply with continuity. \
+         Keep replies concise."
+            .to_owned()
+    } else {
+        // Multi-turn hint layered on the user's system prompt.
+        format!(
+            "{}\n\n(You are in a multi-turn chat; use prior messages in this conversation for context.)",
+            settings.system_prompt.trim()
+        )
+    };
+
+    let conversation_id = match &target {
+        AutoReplyTarget::Direct { peer_id } => {
+            crate::ollama_module::conversation_id_direct(peer_id)
+        }
+        AutoReplyTarget::Room { room_id, .. } => {
+            crate::ollama_module::conversation_id_room(room_id)
+        }
+    };
+
+    info!(
+        "[ollama] auto-reply start rid={request_id} model={} conv={conversation_id} target={target:?}",
+        settings.model
+    );
+    let _ = tx.try_send(crate::ollama_module::OllamaCommand::SetConfig(
+        settings.to_config(),
+    ));
+    if tx
+        .try_send(crate::ollama_module::OllamaCommand::Chat {
+            request_id: request_id.clone(),
+            conversation_id,
+            user_message: body.to_owned(),
+            system_prompt: sys,
+        })
+        .is_err()
+    {
+        warn!("[ollama] auto-reply Chat try_send failed");
+        return;
+    }
+    bridge
+        .as_mut()
+        .rust_mut()
+        .auto_reply_pending
+        .insert(request_id.clone(), target);
+    bridge
+        .as_mut()
+        .rust_mut()
+        .auto_reply_buf
+        .insert(request_id, String::new());
+}
+
+/// Append a streamed token for an auto-reply request (if tracked).
+fn auto_reply_on_chunk(mut bridge: Pin<&mut ffi::AppBridge>, request_id: &str, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(buf) = bridge
+        .as_mut()
+        .rust_mut()
+        .auto_reply_buf
+        .get_mut(request_id)
+    {
+        buf.push_str(text);
+    }
+}
+
+/// Finish an auto-reply: send the accumulated text as chat (direct or room).
+fn auto_reply_on_done(mut bridge: Pin<&mut ffi::AppBridge>, request_id: &str) {
+    let target = bridge
+        .as_mut()
+        .rust_mut()
+        .auto_reply_pending
+        .remove(request_id);
+    let body = bridge
+        .as_mut()
+        .rust_mut()
+        .auto_reply_buf
+        .remove(request_id)
+        .unwrap_or_default();
+    let Some(target) = target else {
+        return;
+    };
+    let reply = body.trim();
+    if reply.is_empty() {
+        warn!("[ollama] auto-reply {request_id} finished with empty body");
+        return;
+    }
+    info!(
+        "[ollama] auto-reply done rid={request_id} chars={} target={target:?}",
+        reply.chars().count()
+    );
+    match target {
+        AutoReplyTarget::Direct { peer_id } => {
+            bridge
+                .as_mut()
+                .send_chat(&QString::from(peer_id.as_str()), &QString::from(reply));
+        }
+        AutoReplyTarget::Room {
+            supernode_id,
+            room_id,
+        } => {
+            send_room_chat_to(bridge, &supernode_id, &room_id, reply);
+        }
+    }
+}
+
+fn auto_reply_on_error(mut bridge: Pin<&mut ffi::AppBridge>, request_id: &str, message: &str) {
+    let had = bridge
+        .as_mut()
+        .rust_mut()
+        .auto_reply_pending
+        .remove(request_id)
+        .is_some();
+    bridge.as_mut().rust_mut().auto_reply_buf.remove(request_id);
+    if had {
+        warn!("[ollama] auto-reply {request_id} failed: {message}");
+    }
+}
+
+/// Send SFU room chat to an explicit room (does not depend on the UI selection).
+fn send_room_chat_to(
+    mut bridge: Pin<&mut ffi::AppBridge>,
+    supernode_id: &str,
+    room_id: &str,
+    body: &str,
+) {
+    if supernode_id.is_empty() || room_id.is_empty() || body.is_empty() {
+        return;
+    }
+    let message_id = uuid::Uuid::new_v4().to_string();
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let (handle, sender_id, chat_store_opt) = {
+        let r = bridge.rust();
+        let handle = r
+            .peer_store
+            .as_ref()
+            .and_then(|ps| {
+                let store = ps.read();
+                store.get(&r.my_peer_id).map(|rec| rec.display_name())
+            })
+            .unwrap_or_default();
+        let sender_id = r.my_public_id.clone();
+        let cs = r.chat_store.clone();
+        (handle, sender_id, cs)
+    };
+    let sn = supernode_id.to_owned();
+    let rid = room_id.to_owned();
+    let body_str = body.to_owned();
+    let sent = match bridge.rust().conn_cmd_tx {
+        Some(ref tx) => tx
+            .try_send(ConnectionCommand::SendSfuChat {
+                supernode_id: sn.clone(),
+                room_id: rid.clone(),
+                body: body_str.clone(),
+                sender_handle: handle.clone(),
+                message_id: message_id.clone(),
+            })
+            .is_ok(),
+        None => false,
+    };
+    let status = if sent { "sent" } else { "failed" };
+    let message_status = if sent {
+        crate::chat_store::MessageStatus::Sent
+    } else {
+        crate::chat_store::MessageStatus::Failed
+    };
+    let json = serde_json::json!({
+        "msg_id": message_id.clone(),
+        "sender": handle.clone(),
+        "sender_id": sender_id.clone(),
+        "body": body_str.clone(),
+        "timestamp": now_ts,
+        "kind": "text",
+        "mine": true,
+        "is_room": true,
+        "status": status,
+        "supernode_id": sn.clone(),
+        "room_id": rid.clone(),
+    })
+    .to_string();
+    if let Some(ref cs) = chat_store_opt {
+        let store_key = room_chat_store_peer_id(&rid);
+        let chat_msg = crate::chat_store::ChatMessage {
+            id: message_id,
+            peer_id: store_key,
+            sender: sender_id,
+            recipient: rid.clone(),
+            body: body_str,
+            timestamp: now_ts,
+            is_self: true,
+            status: message_status,
+            kind: crate::chat_store::MessageKind::Text,
+            attachment_name: String::new(),
+            attachment_path: String::new(),
+            size_str: String::new(),
+            status_note: String::new(),
+            sender_handle: handle,
+        };
+        if let Err(e) = cs.insert(&chat_msg) {
+            warn!("chat_store insert (auto room reply) error: {e}");
+        }
+    }
+    let key = room_chat_history_key(&sn, &rid);
+    bridge
+        .as_mut()
+        .rust_mut()
+        .room_chat_history
+        .entry(key)
+        .or_default()
+        .push(json.clone());
+    let show = bridge.rust().current_supernode_id == sn && bridge.rust().current_room_id == rid;
+    if show {
+        bridge
+            .as_mut()
+            .room_chat_received(QString::from(json.as_str()));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Resolve the effective [`AvatarConfig`] for `peer_id`, matching the trust-tier
+/// rules used by `avatarSvg` / `avatarTintColor`.
+fn resolve_avatar_config(
+    bridge: &AppBridgeRust,
+    peer_id: &QString,
+    config_json: &QString,
+) -> (String, super::avatar::AvatarConfig) {
+    use super::avatar::{avatar_seed_id, AvatarConfig};
+
+    let id = peer_id.to_string();
+    let cfg_str = config_json.to_string();
+    let seed_id = avatar_seed_id(&id, &bridge.my_public_id, &bridge.my_peer_id, |raw| {
+        bridge.peer_store.as_ref().and_then(|ps| {
+            let store = ps.read();
+            store
+                .get(raw)
+                .or_else(|| store.get_by_identity(raw))
+                .map(|rec| rec.identity_pub.clone())
+                .filter(|pub_id| !pub_id.is_empty())
+        })
+    });
+
+    let config = if !cfg_str.is_empty() {
+        // Caller provided an explicit config (own-avatar preview / any site
+        // that binds `configJson` directly, e.g. Settings and the top-right).
+        serde_json::from_str(&cfg_str).unwrap_or_default()
+    } else if seed_id == bridge.my_public_id {
+        // Local user's own avatar with no explicit config. Use the applied
+        // custom config so *every* self-avatar site (voice rail, own room
+        // messages, onboarding, …) renders identically to the Settings
+        // preview and the top-right avatar — not the factory default.
+        //
+        // `avatar_config_json` is kept in lockstep with SettingsModel: it is
+        // pushed on load, on every avatar edit, and on reset (which sets it to
+        // ""), so an empty value here genuinely means "factory defaults".
+        if bridge.avatar_config_json.is_empty() {
+            AvatarConfig::default()
+        } else {
+            serde_json::from_str(&bridge.avatar_config_json).unwrap_or_default()
+        }
+    } else if let Some(ref ps) = bridge.peer_store {
+        let store = ps.read();
+        let rec = store
+            .get(&id)
+            .or_else(|| store.get_by_identity(&id))
+            .or_else(|| store.get_by_identity(&seed_id));
+        match rec {
+            None => AvatarConfig::untrusted(),
+            Some(rec) if rec.identity_pub.is_empty() => AvatarConfig::untrusted(),
+            Some(rec) => rec.avatar_config.clone().unwrap_or_default(),
+        }
+    } else {
+        AvatarConfig::untrusted()
+    };
+
+    (seed_id, config)
+}
+
+/// Read the persisted `audio_input_device` / `audio_output_device` strings
+/// from the settings file.  Empty / missing fields map to `None` so the
+/// CallController falls back to the host's default device.
+fn read_audio_device_settings() -> (Option<String>, Option<String>) {
+    let path = crate::ui::settings_model::settings_file();
+    let mut input: Option<String> = None;
+    let mut output: Option<String> = None;
+    if let Ok(txt) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+            input = v
+                .get("audio_input_device")
+                .and_then(|x| x.as_str())
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
+            output = v
+                .get("audio_output_device")
+                .and_then(|x| x.as_str())
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
+        }
+    }
+    (input, output)
+}
+
+/// Read the persisted `voice_activation` flag from the settings file.
+/// Falls back to `false` so calls default to PTT mode when the setting
+/// is missing or unreadable.
+fn read_voice_activation_setting() -> bool {
+    let path = crate::ui::settings_model::settings_file();
+    if let Ok(txt) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+            return v
+                .get("voice_activation")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
+        }
+    }
+    false
+}
+
+fn voice_bitrate_preset_to_bps(preset: &str) -> u32 {
+    match preset.trim().to_lowercase().as_str() {
+        "low" => 32_000,
+        "balanced" => 64_000,
+        "high" => 96_000,
+        "ultra" => 128_000,
+        _ => crate::call_controller::DEFAULT_OUTGOING_BITRATE_BPS,
+    }
+}
+
+/// Read the persisted outgoing voice bitrate preset from disk.
+/// Defaults to Ultra (128 kbps) to preserve the current release behavior.
+fn read_voice_bitrate_setting() -> u32 {
+    let path = crate::ui::settings_model::settings_file();
+    if let Ok(txt) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+            return v
+                .get("voice_bitrate")
+                .and_then(|x| x.as_str())
+                .map(voice_bitrate_preset_to_bps)
+                .unwrap_or(crate::call_controller::DEFAULT_OUTGOING_BITRATE_BPS);
+        }
+    }
+    crate::call_controller::DEFAULT_OUTGOING_BITRATE_BPS
+}
+
+/// Read the persisted local display handle from disk without going through QObject.
+fn read_local_handle() -> String {
+    let path = crate::ui::settings_model::settings_file();
+    if let Ok(txt) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+            if let Some(handle) = v.get("local_handle").and_then(|x| x.as_str()) {
+                return handle.to_owned();
+            }
+        }
+    }
+    String::new()
+}
+
+/// Read push-to-talk settings from disk without going through the QObject.
+/// Returns `(ptt_enabled, ptt_key)`.
+fn read_settings_for_ptt() -> (bool, String) {
+    let path = crate::ui::settings_model::settings_file();
+    if let Ok(txt) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+            let enabled = v
+                .get("push_to_talk")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
+            let key = v
+                .get("ptt_key")
+                .and_then(|x| x.as_str())
+                .unwrap_or("space")
+                .to_owned();
+            return (enabled, key);
+        }
+    }
+    (false, "space".to_owned())
+}
+
+/// Snapshot of plugin-related fields read from the persisted settings file.
+struct PluginSettings {
+    ollama_enabled: bool,
+    ollama_base_url: String,
+    ollama_model: String,
+}
+
+/// Read plugin settings from the on-disk settings file. Falls back to
+/// safe defaults when the file is missing or fields are absent.
+fn read_plugin_settings() -> PluginSettings {
+    let path = crate::ui::settings_model::settings_file();
+    if let Ok(txt) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+            return PluginSettings {
+                ollama_enabled: v
+                    .get("ollama_enabled")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false),
+                ollama_base_url: v
+                    .get("ollama_base_url")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or(crate::ollama_module::DEFAULT_BASE_URL)
+                    .to_owned(),
+                ollama_model: v
+                    .get("ollama_model")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or(crate::ollama_module::DEFAULT_MODEL)
+                    .to_owned(),
+            };
+        }
+    }
+    PluginSettings {
+        ollama_enabled: false,
+        ollama_base_url: crate::ollama_module::DEFAULT_BASE_URL.to_owned(),
+        ollama_model: crate::ollama_module::DEFAULT_MODEL.to_owned(),
+    }
+}
+
+/// Read the persisted `jitter_buffer_depth` (in Opus frames) from the settings
+/// file.  Defaults to 3 (60 ms) when the field is absent or unreadable.
+fn read_jitter_depth_setting() -> usize {
+    let path = crate::ui::settings_model::settings_file();
+    if let Ok(txt) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+            return v
+                .get("jitter_buffer_depth")
+                .and_then(|x| x.as_i64())
+                .map(|n| (n as usize).clamp(1, 20))
+                .unwrap_or(3);
+        }
+    }
+    3
+}
+
+// ---------------------------------------------------------------------------
+// Background → Qt event dispatcher
+// ---------------------------------------------------------------------------
+
+/// Save received file data to the user's Downloads directory.
+/// Returns the saved path on success (as a string).
+///
+/// Used only for inline transfers; streamed files are written chunk-by-chunk
+/// by the transfer manager and arrive already saved.
+fn save_received_file(rel_path: &str, data: &[u8]) -> Option<String> {
+    use crate::file_transfer::{download_dir, safe_file_name, unique_dest_path};
+    let downloads = download_dir();
+    if let Err(e) = std::fs::create_dir_all(&downloads) {
+        warn!(
+            "Failed to create download directory '{}': {e}",
+            downloads.display()
+        );
+        return None;
+    }
+    // Never clobber an existing file: two peers sending `clip.mp4` used to
+    // overwrite each other silently.
+    let dest = unique_dest_path(&downloads, &safe_file_name(rel_path));
+    match std::fs::write(&dest, data) {
+        Ok(()) => {
+            info!("Received file saved to {}", dest.display());
+            Some(dest.to_string_lossy().into_owned())
+        }
+        Err(e) => {
+            warn!("Failed to save received file '{}': {e}", dest.display());
+            None
+        }
+    }
+}
+
+fn chat_message_to_json(msg: &crate::chat_store::ChatMessage) -> serde_json::Value {
+    serde_json::json!({
+        "msg_id": msg.id,
+        "peer_id": msg.peer_id,
+        "sender": msg.sender_handle,
+        "body": msg.body,
+        "timestamp": msg.timestamp,
+        "kind": msg.kind.as_str(),
+        "mine": msg.is_self,
+        "status": msg.status.as_str(),
+        "attachment_name": msg.attachment_name,
+        "attachment_path": msg.attachment_path,
+        "size_str": msg.size_str,
+    })
+}
+
+fn room_chat_message_to_json(
+    bridge: &AppBridgeRust,
+    msg: &crate::chat_store::ChatMessage,
+) -> serde_json::Value {
+    let sender = room_chat_display_sender(bridge, &msg.sender_handle, &msg.sender);
+    // The store key carries the room id alone; the UI still filters on the
+    // hosting node, so look that up live rather than reading it off the key.
+    let room_id = parse_room_chat_store_key(&msg.peer_id);
+    let supernode_id = room_host_for(bridge, &room_id);
+    serde_json::json!({
+        "msg_id": msg.id,
+        "sender": sender,
+        "sender_id": msg.sender,
+        "body": msg.body,
+        "timestamp": msg.timestamp,
+        "kind": msg.kind.as_str(),
+        "mine": msg.is_self,
+        "is_room": true,
+        "status": msg.status.as_str(),
+        "attachment_name": msg.attachment_name,
+        "attachment_path": msg.attachment_path,
+        "size_str": msg.size_str,
+        "supernode_id": supernode_id,
+        "room_id": room_id,
+    })
+}
+
+/// Recover the room id from a stored conversation key.
+///
+/// Accepts the legacy `room:{supernode_id}:{room_id}` form too, because a
+/// store is only folded to the canonical key when it is next opened and a
+/// long-running session can still be holding rows read before that.
+fn parse_room_chat_store_key(store_key: &str) -> String {
+    let Some(rest) = store_key.strip_prefix("room:") else {
+        return String::new();
+    };
+    match rest.rsplit_once(':') {
+        Some((_legacy_host, room_id)) => room_id.to_owned(),
+        None => rest.to_owned(),
+    }
+}
+
+/// Which supernode currently hosts `room_id`, for UI filtering.
+///
+/// The conversation key no longer encodes a host — a room's identity is its
+/// id — so the live answer comes from the room store instead.
+fn room_host_for(bridge: &AppBridgeRust, room_id: &str) -> String {
+    let Some(rs) = bridge.room_store.as_ref() else {
+        return String::new();
+    };
+    let store = rs.read();
+    store
+        .list()
+        .into_iter()
+        .find(|entry| entry.room_id == room_id)
+        .map(|entry| entry.supernode_id.clone())
+        .unwrap_or_default()
+}
+
+fn attachment_body_label(kind: &crate::chat_store::MessageKind, name: &str) -> String {
+    match kind {
+        crate::chat_store::MessageKind::Image => format!("🖼 {name}"),
+        crate::chat_store::MessageKind::Video => format!("🎬 {name}"),
+        _ => format!("📎 {name}"),
+    }
+}
+
+/// Put an inbound file offer into the chat stream so progress lives in the
+/// bubble, not a detached status strip. The sender already echoed their own
+/// `xfer-{id}` row from `send_file` / `send_room_file`.
+struct InboundFileOffer<'a> {
+    transfer_id: &'a str,
+    peer_id: &'a str,
+    origin_id: &'a str,
+    rel_path: &'a str,
+    size: usize,
+    purpose: &'a str,
+    supernode_id: &'a str,
+}
+
+fn insert_inbound_file_offer(mut bridge: Pin<&mut ffi::AppBridge>, offer: InboundFileOffer<'_>) {
+    let InboundFileOffer {
+        transfer_id,
+        peer_id,
+        origin_id,
+        rel_path,
+        size,
+        purpose,
+        supernode_id,
+    } = offer;
+    let message_id = format!("xfer-{transfer_id}");
+    if let Some(ref cs) = bridge.rust().chat_store {
+        if cs
+            .get_by_id(&message_id)
+            .map(|m| m.is_some())
+            .unwrap_or(false)
+        {
+            return;
+        }
+    }
+    let kind = crate::chat_store::message_kind_for_path(rel_path);
+    let size_str = crate::chat_store::format_byte_size(size as u64);
+    let body = attachment_body_label(&kind, rel_path);
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let is_room = purpose == "room_file";
+
+    if is_room {
+        let sn_raw = if supernode_id.is_empty() {
+            bridge.rust().current_supernode_id.clone()
+        } else {
+            supernode_id.to_owned()
+        };
+        let rid = if peer_id.is_empty() {
+            bridge.rust().current_room_id.clone()
+        } else {
+            peer_id.to_owned()
+        };
+        let sn = bridge
+            .rust()
+            .resolve_supernode_node_id_str(&sn_raw)
+            .unwrap_or(sn_raw);
+        if sn.is_empty() || rid.is_empty() {
+            return;
+        }
+        let my_pub = bridge.rust().my_public_id.clone();
+        let my_peer = bridge.rust().my_peer_id.clone();
+        // Room id and supernode id must never become the author. That is what
+        // made every offer in a room look like the same "other" peer on both
+        // sides, whoever actually sent it.
+        let author = if origin_id.is_empty() || origin_id == rid || pub_id_eq(origin_id, &sn) {
+            String::new()
+        } else {
+            origin_id.to_owned()
+        };
+        let mine =
+            !author.is_empty() && (pub_id_eq(&author, &my_pub) || pub_id_eq(&author, &my_peer));
+        let display_sender = if author.is_empty() {
+            String::new()
+        } else {
+            room_chat_display_sender(bridge.rust(), "", &author)
+        };
+        let msg_json = serde_json::json!({
+            "msg_id": message_id.clone(),
+            "sender": display_sender.clone(),
+            "sender_id": author.clone(),
+            "body": body.clone(),
+            "timestamp": now_ts,
+            "kind": kind.as_str(),
+            "mine": mine,
+            "is_room": true,
+            "status": "delivered",
+            "attachment_name": rel_path,
+            "attachment_path": "",
+            "size_str": size_str.clone(),
+            "supernode_id": sn.clone(),
+            "room_id": rid.clone(),
+        })
+        .to_string();
+        if let Some(ref cs) = bridge.rust().chat_store {
+            let store_key = room_chat_store_peer_id(&rid);
+            let chat_msg = crate::chat_store::ChatMessage {
+                id: message_id.clone(),
+                peer_id: store_key,
+                sender: author.clone(),
+                recipient: rid.clone(),
+                body: body.clone(),
+                timestamp: now_ts,
+                is_self: mine,
+                status: crate::chat_store::MessageStatus::Delivered,
+                kind: kind.clone(),
+                attachment_name: rel_path.to_owned(),
+                attachment_path: String::new(),
+                size_str: size_str.clone(),
+                status_note: String::new(),
+                sender_handle: display_sender,
+            };
+            if let Err(e) = cs.insert(&chat_msg) {
+                warn!("chat_store insert (room file offer) error: {e}");
+            }
+        }
+        let key = room_chat_history_key(&sn, &rid);
+        bridge
+            .as_mut()
+            .rust_mut()
+            .room_chat_history
+            .entry(key)
+            .or_default()
+            .push(msg_json.clone());
+        bridge
+            .as_mut()
+            .room_chat_received(QString::from(msg_json.as_str()));
+        return;
+    }
+
+    let handle = {
+        let r = bridge.rust();
+        r.peer_store
+            .as_ref()
+            .and_then(|ps| {
+                let store = ps.read();
+                store
+                    .get(origin_id)
+                    .or_else(|| store.get_by_identity(origin_id))
+                    .map(|rec| rec.display_name())
+            })
+            .unwrap_or_else(|| origin_id.to_owned())
+    };
+    let list_peer =
+        lookup_list_peer_id(bridge.rust(), origin_id).unwrap_or_else(|| origin_id.to_owned());
+    let chat_msg = crate::chat_store::ChatMessage {
+        id: message_id.clone(),
+        peer_id: list_peer.clone(),
+        sender: handle.clone(),
+        recipient: String::new(),
+        body: body.clone(),
+        timestamp: now_ts,
+        is_self: false,
+        status: crate::chat_store::MessageStatus::Delivered,
+        kind: kind.clone(),
+        attachment_name: rel_path.to_owned(),
+        attachment_path: String::new(),
+        size_str: size_str.clone(),
+        status_note: String::new(),
+        sender_handle: handle.clone(),
+    };
+    if let Some(ref cs) = bridge.rust().chat_store {
+        if let Err(e) = cs.insert(&chat_msg) {
+            warn!("chat_store insert (file offer) error: {e}");
+        }
+    }
+    let msg_json = serde_json::json!({
+        "msg_id": message_id,
+        "peer_id": list_peer,
+        "sender": handle,
+        "body": body,
+        "timestamp": now_ts,
+        "kind": kind.as_str(),
+        "mine": false,
+        "status": "delivered",
+        "attachment_name": rel_path,
+        "attachment_path": "",
+        "size_str": size_str,
+    })
+    .to_string();
+    bridge
+        .as_mut()
+        .chat_message_received(QString::from(msg_json.as_str()));
+}
+
+/// Convert a `file://` URL — the form QML's `FileDialog` hands back — into a
+/// native path. Anything without the scheme is returned unchanged, since this
+/// is also called with paths the client stored itself.
+///
+/// The leading slash of `file:///` belongs to the path on Unix and to nothing
+/// on Windows, where a drive letter follows it. Stripping it unconditionally
+/// turned every Unix file pick into a path relative to the process working
+/// directory.
+fn parse_local_file_path(file_url: &str) -> String {
+    let Some(rest) = file_url.strip_prefix("file://") else {
+        return file_url.to_owned();
+    };
+    let decoded = percent_decode_path(rest);
+    let path = match decoded.strip_prefix('/') {
+        // `file:///C:/Users/x` -> `C:/Users/x`
+        Some(after) if starts_with_drive_letter(after) => after,
+        // `file:///home/user/x` -> `/home/user/x`
+        _ => &decoded,
+    };
+    path.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
+/// A Windows drive prefix (`C:`) at the head of `s`.
+fn starts_with_drive_letter(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some(c), Some(':')) if c.is_ascii_alphabetic()
+    )
+}
+
+/// Decode `%XX` escapes in a URL path. A malformed escape is left as written,
+/// and so is a sequence that would not be valid UTF-8, so this can only ever
+/// return something at least as usable as its input.
+fn percent_decode_path(s: &str) -> String {
+    if !s.contains('%') {
+        return s.to_owned();
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_owned())
+}
+
+fn room_chat_display_sender(
+    bridge: &AppBridgeRust,
+    sender_handle: &str,
+    sender_id: &str,
+) -> String {
+    if !sender_handle.is_empty() {
+        return sender_handle.to_owned();
+    }
+    if let Some(ps) = bridge.peer_store.as_ref() {
+        let store = ps.read();
+        return room_participant_label(
+            Some(&store),
+            Some(&bridge.room_display_handles),
+            sender_id,
+            &bridge.my_peer_id,
+            &bridge.my_public_id,
+        );
+    }
+    room_participant_label(
+        None,
+        Some(&bridge.room_display_handles),
+        sender_id,
+        &bridge.my_peer_id,
+        &bridge.my_public_id,
+    )
+}
+
+/// Remember a room member's display handle for the members panel (not trust).
+/// Returns true when the cached label changed.
+fn remember_room_display_handle(rust: &mut AppBridgeRust, sender_id: &str, handle: &str) -> bool {
+    let handle = handle.trim();
+    if sender_id.is_empty() || handle.is_empty() {
+        return false;
+    }
+    match rust.room_display_handles.get(sender_id) {
+        Some(existing) if existing == handle => false,
+        _ => {
+            rust.room_display_handles
+                .insert(sender_id.to_owned(), handle.to_owned());
+            true
+        }
+    }
+}
+
+fn peer_row_json_with_presence(
+    record: &crate::peer_store::PeerRecord,
+    online_peer_ids: &HashSet<String>,
+    in_call_peer_ids: &HashSet<String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "peer_id": record.peer_id,
+        "handle": record.handle,
+        "online": online_peer_ids.contains(&record.peer_id),
+        "in_call": in_call_peer_ids.contains(&record.peer_id),
+        "blocked": record.blocked,
+    })
+}
+
+fn resolve_list_peer_id(store: &crate::peer_store::PeerStore, id: &str) -> Option<String> {
+    if store.get(id).is_some() {
+        return Some(id.to_owned());
+    }
+    store
+        .get_by_identity(id)
+        .map(|record| record.peer_id.clone())
+}
+
+fn lookup_list_peer_id(bridge: &AppBridgeRust, id: &str) -> Option<String> {
+    let ps = bridge.peer_store.as_ref()?;
+    let store = ps.read();
+    resolve_list_peer_id(&store, id)
+}
+
+fn resolved_room_member_pids(bridge: &AppBridgeRust, member_ids: &[String]) -> Vec<String> {
+    let Some(ps) = bridge.peer_store.as_ref() else {
+        return Vec::new();
+    };
+    let store = ps.read();
+    let my_id = bridge.my_public_id.as_str();
+    member_ids
+        .iter()
+        .filter(|id| id.as_str() != my_id)
+        .filter_map(|id| resolve_list_peer_id(&store, id))
+        .collect()
+}
+
+fn emit_peers_updated(mut bridge: Pin<&mut ffi::AppBridge>) {
+    let online = bridge.rust().online_peer_ids.clone();
+    let in_call = bridge.rust().in_call_peer_ids.clone();
+    let json = bridge.rust().peer_store.as_ref().map(|ps| {
+        let store = ps.read();
+        serde_json::to_string(
+            &store
+                .list_non_supernode_peers()
+                .iter()
+                .map(|p| peer_row_json_with_presence(p, &online, &in_call))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_owned())
+    });
+    if let Some(json) = json {
+        bridge.as_mut().peers_updated(QString::from(json.as_str()));
+    }
+}
+
+fn mark_peer_online(rust: &mut AppBridgeRust, pid: &str, online: bool) {
+    if online {
+        rust.online_peer_ids.insert(pid.to_owned());
+    } else {
+        rust.online_peer_ids.remove(pid);
+    }
+}
+
+fn mark_peer_in_call(rust: &mut AppBridgeRust, pid: &str, in_call: bool) {
+    if in_call {
+        rust.in_call_peer_ids.insert(pid.to_owned());
+    } else {
+        rust.in_call_peer_ids.remove(pid);
+    }
+}
+
+/// True while any presence source still vouches for this peer.
+///
+/// Online is the union of three independent signals, so dropping one of them
+/// must never clear the dot on its own — losing a direct session while a
+/// relayed announce is still fresh means the peer is up, just not reachable
+/// directly.
+fn peer_present_elsewhere(rust: &AppBridgeRust, pid: &str, ignoring: PresenceSource) -> bool {
+    (ignoring != PresenceSource::Direct && rust.direct_connected_peer_ids.contains(pid))
+        || (ignoring != PresenceSource::Room && rust.room_present_peer_ids.contains(pid))
+        || (ignoring != PresenceSource::Relay && rust.relay_present_peer_ids.contains(pid))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PresenceSource {
+    Direct,
+    Room,
+    Relay,
+}
+
+fn mark_direct_connected(rust: &mut AppBridgeRust, pid: &str, connected: bool) {
+    if connected {
+        rust.direct_connected_peer_ids.insert(pid.to_owned());
+        rust.online_peer_ids.insert(pid.to_owned());
+    } else {
+        rust.direct_connected_peer_ids.remove(pid);
+        if !peer_present_elsewhere(rust, pid, PresenceSource::Direct) {
+            rust.online_peer_ids.remove(pid);
+        }
+    }
+}
+
+/// Apply a relayed presence announce (or its expiry).
+fn mark_relay_present(rust: &mut AppBridgeRust, pid: &str, present: bool) {
+    if present {
+        rust.relay_present_peer_ids.insert(pid.to_owned());
+        rust.online_peer_ids.insert(pid.to_owned());
+    } else {
+        rust.relay_present_peer_ids.remove(pid);
+        if !peer_present_elsewhere(rust, pid, PresenceSource::Relay) {
+            rust.online_peer_ids.remove(pid);
+        }
+    }
+}
+
+fn clear_room_member_presence(rust: &mut AppBridgeRust) {
+    for pid in std::mem::take(&mut rust.room_present_peer_ids) {
+        rust.in_call_peer_ids.remove(&pid);
+        if !peer_present_elsewhere(rust, &pid, PresenceSource::Room) {
+            rust.online_peer_ids.remove(&pid);
+        }
+    }
+}
+
+fn apply_room_member_presence(rust: &mut AppBridgeRust, member_pids: &[String]) {
+    clear_room_member_presence(rust);
+    for pid in member_pids {
+        rust.room_present_peer_ids.insert(pid.clone());
+        rust.online_peer_ids.insert(pid.clone());
+        rust.in_call_peer_ids.insert(pid.clone());
+    }
+}
+
+impl AppBridgeRust {
+    /// The peer to send video to, or `None` when video belongs to a room.
+    ///
+    /// The rule itself lives in [`crate::video::video_route`] so it is covered
+    /// by the default test suite — bridge code only compiles under `qt-ui`, so
+    /// a test here would not run in a normal `cargo test`.
+    fn direct_video_target(&self) -> Option<String> {
+        crate::video::video_route(&self.voice_room_id, &self.active_direct_call_peer_id)
+    }
+}
+
+fn set_active_direct_call_presence(
+    rust: &mut AppBridgeRust,
+    peer_id: &str,
+    active: bool,
+    resolved_pid: Option<String>,
+) {
+    if active {
+        rust.active_direct_call_peer_id = peer_id.to_owned();
+        if let Some(pid) = resolved_pid {
+            mark_peer_online(rust, &pid, true);
+            mark_peer_in_call(rust, &pid, true);
+        }
+    } else if rust.active_direct_call_peer_id == peer_id {
+        rust.active_direct_call_peer_id.clear();
+        if let Some(pid) = resolved_pid {
+            mark_peer_in_call(rust, &pid, false);
+            if !rust.relay_present_peer_ids.contains(&pid)
+                && !rust.direct_connected_peer_ids.contains(&pid)
+                && !rust.room_present_peer_ids.contains(&pid)
+            {
+                rust.online_peer_ids.remove(&pid);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn remember_room_in_store(
+    room_store: &Option<Arc<RwLock<crate::room_store::RoomStore>>>,
+    supernode_id: &str,
+    room_id: &str,
+    room_name: &str,
+    room_type: &str,
+    creator_id: &str,
+    is_creator: bool,
+    invite_token: &str,
+    invite_policy: &str,
+) {
+    let Some(rs) = room_store else {
+        return;
+    };
+    if supernode_id.is_empty() || room_id.is_empty() || room_id == "default" {
+        return;
+    }
+    let entry = crate::room_store::RoomEntry::new(room_id, room_name)
+        .with_type(if room_type.is_empty() {
+            "public"
+        } else {
+            room_type
+        })
+        .with_supernode(supernode_id)
+        .with_creator(creator_id, is_creator)
+        .with_invite_token(invite_token)
+        .with_invite_policy(invite_policy);
+    if let Err(e) = rs.write().upsert(entry) {
+        warn!("room_store upsert error: {e}");
+    }
+}
+
+fn local_rooms_json_for_supernode(
+    room_store: &crate::room_store::RoomStore,
+    peer_store: &crate::peer_store::PeerStore,
+    supernode_id: &str,
+) -> serde_json::Value {
+    serde_json::Value::Array(
+        room_store
+            .list_for_supernode_resolved(peer_store, supernode_id)
+            .iter()
+            .filter(|e| !room_store.is_hidden_from_sidebar(supernode_id, &e.room_id))
+            .map(|e| {
+                serde_json::json!({
+                    "room_id": e.room_id,
+                    "room_name": e.room_name,
+                    "room_type": e.room_type,
+                    "creator_id": e.creator_id,
+                    // Space tree linkage: parent node id (a room id, the Server
+                    // node id, or "" for legacy flat rooms). Drives sidebar indent.
+                    "parent_id": e.parent_id,
+                    "space_id": e.space_id,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn room_count_from_json(room: &serde_json::Value) -> u64 {
+    room.get("member_count")
+        .or_else(|| room.get("voice_count"))
+        .or_else(|| room.get("count"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+}
+
+fn room_has_count(room: &serde_json::Value) -> bool {
+    room.get("member_count")
+        .or_else(|| room.get("voice_count"))
+        .or_else(|| room.get("count"))
+        .and_then(|v| v.as_u64())
+        .is_some()
+}
+
+/// Non-empty string value of `obj[key]`, else `None`.
+fn nonempty_str_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+fn merge_room_entry(existing: &mut serde_json::Value, incoming: &serde_json::Value) {
+    let old_count = room_count_from_json(existing);
+    // Client-only Space-tree fields the remote SFU list never carries. Snapshot
+    // them from `existing` (the local side) as owned values *before* we overwrite
+    // it, so nested sub-rooms keep their parent linkage — otherwise the sidebar
+    // tree flattens once the room also appears in the supernode's room list.
+    let keep_parent = nonempty_str_field(existing, "parent_id");
+    let keep_space = nonempty_str_field(existing, "space_id");
+    let mut merged = incoming.clone();
+    if let Some(obj) = merged.as_object_mut() {
+        if !room_has_count(incoming) {
+            obj.insert(
+                "member_count".to_owned(),
+                serde_json::Value::Number(serde_json::Number::from(old_count)),
+            );
+            if let Some(ids) = existing.get("participant_ids") {
+                obj.insert("participant_ids".to_owned(), ids.clone());
+            }
+        }
+        let parent_missing = obj
+            .get("parent_id")
+            .and_then(|v| v.as_str())
+            .is_none_or(str::is_empty);
+        if parent_missing {
+            if let Some(p) = keep_parent {
+                obj.insert("parent_id".to_owned(), serde_json::Value::String(p));
+            }
+        }
+        let space_missing = obj
+            .get("space_id")
+            .and_then(|v| v.as_str())
+            .is_none_or(str::is_empty);
+        if space_missing {
+            if let Some(s) = keep_space {
+                obj.insert("space_id".to_owned(), serde_json::Value::String(s));
+            }
+        }
+    }
+    *existing = merged;
+}
+
+fn active_voice_room_scope(bridge: &AppBridgeRust) -> (String, String) {
+    // Voice rail is driven only by explicit voice scope — never fall back to
+    // the selected text room (which may differ while multi-room chat is active).
+    (
+        bridge.voice_supernode_id.clone(),
+        bridge.voice_room_id.clone(),
+    )
+}
+
+fn is_active_voice_room(bridge: &AppBridgeRust, supernode_id: &str, room_id: &str) -> bool {
+    let (sn, rid) = active_voice_room_scope(bridge);
+    !rid.is_empty() && rid == room_id && same_cluster_scope(bridge, &sn, supernode_id)
+}
+
+fn is_selected_text_room(bridge: &AppBridgeRust, supernode_id: &str, room_id: &str) -> bool {
+    !bridge.current_room_id.is_empty()
+        && bridge.current_room_id == room_id
+        && same_cluster_scope(bridge, &bridge.current_supernode_id, supernode_id)
+}
+
+/// Pad-tolerant equality for Ed25519 `public_id` strings.
+fn pub_id_eq(a: &str, b: &str) -> bool {
+    a == b || a.trim_end_matches('=') == b.trim_end_matches('=')
+}
+
+/// True when `a` and `b` name the same logical supernode: exact match, or
+/// verified cluster siblings of each other. Room joins often keep the invite
+/// member id in UI scope while multi-home/failover delivers `SfuMembers` from
+/// a live sibling — without this, voice rail + sidebar counts freeze after
+/// the invite host dies.
+fn same_cluster_scope(bridge: &AppBridgeRust, a: &str, b: &str) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if pub_id_eq(a, b) {
+        return true;
+    }
+    bridge.cluster_full_set(a).iter().any(|m| pub_id_eq(m, b))
+        || bridge.cluster_full_set(b).iter().any(|m| pub_id_eq(m, a))
+}
+
+/// Sidebar / room-store key for events from any cluster member: prefer the
+/// known-supernode identity (invite host), else the cluster representative.
+fn sidebar_supernode_id(bridge: &AppBridgeRust, event_supernode_id: &str) -> Option<String> {
+    if let Some(canon) = bridge.resolve_supernode_node_id_str(event_supernode_id) {
+        return Some(bridge.cluster_representative(&canon));
+    }
+    let key = bridge.cluster_member_key(event_supernode_id)?;
+    let rep = bridge.cluster_representative(&key);
+    // Prefer a known-supernode form of the representative when present.
+    Some(bridge.resolve_supernode_node_id_str(&rep).unwrap_or(rep))
+}
+
+/// Cluster-wide chat-member count per room id, unioned across every node.
+///
+/// Keys are `"{supernode_id}:{room_id}"` and neither half contains `':'`
+/// (base64url and hex), so matching the `":{room_id}"` suffix is exact.
+fn cluster_chat_counts(rust: &AppBridgeRust) -> std::collections::HashMap<String, usize> {
+    cluster_chat_counts_from(&rust.chat_roster_by_node)
+}
+
+/// The union itself, split out so it can be tested without a live bridge.
+fn cluster_chat_counts_from(
+    rosters: &std::collections::HashMap<String, Vec<String>>,
+) -> std::collections::HashMap<String, usize> {
+    let mut per_room: std::collections::HashMap<String, HashSet<String>> =
+        std::collections::HashMap::new();
+    for (key, members) in rosters {
+        // Split once from the left: the supernode id is base64url and cannot
+        // contain ':', so everything after the first one is the room id.
+        let Some((_, room_id)) = key.split_once(':') else {
+            continue;
+        };
+        let entry = per_room.entry(room_id.to_owned()).or_default();
+        for m in members {
+            entry.insert(m.clone());
+        }
+    }
+    per_room
+        .into_iter()
+        .map(|(room_id, members)| (room_id, members.len()))
+        .collect()
+}
+
+fn room_roster_key(supernode_id: &str, room_id: &str) -> String {
+    format!("{supernode_id}:{room_id}")
+}
+
+fn canon_supernode_id(bridge: &AppBridgeRust, id: &str) -> String {
+    bridge
+        .resolve_supernode_node_id_str(id)
+        .unwrap_or_else(|| id.to_owned())
+}
+
+/// Whether an SFU roster event should update the **voice-rail** participant cache.
+fn should_apply_voice_roster(bridge: &AppBridgeRust, supernode_id: &str, room_id: &str) -> bool {
+    is_active_voice_room(bridge, supernode_id, room_id)
+}
+
+/// Whether an SFU roster event should update the **text members** panel.
+fn should_apply_text_roster(bridge: &AppBridgeRust, supernode_id: &str, room_id: &str) -> bool {
+    is_selected_text_room(bridge, supernode_id, room_id)
+}
+
+fn emit_member_list_json(
+    bridge: &mut Pin<&mut ffi::AppBridge>,
+    members: &[String],
+    as_voice: bool,
+) {
+    let my_public_id = bridge.rust().my_public_id.clone();
+    let my_peer_id = bridge.rust().my_peer_id.clone();
+    let display_handles = bridge.rust().room_display_handles.clone();
+    // Camera state is not part of the roster the supernode sends, so it has to
+    // be re-applied here: the model is reset wholesale on every emission, and
+    // anything omitted reads as "camera off".
+    let streaming = {
+        let r = bridge.rust();
+        let mut set = r.peer_video_active.clone();
+        // Our own tile too — the local flag is authoritative for us, and the
+        // announcement we send never comes back to teach us about ourselves.
+        if r.video_active && !my_public_id.is_empty() {
+            set.insert(my_public_id.clone());
+        }
+        set
+    };
+    let json = if let Some(ps) = bridge.rust().peer_store.as_ref() {
+        room_participants_json(
+            Some(&ps.read()),
+            Some(&display_handles),
+            members,
+            &my_peer_id,
+            &my_public_id,
+            &streaming,
+        )
+    } else {
+        room_participants_json(
+            None,
+            Some(&display_handles),
+            members,
+            &my_peer_id,
+            &my_public_id,
+            &streaming,
+        )
+    };
+    if as_voice {
+        bridge
+            .as_mut()
+            .participants_updated(QString::from(json.as_str()));
+    } else {
+        bridge
+            .as_mut()
+            .text_members_updated(QString::from(json.as_str()));
+    }
+}
+
+/// Local-only teardown for a call that is over, shared by both hang-up paths.
+///
+/// [`end_call`](ffi::AppBridge::end_call) (we hung up) and the `CallEnded` event
+/// (they hung up) used to do different subsets of this, which is why a
+/// peer-initiated hang-up left the voice rail on screen with the microphone
+/// still live. Deliberately sends no signaling: the event path is already a
+/// *response* to the peer's `CallEnd`, and echoing one back would bounce
+/// between the two clients.
+fn teardown_call_locally(bridge: &mut Pin<&mut ffi::AppBridge>) {
+    {
+        let active = bridge.rust().active_direct_call_peer_id.clone();
+        if !active.is_empty() {
+            let resolved = lookup_list_peer_id(bridge.rust(), &active);
+            set_active_direct_call_presence(
+                &mut bridge.as_mut().rust_mut(),
+                &active,
+                false,
+                resolved,
+            );
+        }
+    }
+    if bridge.rust().call_via_fallback_room {
+        // The audio was riding a temporary private room, so leaving that room
+        // *is* the teardown: it stops audio, clears room mode and empties the
+        // rail. Tearing down by hand instead would leave us joined to a room
+        // nobody is left in.
+        bridge.as_mut().rust_mut().call_via_fallback_room = false;
+        bridge.as_mut().leave_room();
+    } else {
+        // Stop the camera before the rest so a leftover capture thread cannot
+        // keep the hardware light on with nowhere to send.
+        bridge.as_mut().stop_local_video();
+        if let Some(ref tx) = bridge.rust().call_cmd_tx {
+            let _ = tx.try_send(CallCommand::StopAudio);
+        }
+        bridge.as_mut().set_voice_active(false);
+        sync_voice_in_room(bridge);
+        bridge.as_mut().reset_inbound_video();
+    }
+    bridge.as_mut().set_call_state(QString::from("idle"));
+    bridge.as_mut().set_call_duration_secs(0);
+    emit_peers_updated(bridge.as_mut());
+}
+
+/// Recompute [`voice_in_room`] from the authoritative pair.
+///
+/// Derived rather than set by hand at each transition: the two facts that
+/// decide it (`voice_active` and whether the session has a room id) are
+/// written from several places, and every past attempt to track the answer
+/// separately is what let it drift out of step.
+fn sync_voice_in_room(bridge: &mut Pin<&mut ffi::AppBridge>) {
+    let in_room_voice = {
+        let r = bridge.rust();
+        r.voice_active && !r.voice_room_id.is_empty()
+    };
+    if bridge.rust().voice_in_room != in_room_voice {
+        bridge.as_mut().set_voice_in_room(in_room_voice);
+    }
+}
+
+fn seed_voice_participants_self(bridge: &mut Pin<&mut ffi::AppBridge>) {
+    let my_public_id = bridge.rust().my_public_id.clone();
+    if my_public_id.is_empty() {
+        return;
+    }
+    bridge.as_mut().rust_mut().room_participant_ids = vec![my_public_id];
+    let ids = bridge.rust().room_participant_ids.clone();
+    emit_member_list_json(bridge, &ids, true);
+}
+
+fn seed_text_members_self(bridge: &mut Pin<&mut ffi::AppBridge>) {
+    let my_public_id = bridge.rust().my_public_id.clone();
+    if my_public_id.is_empty() {
+        bridge.as_mut().rust_mut().text_member_ids.clear();
+        bridge.as_mut().text_members_updated(QString::from("[]"));
+        return;
+    }
+    bridge.as_mut().rust_mut().text_member_ids = vec![my_public_id];
+    let ids = bridge.rust().text_member_ids.clone();
+    emit_member_list_json(bridge, &ids, false);
+}
+
+fn apply_text_roster_to_bridge(bridge: &mut Pin<&mut ffi::AppBridge>, members: &[String]) {
+    bridge.as_mut().rust_mut().text_member_ids = members.to_vec();
+    emit_member_list_json(bridge, members, false);
+}
+
+fn apply_room_roster_to_bridge(
+    bridge: &mut Pin<&mut ffi::AppBridge>,
+    members: &[String],
+    supernode_id: &str,
+    room_id: &str,
+    emit_participants: bool,
+) {
+    bridge.as_mut().rust_mut().room_participant_ids = members.to_vec();
+
+    let my_public_id = bridge.rust().my_public_id.clone();
+    if let Some(ref tx) = bridge.rust().call_cmd_tx {
+        for peer_id in members {
+            if peer_id != &my_public_id {
+                let _ = tx.try_send(CallCommand::InitiatePeer {
+                    peer_id: peer_id.clone(),
+                    host: None,
+                    port: None,
+                });
+            }
+        }
+    }
+
+    let pids = resolved_room_member_pids(bridge.rust(), members);
+    apply_room_member_presence(&mut bridge.as_mut().rust_mut(), &pids);
+
+    if emit_participants {
+        emit_member_list_json(bridge, members, true);
+    }
+
+    // Voice rail + per-room sidebar count both track the voice roster only.
+    update_room_voice_count(bridge, supernode_id, room_id, members);
+}
+
+/// Store the authoritative **voice** roster for one room and push a sidebar
+/// patch so that room's peer count reflects only voice participants — never
+/// text-chat subscribers, and never a different room's membership.
+fn update_room_voice_count(
+    bridge: &mut Pin<&mut ffi::AppBridge>,
+    supernode_id: &str,
+    room_id: &str,
+    voice_members: &[String],
+) {
+    if supernode_id.is_empty() || room_id.is_empty() {
+        return;
+    }
+    let key = room_roster_key(supernode_id, room_id);
+    bridge
+        .as_mut()
+        .rust_mut()
+        .room_voice_rosters
+        .insert(key, voice_members.to_vec());
+    if let Some(patch) =
+        room_voice_sidebar_patch(bridge.rust(), supernode_id, room_id, voice_members)
+    {
+        bridge
+            .as_mut()
+            .sfu_rooms_updated(QString::from(patch.as_str()));
+    }
+}
+
+/// Mutate the cached voice roster for a room (join/leave of a single peer)
+/// and refresh that room's sidebar count. No-op when we have no roster yet
+/// (full `SfuMembers` / `SfuRoomList` will seed it).
+fn adjust_room_voice_member(
+    bridge: &mut Pin<&mut ffi::AppBridge>,
+    supernode_id: &str,
+    room_id: &str,
+    peer_id: &str,
+    joining: bool,
+) {
+    if supernode_id.is_empty() || room_id.is_empty() || peer_id.is_empty() {
+        return;
+    }
+    let key = room_roster_key(supernode_id, room_id);
+    let members = {
+        let rosters = &mut bridge.as_mut().rust_mut().room_voice_rosters;
+        let Some(roster) = rosters.get_mut(&key) else {
+            return;
+        };
+        if joining {
+            if !roster.iter().any(|id| id == peer_id) {
+                roster.push(peer_id.to_owned());
+            }
+        } else {
+            roster.retain(|id| id != peer_id);
+        }
+        roster.clone()
+    };
+    if let Some(patch) = room_voice_sidebar_patch(bridge.rust(), supernode_id, room_id, &members) {
+        bridge
+            .as_mut()
+            .sfu_rooms_updated(QString::from(patch.as_str()));
+    }
+}
+
+/// Seed/refresh per-room voice rosters from an SFU room-list snapshot.
+/// `participant_ids` (voice only) win; bare `member_count` without ids still
+/// drives the displayed count via enrich, but cannot seed the join/leave cache.
+fn seed_voice_rosters_from_room_list(
+    bridge: &mut Pin<&mut ffi::AppBridge>,
+    supernode_id: &str,
+    rooms: &serde_json::Value,
+) {
+    let Some(arr) = rooms.as_array() else {
+        return;
+    };
+    for room in arr {
+        let Some(room_id) = room.get("room_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if room_id.is_empty() {
+            continue;
+        }
+        let participant_ids: Vec<String> = room
+            .get("participant_ids")
+            .or_else(|| room.get("participants"))
+            .and_then(|v| v.as_array())
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Only seed when we have an explicit id list — empty array is a valid
+        // "zero voice members" snapshot from the supernode.
+        if room
+            .get("participant_ids")
+            .or_else(|| room.get("participants"))
+            .and_then(|v| v.as_array())
+            .is_some()
+        {
+            let key = room_roster_key(supernode_id, room_id);
+            bridge
+                .as_mut()
+                .rust_mut()
+                .room_voice_rosters
+                .insert(key, participant_ids);
+        }
+    }
+}
+
+fn merge_room_list_values(
+    local: &serde_json::Value,
+    remote: &serde_json::Value,
+) -> serde_json::Value {
+    let mut by_id: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+    for source in [local, remote] {
+        let Some(arr) = source.as_array() else {
+            continue;
+        };
+        for room in arr {
+            let Some(room_id) = room.get("room_id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if room_id.is_empty() {
+                continue;
+            }
+            by_id
+                .entry(room_id.to_owned())
+                .and_modify(|existing| merge_room_entry(existing, room))
+                .or_insert_with(|| room.clone());
+        }
+    }
+    let mut merged: Vec<serde_json::Value> = by_id.into_values().collect();
+    merged.sort_by(|a, b| {
+        let an = a
+            .get("room_name")
+            .or_else(|| a.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let bn = b
+            .get("room_name")
+            .or_else(|| b.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        an.cmp(bn)
+    });
+    serde_json::Value::Array(merged)
+}
+
+fn sync_saved_rooms_from_list(
+    room_store: &mut crate::room_store::RoomStore,
+    supernode_id: &str,
+    rooms: &serde_json::Value,
+) {
+    let Some(arr) = rooms.as_array() else {
+        return;
+    };
+    let mut pending: Vec<crate::room_store::RoomEntry> = Vec::with_capacity(arr.len());
+    for room in arr {
+        let room_id = room
+            .get("room_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if room_id.is_empty() {
+            continue;
+        }
+        let existing = room_store.get(supernode_id, room_id);
+        let room_name = room
+            .get("name")
+            .or_else(|| room.get("room_name"))
+            .and_then(|v| v.as_str())
+            .filter(|n| !n.is_empty() && *n != room_id)
+            .map(str::to_owned)
+            .or_else(|| {
+                existing
+                    .filter(|e| !e.room_name.is_empty() && e.room_name != room_id)
+                    .map(|e| e.room_name.clone())
+            })
+            .unwrap_or_else(|| room_id.to_owned());
+        // Only take the remote room_type when it is explicitly present and
+        // non-empty; otherwise keep the stored type. Defaulting an absent value
+        // to "public" here would downgrade a stored *private* room (via upsert's
+        // non-empty-wins merge), flipping join_room off the token/invite path so
+        // the supernode silently denies entry to the private room.
+        let room_type_owned = room
+            .get("room_type")
+            .and_then(|v| v.as_str())
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                existing
+                    .map(|e| e.room_type.clone())
+                    .filter(|t| !t.is_empty())
+            })
+            .unwrap_or_else(|| "public".to_owned());
+        let room_type = room_type_owned.as_str();
+        let creator_id = room
+            .get("creator_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let is_creator = existing.map(|e| e.is_creator).unwrap_or(false);
+        let invite_token = existing.map(|e| e.invite_token.as_str()).unwrap_or("");
+        let entry = crate::room_store::RoomEntry::new(room_id, room_name)
+            .with_type(room_type)
+            .with_supernode(supernode_id)
+            .with_creator(
+                if creator_id.is_empty() {
+                    existing.map(|e| e.creator_id.as_str()).unwrap_or("")
+                } else {
+                    creator_id
+                },
+                is_creator,
+            )
+            .with_invite_token(invite_token);
+        pending.push(entry);
+    }
+
+    // Persist once for the whole list rather than once per room. `*_from_remote`
+    // semantics are preserved inside: a room the user hid locally is not
+    // resurrected, since a plain upsert would clear the hide tombstone and
+    // un-hide every listed room each time a room list arrives.
+    if let Err(e) = room_store.upsert_many_from_remote(pending) {
+        warn!("room_store sync from list error: {e}");
+    }
+}
+
+/// Record a cluster member's live WS state and push the resulting cluster-level
+/// rollup to the sidebar as one patch on the stable representative row. This is
+/// how the cluster stays green while any member is reachable: per-member
+/// connect/disconnect never reaches the sidebar directly, only the OR-rollup on
+/// the representative does.
+fn emit_cluster_node_connected(
+    mut bridge: Pin<&mut ffi::AppBridge>,
+    member: &str,
+    connected: bool,
+) {
+    {
+        let mut r = bridge.as_mut().rust_mut();
+        r.supernode_connected.insert(member.to_owned(), connected);
+        if !connected {
+            // The manager stops reporting a dropped node; its last reading
+            // must not keep showing as live.
+            r.supernode_stats.remove(member.trim_end_matches('='));
+        }
+    }
+    let rep = bridge.rust().cluster_representative(member);
+    let rollup = bridge.rust().cluster_rollup_connected(member);
+    let node_json = serde_json::json!([{ "node_id": rep, "connected": rollup }]).to_string();
+    bridge
+        .as_mut()
+        .nodes_updated(QString::from(node_json.as_str()));
+}
+
+/// Rematerialize every client-owned room for a cluster onto a **live** host.
+///
+/// `target_host` is the WS session that will receive `SfuRoomCreate` (may be a
+/// multi-home sibling that is *not* in the peer store). `source_member_ids` is
+/// the full cluster set so rooms saved under the invite host (A) are found even
+/// when replaying onto B/C after A is down — without this, private joins hit
+/// `room_absent` on cold members.
+struct RoomReplayTarget<'a> {
+    host: &'a str,
+    source_member_ids: &'a [String],
+    hide_keys: &'a [String],
+}
+
+fn replay_saved_rooms_on_supernode_connect(
+    room_store: &crate::room_store::RoomStore,
+    peer_store: &crate::peer_store::PeerStore,
+    conn_cmd_tx: &mpsc::Sender<ConnectionCommand>,
+    target: RoomReplayTarget<'_>,
+    my_public_id: &str,
+    identity: Option<&crate::identity::Identity>,
+) {
+    let RoomReplayTarget {
+        host: target_host,
+        source_member_ids,
+        hide_keys,
+    } = target;
+    let entries = if source_member_ids.is_empty() {
+        room_store.list_for_supernode_resolved(peer_store, target_host)
+    } else {
+        room_store.list_for_cluster_members(peer_store, source_member_ids)
+    };
+    // Built-in public room — always present on the supernode; chat-only
+    // subscribe so its text-member count reflects us immediately, without
+    // waiting for a manual click. Mirrors headless_rematerialize_and_subscribe.
+    let _ = conn_cmd_tx.try_send(ConnectionCommand::SubscribeRoomChat {
+        supernode_id: target_host.to_owned(),
+        room_id: "default".to_owned(),
+    });
+    for entry in entries {
+        if entry.room_id == "default" {
+            continue;
+        }
+        // Hide is keyed under the invite host / entry supernode — check all
+        // cluster aliases so a room hidden under A stays hidden on B/C.
+        let hidden = hide_keys
+            .iter()
+            .any(|k| room_store.is_hidden_from_sidebar(k, &entry.room_id))
+            || room_store.is_hidden_from_sidebar(&entry.supernode_id, &entry.room_id)
+            || room_store.is_hidden_from_sidebar(target_host, &entry.room_id);
+        if hidden {
+            continue;
+        }
+        let creator_id = if entry.creator_id.is_empty() {
+            my_public_id.to_owned()
+        } else {
+            entry.creator_id.clone()
+        };
+        let _ = conn_cmd_tx.try_send(ConnectionCommand::CreateRoom {
+            supernode_id: target_host.to_owned(),
+            room_name: entry.room_name.clone(),
+            room_type: entry.room_type.clone(),
+            room_id: Some(entry.room_id.clone()),
+            creator_id: Some(creator_id),
+            materialize_only: true,
+            invite_policy: entry.invite_policy.clone(),
+            // Re-seed after idle GC / cold-node start so private rejoin works.
+            invite_token: entry.invite_token.clone(),
+        });
+        // Every room on our own list is a room we're a member of — stay
+        // subscribed to its text chat regardless of which room is currently
+        // selected in the sidebar (previously this only happened lazily, on
+        // the first manual click, so unopened rooms undercounted by 1 — you
+        // — until clicked at least once).
+        let _ = conn_cmd_tx.try_send(ConnectionCommand::SubscribeRoomChat {
+            supernode_id: target_host.to_owned(),
+            room_id: entry.room_id.clone(),
+        });
+    }
+    // Space-root re-broadcast: prefer invite-host space id when present.
+    if let Some(identity) = identity {
+        let space_hosts: Vec<&str> = std::iter::once(target_host)
+            .chain(source_member_ids.iter().map(String::as_str))
+            .collect();
+        for host in space_hosts {
+            let space_id = crate::room_store::RoomStore::space_id_for(my_public_id, host);
+            if let Some(space) = room_store.get_space(&space_id) {
+                let issued_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let root = space.signed_root(issued_at, |b| identity.sign(b));
+                if let Ok(root_json) = serde_json::to_string(&root) {
+                    let _ = conn_cmd_tx.try_send(ConnectionCommand::AnnounceSpaceRoot {
+                        supernode_id: target_host.to_owned(),
+                        root_json,
+                    });
+                }
+                break;
+            }
+        }
+    }
+}
+
+/// Collect cluster member ids (pad-normalized) for room-store lookup, plus a
+/// stable hide-key list (invite rep first when known).
+fn cluster_materialize_context(
+    bridge: &AppBridgeRust,
+    live_member: &str,
+) -> (
+    String,      /*target*/
+    Vec<String>, /*sources*/
+    Vec<String>, /*hide_keys*/
+) {
+    let target = live_member.to_owned();
+    let sources = bridge.cluster_full_set(live_member);
+    let mut hide_keys = sources.clone();
+    let rep = bridge.cluster_representative(live_member);
+    if !hide_keys.iter().any(|k| pub_id_eq(k, &rep)) {
+        hide_keys.push(rep);
+    }
+    if let Some(canon) = bridge.resolve_supernode_node_id_str(live_member) {
+        if !hide_keys.iter().any(|k| pub_id_eq(k, &canon)) {
+            hide_keys.push(canon);
+        }
+    }
+    // Always include live member itself for standalone / first-connect.
+    let mut source_ids = sources;
+    if !source_ids.iter().any(|k| pub_id_eq(k, &target)) {
+        source_ids.push(target.clone());
+    }
+    (target, source_ids, hide_keys)
+}
+
+fn rematerialize_rooms_on_live_host(bridge: &mut AppBridgeRust, live_member: &str) {
+    let host_key = live_member.trim_end_matches('=').to_owned();
+    if bridge.rematerialized_hosts.contains(&host_key) {
+        return;
+    }
+    let Some(rs) = bridge.room_store.as_ref() else {
+        return;
+    };
+    let Some(ps) = bridge.peer_store.as_ref() else {
+        return;
+    };
+    let Some(tx) = bridge.conn_cmd_tx.as_ref() else {
+        return;
+    };
+    let (target, sources, hide_keys) = cluster_materialize_context(bridge, live_member);
+    info!(
+        "[bridge] rematerializing {} cluster room source(s) onto live host {}",
+        sources.len(),
+        &target[..12.min(target.len())]
+    );
+    replay_saved_rooms_on_supernode_connect(
+        &rs.read(),
+        &ps.read(),
+        tx,
+        RoomReplayTarget {
+            host: &target,
+            source_member_ids: &sources,
+            hide_keys: &hide_keys,
+        },
+        bridge.my_public_id.as_str(),
+        bridge.identity.as_deref(),
+    );
+    bridge.rematerialized_hosts.insert(host_key);
+}
+
+fn filter_sfu_rooms_for_sidebar(
+    room_store: &crate::room_store::RoomStore,
+    supernode_id: &str,
+    rooms: &serde_json::Value,
+) -> serde_json::Value {
+    let Some(arr) = rooms.as_array() else {
+        return rooms.clone();
+    };
+    let filtered: Vec<serde_json::Value> = arr
+        .iter()
+        .filter(|r| {
+            let room_id = r
+                .get("room_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            !room_id.is_empty() && !room_store.is_hidden_from_sidebar(supernode_id, room_id)
+        })
+        .cloned()
+        .collect();
+    serde_json::Value::Array(filtered)
+}
+
+/// Re-pad a base64url `public_id` to its canonical padded form. Relay-sourced
+/// SFU roster ids frequently arrive un-padded, whereas `my_public_id` and the
+/// peer store's `identity_pub` keep the padding — so a raw `==` / lookup on an
+/// un-padded id misses. A 32-byte Ed25519 key is 43 chars unpadded / 44 padded;
+/// this is idempotent on already-padded input.
+fn repad_public_id(id: &str) -> String {
+    let bare = id.trim_end_matches('=');
+    match bare.len() % 4 {
+        0 => bare.to_owned(),
+        rem => {
+            let mut s = String::with_capacity(bare.len() + (4 - rem));
+            s.push_str(bare);
+            s.extend(std::iter::repeat_n('=', 4 - rem));
+            s
+        }
+    }
+}
+
+fn room_member_display_name(
+    peer_store: &crate::peer_store::PeerStore,
+    my_public_id: &str,
+    peer_id: &str,
+) -> Option<String> {
+    // Pad-tolerant self check — the roster id and `my_public_id` are the same
+    // key modulo base64url padding (see `pub_id_eq`).
+    if pub_id_eq(peer_id, my_public_id) {
+        return Some("You".to_owned());
+    }
+    // `identity_pub` is stored padded; re-pad the (possibly un-padded) roster id
+    // before matching so known peers resolve to their handle instead of falling
+    // through to the "unknown" tally.
+    let padded = repad_public_id(peer_id);
+    peer_store
+        .get(peer_id)
+        .or_else(|| peer_store.get_by_identity(peer_id))
+        .or_else(|| peer_store.get_by_identity(&padded))
+        .filter(|rec| !rec.is_supernode)
+        .map(|rec| rec.display_name())
+}
+
+fn enrich_room_voice_participants(
+    rooms: serde_json::Value,
+    peer_store: Option<&crate::peer_store::PeerStore>,
+    my_public_id: &str,
+    chat_counts: Option<&std::collections::HashMap<String, usize>>,
+) -> serde_json::Value {
+    let Some(arr) = rooms.as_array() else {
+        return rooms;
+    };
+    let enriched = arr
+        .iter()
+        .map(|room| {
+            let mut obj = room.as_object().cloned().unwrap_or_default();
+            // Voice-only identity list from the SFU. Text-chat subscribers are
+            // never included here — they must not inflate the room peer badge.
+            let has_id_list = room
+                .get("participant_ids")
+                .or_else(|| room.get("participants"))
+                .and_then(|v| v.as_array())
+                .is_some();
+            let participant_ids: Vec<String> = room
+                .get("participant_ids")
+                .or_else(|| room.get("participants"))
+                .and_then(|v| v.as_array())
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Prefer the explicit voice id list (including empty = 0 voices).
+            // Fall back to member_count / voice_count only when no id list was
+            // provided (legacy / local-only entries). Never use chat_members.
+            let voice_count = if has_id_list {
+                participant_ids.len()
+            } else {
+                room.get("member_count")
+                    .or_else(|| room.get("voice_count"))
+                    .or_else(|| room.get("count"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize
+            };
+
+            let mut known = Vec::new();
+            if let Some(store) = peer_store {
+                for id in &participant_ids {
+                    if let Some(name) = room_member_display_name(store, my_public_id, id) {
+                        if !known.iter().any(|existing| existing == &name) {
+                            known.push(name);
+                        }
+                    }
+                }
+            }
+            known.sort();
+
+            let unknown = voice_count.saturating_sub(known.len());
+            obj.insert(
+                "known_peers".to_owned(),
+                serde_json::Value::Array(
+                    known.into_iter().map(serde_json::Value::String).collect(),
+                ),
+            );
+            obj.insert(
+                "unknown_peers".to_owned(),
+                serde_json::Value::Number(serde_json::Number::from(unknown as u64)),
+            );
+            // Canonical voice-only count fields for the Rooms sidebar badge.
+            let count_num = serde_json::Value::Number(serde_json::Number::from(voice_count as u64));
+            obj.insert("voice_count".to_owned(), count_num.clone());
+            obj.insert("member_count".to_owned(), count_num);
+            // Text badge: prefer the cluster-wide union over the single node's
+            // `chat_count`, which under-reports whenever the peers subscribed
+            // on different cluster members.
+            if let Some(counts) = chat_counts {
+                if let Some(n) = room
+                    .get("room_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|rid| counts.get(rid))
+                {
+                    obj.insert(
+                        "chat_count".to_owned(),
+                        serde_json::Value::Number(serde_json::Number::from(*n as u64)),
+                    );
+                }
+            }
+            if has_id_list {
+                obj.insert(
+                    "participant_ids".to_owned(),
+                    serde_json::Value::Array(
+                        participant_ids
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                );
+            }
+            serde_json::Value::Object(obj)
+        })
+        .collect();
+    serde_json::Value::Array(enriched)
+}
+
+fn room_voice_sidebar_patch(
+    bridge: &AppBridgeRust,
+    supernode_id: &str,
+    room_id: &str,
+    member_ids: &[String],
+) -> Option<String> {
+    if supernode_id.is_empty() || room_id.is_empty() {
+        return None;
+    }
+
+    // Fold multi-home sibling ids onto the single logical sidebar row (invite
+    // host / cluster representative).
+    let sidebar_sn =
+        sidebar_supernode_id(bridge, supernode_id).unwrap_or_else(|| supernode_id.to_owned());
+
+    let mut room = serde_json::json!({
+        "room_id": room_id,
+        "participant_ids": member_ids,
+        "member_count": member_ids.len(),
+    });
+
+    if let (Some(rs), Some(ps)) = (bridge.room_store.as_ref(), bridge.peer_store.as_ref()) {
+        let store = rs.read();
+        let peer_store = ps.read();
+        if let Some(entry) = store
+            .get(&sidebar_sn, room_id)
+            .or_else(|| store.get(supernode_id, room_id))
+        {
+            room["room_name"] = serde_json::Value::String(entry.room_name.clone());
+            room["room_type"] = serde_json::Value::String(entry.room_type.clone());
+            room["creator_id"] = serde_json::Value::String(entry.creator_id.clone());
+            room["is_default"] = serde_json::Value::Bool(entry.room_id == "default");
+        }
+        let rooms = enrich_room_voice_participants(
+            serde_json::Value::Array(vec![room]),
+            Some(&peer_store),
+            bridge.my_public_id.as_str(),
+            Some(&cluster_chat_counts(bridge)),
+        );
+        return Some(
+            serde_json::json!({
+                "supernode_id": sidebar_sn,
+                "rooms": rooms,
+                "replace": false,
+            })
+            .to_string(),
+        );
+    }
+
+    let rooms = enrich_room_voice_participants(
+        serde_json::Value::Array(vec![room]),
+        None,
+        bridge.my_public_id.as_str(),
+        Some(&cluster_chat_counts(bridge)),
+    );
+    Some(
+        serde_json::json!({
+            "supernode_id": sidebar_sn,
+            "rooms": rooms,
+            "replace": false,
+        })
+        .to_string(),
+    )
+}
+
+fn room_participant_label(
+    peer_store: Option<&crate::peer_store::PeerStore>,
+    display_handles: Option<&std::collections::HashMap<String, String>>,
+    peer_id: &str,
+    my_peer_id: &str,
+    my_public_id: &str,
+) -> String {
+    if peer_id == my_public_id || peer_id == my_peer_id {
+        let local = read_local_handle();
+        if !local.is_empty() {
+            return local;
+        }
+        if let Some(store) = peer_store {
+            if let Some(rec) = store.get(my_peer_id) {
+                if !rec.handle.is_empty() {
+                    return rec.handle.clone();
+                }
+            }
+        }
+    } else if let Some(store) = peer_store {
+        if let Some(rec) = store
+            .get(peer_id)
+            .or_else(|| store.get_by_identity(peer_id))
+        {
+            if !rec.handle.is_empty() {
+                return rec.handle.clone();
+            }
+        }
+    }
+    if let Some(cache) = display_handles {
+        if let Some(h) = cache.get(peer_id).filter(|s| !s.is_empty()) {
+            return h.clone();
+        }
+    }
+    if peer_id.len() > 12 {
+        format!("{}…", &peer_id[..12])
+    } else {
+        peer_id.to_string()
+    }
+}
+
+fn room_participants_json(
+    peer_store: Option<&crate::peer_store::PeerStore>,
+    display_handles: Option<&std::collections::HashMap<String, String>>,
+    ids: &[String],
+    my_peer_id: &str,
+    my_public_id: &str,
+    streaming: &HashSet<String>,
+) -> String {
+    serde_json::to_string(
+        &ids.iter()
+            .map(|id| {
+                serde_json::json!({
+                    "peer_id": id,
+                    "handle": room_participant_label(
+                        peer_store,
+                        display_handles,
+                        id,
+                        my_peer_id,
+                        my_public_id
+                    ),
+                    "speaking": false,
+                    "muted": false,
+                    "is_self": id == my_public_id || id == my_peer_id,
+                    // Roster ids are the room's live-present members, so each is
+                    // online by construction. The field is explicit so the room
+                    // members list can bind a presence indicator directly.
+                    "online": true,
+                    // Listener-local UI state. Emitted explicitly even though
+                    // `Row` defaults them: every field here is `#[serde(default)]`
+                    // on the consuming side, so a key omitted by mistake shows
+                    // up as a plausible-looking `false`/`0` with no error at any
+                    // layer. Naming them keeps that failure impossible.
+                    "local_muted": false,
+                    "local_volume": 100,
+                    // Not roster state — carried across the reset from the last
+                    // `SfuVideoState` each member announced, since a roster
+                    // refresh must not read as everyone turning their camera off.
+                    "video_active": streaming.contains(id),
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".to_owned())
+}
+
+fn rooms_sidebar_json(store: &crate::peer_store::PeerStore) -> String {
+    serde_json::to_string(
+        &store
+            .supernodes()
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "node_id": p.identity_pub,
+                    "connected": false,
+                    "homepage_url": "",
+                    "title": p.handle,
+                    "sfu_enabled": false,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".to_owned())
+}
+
+/// Pull the video codec set out of a peer's `CAPABILITY_ANNOUNCE` payload.
+///
+/// Reads `core.video.v1` — the direct-call descriptor. Room video is not
+/// negotiated pairwise (see [`pick_room_video_codec`]), so its advertised set
+/// is not consulted here.
+///
+/// A peer with no video capability, or one advertising no codecs, yields an
+/// empty set, which negotiates to "send no video" rather than to a default.
+fn video_codecs_from_caps_json(
+    caps_json: &str,
+) -> Vec<doubleslash_features::video_codec::VideoCodec> {
+    let Ok(parsed) =
+        serde_json::from_str::<Vec<doubleslash_features::CapabilityDescriptor>>(caps_json)
+    else {
+        return Vec::new();
+    };
+    parsed
+        .iter()
+        .find(|c| c.id == "core.video.v1")
+        .map(|c| doubleslash_features::video_codec::codecs_from_params(&c.params))
+        .unwrap_or_default()
+}
+
+/// Human-readable name for a codec in the settings picker.
+///
+/// Names the *implementation* where there is only one, because that is what
+/// decides whether the encode lands on the GPU — the difference a user choosing
+/// between these actually feels.
+fn video_codec_label(codec: doubleslash_features::video_codec::VideoCodec) -> &'static str {
+    match codec {
+        doubleslash_features::video_codec::VideoCodec::H264 => {
+            if cfg!(target_os = "windows") {
+                "H.264 (Media Foundation, hardware when available)"
+            } else {
+                "H.264"
+            }
+        }
+        doubleslash_features::video_codec::VideoCodec::Vp8 => {
+            "VP8 (software, works with every platform)"
+        }
+        doubleslash_features::video_codec::VideoCodec::Stub => "Uncompressed (test only)",
+    }
+}
+
+/// Codec for a direct 1:1 call: the best codec both ends can run, preferring
+/// `preferred` when both ends have it.
+///
+/// `None` means no mutual codec, and the caller must not start the camera —
+/// sending frames the peer provably cannot decode wastes their bandwidth and
+/// shows them nothing.
+fn pick_direct_video_codec(
+    peer_codecs: &[doubleslash_features::video_codec::VideoCodec],
+    preferred: Option<doubleslash_features::video_codec::VideoCodec>,
+) -> Option<doubleslash_features::video_codec::VideoCodec> {
+    // An *empty* list means "we have not heard what this peer speaks", which is
+    // not the same as "this peer speaks nothing we do". Treating the two alike
+    // silently refused to start the camera whenever the capability announce had
+    // not arrived yet, or came from a build using the previous capability id —
+    // the caller sees only that video stopped working.
+    //
+    // Unknown therefore falls back to our own preferred codec and sends. A
+    // receiver that cannot decode it drops the frames and says so in its log,
+    // which is a far better failure than a camera that never turns on.
+    if peer_codecs.is_empty() {
+        return pick_room_video_codec(preferred);
+    }
+    doubleslash_features::video_codec::negotiate_preferring(
+        &crate::video::codec::available_codecs(),
+        peer_codecs,
+        preferred,
+    )
+}
+
+/// Codec for room video: our own most-preferred available codec, or the user's
+/// choice when this build can encode it.
+///
+/// Deliberately not a negotiation. A room sender fans one encoded stream out to
+/// every member, so satisfying everyone would mean either encoding once per
+/// codec (N encoders on the sender) or falling to the worst common denominator
+/// — and membership changes mid-call, which would force a re-encode and a
+/// keyframe every time someone joined. Instead the sender picks what it does
+/// best, stamps it on each frame, and a member without that decoder drops the
+/// frames and logs why. Room-wide codec convergence is a later problem, and the
+/// per-frame codec byte is what leaves room to solve it.
+///
+/// That structure is also why a user preference is safe here: nothing about a
+/// room send was ever agreed pairwise, so choosing VP8 over H.264 changes only
+/// which decoder each member routes the frames to.
+fn pick_room_video_codec(
+    preferred: Option<doubleslash_features::video_codec::VideoCodec>,
+) -> Option<doubleslash_features::video_codec::VideoCodec> {
+    doubleslash_features::video_codec::best_available(
+        &crate::video::codec::available_codecs(),
+        preferred,
+    )
+}
+
+/// The `video_*` encoder settings, as they arrive from
+/// `SettingsModel::videoEncoderJson()`.
+///
+/// Parsing is total: this crosses the QML boundary from a hand-editable file, so
+/// a malformed blob resolves to "no overrides" and the preset alone — the
+/// behaviour that predates these settings — rather than refusing to start a
+/// capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+struct VideoEncoderSettings {
+    width: u32,
+    height: u32,
+    fps: u32,
+    bitrate_bps: u32,
+    keyframe_secs: u32,
+    /// `"auto"` | `"h264"` | `"vp8"`, resolved to a preference on the way in so
+    /// no caller has to know that `"auto"` and an unknown name mean the same
+    /// thing. `None` is "let negotiation decide".
+    #[serde(deserialize_with = "deserialize_codec")]
+    codec: Option<doubleslash_features::video_codec::VideoCodec>,
+    adaptive: bool,
+}
+
+impl Default for VideoEncoderSettings {
+    fn default() -> Self {
+        Self {
+            width: 0,
+            height: 0,
+            fps: 0,
+            bitrate_bps: 0,
+            keyframe_secs: 0,
+            codec: None,
+            // Adaptation was unconditional before this setting existed, so its
+            // absence has to mean "on" — otherwise upgrading would silently pin
+            // every existing user's stream at their ceiling.
+            adaptive: true,
+        }
+    }
+}
+
+fn deserialize_codec<'de, D>(
+    d: D,
+) -> Result<Option<doubleslash_features::video_codec::VideoCodec>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = <String as serde::Deserialize>::deserialize(d)?;
+    Ok(doubleslash_features::video_codec::preference_from_setting(
+        &raw,
+    ))
+}
+
+impl VideoEncoderSettings {
+    fn parse(json: &str) -> Self {
+        serde_json::from_str(json).unwrap_or_else(|e| {
+            if !json.trim().is_empty() {
+                debug!("[video] ignoring unusable encoder settings ({e})");
+            }
+            Self::default()
+        })
+    }
+
+    fn overrides(&self) -> crate::video::sender::QualityOverrides {
+        crate::video::sender::QualityOverrides {
+            width: self.width,
+            height: self.height,
+            fps: self.fps,
+            bitrate_bps: self.bitrate_bps,
+            keyframe_interval_secs: self.keyframe_secs,
+        }
+    }
+
+    fn preferred_codec(&self) -> Option<doubleslash_features::video_codec::VideoCodec> {
+        self.codec
+    }
+}
+
+fn emit_rooms_sidebar_sync(mut bridge: Pin<&mut ffi::AppBridge>) {
+    let json = bridge
+        .rust()
+        .peer_store
+        .as_ref()
+        .map(|ps| rooms_sidebar_json(&ps.read()));
+    if let Some(json) = json {
+        bridge
+            .as_mut()
+            .rooms_sidebar_sync(QString::from(json.as_str()));
+    }
+}
+
+fn emit_local_rooms_for_all_supernodes(mut bridge: Pin<&mut ffi::AppBridge>) {
+    let (peer_store, room_store) = (
+        bridge.rust().peer_store.clone(),
+        bridge.rust().room_store.clone(),
+    );
+    let (Some(peer_store), Some(room_store)) = (peer_store, room_store) else {
+        return;
+    };
+    let supernode_ids: Vec<String> = peer_store
+        .read()
+        .supernodes()
+        .iter()
+        .map(|p| p.identity_pub.clone())
+        .collect();
+    for supernode_id in supernode_ids {
+        let ps = peer_store.read();
+        let rs = room_store.read();
+        let local = local_rooms_json_for_supernode(&rs, &ps, &supernode_id);
+        drop(rs);
+        drop(ps);
+        if local.as_array().is_some_and(|a| a.is_empty()) {
+            continue;
+        }
+        let wrapped = serde_json::json!({
+            "supernode_id": supernode_id,
+            "rooms": local,
+            "replace": false,
+        })
+        .to_string();
+        bridge
+            .as_mut()
+            .sfu_rooms_updated(QString::from(wrapped.as_str()));
+    }
+}
+
+fn dispatch_event(
+    qt_thread: &cxx_qt::CxxQtThread<ffi::AppBridge>,
+    ev: ConnectionEvent,
+    chat_store: &Arc<crate::chat_store::ChatStore>,
+    call_timer_stop: &mut Option<oneshot::Sender<()>>,
+) {
+    match ev {
+        ConnectionEvent::PeerConnected(peer_id) => {
+            let banner = format!("Direct \u{00b7} {peer_id}");
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let n = *bridge.peer_count() + 1;
+                bridge.as_mut().set_peer_count(n);
+                bridge
+                    .as_mut()
+                    .set_session_banner(QString::from(banner.as_str()));
+                bridge.as_mut().set_connection_mode(QString::from("direct"));
+                if let Some(pid) = lookup_list_peer_id(bridge.rust(), &peer_id) {
+                    mark_direct_connected(&mut bridge.as_mut().rust_mut(), &pid, true);
+                }
+                emit_peers_updated(bridge.as_mut());
+                // Auto-broadcast own avatar config to the newly connected peer.
+                let cfg = bridge.rust().avatar_config_json.clone();
+                let pid = peer_id.clone();
+                if !cfg.is_empty() {
+                    if let Some(ref tx) = bridge.rust().conn_cmd_tx {
+                        let _ = tx.try_send(ConnectionCommand::BroadcastAvatarConfig {
+                            peer_id: pid.clone(),
+                            config_json: cfg,
+                        });
+                    }
+                }
+                // Also announce our display handle (CM also sends on QuicConnected;
+                // this covers reconnect races after settings load).
+                let handle = read_local_handle();
+                if !handle.is_empty() {
+                    if let Some(ref tx) = bridge.rust().conn_cmd_tx {
+                        let _ = tx.try_send(ConnectionCommand::BroadcastHandleUpdate {
+                            peer_id: pid,
+                            handle,
+                        });
+                    }
+                }
+            });
+        }
+        ConnectionEvent::PeerDisconnected(peer_id) => {
+            let banner = format!("Offline \u{00b7} {peer_id}");
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let n = (*bridge.peer_count() - 1).max(0);
+                bridge.as_mut().set_peer_count(n);
+                bridge
+                    .as_mut()
+                    .set_session_banner(QString::from(banner.as_str()));
+                bridge
+                    .as_mut()
+                    .set_connection_mode(QString::from("offline"));
+                if let Some(pid) = lookup_list_peer_id(bridge.rust(), &peer_id) {
+                    mark_direct_connected(&mut bridge.as_mut().rust_mut(), &pid, false);
+                }
+                emit_peers_updated(bridge.as_mut());
+            });
+        }
+        ConnectionEvent::ChatMessage {
+            peer_id,
+            message_id,
+            body,
+            timestamp,
+            sender_handle,
+        } => {
+            // Idempotency: the same message can legitimately arrive more than
+            // once — e.g. relayed via a supernode *and* delivered directly, or
+            // a duplicate relay. Rows are keyed by message_id, so if we've
+            // already stored it, skip persist/notify/display to avoid showing
+            // it twice or double-counting unread.
+            if chat_store
+                .get_by_id(&message_id)
+                .map(|m| m.is_some())
+                .unwrap_or(false)
+            {
+                return;
+            }
+            // Persist to chat store (best-effort)
+            let msg = crate::chat_store::ChatMessage {
+                id: message_id.clone(),
+                peer_id: peer_id.clone(),
+                sender: sender_handle.clone(),
+                recipient: String::new(),
+                body: body.clone(),
+                timestamp,
+                is_self: false,
+                status: crate::chat_store::MessageStatus::Delivered,
+                kind: crate::chat_store::MessageKind::Text,
+                attachment_name: String::new(),
+                attachment_path: String::new(),
+                size_str: String::new(),
+                status_note: String::new(),
+                sender_handle: sender_handle.clone(),
+            };
+            if let Err(e) = chat_store.insert(&msg) {
+                warn!("chat_store insert error: {e}");
+            }
+            let preview = if body.chars().count() > 80 {
+                let truncated: String = body.chars().take(79).collect();
+                format!("{truncated}\u{2026}")
+            } else {
+                body.clone()
+            };
+
+            let peer_id_clone = peer_id.clone();
+            let preview_clone = preview.clone();
+            let message_id_clone = message_id.clone();
+            let sender_handle_clone = sender_handle.clone();
+            let body_clone = body.clone();
+            let chat_store_for_read = Arc::clone(chat_store);
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let is_viewing = bridge.rust().selected_peer_id == peer_id_clone;
+                if is_viewing {
+                    if let Err(e) = chat_store_for_read.mark_peer_read(&peer_id_clone) {
+                        warn!("chat_store mark_peer_read (live) error: {e}");
+                    }
+                }
+
+                let peer_unread = chat_store_for_read
+                    .unread_count(&peer_id_clone)
+                    .unwrap_or(0) as i32;
+                let global = chat_store_for_read.total_unread_count().unwrap_or(0) as u32;
+                bridge.as_mut().rust_mut().unread_chat = global;
+                if global == 0 {
+                    crate::platform::clear_taskbar_badge();
+                } else {
+                    crate::platform::set_taskbar_badge(global);
+                }
+
+                let status = if is_viewing { "read" } else { "delivered" };
+                let json = serde_json::json!({
+                    "msg_id": message_id_clone,
+                    "peer_id": peer_id_clone,
+                    "sender": sender_handle_clone,
+                    "body": body_clone,
+                    "timestamp": timestamp,
+                    "kind": "text",
+                    "mine": false,
+                    "status": status,
+                })
+                .to_string();
+                bridge
+                    .as_mut()
+                    .chat_message_received(QString::from(json.as_str()));
+
+                bridge
+                    .as_mut()
+                    .unread_changed(QString::from(peer_id_clone.as_str()), peer_unread);
+                let preview_text = if preview_clone.chars().count() > 60 {
+                    let truncated: String = preview_clone.chars().take(59).collect();
+                    format!("{truncated}\u{2026}")
+                } else {
+                    preview_clone.clone()
+                };
+                bridge.as_mut().preview_changed(
+                    QString::from(peer_id_clone.as_str()),
+                    QString::from(preview_text.as_str()),
+                );
+
+                // Optional Ollama auto-reply for direct messages.
+                maybe_start_auto_reply(
+                    bridge.as_mut(),
+                    AutoReplyTarget::Direct {
+                        peer_id: peer_id_clone,
+                    },
+                    &body_clone,
+                    &message_id_clone,
+                );
+            });
+        }
+        ConnectionEvent::ChatAck {
+            peer_id: _,
+            message_id,
+        } => {
+            if let Err(e) =
+                chat_store.update_status(&message_id, crate::chat_store::MessageStatus::Delivered)
+            {
+                warn!("chat_store update_status delivered error: {e}");
+            }
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge.as_mut().message_status_changed(
+                    QString::from(message_id.as_str()),
+                    QString::from("delivered"),
+                );
+            });
+        }
+        ConnectionEvent::ChatSendFailed {
+            peer_id: _,
+            message_id,
+            reason,
+        } => {
+            if let Err(e) = chat_store.update_status_note(
+                &message_id,
+                crate::chat_store::MessageStatus::Failed,
+                &reason,
+            ) {
+                warn!("chat_store update_status failed error: {e}");
+            }
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge.as_mut().message_status_changed(
+                    QString::from(message_id.as_str()),
+                    QString::from("failed"),
+                );
+            });
+        }
+        ConnectionEvent::CallRequest {
+            peer_id,
+            fallback_supernode_id,
+            fallback_room_id,
+            fallback_invite_token,
+        } => {
+            let fallback = (!fallback_supernode_id.is_empty() && !fallback_room_id.is_empty())
+                .then(|| {
+                    (
+                        peer_id.clone(),
+                        fallback_supernode_id,
+                        fallback_room_id,
+                        fallback_invite_token,
+                    )
+                });
+            let ring = fallback.is_none();
+            if ring {
+                crate::platform::play_ringtone();
+                crate::platform::show_notification("Incoming call", &peer_id);
+            }
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let has_fallback = fallback.is_some();
+                bridge.as_mut().rust_mut().incoming_call_fallback = fallback;
+                // A fallback re-invite for the call we already accepted (the
+                // caller's direct dial failed): join the temp room silently
+                // instead of ringing a second time.
+                if has_fallback
+                    && bridge.rust().active_direct_call_peer_id == peer_id
+                    && bridge.rust().call_state.to_string() != "idle"
+                {
+                    bridge
+                        .as_mut()
+                        .accept_call(&QString::from(peer_id.as_str()));
+                    return;
+                }
+                if has_fallback {
+                    crate::platform::play_ringtone();
+                    crate::platform::show_notification("Incoming call", &peer_id);
+                }
+                bridge.as_mut().rust_mut().has_incoming_call = true;
+                bridge
+                    .as_mut()
+                    .incoming_call(QString::from(peer_id.as_str()));
+            });
+        }
+        ConnectionEvent::CallAccepted { peer_id } => {
+            // Start a per-second call duration timer.
+            call_timer_stop.take(); // cancel any previous timer
+            let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+            *call_timer_stop = Some(stop_tx);
+            let qt = qt_thread.clone();
+            tokio::spawn(async move {
+                let mut secs: i32 = 0;
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                            secs += 1;
+                            let _ = qt.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                                bridge.as_mut().set_call_duration_secs(secs);
+                            });
+                        }
+                        _ = &mut stop_rx => break,
+                    }
+                }
+            });
+            let banner = format!("In call \u{00b7} {peer_id}");
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge.as_mut().rust_mut().has_incoming_call = false;
+                bridge.as_mut().set_call_state(QString::from("in_call"));
+                bridge
+                    .as_mut()
+                    .set_session_banner(QString::from(banner.as_str()));
+                {
+                    let resolved = lookup_list_peer_id(bridge.rust(), &peer_id);
+                    set_active_direct_call_presence(
+                        &mut bridge.as_mut().rust_mut(),
+                        &peer_id,
+                        true,
+                        resolved,
+                    );
+                }
+                emit_peers_updated(bridge.as_mut());
+            });
+        }
+        ConnectionEvent::CallFallbackRoomReady {
+            peer_id,
+            supernode_id,
+            room_id,
+        } => {
+            // Caller side: our direct dial never completed and the CM created a
+            // temp private room + invited the peer. Switch local audio to room
+            // mode; the call proper starts when the peer joins the room.
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                {
+                    let mut r = bridge.as_mut().rust_mut();
+                    r.voice_supernode_id = supernode_id.clone();
+                    r.voice_room_id = room_id.clone();
+                    r.call_via_fallback_room = true;
+                    sync_voice_in_room(&mut bridge.as_mut());
+                }
+                if let Some(ref tx) = bridge.rust().call_cmd_tx {
+                    let _ = tx.try_send(CallCommand::SetRoomMode {
+                        supernode_id,
+                        room_id,
+                    });
+                    let va = read_voice_activation_setting();
+                    let _ = tx.try_send(CallCommand::StartAudio {
+                        voice_activation: va,
+                    });
+                }
+                let banner = format!("Calling via room \u{00b7} {peer_id}");
+                bridge
+                    .as_mut()
+                    .set_session_banner(QString::from(banner.as_str()));
+            });
+        }
+        ConnectionEvent::CallEnded { peer_id } => {
+            call_timer_stop.take(); // stop the duration timer
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge.as_mut().rust_mut().incoming_call_fallback = None;
+                // Only a call still *ringing* here was missed. Once we answered,
+                // the peer hanging up is simply the end of the call.
+                if bridge.rust().has_incoming_call {
+                    bridge.as_mut().rust_mut().has_incoming_call = false;
+                    let mc = bridge.rust().missed_calls + 1;
+                    bridge.as_mut().set_missed_calls(mc);
+                }
+                // Both `start_call` and `accept_call` set the active peer up
+                // front, so a live call always has one. Anything else -- a ring
+                // we never answered, or a stray CallEnd from a third peer --
+                // must not tear down audio, because a room voice session may be
+                // running alongside and has to survive this.
+                let ours = {
+                    let active = &bridge.rust().active_direct_call_peer_id;
+                    !active.is_empty() && *active == peer_id
+                };
+                if ours {
+                    teardown_call_locally(&mut bridge.as_mut());
+                } else {
+                    bridge.as_mut().set_call_state(QString::from("idle"));
+                    bridge.as_mut().set_call_duration_secs(0);
+                    emit_peers_updated(bridge.as_mut());
+                }
+            });
+        }
+        ConnectionEvent::SessionStateUpdate(state) => {
+            let path_str = match state.chat_path {
+                crate::session_state::ChatPath::Direct => "direct",
+                crate::session_state::ChatPath::Relay => "relay",
+                crate::session_state::ChatPath::None => "offline",
+            };
+            let mode = path_str.to_owned();
+            let banner = format!("{path_str} \u{00b7} {}", state.peer_id);
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge
+                    .as_mut()
+                    .set_session_banner(QString::from(banner.as_str()));
+                bridge
+                    .as_mut()
+                    .set_connection_mode(QString::from(mode.as_str()));
+            });
+        }
+        ConnectionEvent::SupernodeConnected(id) => {
+            let banner = format!("Connected via supernode \u{00b7} {id}");
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge
+                    .as_mut()
+                    .set_session_banner(QString::from(banner.as_str()));
+                // Fold this member's live state into the cluster rollup and push
+                // one patch on the stable representative row (green if ANY member
+                // is up). This runs for roster-learned siblings too, so the
+                // logical node reflects the whole cluster's reachability.
+                if let Some(key) = bridge.rust().cluster_member_key(&id) {
+                    emit_cluster_node_connected(bridge.as_mut(), &key, true);
+                }
+                // Rematerialize client-owned rooms onto *this* live host — invite
+                // supernode (A) or multi-home sibling (B/C). Previously we only
+                // replayed for peer-store supernodes, so B/C never got private
+                // rooms when A was down (joins → room_absent).
+                rematerialize_rooms_on_live_host(&mut bridge.as_mut().rust_mut(), &id);
+            });
+        }
+        ConnectionEvent::SupernodeDisconnected(id) => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                // Allow rematerialize again if this host reconnects later.
+                bridge
+                    .as_mut()
+                    .rust_mut()
+                    .rematerialized_hosts
+                    .remove(id.trim_end_matches('='));
+                let Some(key) = bridge.rust().cluster_member_key(&id) else {
+                    return;
+                };
+                // Fold into the cluster rollup: the logical node stays green
+                // (and this pushes no visible change) while any sibling remains
+                // reachable. `cluster_up` is false only when the whole cluster
+                // — or a standalone node — is down.
+                emit_cluster_node_connected(bridge.as_mut(), &key, false);
+                let cluster_up = bridge.rust().cluster_rollup_connected(&key);
+                if cluster_up {
+                    // Cluster still reachable via another member: hold the room in
+                    // place (the connection layer emits `RoomFailedOver` once a
+                    // sibling accepts the resumed join) — nothing visible changes.
+                    return;
+                }
+                // Whole cluster (or a standalone host) is gone.
+                if bridge.rust().current_supernode_id == key {
+                    // We were hosting the active room here: full local leave so we
+                    // don't stay stuck targeting a dead host for audio/chat.
+                    bridge.as_mut().leave_room();
+                    {
+                        let mut r = bridge.as_mut().rust_mut();
+                        r.current_supernode_id.clear();
+                        r.current_room_id.clear();
+                    }
+                }
+                bridge.as_mut().set_session_banner(QString::from("Offline"));
+                bridge
+                    .as_mut()
+                    .set_connection_mode(QString::from("offline"));
+            });
+        }
+        ConnectionEvent::ClusterMembersUpdated {
+            supernode_id,
+            members,
+            relay_addrs,
+        } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                // Accept rosters from multi-home siblings (not only invite host).
+                let key = bridge
+                    .rust()
+                    .resolve_supernode_node_id_str(&supernode_id)
+                    .unwrap_or_else(|| supernode_id.trim_end_matches('=').to_owned());
+                {
+                    let mut r = bridge.as_mut().rust_mut();
+                    r.cluster_siblings.insert(key.clone(), members);
+                    r.cluster_member_addrs.extend(relay_addrs);
+                }
+                // Roster often arrives *after* SupernodeConnected for a cold
+                // sibling. Rematerialize only hosts not yet done this session
+                // (see rematerialized_hosts) so we don't re-CreateRoom forever.
+                let live: Vec<String> = bridge
+                    .rust()
+                    .supernode_connected
+                    .iter()
+                    .filter(|(_, up)| **up)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for host in live {
+                    if bridge
+                        .rust()
+                        .cluster_full_set(&key)
+                        .iter()
+                        .any(|m| pub_id_eq(m, &host))
+                        || pub_id_eq(&host, &key)
+                    {
+                        rematerialize_rooms_on_live_host(&mut bridge.as_mut().rust_mut(), &host);
+                    }
+                }
+            });
+        }
+        ConnectionEvent::RoomFailedOver {
+            supernode_id,
+            room_id,
+        } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let Some(canon) = bridge.rust().resolve_supernode_node_id_str(&supernode_id) else {
+                    return;
+                };
+                // Only follow the move if this is still our active room — the
+                // connection layer resumed it on `canon` after the old host was
+                // lost. Re-point the UI's active-room (and voice, if we were
+                // voicing this room) to the new member so it keeps showing the
+                // room instead of the "reconnecting" hold set on disconnect.
+                if bridge.rust().current_room_id != room_id {
+                    return;
+                }
+                {
+                    let mut r = bridge.as_mut().rust_mut();
+                    r.current_supernode_id = canon.clone();
+                    if r.voice_room_id == room_id {
+                        r.voice_supernode_id = canon.clone();
+                    }
+                }
+                bridge
+                    .as_mut()
+                    .set_session_banner(QString::from("Reconnected \u{00b7} cluster"));
+                bridge.as_mut().set_connection_mode(QString::from("room"));
+                bridge.as_mut().set_in_room(true);
+                // Mark the new host connected and re-emit the cluster rollup so
+                // the single logical node stays green.
+                emit_cluster_node_connected(bridge.as_mut(), &canon, true);
+                // Refresh the new host's room list so the sidebar shows the room
+                // under this member with its real participant count (the count is
+                // per-supernode; the pre-failover list came from the lost host and
+                // now reads as a stale dash). The `SfuMembers` accompanying the
+                // resumed join updates the voice rail; this fixes the sidebar.
+                if let Some(tx) = bridge.rust().conn_cmd_tx.as_ref() {
+                    let _ = tx.try_send(ConnectionCommand::RequestRoomList {
+                        supernode_id: canon.clone(),
+                    });
+                }
+                info!(
+                    "[bridge] room {} failed over to cluster member {}",
+                    room_id, canon
+                );
+            });
+        }
+        ConnectionEvent::SupernodeInfoReceived {
+            supernode_id,
+            homepage_url,
+            title,
+            sfu_enabled,
+            public_rooms_enabled,
+        } => {
+            let url_q = homepage_url.clone();
+            let title_q = title.clone();
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let Some(canon) = bridge.rust().resolve_supernode_node_id_str(&supernode_id) else {
+                    return;
+                };
+                // Land title/homepage on the cluster's representative row so the
+                // single logical node carries a stable name (members of a cluster
+                // share operator title/homepage).
+                let rep = bridge.rust().cluster_representative(&canon);
+                let node_json = serde_json::json!([{
+                    "node_id": rep,
+                    "homepage_url": homepage_url,
+                    "title": title,
+                    "sfu_enabled": sfu_enabled,
+                    "public_rooms_enabled": public_rooms_enabled,
+                }])
+                .to_string();
+                bridge
+                    .as_mut()
+                    .nodes_updated(QString::from(node_json.as_str()));
+                bridge.as_mut().supernode_info_received(
+                    QString::from(canon.as_str()),
+                    QString::from(url_q.as_str()),
+                    QString::from(title_q.as_str()),
+                );
+            });
+        }
+        ConnectionEvent::RoomCreated {
+            supernode_id,
+            room_id,
+            room_name,
+            room_type,
+            invite_token,
+        } => {
+            let banner = format!("Room \u{00b7} {room_name}");
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let Some(canon) = bridge.rust().resolve_supernode_node_id_str(&supernode_id) else {
+                    // Multi-home sibling ack for a rematerialize — not a user create.
+                    return;
+                };
+                // Rematerialize / cluster replay must never surface as tray
+                // "Private room created". If RoomStore already has this room_id
+                // anywhere in the cluster, stay silent.
+                let already_known = {
+                    let members = bridge.rust().cluster_full_set(&canon);
+                    match (
+                        bridge.rust().room_store.as_ref(),
+                        bridge.rust().peer_store.as_ref(),
+                    ) {
+                        (Some(rs), Some(ps)) => {
+                            let store = rs.read();
+                            let ps = ps.read();
+                            store.get(&canon, &room_id).is_some()
+                                || store
+                                    .list_for_cluster_members(&ps, &members)
+                                    .iter()
+                                    .any(|e| e.room_id == room_id)
+                        }
+                        (Some(rs), None) => rs.read().get(&canon, &room_id).is_some(),
+                        _ => false,
+                    }
+                };
+                if already_known {
+                    debug!(
+                        "[bridge] ignoring RoomCreated for already-known room {} (rematerialize)",
+                        &room_id[..8.min(room_id.len())]
+                    );
+                    return;
+                }
+                let my_public_id = bridge.rust().my_public_id.clone();
+                let invite_policy = {
+                    let mut r = bridge.as_mut().rust_mut();
+                    r.pending_room_invite_policy
+                        .remove(&format!("{canon}:{room_name}"))
+                        .unwrap_or_default()
+                };
+                remember_room_in_store(
+                    &bridge.rust().room_store,
+                    &canon,
+                    &room_id,
+                    &room_name,
+                    &room_type,
+                    &my_public_id,
+                    true,
+                    &invite_token,
+                    &invite_policy,
+                );
+                // Layer-1 Space tree: adopt the room we just created into our
+                // Space and sign a new epoch root. If this create was launched as
+                // a sub-room (a pending parent was stashed by `create_sub_room`,
+                // keyed by supernode:room_name), nest it under that parent room;
+                // otherwise it nests directly under the Server node. Stamps the
+                // stored entry's space_id/parent_id so the sidebar can indent it.
+                // Best-effort — a signing/persist hiccup must not block creation.
+                let parent_node_id = {
+                    let mut r = bridge.as_mut().rust_mut();
+                    r.pending_sub_room_parent
+                        .remove(&format!("{canon}:{room_name}"))
+                        .unwrap_or_default()
+                };
+                if let (Some(rs), Some(identity)) = (
+                    bridge.rust().room_store.clone(),
+                    bridge.rust().identity.clone(),
+                ) {
+                    let issued_at = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    match rs.write().adopt_room_into_space(
+                        &my_public_id,
+                        &canon,
+                        &room_id,
+                        &room_name,
+                        &room_type,
+                        &parent_node_id,
+                        issued_at,
+                        |b| identity.sign(b),
+                    ) {
+                        Ok(root) => {
+                            // Announce the new signed root to the host supernode
+                            // (authenticated room-set sync): it verifies, stores
+                            // the highest epoch, and cluster-gossips it so any
+                            // member can later admit joiners by proof.
+                            if let Some(tx) = bridge.rust().conn_cmd_tx.as_ref() {
+                                if let Ok(root_json) = serde_json::to_string(&root) {
+                                    let _ = tx.try_send(ConnectionCommand::AnnounceSpaceRoot {
+                                        supernode_id: canon.clone(),
+                                        root_json,
+                                    });
+                                }
+                            }
+                        }
+                        Err(e) => warn!("space adopt_room_into_space error: {e}"),
+                    }
+                }
+                bridge
+                    .as_mut()
+                    .set_session_banner(QString::from(banner.as_str()));
+                bridge.as_mut().set_connection_mode(QString::from("room"));
+                {
+                    let mut r = bridge.as_mut().rust_mut();
+                    r.current_supernode_id = canon.clone();
+                    r.current_room_id = room_id.clone();
+                }
+                bridge.as_mut().room_created(
+                    QString::from(canon.as_str()),
+                    QString::from(room_id.as_str()),
+                    QString::from(room_name.as_str()),
+                    QString::from(room_type.as_str()),
+                    QString::from(invite_token.as_str()),
+                );
+            });
+        }
+        ConnectionEvent::RoomInviteReady {
+            supernode_id,
+            room_id,
+            room_name,
+            room_type,
+            invite_token,
+            parent_id,
+            space_id,
+        } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let canon = bridge
+                    .rust()
+                    .resolve_supernode_node_id_str(&supernode_id)
+                    .unwrap_or(supernode_id);
+                // Persist as a room we did not create, carrying the token, so
+                // join_room()'s invite path validates it for private rooms
+                // (and a plain join is used for public ones).
+                remember_room_in_store(
+                    &bridge.rust().room_store,
+                    &canon,
+                    &room_id,
+                    &room_name,
+                    &room_type,
+                    "",
+                    false,
+                    &invite_token,
+                    "",
+                );
+                // Stamp the Space-tree linkage carried by the invite proof so the
+                // sidebar nests the room under its parent instead of showing it
+                // flat at the top level.
+                if !parent_id.is_empty() || !space_id.is_empty() {
+                    if let Some(ref rs) = bridge.rust().room_store {
+                        if let Err(e) = rs
+                            .write()
+                            .set_space_linkage(&canon, &room_id, &parent_id, &space_id)
+                        {
+                            warn!("room_store set_space_linkage error: {e}");
+                        }
+                    }
+                }
+                // The room is now in the local store, but the sidebar only
+                // re-renders on `RoomListReceived`, and joining doesn't reliably
+                // push a fresh list back to the joiner. Request one so the newly
+                // accepted room actually appears in the Rooms list.
+                if let Some(ref tx) = bridge.rust().conn_cmd_tx {
+                    let _ = tx.try_send(ConnectionCommand::RequestRoomList {
+                        supernode_id: canon.clone(),
+                    });
+                }
+                bridge.as_mut().room_invite_ready(
+                    QString::from(canon.as_str()),
+                    QString::from(room_id.as_str()),
+                    QString::from(room_name.as_str()),
+                );
+            });
+        }
+        ConnectionEvent::RelayPaymentRequired {
+            supernode_id,
+            portal_url,
+        } => {
+            info!(
+                "[relay] Portal required — opening browser for {}",
+                &supernode_id[..8.min(supernode_id.len())]
+            );
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge.as_mut().relay_portal_required(
+                    QString::from(supernode_id.as_str()),
+                    QString::from(portal_url.as_str()),
+                );
+            });
+        }
+        ConnectionEvent::RelayGranted {
+            supernode_id,
+            relay_host,
+            relay_port,
+            portal_only,
+            ..
+        } => {
+            let banner = if portal_only {
+                "Portal \u{00b7} access required".to_owned()
+            } else {
+                format!("Relay \u{00b7} {relay_host}:{relay_port}")
+            };
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge
+                    .as_mut()
+                    .set_session_banner(QString::from(banner.as_str()));
+                bridge
+                    .as_mut()
+                    .set_connection_mode(QString::from(if portal_only {
+                        "portal"
+                    } else {
+                        "relay"
+                    }));
+                // Portal-only guest grant: route straight to the access gate.
+                // Inline the navigation (don't call open_node_portal, which
+                // would re-issue RequestRelay and loop against this grant).
+                if portal_only {
+                    let canon = bridge
+                        .rust()
+                        .resolve_supernode_node_id_str(&supernode_id)
+                        .unwrap_or_else(|| supernode_id.clone());
+                    let sn_id = bridge
+                        .rust()
+                        .pick_live_cluster_member(&canon)
+                        .unwrap_or(canon);
+                    #[cfg(feature = "webengine")]
+                    crate::ui::scheme::register_portal_peer_id(&sn_id);
+                    // Access portal is a separate page from the full dashboard.
+                    let url = doubleslash_features::mint_uri(&format!("{}/access.html", sn_id));
+                    bridge.as_mut().navigate_node_portal(
+                        QString::from(sn_id.as_str()),
+                        QString::from(url.as_str()),
+                    );
+                }
+            });
+        }
+        ConnectionEvent::TypingIndicator { peer_id, is_typing } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge
+                    .as_mut()
+                    .typing_changed(QString::from(peer_id.as_str()), is_typing);
+            });
+        }
+        ConnectionEvent::HandleUpdated { peer_id, handle } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let is_supernode = bridge
+                    .rust()
+                    .peer_store
+                    .as_ref()
+                    .map(|ps| ps.read().is_supernode_id(&peer_id))
+                    .unwrap_or(false);
+                if !is_supernode {
+                    emit_peers_updated(bridge.as_mut());
+                }
+                // Also seed the room label cache so members panels pick up renames
+                // even when the peer is not in PeerStore yet.
+                if remember_room_display_handle(&mut bridge.as_mut().rust_mut(), &peer_id, &handle)
+                {
+                    // no-op beyond cache; re-emit rosters below
+                }
+                if !bridge.rust().room_participant_ids.is_empty() {
+                    let ids = bridge.rust().room_participant_ids.clone();
+                    emit_member_list_json(&mut bridge, &ids, true);
+                }
+                if !bridge.rust().text_member_ids.is_empty() {
+                    let ids = bridge.rust().text_member_ids.clone();
+                    emit_member_list_json(&mut bridge, &ids, false);
+                }
+            });
+        }
+        ConnectionEvent::AvatarConfigUpdated { peer_id } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge
+                    .as_mut()
+                    .avatar_config_updated(QString::from(peer_id.as_str()));
+            });
+        }
+        ConnectionEvent::RoomMembersChanged {
+            supernode_id,
+            room_id,
+            members,
+            chat_members,
+        } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let canon = canon_supernode_id(bridge.rust(), &supernode_id);
+                // Authoritative roster confirming us present → the room is admitted;
+                // subsequent re-entries skip the spent-token invite path (join_room).
+                let my_pub = bridge.rust().my_public_id.clone();
+                if !my_pub.is_empty()
+                    && (members.contains(&my_pub) || chat_members.contains(&my_pub))
+                {
+                    bridge
+                        .as_mut()
+                        .rust_mut()
+                        .admitted_rooms
+                        .insert(format!("{}:{}", canon, room_id));
+                }
+                let key = room_roster_key(canon.as_str(), room_id.as_str());
+                // Record this node's view before any selected-room routing, so
+                // the sidebar can union across the cluster even for rooms that
+                // are not open.
+                bridge
+                    .as_mut()
+                    .rust_mut()
+                    .chat_roster_by_node
+                    .insert(key.clone(), chat_members.clone());
+                // Voice rail: only the active voice room's participant list.
+                if should_apply_voice_roster(bridge.rust(), canon.as_str(), room_id.as_str()) {
+                    apply_room_roster_to_bridge(
+                        &mut bridge,
+                        &members,
+                        canon.as_str(),
+                        room_id.as_str(),
+                        true,
+                    );
+                } else {
+                    bridge
+                        .as_mut()
+                        .rust_mut()
+                        .pending_room_rosters
+                        .insert(key.clone(), members.clone());
+                    // Still refresh this room's sidebar voice count from the
+                    // voice roster — chat subscribers must not affect it.
+                    update_room_voice_count(
+                        &mut bridge,
+                        canon.as_str(),
+                        room_id.as_str(),
+                        &members,
+                    );
+                }
+                // Text members panel: chat recipients for the selected room.
+                if should_apply_text_roster(bridge.rust(), canon.as_str(), room_id.as_str()) {
+                    apply_text_roster_to_bridge(&mut bridge, &chat_members);
+                } else {
+                    bridge
+                        .as_mut()
+                        .rust_mut()
+                        .pending_chat_rosters
+                        .insert(key, chat_members);
+                }
+                emit_peers_updated(bridge.as_mut());
+            });
+        }
+        ConnectionEvent::RoomJoinRejected {
+            supernode_id,
+            room_id,
+            reason,
+        } => {
+            warn!(
+                "[bridge] room join rejected sn={} room={}: {}",
+                &supernode_id[..8.min(supernode_id.len())],
+                room_id,
+                reason
+            );
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let canon = canon_supernode_id(bridge.rust(), &supernode_id);
+                let key = format!("{}:{}", canon, room_id);
+                bridge.as_mut().rust_mut().admitted_rooms.remove(&key);
+                bridge
+                    .as_mut()
+                    .rust_mut()
+                    .pending_room_rosters
+                    .remove(&room_roster_key(canon.as_str(), room_id.as_str()));
+
+                let voice_match = {
+                    let r = bridge.rust();
+                    r.voice_room_id == room_id
+                        && (r.voice_supernode_id == canon || r.voice_supernode_id == supernode_id)
+                };
+                let current_match = {
+                    let r = bridge.rust();
+                    r.current_room_id == room_id
+                        && (r.current_supernode_id == canon
+                            || r.current_supernode_id == supernode_id
+                            || r.current_supernode_id.is_empty())
+                };
+
+                if voice_match {
+                    // Roll back optimistic join_room_with_voice: stop SFU audio
+                    // mode, camera, and clear voice scope so we don't look "in call".
+                    // Announce camera-off first so the CM can still route it.
+                    bridge.as_mut().stop_local_video();
+                    if let Some(ref tx) = bridge.rust().call_cmd_tx {
+                        let _ = tx.try_send(CallCommand::ClearRoomMode);
+                        let _ = tx.try_send(CallCommand::StopAudio);
+                    }
+                    let my_pub = bridge.rust().my_public_id.clone();
+                    {
+                        let mut r = bridge.as_mut().rust_mut();
+                        r.room_participant_ids.clear();
+                        r.voice_supernode_id.clear();
+                        r.voice_room_id.clear();
+                    }
+                    // Drop our optimistic voice presence from that room's count.
+                    if !my_pub.is_empty() {
+                        adjust_room_voice_member(
+                            &mut bridge,
+                            canon.as_str(),
+                            room_id.as_str(),
+                            &my_pub,
+                            false,
+                        );
+                    }
+                    clear_room_member_presence(&mut bridge.as_mut().rust_mut());
+                    bridge.as_mut().set_voice_active(false);
+                    sync_voice_in_room(&mut bridge.as_mut());
+                    bridge.as_mut().set_in_room(false);
+                    bridge.as_mut().reset_inbound_video();
+                }
+                if current_match {
+                    let mut r = bridge.as_mut().rust_mut();
+                    r.current_room_id.clear();
+                    r.current_supernode_id.clear();
+                }
+                emit_peers_updated(bridge.as_mut());
+            });
+        }
+        ConnectionEvent::RoomPeerJoined {
+            supernode_id,
+            room_id,
+            peer_id,
+        } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let canon = canon_supernode_id(bridge.rust(), &supernode_id);
+                // Voice participant join — update the voice rail when this is
+                // the active voice room; always keep that room's sidebar count
+                // in sync from the voice roster cache.
+                if should_apply_voice_roster(bridge.rust(), canon.as_str(), room_id.as_str()) {
+                    let cfg = bridge.rust().avatar_config_json.clone();
+                    if !cfg.is_empty() {
+                        if let Some(ref tx) = bridge.rust().conn_cmd_tx {
+                            let _ = tx.try_send(ConnectionCommand::BroadcastAvatarConfig {
+                                peer_id: peer_id.clone(),
+                                config_json: cfg,
+                            });
+                        }
+                    }
+
+                    if !bridge.rust().room_participant_ids.contains(&peer_id) {
+                        bridge
+                            .as_mut()
+                            .rust_mut()
+                            .room_participant_ids
+                            .push(peer_id.clone());
+                    }
+
+                    let ids = bridge.rust().room_participant_ids.clone();
+                    apply_room_roster_to_bridge(
+                        &mut bridge,
+                        &ids,
+                        canon.as_str(),
+                        room_id.as_str(),
+                        true,
+                    );
+                } else {
+                    adjust_room_voice_member(
+                        &mut bridge,
+                        canon.as_str(),
+                        room_id.as_str(),
+                        &peer_id,
+                        true,
+                    );
+                }
+                // Voice joiners are also chat recipients; keep the text panel
+                // in sync when this is the selected text room.
+                if should_apply_text_roster(bridge.rust(), canon.as_str(), room_id.as_str())
+                    && !bridge.rust().text_member_ids.contains(&peer_id)
+                {
+                    bridge.as_mut().rust_mut().text_member_ids.push(peer_id);
+                    let ids = bridge.rust().text_member_ids.clone();
+                    apply_text_roster_to_bridge(&mut bridge, &ids);
+                }
+                emit_peers_updated(bridge.as_mut());
+            });
+        }
+        ConnectionEvent::RoomPeerLeft {
+            supernode_id,
+            room_id,
+            peer_id,
+        } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let canon = canon_supernode_id(bridge.rust(), &supernode_id);
+                if should_apply_voice_roster(bridge.rust(), canon.as_str(), room_id.as_str()) {
+                    bridge
+                        .as_mut()
+                        .rust_mut()
+                        .room_participant_ids
+                        .retain(|id| id != &peer_id);
+
+                    let ids = bridge.rust().room_participant_ids.clone();
+                    apply_room_roster_to_bridge(
+                        &mut bridge,
+                        &ids,
+                        canon.as_str(),
+                        room_id.as_str(),
+                        true,
+                    );
+                    // Drop their decoder and blank any tile still showing them.
+                    // Without this a departed peer's last frame (and the HW
+                    // decoder surfaces behind it) survive until we leave too.
+                    bridge.as_mut().forget_peer_video(&peer_id);
+                } else {
+                    adjust_room_voice_member(
+                        &mut bridge,
+                        canon.as_str(),
+                        room_id.as_str(),
+                        &peer_id,
+                        false,
+                    );
+                }
+                // Voice leave does not remove a text subscriber; SfuMembers
+                // (chat_members) is authoritative for the members panel. Still
+                // drop from text panel only if they are not also a chat
+                // subscriber — full roster arrives via RoomMembersChanged.
+                emit_peers_updated(bridge.as_mut());
+            });
+        }
+        ConnectionEvent::ContentAudioReceived {
+            peer_id,
+            opus,
+            pts_us,
+            seq,
+        } => {
+            // Straight to the call controller: it owns the 20 ms playout tick
+            // that both mixes this to the speaker and anchors the A/V timeline.
+            let _ = qt_thread.queue(move |bridge: Pin<&mut ffi::AppBridge>| {
+                if let Some(ref tx) = bridge.rust().call_cmd_tx {
+                    let _ = tx.try_send(crate::call_controller::CallCommand::ContentAudioInbound {
+                        peer_id,
+                        seq,
+                        pts_us,
+                        opus,
+                    });
+                }
+            });
+        }
+        ConnectionEvent::VideoFrameReceived {
+            peer_id,
+            encoded,
+            keyframe,
+            codec,
+            pts_us,
+        } => {
+            // Hand straight to the decode thread. Decoding here would run on
+            // the connection-manager task; decoding after the Qt hop would run
+            // on the GUI thread. Both are wrong for a blocking codec call.
+            let stall_qt = qt_thread.clone();
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                if bridge.rust().video_receiver.is_none() {
+                    // Spawned on first inbound frame rather than at startup, so
+                    // a client that never receives video never pays for a
+                    // decode thread.
+                    let conn_tx = bridge.rust().conn_cmd_tx.clone();
+                    let receiver = crate::video::receiver::VideoReceiver::start(
+                        |codec| {
+                            // Per frame codec, not per session: a room may carry
+                            // several senders using different codecs. A codec
+                            // this build cannot decode returns None, and the
+                            // receiver logs and drops rather than guessing.
+                            crate::video::codec::make_decoder(codec)
+                                .map_err(|e| {
+                                    warn!("[video] no {} decoder: {e}", codec.as_str());
+                                })
+                                .ok()
+                        },
+                        move |peer_id| {
+                            if let Some(tx) = conn_tx.as_ref() {
+                                let _ = tx.try_send(ConnectionCommand::RequestVideoKeyframe {
+                                    peer_id: peer_id.to_owned(),
+                                });
+                            }
+                        },
+                        move |peer_id, stalled| {
+                            // Straight to QML: a stalled tile is a display
+                            // concern, and nothing in the backend acts on it.
+                            let id = peer_id.to_owned();
+                            let _ = stall_qt.queue(move |bridge: Pin<&mut ffi::AppBridge>| {
+                                bridge.peer_video_stalled_changed(
+                                    QString::from(id.as_str()),
+                                    stalled,
+                                );
+                            });
+                        },
+                        crate::video::sink::has_sink,
+                    );
+                    // The call controller anchors the sync timeline from its
+                    // own playout tick, so it needs the same state this
+                    // receiver holds video against.
+                    if let Some(ref tx) = bridge.rust().call_cmd_tx {
+                        let _ = tx.try_send(crate::call_controller::CallCommand::SetVideoPlayout(
+                            receiver.playout(),
+                        ));
+                    }
+                    bridge.as_mut().rust_mut().video_receiver = Some(receiver);
+                }
+                if let Some(rx) = bridge.rust().video_receiver.as_ref() {
+                    rx.submit(&peer_id, encoded, keyframe, codec, pts_us);
+                }
+            });
+        }
+        ConnectionEvent::PeerVideoStateChanged { peer_id, active } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                // The announcement carries the sender's `public_id`, but peer
+                // rows - and the video tiles bound to them - are keyed by the
+                // *list* peer id. A room roster is made of public_ids so the
+                // two coincide there, which is why room video lit an indicator
+                // while a direct call never did: its list id is the hex peer
+                // id and nothing matched. Register both forms rather than
+                // choosing, so neither path can regress.
+                let resolved = lookup_list_peer_id(bridge.rust(), &peer_id);
+                let mut keys = vec![peer_id.clone()];
+                if let Some(list_id) = resolved {
+                    if list_id != peer_id {
+                        keys.push(list_id);
+                    }
+                }
+
+                // Remembered as well as signalled: the signal only reaches rows
+                // that exist right now, and the next roster reset would drop it.
+                {
+                    let mut r = bridge.as_mut().rust_mut();
+                    for key in &keys {
+                        if active {
+                            r.peer_video_active.insert(key.clone());
+                        } else {
+                            r.peer_video_active.remove(key);
+                        }
+                    }
+                }
+                for key in &keys {
+                    bridge
+                        .as_mut()
+                        .peer_video_state_changed(QString::from(key.as_str()), active);
+                }
+                // Camera-off: free the decoder (inter-frame state is useless
+                // across a stream restart) and blank the tile so the last
+                // frame does not stick after the indicator goes dark.
+                if !active {
+                    bridge.forget_peer_video(&peer_id);
+                }
+            });
+        }
+        ConnectionEvent::VideoKeyframeRequested { peer_id } => {
+            // Ask the capture thread for a keyframe on its next frame. Deferred
+            // rather than encoded here: producing a frame outside the capture
+            // cadence would disturb the encoder's rate control.
+            let _ = qt_thread.queue(move |bridge: Pin<&mut ffi::AppBridge>| {
+                if let Some(sender) = bridge.rust().video_sender.as_ref() {
+                    debug!(
+                        "[video] keyframe requested by {}",
+                        &peer_id[..8.min(peer_id.len())]
+                    );
+                    sender.request_keyframe();
+                }
+            });
+        }
+        ConnectionEvent::SfuAudioReceived { peer_id, opus_data } => {
+            // Forward relayed room audio to the call controller's inbound pipeline.
+            let _ = qt_thread.queue(move |bridge: Pin<&mut ffi::AppBridge>| {
+                if let Some(ref tx) = bridge.rust().call_cmd_tx {
+                    let _ = tx.try_send(CallCommand::RoomAudioInbound { peer_id, opus_data });
+                }
+            });
+        }
+        ConnectionEvent::DirectAudioReceived { peer_id, opus_data } => {
+            // Forward direct 1:1 QUIC audio to the call controller.
+            let _ = qt_thread.queue(move |bridge: Pin<&mut ffi::AppBridge>| {
+                if let Some(ref tx) = bridge.rust().call_cmd_tx {
+                    let _ = tx.try_send(CallCommand::DirectAudioInbound { peer_id, opus_data });
+                }
+            });
+        }
+        ConnectionEvent::RoomChatMessage {
+            supernode_id,
+            room_id,
+            sender_id,
+            sender_handle,
+            body,
+            timestamp,
+            message_id,
+        } => {
+            let message_id = if message_id.is_empty() {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                message_id
+            };
+            if chat_store
+                .get_by_id(&message_id)
+                .map(|m| m.is_some())
+                .unwrap_or(false)
+            {
+                return;
+            }
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                // Chat rides whichever multi-homed cluster session wins the
+                // race, and the supernode forwards the frame verbatim, so
+                // `supernode_id` is usually a roster-learned sibling that is
+                // NOT in the peer store. Fold it onto the logical node's row —
+                // the same key the room panel, store, and history use — instead
+                // of dropping the message. `resolve_supernode_node_id_str`
+                // alone returned `None` here and silently swallowed every
+                // sibling-delivered message (the other 3 copies then lost the
+                // replay guard), so a remote peer's room chat never appeared.
+                let Some(sn) = sidebar_supernode_id(bridge.rust(), &supernode_id) else {
+                    warn!(
+                        "[room.chat.v1] inbound message from {} on unknown node {} — dropping",
+                        &sender_id[..8.min(sender_id.len())],
+                        &supernode_id[..12.min(supernode_id.len())],
+                    );
+                    return;
+                };
+                // Learn the sender's display name for the room members panel
+                // without promoting them into the trusted Peers list.
+                let handle_changed = remember_room_display_handle(
+                    &mut bridge.as_mut().rust_mut(),
+                    &sender_id,
+                    &sender_handle,
+                );
+                let display_sender =
+                    room_chat_display_sender(bridge.rust(), &sender_handle, &sender_id);
+                let json = serde_json::json!({
+                    "msg_id": message_id.clone(),
+                    "sender": display_sender.clone(),
+                    "sender_id": sender_id.clone(),
+                    "body": body.clone(),
+                    "timestamp": timestamp,
+                    "kind": "text",
+                    "mine": false,
+                    "is_room": true,
+                    "status": "delivered",
+                    "supernode_id": sn.clone(),
+                    "room_id": room_id.clone(),
+                })
+                .to_string();
+                if let Some(ref cs) = bridge.rust().chat_store {
+                    let store_key = room_chat_store_peer_id(&room_id);
+                    let chat_msg = crate::chat_store::ChatMessage {
+                        id: message_id.clone(),
+                        peer_id: store_key,
+                        sender: sender_id.clone(),
+                        recipient: room_id.clone(),
+                        body: body.clone(),
+                        timestamp,
+                        is_self: false,
+                        status: crate::chat_store::MessageStatus::Delivered,
+                        kind: crate::chat_store::MessageKind::Text,
+                        attachment_name: String::new(),
+                        attachment_path: String::new(),
+                        size_str: String::new(),
+                        status_note: String::new(),
+                        sender_handle: display_sender.clone(),
+                    };
+                    if let Err(e) = cs.insert(&chat_msg) {
+                        warn!("chat_store insert (room inbound) error: {e}");
+                    }
+                }
+                if handle_changed && !bridge.rust().text_member_ids.is_empty() {
+                    let ids = bridge.rust().text_member_ids.clone();
+                    emit_member_list_json(&mut bridge, &ids, false);
+                }
+                let key = room_chat_history_key(&sn, &room_id);
+                // Persist in session-scoped history so switchToRoom can replay.
+                bridge
+                    .as_mut()
+                    .rust_mut()
+                    .room_chat_history
+                    .entry(key)
+                    .or_default()
+                    .push(json.clone());
+                // Only paint into the open room panel — other rooms stay
+                // chat-active for history/store, not the visible list.
+                let show = is_selected_text_room(bridge.rust(), &sn, &room_id);
+                if show {
+                    bridge
+                        .as_mut()
+                        .room_chat_received(QString::from(json.as_str()));
+                }
+
+                // Don't auto-reply to our own room messages (shouldn't appear
+                // here, but sender_id check is the hard gate).
+                let mine = !bridge.rust().my_public_id.is_empty()
+                    && (sender_id == bridge.rust().my_public_id
+                        || sender_id == bridge.rust().my_peer_id);
+                if !mine {
+                    maybe_start_auto_reply(
+                        bridge.as_mut(),
+                        AutoReplyTarget::Room {
+                            supernode_id: sn,
+                            room_id,
+                        },
+                        &body,
+                        &message_id,
+                    );
+                }
+            });
+        }
+        // Log capability announces; no UI update needed yet.
+        ConnectionEvent::CapabilityAnnounced { peer_id, caps_json } => {
+            info!(
+                "Capabilities from {}: {}",
+                &peer_id[..8.min(peer_id.len())],
+                caps_json
+            );
+            // Record what video codecs this peer can run, so a later camera
+            // start can negotiate without a round trip to the manager.
+            let codecs = video_codecs_from_caps_json(&caps_json);
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                if codecs.is_empty() {
+                    bridge
+                        .as_mut()
+                        .rust_mut()
+                        .peer_video_codecs
+                        .remove(&peer_id);
+                } else {
+                    bridge
+                        .as_mut()
+                        .rust_mut()
+                        .peer_video_codecs
+                        .insert(peer_id, codecs);
+                }
+            });
+        }
+        // Endpoint update — re-trigger peer list refresh (presence change).
+        ConnectionEvent::EndpointUpdated { peer_id, .. } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                if bridge
+                    .rust()
+                    .peer_store
+                    .as_ref()
+                    .map(|ps| ps.read().is_supernode_id(&peer_id))
+                    .unwrap_or(false)
+                {
+                    return;
+                }
+                if let Some(pid) = lookup_list_peer_id(bridge.rust(), &peer_id) {
+                    mark_peer_online(&mut bridge.as_mut().rust_mut(), &pid, true);
+                }
+                emit_peers_updated(bridge.as_mut());
+            });
+        }
+        // Room list received from supernode — forward to QML.
+        ConnectionEvent::RoomListReceived {
+            supernode_id,
+            rooms_json,
+        } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                // Accept lists from multi-home cluster siblings (not in peer
+                // store) by folding onto the invite representative row.
+                let Some(canon) = sidebar_supernode_id(bridge.rust(), &supernode_id) else {
+                    return;
+                };
+                let remote = serde_json::from_str::<serde_json::Value>(&rooms_json)
+                    .unwrap_or(serde_json::Value::Array(vec![]));
+                let my_pub = bridge.rust().my_public_id.clone();
+                // Snapshot before the borrows below; the union is cheap and the
+                // sidebar needs it for every room in this list.
+                let chat_counts = cluster_chat_counts(bridge.rust());
+                let rooms = if let (Some(rs), Some(ps)) = (
+                    bridge.rust().room_store.clone(),
+                    bridge.rust().peer_store.clone(),
+                ) {
+                    let filtered = {
+                        let mut store = rs.write();
+                        sync_saved_rooms_from_list(&mut store, &canon, &remote);
+                        let peer_store = ps.read();
+                        let local = local_rooms_json_for_supernode(&store, &peer_store, &canon);
+                        let merged = merge_room_list_values(&local, &remote);
+                        filter_sfu_rooms_for_sidebar(&store, &canon, &merged)
+                    };
+                    // Seed per-room voice caches from voice participant_ids only
+                    // (never chat subscribers) so join/leave can patch counts.
+                    seed_voice_rosters_from_room_list(&mut bridge, &canon, &filtered);
+                    let peer_store = ps.read();
+                    enrich_room_voice_participants(
+                        filtered,
+                        Some(&peer_store),
+                        my_pub.as_str(),
+                        Some(&chat_counts),
+                    )
+                } else {
+                    seed_voice_rosters_from_room_list(&mut bridge, &canon, &remote);
+                    enrich_room_voice_participants(
+                        remote,
+                        None,
+                        my_pub.as_str(),
+                        Some(&chat_counts),
+                    )
+                };
+                let wrapped = serde_json::json!({
+                    "supernode_id": canon,
+                    "rooms": rooms,
+                    "replace": true,
+                })
+                .to_string();
+                bridge
+                    .as_mut()
+                    .sfu_rooms_updated(QString::from(wrapped.as_str()));
+            });
+        }
+        // Presence update — reflect in peer list.
+        ConnectionEvent::PresenceUpdated { peer_id, status } => {
+            let online = status != "offline";
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                if bridge
+                    .rust()
+                    .peer_store
+                    .as_ref()
+                    .map(|ps| ps.read().is_supernode_id(&peer_id))
+                    .unwrap_or(false)
+                {
+                    return;
+                }
+                if let Some(pid) = lookup_list_peer_id(bridge.rust(), &peer_id) {
+                    mark_relay_present(&mut bridge.as_mut().rust_mut(), &pid, online);
+                }
+                emit_peers_updated(bridge.as_mut());
+            });
+        }
+        // Invite accepted — new peer added.
+        ConnectionEvent::InviteAccepted { peer_id, handle } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let is_supernode = bridge
+                    .rust()
+                    .peer_store
+                    .as_ref()
+                    .map(|ps| ps.read().is_supernode_id(&peer_id))
+                    .unwrap_or(false);
+                if is_supernode {
+                    emit_rooms_sidebar_sync(bridge.as_mut());
+                    emit_local_rooms_for_all_supernodes(bridge.as_mut());
+                    return;
+                }
+                if let Some(pid) = lookup_list_peer_id(bridge.rust(), &peer_id) {
+                    mark_peer_online(&mut bridge.as_mut().rust_mut(), &pid, true);
+                }
+                emit_peers_updated(bridge.as_mut());
+                bridge.as_mut().peer_added(
+                    QString::from(peer_id.as_str()),
+                    QString::from(handle.as_str()),
+                );
+            });
+        }
+        // File transfer events — forward to QML.
+        ConnectionEvent::InviteFailed { reason } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let banner = format!("Invite failed: {reason}");
+                bridge
+                    .as_mut()
+                    .set_session_banner(QString::from(banner.as_str()));
+                bridge.as_mut().set_connection_mode(QString::from("error"));
+            });
+        }
+        ConnectionEvent::FileOffered {
+            transfer_id,
+            peer_id,
+            rel_path,
+            size,
+            purpose,
+            is_self,
+            origin_id,
+            supernode_id,
+        } => {
+            let json = serde_json::json!({
+                "transfer_id": transfer_id,
+                "peer_id": peer_id,
+                "origin_id": origin_id,
+                "rel_path": rel_path,
+                "size": size,
+                "purpose": purpose,
+                "is_self": is_self,
+            })
+            .to_string();
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                insert_inbound_file_offer(
+                    bridge.as_mut(),
+                    InboundFileOffer {
+                        transfer_id: &transfer_id,
+                        peer_id: &peer_id,
+                        origin_id: &origin_id,
+                        rel_path: &rel_path,
+                        size,
+                        purpose: &purpose,
+                        supernode_id: &supernode_id,
+                    },
+                );
+                bridge.as_mut().file_offered(QString::from(json.as_str()));
+            });
+        }
+        ConnectionEvent::FileProgress {
+            transfer_id,
+            progress,
+        } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge
+                    .as_mut()
+                    .file_progress(QString::from(transfer_id.as_str()), progress);
+            });
+        }
+        ConnectionEvent::FileComplete {
+            transfer_id,
+            peer_id,
+            room_id,
+            supernode_id,
+            purpose,
+            payload,
+            rel_path,
+        } => {
+            use crate::file_transfer::TransferPayload;
+            // Inline transfers hand back bytes to write; a streamed transfer
+            // was already written and verified on disk, so it only names its
+            // final path — never re-serialize a 250 MB file to save it.
+            let byte_len = payload.len();
+            let saved_path = match &payload {
+                TransferPayload::Bytes(bytes) => save_received_file(&rel_path, bytes),
+                TransferPayload::SavedAt { path, .. } => Some(path.clone()),
+            };
+            let kind = crate::chat_store::message_kind_for_path(&rel_path);
+            let size_str = crate::chat_store::format_byte_size(byte_len);
+            let body = attachment_body_label(&kind, &rel_path);
+            let message_id = format!("xfer-{transfer_id}");
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            let is_room = !room_id.is_empty() || purpose == "room_file";
+            let json = serde_json::json!({
+                "transfer_id": transfer_id,
+                "rel_path": rel_path,
+                "saved_path": saved_path.clone().unwrap_or_default(),
+                "size_str": size_str,
+                "peer_id": peer_id,
+                "room_id": room_id,
+                "purpose": purpose,
+            })
+            .to_string();
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let attachment_path = saved_path.clone().unwrap_or_default();
+                // Offer already inserted a bubble (xfer-{id}). Patch its path
+                // rather than appending a second message for the same file.
+                if let Some(ref cs) = bridge.rust().chat_store {
+                    if cs
+                        .get_by_id(&message_id)
+                        .map(|m| m.is_some())
+                        .unwrap_or(false)
+                    {
+                        // Sender ACK has no new path — keep the local-echo
+                        // attachment rather than wiping it to empty.
+                        if !attachment_path.is_empty() {
+                            if let Err(e) =
+                                cs.update_attachment(&message_id, &attachment_path, &size_str)
+                            {
+                                warn!("chat_store update_attachment error: {e}");
+                            }
+                        }
+                        bridge.as_mut().file_complete(QString::from(json.as_str()));
+                        return;
+                    }
+                }
+                if is_room {
+                    let sn_raw = if supernode_id.is_empty() {
+                        bridge.rust().current_supernode_id.clone()
+                    } else {
+                        supernode_id.clone()
+                    };
+                    let rid = if room_id.is_empty() {
+                        bridge.rust().current_room_id.clone()
+                    } else {
+                        room_id.clone()
+                    };
+                    let sn = bridge
+                        .rust()
+                        .resolve_supernode_node_id_str(&sn_raw)
+                        .unwrap_or(sn_raw);
+                    if !sn.is_empty() && !rid.is_empty() && !attachment_path.is_empty() {
+                        let my_pub = bridge.rust().my_public_id.clone();
+                        let my_peer = bridge.rust().my_peer_id.clone();
+                        let author =
+                            if peer_id.is_empty() || peer_id == rid || pub_id_eq(&peer_id, &sn) {
+                                String::new()
+                            } else {
+                                peer_id.clone()
+                            };
+                        let mine = !author.is_empty()
+                            && (pub_id_eq(&author, &my_pub) || pub_id_eq(&author, &my_peer));
+                        let display_sender = if author.is_empty() {
+                            String::new()
+                        } else {
+                            room_chat_display_sender(bridge.rust(), "", &author)
+                        };
+                        let msg_json = serde_json::json!({
+                            "msg_id": message_id.clone(),
+                            "sender": display_sender.clone(),
+                            "sender_id": author.clone(),
+                            "body": body.clone(),
+                            "timestamp": now_ts,
+                            "kind": kind.as_str(),
+                            "mine": mine,
+                            "is_room": true,
+                            "status": "delivered",
+                            "attachment_name": rel_path.clone(),
+                            "attachment_path": attachment_path.clone(),
+                            "size_str": size_str.clone(),
+                            "supernode_id": sn.clone(),
+                            "room_id": rid.clone(),
+                        })
+                        .to_string();
+                        if let Some(ref cs) = bridge.rust().chat_store {
+                            let store_key = room_chat_store_peer_id(&rid);
+                            let chat_msg = crate::chat_store::ChatMessage {
+                                id: message_id.clone(),
+                                peer_id: store_key,
+                                sender: author.clone(),
+                                recipient: rid.clone(),
+                                body: body.clone(),
+                                timestamp: now_ts,
+                                is_self: mine,
+                                status: crate::chat_store::MessageStatus::Delivered,
+                                kind: kind.clone(),
+                                attachment_name: rel_path.clone(),
+                                attachment_path: attachment_path.clone(),
+                                size_str: size_str.clone(),
+                                status_note: String::new(),
+                                sender_handle: display_sender,
+                            };
+                            if let Err(e) = cs.insert(&chat_msg) {
+                                warn!("chat_store insert (room file inbound) error: {e}");
+                            }
+                        }
+                        let key = room_chat_history_key(&sn, &rid);
+                        bridge
+                            .as_mut()
+                            .rust_mut()
+                            .room_chat_history
+                            .entry(key)
+                            .or_default()
+                            .push(msg_json.clone());
+                        bridge
+                            .as_mut()
+                            .room_chat_received(QString::from(msg_json.as_str()));
+                    }
+                } else if !attachment_path.is_empty() {
+                    let handle = {
+                        let r = bridge.rust();
+                        r.peer_store
+                            .as_ref()
+                            .and_then(|ps| {
+                                let store = ps.read();
+                                store
+                                    .get(&peer_id)
+                                    .or_else(|| store.get_by_identity(&peer_id))
+                                    .map(|rec| rec.display_name())
+                            })
+                            .unwrap_or_else(|| peer_id.clone())
+                    };
+                    let list_peer = lookup_list_peer_id(bridge.rust(), &peer_id)
+                        .unwrap_or_else(|| peer_id.clone());
+                    let chat_msg = crate::chat_store::ChatMessage {
+                        id: message_id.clone(),
+                        peer_id: list_peer.clone(),
+                        sender: handle.clone(),
+                        recipient: String::new(),
+                        body: body.clone(),
+                        timestamp: now_ts,
+                        is_self: false,
+                        status: crate::chat_store::MessageStatus::Delivered,
+                        kind: kind.clone(),
+                        attachment_name: rel_path.clone(),
+                        attachment_path: attachment_path.clone(),
+                        size_str: size_str.clone(),
+                        status_note: String::new(),
+                        sender_handle: handle.clone(),
+                    };
+                    if let Some(ref cs) = bridge.rust().chat_store {
+                        if let Err(e) = cs.insert(&chat_msg) {
+                            warn!("chat_store insert (file inbound) error: {e}");
+                        }
+                    }
+                    let msg_json = serde_json::json!({
+                        "msg_id": message_id,
+                        "peer_id": list_peer,
+                        "sender": handle,
+                        "body": body,
+                        "timestamp": now_ts,
+                        "kind": kind.as_str(),
+                        "mine": false,
+                        "status": "delivered",
+                        "attachment_name": rel_path,
+                        "attachment_path": attachment_path,
+                        "size_str": size_str,
+                    })
+                    .to_string();
+                    bridge
+                        .as_mut()
+                        .chat_message_received(QString::from(msg_json.as_str()));
+                }
+
+                bridge.as_mut().file_complete(QString::from(json.as_str()));
+            });
+        }
+        ConnectionEvent::FileFailed {
+            transfer_id,
+            reason,
+        } => {
+            let json = serde_json::json!({
+                "transfer_id": transfer_id,
+                "reason": reason,
+            })
+            .to_string();
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge.as_mut().file_failed(QString::from(json.as_str()));
+            });
+        }
+        ConnectionEvent::ConnectionStats { peer_id, json } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                // Feed transport loss/RTT into the call controller's adaptive
+                // bitrate control before forwarding the stats to QML.
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
+                    let loss_pct = v
+                        .get("packet_loss_pct")
+                        .and_then(|x| x.as_f64())
+                        .unwrap_or(0.0) as f32;
+                    let rtt_ms = v.get("rtt_ms").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
+                    if let Some(ref tx) = bridge.rust().call_cmd_tx {
+                        let _ = tx.try_send(CallCommand::UpdateNetworkQuality { loss_pct, rtt_ms });
+                    }
+                    // Same measurement steers video. Adapting both media from
+                    // one reading keeps them from fighting: two independent
+                    // estimators on one link would each read the other's
+                    // back-off as headroom and climb into it.
+                    if let Some(sender) = bridge.as_mut().rust_mut().video_sender.as_mut() {
+                        sender.apply_network_quality(loss_pct);
+                    }
+                    // Keep supernode rows per cluster member for the room
+                    // connection panel. Peer rows resolve to no member key.
+                    if let Some(key) = bridge.rust().cluster_member_key(&peer_id) {
+                        bridge
+                            .as_mut()
+                            .rust_mut()
+                            .supernode_stats
+                            .insert(key.trim_end_matches('=').to_owned(), v);
+                    }
+                }
+                bridge
+                    .as_mut()
+                    .connection_stats(QString::from(json.as_str()));
+            });
+        }
+        #[cfg(feature = "webengine")]
+        ConnectionEvent::PortalGameDatagram {
+            supernode_id,
+            payload,
+        } => {
+            crate::ui::scheme::push_portal_game_datagram(&supernode_id, payload);
+        }
+        #[cfg(not(feature = "webengine"))]
+        ConnectionEvent::PortalGameDatagram { .. } => {}
+        _ => {}
+    }
+}
+
+fn dispatch_update_event(
+    qt_thread: &cxx_qt::CxxQtThread<ffi::AppBridge>,
+    ev: crate::github_updater::UpdateEvent,
+) {
+    use crate::github_updater::UpdateEvent;
+    match ev {
+        UpdateEvent::UpdateAvailable(release) => {
+            let tag = release.tag_name.clone();
+            let url = release.html_url.clone();
+            info!("Update available: {tag}");
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge.as_mut().rust_mut().pending_release =
+                    Some(crate::github_updater::ReleaseInfo {
+                        tag_name: tag.clone(),
+                        name: None,
+                        body: None,
+                        html_url: url.clone(),
+                    });
+                bridge
+                    .as_mut()
+                    .update_available(QString::from(tag.as_str()), QString::from(url.as_str()));
+            });
+        }
+        UpdateEvent::CheckError(e) => warn!("Update check error: {e}"),
+        UpdateEvent::InstallerStarted => info!("Installer launched"),
+        UpdateEvent::InstallerError(e) => {
+            warn!("Installer error: {e}");
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge
+                    .as_mut()
+                    .update_install_failed(QString::from(e.as_str()));
+            });
+        }
+        UpdateEvent::AlreadyLatest => info!("Already on latest version"),
+    }
+}
+
+fn dispatch_ollama_event(
+    qt_thread: &cxx_qt::CxxQtThread<ffi::AppBridge>,
+    ev: crate::ollama_module::OllamaEvent,
+) {
+    use crate::ollama_module::OllamaEvent;
+    match ev {
+        OllamaEvent::Chunk(chunk) => {
+            let rid = chunk.request_id.clone();
+            let text = chunk.text.clone();
+            let done = chunk.done;
+            let is_auto = rid.starts_with("auto-");
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                if is_auto {
+                    auto_reply_on_chunk(bridge.as_mut(), &rid, &text);
+                    if done {
+                        auto_reply_on_done(bridge.as_mut(), &rid);
+                    }
+                    return;
+                }
+                if !text.is_empty() {
+                    bridge
+                        .as_mut()
+                        .ollama_chunk(QString::from(rid.as_str()), QString::from(text.as_str()));
+                }
+                if done {
+                    bridge.as_mut().ollama_done(QString::from(rid.as_str()));
+                }
+            });
+        }
+        OllamaEvent::Error {
+            request_id,
+            message,
+        } => {
+            warn!("[ollama] error for {request_id}: {message}");
+            let is_auto = request_id.starts_with("auto-");
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                if is_auto {
+                    auto_reply_on_error(bridge.as_mut(), &request_id, &message);
+                    return;
+                }
+                bridge.as_mut().ollama_error(
+                    QString::from(request_id.as_str()),
+                    QString::from(message.as_str()),
+                );
+            });
+        }
+        OllamaEvent::Models { models, error } => {
+            let models_json = serde_json::to_string(&models).unwrap_or_else(|_| "[]".to_owned());
+            let _ = qt_thread.queue(move |bridge: Pin<&mut ffi::AppBridge>| {
+                publish_ollama_models(bridge, &models_json, &error);
+            });
+        }
+    }
+}
+
+fn dispatch_call_event(
+    qt_thread: &cxx_qt::CxxQtThread<ffi::AppBridge>,
+    ev: crate::call_controller::CallEvent,
+) {
+    use crate::call_controller::{CallEvent, CallState};
+    match ev {
+        CallEvent::LocalSpeakingChanged(speaking) => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge.as_mut().local_speaking_changed(speaking);
+            });
+        }
+        CallEvent::LocalLevelChanged(level) => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge.as_mut().set_mic_level(level);
+            });
+        }
+        CallEvent::StateChanged(state) => {
+            // When transitioning back to idle, reset mic test state and level.
+            if state == CallState::Idle {
+                let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                    bridge.as_mut().set_mic_level(0.0);
+                    bridge.as_mut().set_mic_test_active(false);
+                });
+            }
+        }
+        CallEvent::RemoteSpeakingChanged { peer_id, speaking } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge
+                    .as_mut()
+                    .peer_speaking_changed(QString::from(peer_id.as_str()), speaking);
+            });
+        }
+        CallEvent::RemoteLevelChanged { peer_id, level } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge
+                    .as_mut()
+                    .peer_level_changed(QString::from(peer_id.as_str()), level);
+            });
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod room_voice_count_tests {
+    use super::{cluster_chat_counts_from, enrich_room_voice_participants, repad_public_id};
+
+    #[test]
+    fn repad_restores_canonical_padding() {
+        // A 32-byte Ed25519 public_id is 43 chars unpadded / 44 padded. An
+        // un-padded roster id (as relay peers deliver) must round-trip back to
+        // the padded form the peer store and `my_public_id` are keyed on.
+        let padded = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ="; // 44 chars, 1 '='
+        let unpadded = padded.trim_end_matches('=');
+        assert_eq!(unpadded.len(), 43);
+        assert_eq!(repad_public_id(unpadded), padded);
+        // Idempotent on already-padded input.
+        assert_eq!(repad_public_id(padded), padded);
+        // A value that needs two '=' pads (bare len % 4 == 2).
+        assert_eq!(repad_public_id("AB"), "AB==");
+        assert_eq!(repad_public_id("AB=="), "AB==");
+    }
+
+    #[test]
+    fn enrich_uses_participant_ids_as_voice_count() {
+        let rooms = serde_json::json!([{
+            "room_id": "a",
+            "member_count": 99,
+            "participant_ids": ["p1", "p2"],
+        }]);
+        let out = enrich_room_voice_participants(rooms, None, "me", None);
+        let room = &out.as_array().unwrap()[0];
+        assert_eq!(room.get("voice_count").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(room.get("member_count").and_then(|v| v.as_u64()), Some(2));
+    }
+
+    #[test]
+    fn enrich_empty_participant_ids_is_zero_voices() {
+        // Explicit empty voice roster must win over a stale member_count.
+        let rooms = serde_json::json!([{
+            "room_id": "a",
+            "member_count": 5,
+            "participant_ids": [],
+        }]);
+        let out = enrich_room_voice_participants(rooms, None, "me", None);
+        let room = &out.as_array().unwrap()[0];
+        assert_eq!(room.get("voice_count").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(room.get("member_count").and_then(|v| v.as_u64()), Some(0));
+    }
+
+    #[test]
+    fn enrich_falls_back_to_member_count_without_id_list() {
+        let rooms = serde_json::json!([{
+            "room_id": "a",
+            "member_count": 3,
+        }]);
+        let out = enrich_room_voice_participants(rooms, None, "me", None);
+        let room = &out.as_array().unwrap()[0];
+        assert_eq!(room.get("voice_count").and_then(|v| v.as_u64()), Some(3));
+    }
+
+    #[test]
+    fn enrich_ignores_chat_members_field() {
+        // chat_members must never drive the sidebar badge.
+        let rooms = serde_json::json!([{
+            "room_id": "a",
+            "participant_ids": ["speaker"],
+            "chat_members": ["speaker", "lurker", "lurker2"],
+            "member_count": 1,
+        }]);
+        let out = enrich_room_voice_participants(rooms, None, "me", None);
+        let room = &out.as_array().unwrap()[0];
+        assert_eq!(room.get("voice_count").and_then(|v| v.as_u64()), Some(1));
+    }
+
+    /// The server's `chat_count` (text-chat occupancy, distinct from the
+    /// voice-only badge) must survive enrichment untouched — this function
+    /// only ever inserts/overwrites the voice-specific keys.
+    #[test]
+    fn chat_counts_union_across_cluster_members() {
+        // The bug this exists for: a cluster hosts one logical room on several
+        // members, and two peers routinely subscribe on different ones. Each
+        // node's own `chat_count` is then 1, and the sidebar showed 1 while the
+        // member list showed both.
+        let mut rosters = std::collections::HashMap::new();
+        rosters.insert("nodeA:room1".to_owned(), vec!["desktop".to_owned()]);
+        rosters.insert("nodeB:room1".to_owned(), vec!["phone".to_owned()]);
+        let counts = cluster_chat_counts_from(&rosters);
+        assert_eq!(counts.get("room1"), Some(&2));
+    }
+
+    #[test]
+    fn chat_counts_do_not_double_count_a_peer_on_two_nodes() {
+        // Multi-homing means the same peer legitimately appears in two nodes'
+        // rosters; a sum would report 2 people where there is one.
+        let mut rosters = std::collections::HashMap::new();
+        rosters.insert("nodeA:room1".to_owned(), vec!["phone".to_owned()]);
+        rosters.insert("nodeB:room1".to_owned(), vec!["phone".to_owned()]);
+        assert_eq!(cluster_chat_counts_from(&rosters).get("room1"), Some(&1));
+    }
+
+    #[test]
+    fn chat_counts_keep_rooms_apart() {
+        let mut rosters = std::collections::HashMap::new();
+        rosters.insert("nodeA:room1".to_owned(), vec!["a".to_owned()]);
+        rosters.insert(
+            "nodeA:room2".to_owned(),
+            vec!["a".to_owned(), "b".to_owned()],
+        );
+        let counts = cluster_chat_counts_from(&rosters);
+        assert_eq!(counts.get("room1"), Some(&1));
+        assert_eq!(counts.get("room2"), Some(&2));
+    }
+
+    #[test]
+    fn enrich_prefers_the_cluster_union_over_one_node_chat_count() {
+        let rooms = serde_json::json!([{
+            "room_id": "room1",
+            "participant_ids": [],
+            "chat_count": 1,
+        }]);
+        let mut counts = std::collections::HashMap::new();
+        counts.insert("room1".to_owned(), 2usize);
+        let out = enrich_room_voice_participants(rooms, None, "me", Some(&counts));
+        let room = &out.as_array().unwrap()[0];
+        assert_eq!(room.get("chat_count").and_then(|v| v.as_u64()), Some(2));
+        // The voice badge must not move with it.
+        assert_eq!(room.get("voice_count").and_then(|v| v.as_u64()), Some(0));
+    }
+
+    #[test]
+    fn enrich_preserves_chat_count() {
+        let rooms = serde_json::json!([{
+            "room_id": "a",
+            "participant_ids": ["speaker"],
+            "member_count": 1,
+            "chat_count": 3,
+        }]);
+        let out = enrich_room_voice_participants(rooms, None, "me", None);
+        let room = &out.as_array().unwrap()[0];
+        assert_eq!(room.get("voice_count").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(room.get("chat_count").and_then(|v| v.as_u64()), Some(3));
+    }
+}
+
+#[cfg(test)]
+mod cluster_grouping_tests {
+    use super::{
+        cluster_full_set, cluster_node_rows, cluster_representative, cluster_rollup_connected,
+        pick_live_cluster_member, pub_id_eq, ClusterNodeSources, ClusterSiblings, MemberConnected,
+    };
+    use std::collections::HashMap;
+
+    /// A 3-member cluster where each member's verified roster lists the other
+    /// two (siblings exclude self, as `verified_members` returns them).
+    fn abc_cluster() -> ClusterSiblings {
+        let mut s = ClusterSiblings::new();
+        s.insert("A".into(), vec!["B".into(), "C".into()]);
+        s.insert("B".into(), vec!["A".into(), "C".into()]);
+        s.insert("C".into(), vec!["A".into(), "B".into()]);
+        s
+    }
+
+    fn connected(pairs: &[(&str, bool)]) -> MemberConnected {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect()
+    }
+
+    #[test]
+    fn full_set_includes_self_and_all_members() {
+        let s = abc_cluster();
+        assert_eq!(cluster_full_set(&s, "B"), vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn representative_is_smallest_and_stable_from_any_member() {
+        let s = abc_cluster();
+        // Same representative regardless of which member we ask from — the
+        // property that keeps the logical node's identity stable across failover.
+        assert_eq!(cluster_representative(&s, "A"), "A");
+        assert_eq!(cluster_representative(&s, "B"), "A");
+        assert_eq!(cluster_representative(&s, "C"), "A");
+    }
+
+    #[test]
+    fn full_set_converges_when_only_one_roster_arrived() {
+        // Only B's roster has been received so far (naming A and C); A and C are
+        // not yet keys. The set must still resolve to all three from any of them.
+        let mut s = ClusterSiblings::new();
+        s.insert("B".into(), vec!["A".into(), "C".into()]);
+        assert_eq!(cluster_full_set(&s, "A"), vec!["A", "B", "C"]);
+        assert_eq!(cluster_representative(&s, "C"), "A");
+    }
+
+    #[test]
+    fn standalone_node_is_its_own_cluster() {
+        let s = ClusterSiblings::new();
+        assert_eq!(cluster_full_set(&s, "solo"), vec!["solo"]);
+        assert_eq!(cluster_representative(&s, "solo"), "solo");
+    }
+
+    #[test]
+    fn rollup_is_green_while_any_member_is_up() {
+        let s = abc_cluster();
+        // Representative A is down but B is up — the logical node stays green.
+        let c = connected(&[("A", false), ("B", true), ("C", false)]);
+        assert!(cluster_rollup_connected(&s, &c, "A"));
+        // All down → not green.
+        let c = connected(&[("A", false), ("B", false), ("C", false)]);
+        assert!(!cluster_rollup_connected(&s, &c, "A"));
+    }
+
+    #[test]
+    fn pick_live_prefers_representative_then_any_live_member() {
+        let s = abc_cluster();
+        // Representative A live → chosen.
+        let c = connected(&[("A", true), ("B", true)]);
+        assert_eq!(pick_live_cluster_member(&s, &c, "C"), Some("A".into()));
+        // A down, B live → B (any live member serves the portal).
+        let c = connected(&[("A", false), ("B", true)]);
+        assert_eq!(pick_live_cluster_member(&s, &c, "C"), Some("B".into()));
+        // All down → none.
+        let c = connected(&[("A", false), ("B", false), ("C", false)]);
+        assert_eq!(pick_live_cluster_member(&s, &c, "A"), None);
+    }
+
+    #[test]
+    fn same_cluster_scope_matches_siblings_and_pad_variants() {
+        // Minimal AppBridgeRust-shaped check via free helpers used by roster apply.
+        assert!(pub_id_eq("abc=", "abc"));
+        assert!(!pub_id_eq("abc", "xyz"));
+        // cluster_full_set is the basis of same_cluster_scope; siblings share a set.
+        let s = abc_cluster();
+        assert!(cluster_full_set(&s, "A").iter().any(|m| pub_id_eq(m, "C")));
+        assert!(cluster_full_set(&s, "C").iter().any(|m| pub_id_eq(m, "A")));
+    }
+
+    #[test]
+    fn node_rows_put_serving_member_first_and_hide_stale_readings() {
+        // A is a known supernode, so its own roster and live state are keyed by
+        // the padded canonical id while its siblings name it unpadded.
+        let mut s = ClusterSiblings::new();
+        s.insert("A=".into(), vec!["B".into(), "C".into()]);
+        s.insert("B".into(), vec!["A".into(), "C".into()]);
+        s.insert("C".into(), vec!["A".into(), "B".into()]);
+        let c = connected(&[("A=", true), ("B", false), ("C", true)]);
+        let stats: HashMap<String, serde_json::Value> = [
+            ("A".to_owned(), serde_json::json!({ "rtt_ms": 20.0 })),
+            // B's last reading, still cached when it dropped.
+            ("B".to_owned(), serde_json::json!({ "rtt_ms": 90.0 })),
+            ("C".to_owned(), serde_json::json!({ "rtt_ms": 40.0 })),
+        ]
+        .into_iter()
+        .collect();
+        let addrs: HashMap<String, String> = [("C".to_owned(), "10.0.0.3:3778".to_owned())]
+            .into_iter()
+            .collect();
+        let rosters: HashMap<String, Vec<String>> = [
+            ("C:room1".to_owned(), vec!["p1".to_owned(), "p2".to_owned()]),
+            ("C:other".to_owned(), vec!["p3".to_owned()]),
+            ("B:room1".to_owned(), vec!["p4".to_owned()]),
+        ]
+        .into_iter()
+        .collect();
+        let src = ClusterNodeSources {
+            siblings: &s,
+            connected: &c,
+            stats: &stats,
+            addrs: &addrs,
+            rosters: &rosters,
+        };
+
+        let rows = cluster_node_rows(&src, "B", "room1", "C");
+
+        // Serving member, then the other live one, then the dead one — and the
+        // padded and unpadded forms of A collapse to a single row.
+        let ids: Vec<&str> = rows
+            .iter()
+            .map(|r| r["node_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["C", "A", "B"]);
+        assert_eq!(rows[0]["active"], true);
+        assert_eq!(rows[0]["relay_addr"], "10.0.0.3:3778");
+        assert_eq!(rows[0]["room_members"], 2);
+        assert_eq!(rows[1]["active"], false);
+        assert_eq!(rows[1]["stats"]["rtt_ms"], 20.0);
+        assert!(rows[1]["room_members"].is_null());
+        assert_eq!(rows[2]["connected"], false);
+        assert!(rows[2]["stats"].is_null());
+        assert!(rows[2]["room_members"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod video_encoder_settings_tests {
+    use super::*;
+    use doubleslash_features::video_codec::VideoCodec;
+
+    #[test]
+    fn a_full_blob_parses_every_field() {
+        let s = VideoEncoderSettings::parse(
+            r#"{"width":1920,"height":1080,"fps":60,"bitrate_bps":4000000,
+                "keyframe_secs":2,"codec":"vp8","adaptive":false}"#,
+        );
+        assert_eq!(s.overrides().width, 1920);
+        assert_eq!(s.overrides().height, 1080);
+        assert_eq!(s.overrides().fps, 60);
+        assert_eq!(s.overrides().bitrate_bps, 4_000_000);
+        assert_eq!(s.overrides().keyframe_interval_secs, 2);
+        assert_eq!(s.preferred_codec(), Some(VideoCodec::Vp8));
+        assert!(!s.adaptive);
+    }
+
+    /// The blob crosses the QML boundary from a hand-editable file, so every
+    /// unusable spelling has to land on the behaviour that predates it: the
+    /// preset alone, negotiated codec, adaptation on.
+    #[test]
+    fn an_unusable_blob_falls_back_to_the_preset_alone() {
+        for raw in ["", "   ", "not json", "[]", "null", r#"{"width":"wide"}"#] {
+            let s = VideoEncoderSettings::parse(raw);
+            assert_eq!(
+                s.overrides(),
+                crate::video::sender::QualityOverrides::default(),
+                "{raw:?} must not override the preset"
+            );
+            assert_eq!(s.preferred_codec(), None, "{raw:?} must still negotiate");
+            assert!(s.adaptive, "{raw:?} must leave adaptation on");
+        }
+    }
+
+    /// Upgrading from a build without these settings must not silently pin an
+    /// existing user's stream at their ceiling.
+    #[test]
+    fn a_blob_missing_the_adaptive_flag_keeps_adaptation_on() {
+        assert!(VideoEncoderSettings::parse(r#"{"width":1280,"height":720}"#).adaptive);
+    }
+
+    #[test]
+    fn auto_and_unknown_codecs_both_mean_negotiate() {
+        for raw in [
+            r#"{"codec":"auto"}"#,
+            r#"{"codec":"av1"}"#,
+            r#"{"codec":""}"#,
+        ] {
+            assert_eq!(VideoEncoderSettings::parse(raw).preferred_codec(), None);
+        }
+    }
+
+    /// The stub is never advertised to peers, so it must not be reachable by
+    /// writing it into a settings file either.
+    #[test]
+    fn the_stub_codec_cannot_be_requested_from_settings() {
+        assert_eq!(
+            VideoEncoderSettings::parse(r#"{"codec":"stub"}"#).preferred_codec(),
+            None
+        );
+    }
+
+    /// The contract across the QML boundary: what `SettingsModel` writes is
+    /// exactly what this parses. A field renamed on one side only would leave
+    /// the setting silently not applying, with nothing failing anywhere.
+    #[test]
+    fn what_the_settings_model_writes_is_what_this_reads() {
+        let overrides = crate::video::sender::QualityOverrides {
+            width: 1600,
+            height: 900,
+            fps: 48,
+            bitrate_bps: 3_000_000,
+            keyframe_interval_secs: 8,
+        };
+        let blob = crate::ui::settings_model::video_encoder_blob(overrides, "vp8", false);
+        let parsed = VideoEncoderSettings::parse(&blob);
+        assert_eq!(parsed.overrides(), overrides);
+        assert_eq!(parsed.preferred_codec(), Some(VideoCodec::Vp8));
+        assert!(!parsed.adaptive);
+    }
+
+    /// ...including the empty case, which must mean "the preset alone" on both
+    /// sides rather than a capture pinned at zero.
+    #[test]
+    fn an_empty_settings_model_blob_round_trips_as_no_overrides() {
+        let blob = crate::ui::settings_model::video_encoder_blob(
+            crate::video::sender::QualityOverrides::default(),
+            "auto",
+            true,
+        );
+        let parsed = VideoEncoderSettings::parse(&blob);
+        assert_eq!(parsed, VideoEncoderSettings::default());
+    }
+
+    /// Every codec offered in the picker must be one this build can actually
+    /// encode — the picker is built from this list, so a name here that
+    /// `make_encoder` rejects would be a setting that cannot work.
+    #[test]
+    fn every_labelled_codec_is_one_this_build_can_encode() {
+        for codec in crate::video::codec::available_codecs() {
+            assert!(!video_codec_label(codec).is_empty());
+            assert_eq!(
+                doubleslash_features::video_codec::preference_from_setting(codec.as_str()),
+                Some(codec),
+                "{codec:?} is offered in the picker but does not round-trip as a preference"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod local_file_path_tests {
+    use super::*;
+
+    /// The leading slash of `file:///` is the Unix root. Dropping it made every
+    /// picked file resolve against the process working directory instead.
+    #[test]
+    fn unix_url_keeps_its_root() {
+        let want = format!("{0}home{0}me{0}a.bin", std::path::MAIN_SEPARATOR);
+        assert_eq!(parse_local_file_path("file:///home/me/a.bin"), want);
+    }
+
+    /// On Windows that same slash precedes a drive letter and is not part of
+    /// the path.
+    #[test]
+    fn windows_url_drops_the_slash_before_the_drive() {
+        let want = format!("C:{0}Users{0}me{0}a.bin", std::path::MAIN_SEPARATOR);
+        assert_eq!(parse_local_file_path("file:///C:/Users/me/a.bin"), want);
+    }
+
+    #[test]
+    fn percent_escapes_are_decoded() {
+        let got = parse_local_file_path("file:///home/me/my%20file%2Bv2.bin");
+        assert!(got.ends_with("my file+v2.bin"), "{got}");
+    }
+
+    /// A malformed or partial escape must survive as written rather than
+    /// mangling the name or dropping bytes.
+    #[test]
+    fn malformed_escapes_survive_unchanged() {
+        for (url, tail) in [
+            ("file:///tmp/100%25.bin", "100%.bin"),
+            ("file:///tmp/50%off.bin", "50%off.bin"),
+            ("file:///tmp/trailing%2", "trailing%2"),
+            ("file:///tmp/bare%.bin", "bare%.bin"),
+        ] {
+            let got = parse_local_file_path(url);
+            assert!(got.ends_with(tail), "{url} -> {got}, wanted tail {tail}");
+        }
+    }
+
+    /// The bridge is also called with paths the client stored itself.
+    #[test]
+    fn a_plain_path_is_returned_unchanged() {
+        assert_eq!(parse_local_file_path("/home/me/a.bin"), "/home/me/a.bin");
+        assert_eq!(
+            parse_local_file_path(r"C:\Users\me\a.bin"),
+            r"C:\Users\me\a.bin"
+        );
+        assert_eq!(parse_local_file_path(""), "");
+    }
+
+    #[test]
+    fn drive_letter_detection_is_narrow() {
+        assert!(starts_with_drive_letter("C:/x"));
+        assert!(starts_with_drive_letter("z:"));
+        assert!(!starts_with_drive_letter("home/x"));
+        assert!(!starts_with_drive_letter("/C:/x"));
+        assert!(!starts_with_drive_letter("1:/x"));
+        assert!(!starts_with_drive_letter(""));
+    }
+}
+
+/// Apply the user's auto-unlock choice for `public_id` after a successful unlock.
+///
+/// Storing the Argon2id-derived file key - never the passphrase - is what lets
+/// the next launch skip the prompt. The `false` branch matters as much as the
+/// `true` one: unchecking the box has to erase a key stored on an earlier
+/// unlock, or "off" would only mean "off next time".
+fn apply_auto_unlock_choice(public_id: &str, aes_key: &[u8; 32], remember: bool) {
+    if remember {
+        if crate::identity::keyring_store_aes_key(public_id, aes_key) {
+            info!("Auto-unlock enabled — identity key stored in the OS keyring");
+        } else {
+            // Not fatal: the identity is open, the user just has to type the
+            // passphrase again next time. A silent failure would be worse.
+            warn!("Auto-unlock requested but the OS keyring refused the key");
+        }
+    } else if crate::identity::keyring_delete_aes_key(public_id) {
+        info!("Auto-unlock disabled — identity key removed from the OS keyring");
+    }
+}

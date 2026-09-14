@@ -24,16 +24,16 @@ feature), so the split cost nothing structurally.
 
 | Path | What it is |
 |---|---|
-| `rust/conquerd-android/` | JNI bridge crate — `cdylib`, its own workspace |
+| `rust/doubleslash-android/` | JNI bridge crate — `cdylib`, its own workspace |
 | `android/` | Gradle project (Kotlin, Compose, Material 3) |
 | `android/app/src/main/jniLibs/` | Where cargo-ndk drops the built `.so` (gitignored) |
 
-The bridge crate depends on `conquerd-client` as a plain library. It never
+The bridge crate depends on `doubleslash-client` as a plain library. It never
 enables `qt-ui`, which is what keeps Qt out of the Android dependency graph.
 
 ## The JNI boundary
 
-Four native methods, on `com.conquerd.client.NativeCore`:
+Four native methods, on `com.doubleslash.client.NativeCore`:
 
 ```
 String nativeVersion()
@@ -103,7 +103,7 @@ wrapper 8.11.1) is the floor that officially supports `compileSdk` 36.
 To build the core alone:
 
 ```powershell
-cd rust/conquerd-android
+cd rust/doubleslash-android
 cargo ndk -t arm64-v8a --platform 26 -o ../../android/app/src/main/jniLibs build --lib
 ```
 
@@ -118,7 +118,7 @@ library `dlopen` refuses on older devices with no useful diagnostic.
 ## Tests
 
 ```powershell
-cd rust/conquerd-android && cargo test        # 23, host - no device needed
+cd rust/doubleslash-android && cargo test        # 23, host - no device needed
 cd android && ./gradlew testDebugUnitTest     # 13, JVM
 ```
 
@@ -155,7 +155,7 @@ llvm-readelf -l lib/arm64-v8a/<name>.so | findstr LOAD   # Align must be 0x4000
 zipalign -c -P 16 -v 4 app-debug.apk                     # and the zip itself
 ```
 
-**NDK r28 emits 16 KB-aligned segments by default**, so `libconquerd_android.so`
+**NDK r28 emits 16 KB-aligned segments by default**, so `libdoubleslash_android.so`
 needs no linker flags. The risk is dependencies: CameraX **1.3.4** shipped
 `libimage_processing_util_jni.so` at 4 KB and produced exactly this warning on a
 Pixel. Fixed by moving to CameraX **1.4.2**. Any new dependency carrying a `.so`
@@ -177,19 +177,19 @@ default `tracing_subscriber` writer would send every line into the void.
 Four changes; the first three were latent cross-compilation bugs in shared
 crates rather than Android special-casing:
 
-1. **`conquerd-opus/build.rs`** keyed its platform branches off `cfg!(target_os)`,
+1. **`doubleslash-opus/build.rs`** keyed its platform branches off `cfg!(target_os)`,
    which in a build script describes the *host*. It now reads
    `CARGO_CFG_TARGET_OS`, and passes the NDK's `android.toolchain.cmake` plus
    `ANDROID_ABI` / `ANDROID_PLATFORM` — without the toolchain file, cmake's
    Android-Determine module aborts with "Neither the NDK or a standalone
    toolchain was found".
-2. **`conquerd-vpx/build.rs`** emitted `cargo:rustc-link-lib=pthread` for every
+2. **`doubleslash-vpx/build.rs`** emitted `cargo:rustc-link-lib=pthread` for every
    non-Windows target. Bionic implements pthreads inside libc and ships no
    `libpthread` at all, so that is a hard link error rather than a no-op.
 3. **`arboard`** (clipboard) has no Android backend. It is only ever used by the
    Qt bridge, so it moved to an optional dependency behind the `qt-ui` feature —
    which also drops it from headless desktop builds.
-4. **`libc++abi` was never linked** (`rust/conquerd-android/build.rs`).
+4. **`libc++abi` was never linked** (`rust/doubleslash-android/build.rs`).
    `oboe-sys` emits only `-lc++_static`, which supplies libc++ but not the ABI
    layer under it. The link *succeeded* — a shared object may have undefined
    symbols — and failed only on the device as
@@ -319,10 +319,10 @@ accepted after unlock before the Home screen; the version is stored in
 `AppSettings.acceptedTermsVersion`. Mic and camera prompts show an in-app
 disclosure first, because a call keeps capture running with the screen off.
 Peer and room long-press menus include **Report** (a share sheet — there is no
-report backend). The portal WebView loads only `d://` / `conquerd://`; anything
+report backend). The portal WebView loads only `d://` / `doubleslash://`; anything
 else is blocked or opened in the system browser so the JS bridge cannot ride
 along. The public privacy policy is
-https://github.com/ConquerD/DoubleSlash/blob/develop/PRIVACY.md.
+https://github.com/DoubleSlashSpace/DoubleSlash/blob/develop/PRIVACY.md.
 
 **Incoming calls while backgrounded.** `IncomingCallNotifier` posts a
 `CallStyle` (API 31+) notification with Answer / Decline and a full-screen

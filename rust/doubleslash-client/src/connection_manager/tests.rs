@@ -1,0 +1,2548 @@
+use super::events::ConnectionEvent;
+use super::internal::{host_from_url, is_loopback_or_wildcard};
+use super::manager::{
+    accept_group_key_epoch, build_room_invite_url, is_elected_keyer, may_send_room_e2e_content,
+    normalize_room_type, parse_quic_lan_hint, parse_room_invite, peer_quic_endpoint,
+    peer_reconnect_backoff, plan_cluster_failover, room_scope_key,
+    should_auto_join_on_room_created, should_fanout_peer_relay, should_mint_first_room_key,
+    should_reseal_to_lagging_member, should_track_pending_materialize,
+    should_use_private_room_invite, union_members_for_room, FailoverPlan, RoomInvitePayload,
+    MAX_EPOCH_ADVANCE, ROOM_INVITE_SCHEMA,
+};
+use super::ConnectionManager;
+use crate::protocol::MessageType;
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+
+#[test]
+fn device_signaling_is_rejected_until_registration_is_negotiated() {
+    use crate::identity::Identity;
+    use crate::protocol::SignalingMessage;
+    use base64::Engine;
+    let identity = Identity::generate();
+    for source in [true, false] {
+        let mut message = SignalingMessage::new(MessageType::Ping, identity.public_id());
+        if source {
+            message.source_device = Some(doubleslash_features::DeviceId([1; 32]));
+        } else {
+            message.target = Some(identity.public_id());
+            message.target_device = Some(doubleslash_features::DeviceId([2; 32]));
+        }
+        message.signature = Some(
+            base64::engine::general_purpose::URL_SAFE
+                .encode(identity.sign(&message.canonical_bytes().unwrap())),
+        );
+        assert!(!ConnectionManager::verify_inbound_signature_for_test(
+            &message
+        ));
+    }
+}
+
+#[tokio::test]
+async fn portal_fetch_wait_does_not_block_relay_events() {
+    let mut context = harness::test_cm();
+    let mut outbound = context.cm.test_add_supernode_session("supernode");
+    let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+    tokio::time::timeout(
+        Duration::from_millis(100),
+        context
+            .cm
+            .handle_fetch_web_app("supernode".into(), "/index.html".into(), None, reply_tx),
+    )
+    .await
+    .expect("portal fetch must yield the manager to process RelayGranted and RelayClientReady");
+    assert!(outbound.try_recv().is_ok());
+    assert!(matches!(
+        reply_rx.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    let (second_tx, second_rx) = tokio::sync::oneshot::channel();
+    context
+        .cm
+        .handle_fetch_web_app("supernode".into(), "/index.html".into(), None, second_tx)
+        .await;
+    assert!(
+        outbound.try_recv().is_err(),
+        "concurrent fetches share one relay request"
+    );
+    context
+        .cm
+        .handle_internal_event(super::internal::InternalEvent::RelayClientReady {
+            supernode_id: "supernode".into(),
+            client: None,
+        })
+        .await;
+    assert_eq!(
+        reply_rx.await.unwrap().unwrap_err(),
+        "relay connection failed"
+    );
+    assert_eq!(
+        second_rx.await.unwrap().unwrap_err(),
+        "relay connection failed"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn portal_fetch_timeout_allows_retry() {
+    let mut context = harness::test_cm();
+    let mut outbound = context.cm.test_add_supernode_session("supernode");
+    for _ in 0..2 {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        context
+            .cm
+            .handle_fetch_web_app("supernode".into(), "/index.html".into(), None, reply_tx)
+            .await;
+        assert!(
+            outbound.try_recv().is_ok(),
+            "expired waiter must not suppress retry"
+        );
+        assert_eq!(
+            reply_rx.await.unwrap().unwrap_err(),
+            "timed out waiting for QUIC relay"
+        );
+    }
+}
+
+#[test]
+fn file_payload_stays_on_one_transport() {
+    assert!(ConnectionManager::is_ordered_file_payload(
+        &MessageType::FileTransferChunk
+    ));
+    assert!(ConnectionManager::is_ordered_file_payload(
+        &MessageType::FileTransferComplete
+    ));
+    assert!(ConnectionManager::is_ordered_file_payload(
+        &MessageType::SfuFileChunk
+    ));
+    assert!(ConnectionManager::is_ordered_file_payload(
+        &MessageType::SfuFileComplete
+    ));
+    assert!(!ConnectionManager::is_ordered_file_payload(
+        &MessageType::SfuFileOffer
+    ));
+    assert!(!ConnectionManager::is_ordered_file_payload(
+        &MessageType::ChatMessage
+    ));
+}
+
+#[test]
+fn parses_saved_quic_endpoints() {
+    assert_eq!(
+        parse_quic_lan_hint("quic://192.168.1.20:61046"),
+        Some(("192.168.1.20".to_owned(), 61046))
+    );
+    assert_eq!(
+        parse_quic_lan_hint("udp://[2001:db8::1]:61047"),
+        Some(("2001:db8::1".to_owned(), 61047))
+    );
+    assert_eq!(parse_quic_lan_hint("quic://localhost:0"), None);
+}
+
+#[test]
+fn peer_endpoint_prefers_persisted_hint() {
+    let record = crate::peer_store::PeerRecord {
+        relay_hints: vec!["quic://10.0.0.8:61048".to_owned()],
+        quic_port: 61049,
+        ..Default::default()
+    };
+    assert_eq!(
+        peer_quic_endpoint(&record),
+        Some(("10.0.0.8".to_owned(), 61048))
+    );
+}
+
+#[test]
+fn host_from_url_variants() {
+    assert_eq!(
+        host_from_url("ws://1.2.3.4:34935/sig").as_deref(),
+        Some("1.2.3.4")
+    );
+    assert_eq!(
+        host_from_url("wss://relay.example:443").as_deref(),
+        Some("relay.example")
+    );
+    assert_eq!(
+        host_from_url("https://localhost:8443").as_deref(),
+        Some("localhost")
+    );
+    assert_eq!(
+        host_from_url("relay.example:34935").as_deref(),
+        Some("relay.example")
+    );
+    assert_eq!(
+        host_from_url("ws://user@host:80/x").as_deref(),
+        Some("host")
+    );
+    assert_eq!(host_from_url("https://[::1]:8443").as_deref(), Some("::1"));
+    assert_eq!(
+        host_from_url("https://[2001:db8::1]:8443").as_deref(),
+        Some("2001:db8::1")
+    );
+    assert_eq!(host_from_url(""), None);
+}
+
+/// Reduce a minted room invite to the base64url payload `parse_room_invite`
+/// consumes. Invites ship as https links, so the test cannot slice a scheme
+/// prefix off the front any more.
+fn room_payload(url: &str) -> String {
+    let rest = doubleslash_features::normalize_app_url(url).expect("invite URL must normalize");
+    rest.strip_prefix("room#")
+        .expect("room invite action prefix")
+        .to_owned()
+}
+
+#[test]
+fn room_invite_url_round_trips() {
+    let url = build_room_invite_url(
+        "supernode-identity-pub",
+        "wss://relay.example:443/sig",
+        "room-abc",
+        "Team Standup",
+        "private",
+        "f4052efe6d931922582f2f4ef4cec47f",
+        1_800_000_000,
+        "",
+        "",
+        "",
+    );
+    assert!(
+        url.starts_with("https://doubleslash.space/r#"),
+        "url = {url}"
+    );
+    let encoded = room_payload(&url);
+    assert_eq!(
+        parse_room_invite(&encoded).unwrap(),
+        RoomInvitePayload {
+            supernode_id: "supernode-identity-pub".into(),
+            supernode_hint: "wss://relay.example:443/sig".into(),
+            room_id: "room-abc".into(),
+            room_name: "Team Standup".into(),
+            room_type: "private".into(),
+            invite_token: "f4052efe6d931922582f2f4ef4cec47f".into(),
+            expires_at: 1_800_000_000,
+            space_root: String::new(),
+            space_proof: String::new(),
+            space_grant: String::new(),
+        }
+    );
+}
+
+/// Space proof-based admission fields survive the invite round-trip as nested
+/// JSON objects, so a joiner can forward them to the supernode for verification.
+#[test]
+fn room_invite_carries_space_fields() {
+    let root = r#"{"schema":1,"space_id":"srv0","epoch":3,"root_hash":"ab","node_count":2,"issued_at":9,"signer":"OWNER","signature":"SIG"}"#;
+    let proof = r#"{"schema":1,"node":{"node_id":"r","parent_id":"srv0","kind":"room","name":"R","node_type":"public","owner_pub":"OWNER","invite_policy":"","inherit":false,"key_commit":""},"leaf_index":0,"path":[],"epoch":3}"#;
+    let grant = r#"{"schema":1,"node_id":"r","epoch":3,"grantee_pub":"BEE","expires_at":0,"signature":"GSIG"}"#;
+    let url = build_room_invite_url(
+        "sn",
+        "wss://h:443",
+        "r",
+        "R",
+        "public",
+        "",
+        0,
+        root,
+        proof,
+        grant,
+    );
+    let encoded = room_payload(&url);
+    let got = parse_room_invite(&encoded).unwrap();
+    // Re-parse the extracted JSON text and compare structurally (key order may
+    // differ after the round-trip, but the fields — and thus signatures — match).
+    let as_val = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+    assert_eq!(as_val(&got.space_root), as_val(root));
+    assert_eq!(as_val(&got.space_proof), as_val(proof));
+    assert_eq!(as_val(&got.space_grant), as_val(grant));
+
+    // An invite without space fields yields empty strings (not "null").
+    let plain = build_room_invite_url(
+        "sn",
+        "wss://h:443",
+        "r",
+        "R",
+        "public",
+        "tok",
+        0,
+        "",
+        "",
+        "",
+    );
+    let plain_got = parse_room_invite(&room_payload(&plain)).unwrap();
+    assert!(plain_got.space_root.is_empty() && plain_got.space_proof.is_empty());
+}
+
+/// Invites minted before `room_type` existed (and any with it blank) default to
+/// private — the only kind that existed then — so the token path still runs.
+#[test]
+fn room_invite_defaults_room_type_to_private() {
+    let bare = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        br#"{"v":1,"supernode_id":"s","room_id":"r"}"#,
+    );
+    assert_eq!(parse_room_invite(&bare).unwrap().room_type, "private");
+}
+
+/// Wire-format field stability guard for the room invite payload.
+///
+/// If you rename a field, keep the JSON key stable and update this list; a real
+/// wire change must bump `ROOM_INVITE_SCHEMA` and add migration in
+/// `parse_room_invite`.
+#[test]
+fn room_invite_wire_fields_are_stable() {
+    let url = build_room_invite_url(
+        "sn",
+        "wss://h:443",
+        "r",
+        "n",
+        "private",
+        "tok",
+        42,
+        "",
+        "",
+        "",
+    );
+    let encoded = room_payload(&url);
+    let json_bytes =
+        base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &encoded)
+            .unwrap();
+    let obj: serde_json::Value = serde_json::from_slice(&json_bytes).unwrap();
+    for key in [
+        "v",
+        "supernode_id",
+        "supernode_hint",
+        "room_id",
+        "room_name",
+        "room_type",
+        "invite_token",
+        "expires_at",
+    ] {
+        assert!(
+            obj.get(key).is_some(),
+            "room invite wire field missing or renamed: `{key}`"
+        );
+    }
+    assert_eq!(obj["v"].as_u64(), Some(ROOM_INVITE_SCHEMA as u64));
+}
+
+#[test]
+fn room_invite_rejects_missing_required_fields() {
+    // Missing supernode_id.
+    let bad = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        br#"{"v":1,"room_id":"r"}"#,
+    );
+    assert!(parse_room_invite(&bad).is_err());
+    // Unknown future schema version is refused.
+    let future = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        br#"{"v":999,"supernode_id":"s","room_id":"r"}"#,
+    );
+    assert!(parse_room_invite(&future).is_err());
+}
+
+#[test]
+fn personal_invite_url_includes_ephemeral_and_lan_hint() {
+    // AcceptInvite fails closed without inviter_ephemeral_pub; generation must
+    // always mint one. Also ship a lan_hint for the direct-QUIC dial path.
+    let mut t = harness::test_cm();
+    let url =
+        t.cm.generate_invite_url()
+            .expect("generate_invite_url should succeed with a QUIC endpoint");
+    // Shared invites are minted as https so chat clients linkify them; the
+    // payload still rides in the fragment, unchanged.
+    assert!(url.starts_with("https://doubleslash.space/i#"), "url={url}");
+    let rest = doubleslash_features::normalize_app_url(&url).expect("invite URL must normalize");
+    let encoded = rest.strip_prefix("invite#").expect("invite action prefix");
+    let bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        encoded.trim_end_matches('='),
+    )
+    .expect("invite payload must be base64url");
+    let payload: serde_json::Value = serde_json::from_slice(&bytes).expect("invite JSON");
+    let eph = payload
+        .get("inviter_ephemeral_pub")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(
+        !eph.is_empty(),
+        "personal invites must include inviter_ephemeral_pub; got {payload}"
+    );
+    // lan_hint is best-effort (requires a bound QUIC listener); when present it
+    // must be a quic:// endpoint for the direct dial path.
+    if let Some(lan) = payload.get("lan_hint").and_then(|v| v.as_str()) {
+        assert!(
+            lan.starts_with("quic://"),
+            "lan_hint must be a quic:// URL when present; got {payload}"
+        );
+    }
+    assert_eq!(
+        payload.get("inviter_identity_pub").and_then(|v| v.as_str()),
+        Some(t.identity.public_id().as_str())
+    );
+}
+
+#[tokio::test]
+async fn personal_invite_sends_init_via_shared_supernode_when_online() {
+    // Two local peers sharing a supernode must complete trust without LAN QUIC.
+    use crate::protocol::MessageType;
+    use serde_json::Value;
+
+    let mut inviter = harness::test_cm();
+    let mut joiner = harness::test_cm();
+
+    let url = inviter
+        .cm
+        .generate_invite_url()
+        .expect("inviter generates personal invite");
+
+    // Both already online on the same supernode (room co-presence case).
+    let sn_id = "SN-SHARED";
+    let mut inviter_ws = inviter.cm.test_add_supernode_session(sn_id);
+    let mut joiner_ws = joiner.cm.test_add_supernode_session(sn_id);
+
+    joiner.cm.handle_accept_invite(url).await;
+
+    // Joiner must emit InviteHandshakeInit targeted at inviter identity via
+    // supernode fan-out (no direct QUIC session exists in this harness).
+    let outbound = harness::drain_ws(&mut joiner_ws);
+    let init = outbound
+        .iter()
+        .find(|m| m.msg_type == MessageType::InviteHandshakeInit)
+        .expect("joiner must send InviteHandshakeInit over supernode relay");
+    assert_eq!(
+        init.target.as_deref(),
+        Some(inviter.identity.public_id().as_str()),
+        "INIT must target inviter public_id for supernode socket lookup"
+    );
+    let invite_id = init
+        .payload
+        .get("invite_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    assert!(!invite_id.is_empty());
+
+    // Deliver INIT to the inviter (what the supernode would relay).
+    inviter.cm.handle_inbound(init.clone()).await;
+
+    assert!(
+        inviter
+            .store
+            .read()
+            .get_by_identity(&joiner.identity.public_id())
+            .is_some(),
+        "inviter PeerStore must list the joiner after INIT"
+    );
+
+    // ACCEPT is peer-targeted after the inviter has just trusted the joiner, so
+    // dispatch_outbound may wrap it in EncryptedSignal for supernode opacity.
+    // Deliver the raw outbound frame(s) to the joiner the same way a supernode
+    // would (opaque relay) — handle_inbound unwraps EncryptedSignal itself.
+    let inviter_out = harness::drain_ws(&mut inviter_ws);
+    assert!(
+        !inviter_out.is_empty(),
+        "inviter must emit at least one reply frame after INIT"
+    );
+    let mut joiner_trusted = false;
+    for frame in inviter_out {
+        assert_eq!(
+            frame.target.as_deref(),
+            Some(joiner.identity.public_id().as_str()),
+            "replies must target joiner public_id for supernode relay; got {:?}",
+            frame.msg_type
+        );
+        joiner.cm.handle_inbound(frame).await;
+        if joiner
+            .store
+            .read()
+            .get_by_identity(&inviter.identity.public_id())
+            .is_some()
+        {
+            joiner_trusted = true;
+            break;
+        }
+    }
+    assert!(
+        joiner_trusted,
+        "joiner PeerStore must list the inviter after ACCEPT (invite_id={invite_id})"
+    );
+}
+
+#[test]
+fn loopback_detection() {
+    for h in ["localhost", "127.0.0.1", "0.0.0.0", "::1", "::"] {
+        assert!(
+            is_loopback_or_wildcard(h),
+            "{h} should be loopback/wildcard"
+        );
+    }
+    for h in ["1.2.3.4", "relay.example", "example.com"] {
+        assert!(!is_loopback_or_wildcard(h), "{h} should be routable");
+    }
+}
+
+#[test]
+fn trusted_sender_gate_resolves_and_excludes() {
+    use crate::identity::Identity;
+    use crate::peer_store::{PeerRecord, PeerStore};
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    let dir = tempdir().unwrap();
+    let id = Identity::generate();
+    let mut store = PeerStore::open(&id, Some(&dir.path().join("peers.dat"))).unwrap();
+
+    store.upsert(PeerRecord {
+        peer_id: "hexpeerid".to_owned(),
+        identity_pub: "base64identity".to_owned(),
+        handle: "Trusted".to_owned(),
+        ..Default::default()
+    });
+    store.upsert(PeerRecord {
+        peer_id: "hexblocked".to_owned(),
+        identity_pub: "base64blocked".to_owned(),
+        blocked: true,
+        ..Default::default()
+    });
+    store.upsert(PeerRecord {
+        peer_id: "hexrevoked".to_owned(),
+        identity_pub: "base64revoked".to_owned(),
+        revoked: true,
+        ..Default::default()
+    });
+
+    let store = Arc::new(RwLock::new(store));
+
+    assert!(ConnectionManager::is_trusted_sender(
+        &store,
+        "base64identity"
+    ));
+    assert!(ConnectionManager::is_trusted_sender(&store, "hexpeerid"));
+    assert!(!ConnectionManager::is_trusted_sender(&store, "stranger"));
+    assert!(!ConnectionManager::is_trusted_sender(
+        &store,
+        "base64blocked"
+    ));
+    assert!(!ConnectionManager::is_trusted_sender(
+        &store,
+        "base64revoked"
+    ));
+}
+
+#[test]
+fn verify_inbound_signature_rejects_stale_and_future_timestamps() {
+    use crate::identity::Identity;
+    use crate::protocol::{MessageType, SignalingMessage};
+    use base64::Engine;
+
+    const MAX_AGE: f64 = 300.0;
+    let id = Identity::generate();
+
+    let signed = |timestamp: f64| -> SignalingMessage {
+        let mut msg = SignalingMessage::new(MessageType::ChatMessage, id.public_id());
+        msg.timestamp = timestamp;
+        msg.target = Some("peer-target".to_owned());
+        let canonical = msg.canonical_bytes().expect("canonical");
+        let sig = id.sign(&canonical);
+        msg.signature = Some(base64::engine::general_purpose::URL_SAFE.encode(sig));
+        msg
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+
+    assert!(ConnectionManager::verify_inbound_signature_for_test(
+        &signed(now)
+    ));
+    assert!(!ConnectionManager::verify_inbound_signature_for_test(
+        &signed(now - MAX_AGE - 1.0)
+    ));
+    assert!(!ConnectionManager::verify_inbound_signature_for_test(
+        &signed(now + MAX_AGE + 1.0)
+    ));
+}
+
+/// End-to-end guard for the supernode-relay `EncryptedSignal` envelope: two
+/// paired peers derive the same pairwise key, the wrapped wire form leaks no
+/// plaintext, and the inner message survives the round-trip with its own
+/// signature intact. Mirrors the format produced by `maybe_wrap_for_relay`
+/// and consumed by the inbound `EncryptedSignal` arm.
+#[test]
+fn encrypted_signal_envelope_round_trips_and_hides_plaintext() {
+    use crate::crypto::{b64url_decode, b64url_encode, decrypt_blob, encrypt_blob};
+    use crate::identity::Identity;
+    use crate::protocol::{MessageType, SignalingMessage};
+    use base64::Engine;
+    use serde_json::Value;
+
+    let alice = Identity::generate();
+    let bob = Identity::generate();
+
+    // Alice builds + signs an inner ChatMessage targeted at Bob.
+    let mut inner = SignalingMessage::new(MessageType::ChatMessage, alice.public_id());
+    inner.target = Some(bob.public_id());
+    inner
+        .payload
+        .insert("body".into(), Value::String("secret hi".into()));
+    inner
+        .payload
+        .insert("message_id".into(), Value::String("m1".into()));
+    let canonical = inner.canonical_bytes().unwrap();
+    inner.signature =
+        Some(base64::engine::general_purpose::URL_SAFE.encode(alice.sign(&canonical)));
+    let inner_json = inner.to_json().unwrap();
+
+    // Alice wraps it for the relay (same steps as `maybe_wrap_for_relay`).
+    let key_a = alice.derive_pairwise_relay_key(&bob.public_id()).unwrap();
+    let ct = encrypt_blob(&key_a, inner_json.as_bytes()).unwrap();
+    let mut env = SignalingMessage::new(MessageType::EncryptedSignal, alice.public_id());
+    env.target = Some(bob.public_id());
+    env.payload
+        .insert("ciphertext".into(), Value::String(b64url_encode(&ct)));
+    let env_canon = env.canonical_bytes().unwrap();
+    env.signature = Some(base64::engine::general_purpose::URL_SAFE.encode(alice.sign(&env_canon)));
+
+    // The relayed wire form exposes neither the inner type nor its content.
+    assert_eq!(env.msg_type, MessageType::EncryptedSignal);
+    assert!(!env.payload.contains_key("body"));
+    let env_wire = env.to_json().unwrap();
+    assert!(!env_wire.contains("secret hi"));
+    assert!(!env_wire.contains("chat_message"));
+    // The envelope itself is signature-valid + fresh (supernode relays it as-is).
+    assert!(ConnectionManager::verify_inbound_signature_for_test(&env));
+
+    // Bob derives the identical key, decrypts, and recovers the inner message.
+    let key_b = bob.derive_pairwise_relay_key(&alice.public_id()).unwrap();
+    assert_eq!(key_a, key_b);
+    let ct_b = b64url_decode(env.payload.get("ciphertext").unwrap().as_str().unwrap()).unwrap();
+    let recovered = decrypt_blob(&key_b, &ct_b).unwrap();
+    let inner2 = SignalingMessage::from_json(std::str::from_utf8(&recovered).unwrap()).unwrap();
+    assert_eq!(inner2.msg_type, MessageType::ChatMessage);
+    assert_eq!(
+        inner2.payload.get("body").unwrap().as_str().unwrap(),
+        "secret hi"
+    );
+    assert_eq!(inner2.sender, alice.public_id());
+    // Inner signature still verifies after the round-trip (defense in depth).
+    assert!(ConnectionManager::verify_inbound_signature_for_test(
+        &inner2
+    ));
+
+    // A third party who is not the paired peer cannot decrypt.
+    let eve = Identity::generate();
+    let eve_key = eve.derive_pairwise_relay_key(&alice.public_id()).unwrap();
+    assert!(decrypt_blob(&eve_key, &ct_b).is_err());
+}
+
+/// Regression: room group-key distribution must **sign** the inner
+/// `SfuGroupKey` before sealing it in `EncryptedSignal`. The receiver unwraps
+/// the envelope and re-dispatches the inner through the full inbound pipeline
+/// (signature + freshness + replay). An unsigned inner is dropped as
+/// "signature missing", so the peer never installs the epoch key, stays on the
+/// deterministic fallback, and E2E room audio is silenced for both sides
+/// (keyer seals under the real key; peer cannot open). Mirrors
+/// `distribute_group_key` + the inbound `EncryptedSignal` → `SfuGroupKey` path.
+#[test]
+fn sfu_group_key_inner_must_be_signed_to_install() {
+    use crate::crypto::{b64url_decode, b64url_encode, decrypt_blob, encrypt_blob};
+    use crate::group_key::{open_voice_frame, seal_voice_frame, SenderKeysGroup};
+    use crate::identity::Identity;
+    use crate::protocol::{MessageType, SignalingMessage};
+    use base64::Engine;
+    use serde_json::Value;
+
+    let alice = Identity::generate();
+    let bob = Identity::generate();
+    let room_id = "default";
+    let epoch_key = [0x42u8; 32];
+
+    // --- Bug path: unsigned inner is rejected by the inbound pipeline ---
+    let mut unsigned = SignalingMessage::new(MessageType::SfuGroupKey, alice.public_id());
+    unsigned
+        .payload
+        .insert("room_id".into(), Value::String(room_id.into()));
+    unsigned
+        .payload
+        .insert("epoch".into(), Value::Number(0u64.into()));
+    unsigned
+        .payload
+        .insert("key".into(), Value::String(b64url_encode(&epoch_key)));
+    assert!(
+        !ConnectionManager::verify_inbound_signature_for_test(&unsigned),
+        "unsigned SfuGroupKey must fail verify_inbound_signature (the silent-room bug)"
+    );
+
+    // --- Fixed path: sign inner, seal, unwrap, verify, install, open audio ---
+    let mut inner = unsigned.clone();
+    let canonical = inner.canonical_bytes().unwrap();
+    inner.signature =
+        Some(base64::engine::general_purpose::URL_SAFE.encode(alice.sign(&canonical)));
+    assert!(
+        ConnectionManager::verify_inbound_signature_for_test(&inner),
+        "signed SfuGroupKey must pass the inbound signature + freshness checks"
+    );
+
+    let key_a = alice.derive_pairwise_relay_key(&bob.public_id()).unwrap();
+    let ct = encrypt_blob(&key_a, inner.to_json().unwrap().as_bytes()).unwrap();
+    let mut env = SignalingMessage::new(MessageType::EncryptedSignal, alice.public_id());
+    env.target = Some(bob.public_id());
+    env.payload
+        .insert("ciphertext".into(), Value::String(b64url_encode(&ct)));
+    let env_canon = env.canonical_bytes().unwrap();
+    env.signature = Some(base64::engine::general_purpose::URL_SAFE.encode(alice.sign(&env_canon)));
+    assert!(ConnectionManager::verify_inbound_signature_for_test(&env));
+
+    // Bob unwraps the envelope (same steps as the EncryptedSignal arm).
+    let key_b = bob.derive_pairwise_relay_key(&alice.public_id()).unwrap();
+    assert_eq!(key_a, key_b);
+    let ct_b = b64url_decode(env.payload.get("ciphertext").unwrap().as_str().unwrap()).unwrap();
+    let recovered = decrypt_blob(&key_b, &ct_b).unwrap();
+    let inner2 = SignalingMessage::from_json(std::str::from_utf8(&recovered).unwrap()).unwrap();
+    assert_eq!(inner2.msg_type, MessageType::SfuGroupKey);
+    assert!(
+        ConnectionManager::verify_inbound_signature_for_test(&inner2),
+        "unwrapped SfuGroupKey must still verify after EncryptedSignal round-trip"
+    );
+
+    // Install on both sides and prove voice E2E opens both ways.
+    let mut alice_keys = SenderKeysGroup::new();
+    let mut bob_keys = SenderKeysGroup::new();
+    alice_keys.install(room_id, 0, epoch_key);
+    let key_bytes = b64url_decode(inner2.payload.get("key").unwrap().as_str().unwrap()).unwrap();
+    let mut installed = [0u8; 32];
+    installed.copy_from_slice(&key_bytes);
+    bob_keys.install(room_id, 0, installed);
+
+    let opus = b"fake-opus-frame";
+    let sealed = seal_voice_frame(&alice_keys, room_id, &alice.public_id(), 1, opus).unwrap();
+    let opened = open_voice_frame(&bob_keys, room_id, &alice.public_id(), 1, &sealed).unwrap();
+    assert_eq!(opened, opus);
+
+    // Without install, Bob still on deterministic fallback cannot open Alice's real-key frame.
+    let bob_fallback = SenderKeysGroup::new();
+    assert!(
+        open_voice_frame(&bob_fallback, room_id, &alice.public_id(), 1, &sealed).is_none(),
+        "uninstalled peer must not open real-key E2E audio (would hear silence in production)"
+    );
+}
+
+/// Elected-keyer gate rejects group keys from non-keyer room members.
+#[test]
+fn elected_keyer_ignores_base64_padding() {
+    // The same identity reaching the roster from two sources: the relay path
+    // strips base64 padding, SFU/signaling keep it.
+    let padded = "GHy8U9mJvdrk9ozKF35f42xNz3mQIc0T-0U1A4pSPsg=".to_owned();
+    let unpadded = padded.trim_end_matches('=').to_owned();
+    let other = "VkR20VqcIw23mCzMdsqj9FP_SjdbIIdx642dzdGJQJ8=".to_owned();
+
+    // Compared raw, `unpadded` sorts before `padded` and the rightful keyer
+    // would conclude it is not elected — and a receiver holding both forms
+    // would reject its key.
+    let members = vec![padded.clone(), unpadded, other.clone()];
+    assert!(
+        is_elected_keyer(&members, &padded),
+        "the lexicographically smallest identity must be elected regardless of padding",
+    );
+    assert!(
+        !is_elected_keyer(&members, &other),
+        "a later identity must not consider itself elected",
+    );
+}
+
+#[test]
+fn elected_keyer_agrees_across_padding_spellings() {
+    // Both spellings of the same identity must reach the same verdict, which
+    // is what stops two peers electing different keyers.
+    let padded = "AAAA1111bbbbCCCCddddEEEEffffGGGGhhhhIIIIjjj=".to_owned();
+    let other = "ZZZZ9999yyyyXXXXwwwwVVVVuuuuTTTTssssRRRRqqq=".to_owned();
+    let members = vec![padded.clone(), other];
+
+    assert!(is_elected_keyer(&members, &padded));
+    assert!(is_elected_keyer(&members, padded.trim_end_matches('=')));
+}
+
+#[test]
+fn accept_group_key_requires_elected_keyer() {
+    // is_elected_keyer is the sole membership check used by accept_group_key_from
+    // for the "who may install" question — cover the predicate here; epoch
+    // policy is unit-tested separately via `accept_group_key_epoch`.
+    let members = vec!["alice".to_owned(), "bob".to_owned(), "carol".to_owned()];
+    assert!(is_elected_keyer(&members, "alice"));
+    assert!(!is_elected_keyer(&members, "bob"));
+    assert!(!is_elected_keyer(&members, "carol"));
+    // Hostile "bob" must not be able to claim keyer status.
+    assert!(!is_elected_keyer(&members, "bob"));
+}
+
+/// Epoch policy for installing a sealed SfuGroupKey from the elected keyer.
+#[test]
+fn accept_group_key_epoch_allows_bootstrap_and_forward_only() {
+    // No real key yet → first install accepts any offered epoch.
+    assert!(accept_group_key_epoch(false, 0, 0));
+    assert!(accept_group_key_epoch(false, 0, 7));
+    assert!(accept_group_key_epoch(false, 0, 255));
+
+    // With real key at epoch 3: same epoch (reseal) and anything ahead in reach.
+    assert!(accept_group_key_epoch(true, 3, 3));
+    assert!(accept_group_key_epoch(true, 3, 4));
+    assert!(accept_group_key_epoch(true, 3, 5));
+    assert!(accept_group_key_epoch(true, 3, 3 + MAX_EPOCH_ADVANCE));
+    assert!(!accept_group_key_epoch(true, 3, 3 + MAX_EPOCH_ADVANCE + 1));
+
+    // Rollbacks.
+    assert!(!accept_group_key_epoch(true, 3, 2));
+    assert!(!accept_group_key_epoch(true, 3, 0));
+
+    // u8 wrap: current 255, the next rotations are 0, 1, ...
+    assert!(accept_group_key_epoch(true, 255, 255));
+    assert!(accept_group_key_epoch(true, 255, 0));
+    assert!(accept_group_key_epoch(true, 255, 1));
+    assert!(!accept_group_key_epoch(true, 0, 255));
+}
+
+/// The 2026-09-12 split: a desktop held epoch 1 while the keyer rotated
+/// `default` to 5 without it. It refused 4 and 5 as jumps, the keyer gave up
+/// resending, and it stayed deaf both ways to everyone keyed since.
+#[test]
+fn a_member_that_missed_rotations_takes_the_rooms_epoch() {
+    assert!(accept_group_key_epoch(true, 1, 4));
+    assert!(accept_group_key_epoch(true, 1, 5));
+}
+
+/// When the keyer reopens distribution to a member still on an old epoch.
+#[test]
+fn keyer_reseals_only_to_a_member_left_behind() {
+    let settled = Duration::from_secs(60);
+    assert!(
+        should_reseal_to_lagging_member(1, 5, settled),
+        "left behind"
+    );
+    assert!(!should_reseal_to_lagging_member(5, 5, settled), "current");
+    assert!(
+        !should_reseal_to_lagging_member(6, 5, settled),
+        "ahead of us is not behind"
+    );
+    assert!(
+        !should_reseal_to_lagging_member(1, 5, Duration::from_millis(200)),
+        "just after a rotation an old epoch is a frame in flight"
+    );
+    assert!(
+        !should_reseal_to_lagging_member(0, MAX_EPOCH_ADVANCE + 1, settled),
+        "too far behind to take the offer"
+    );
+}
+
+/// An identity whose `public_id` sorts after `than`, making `than` the elected
+/// keyer of any room the two share.
+fn identity_sorting_after(than: &str) -> crate::identity::Identity {
+    loop {
+        let id = crate::identity::Identity::generate();
+        if id.public_id().trim_end_matches('=') > than.trim_end_matches('=') {
+            return id;
+        }
+    }
+}
+
+/// An identity whose `public_id` sorts before `than`, electing it over `than`.
+fn identity_sorting_before(than: &str) -> crate::identity::Identity {
+    loop {
+        let id = crate::identity::Identity::generate();
+        if id.public_id().trim_end_matches('=') < than.trim_end_matches('=') {
+            return id;
+        }
+    }
+}
+
+/// Signed room audio from `sender` whose frame claims `epoch`. The body is not a
+/// real seal: the keyer only reads the epoch, and cannot open it either way.
+fn room_audio_on_epoch(
+    sender: &crate::identity::Identity,
+    room_id: &str,
+    epoch: u8,
+) -> crate::protocol::SignalingMessage {
+    use base64::Engine;
+    use serde_json::Value;
+    let mut frame = vec![epoch];
+    frame.extend_from_slice(&[0u8; 12 + 32]);
+    let mut msg = crate::protocol::SignalingMessage::new(MessageType::SfuAudio, sender.public_id());
+    msg.payload.insert(
+        "audio".into(),
+        Value::String(base64::engine::general_purpose::URL_SAFE.encode(&frame)),
+    );
+    msg.payload.insert("e2e".into(), Value::Bool(true));
+    msg.payload
+        .insert("room_id".into(), Value::String(room_id.into()));
+    msg.payload.insert("seq".into(), Value::Number(1u64.into()));
+    harness::sign(sender, &mut msg);
+    msg
+}
+
+/// Epochs of the `SfuGroupKey`s in `sent` that were sealed to `member`.
+fn group_key_epochs_sealed_to(
+    member: &crate::identity::Identity,
+    sent: &[crate::protocol::SignalingMessage],
+) -> Vec<u64> {
+    let id = member.public_id();
+    sent.iter()
+        .filter(|m| {
+            m.msg_type == MessageType::EncryptedSignal && m.target.as_deref() == Some(id.as_str())
+        })
+        .filter_map(|env| {
+            let key = member.derive_pairwise_relay_key(&env.sender).ok()?;
+            let ct = crate::crypto::b64url_decode(env.payload.get("ciphertext")?.as_str()?).ok()?;
+            let plain = crate::crypto::decrypt_blob(&key, &ct).ok()?;
+            let inner =
+                crate::protocol::SignalingMessage::from_json(std::str::from_utf8(&plain).ok()?)
+                    .ok()?;
+            if inner.msg_type != MessageType::SfuGroupKey {
+                return None;
+            }
+            inner.payload.get("epoch")?.as_u64()
+        })
+        .collect()
+}
+
+/// A member that outlasted every reseal of a rotation is re-armed from its own
+/// frames, rather than left on the old epoch until membership next changes.
+#[tokio::test]
+async fn keyer_reseals_the_current_epoch_to_a_member_still_on_an_old_one() {
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-A");
+    let member = identity_sorting_after(&t.identity.public_id());
+    t.cm.test_set_room_members("SN-A", "room", &[member.public_id()]);
+    t.cm.test_mint_group_key("room");
+    let epoch = t.cm.test_rotate_group_key("room");
+    t.cm.test_age_group_key("room", Duration::from_secs(60));
+
+    t.cm.handle_inbound(room_audio_on_epoch(&member, "room", 0))
+        .await;
+    assert_eq!(
+        group_key_epochs_sealed_to(&member, &harness::drain_ws(&mut sn)),
+        vec![u64::from(epoch)],
+        "the member must be offered the room's epoch"
+    );
+
+    // Still on its way: more stale frames must not pile on more seals.
+    t.cm.handle_inbound(room_audio_on_epoch(&member, "room", 0))
+        .await;
+    assert!(group_key_epochs_sealed_to(&member, &harness::drain_ws(&mut sn)).is_empty());
+}
+
+/// Right after a rotation, frames sealed under the old epoch are still in
+/// flight. Answering each with a reseal would trail every rotation with a burst
+/// of redundant ones.
+#[tokio::test]
+async fn keyer_leaves_frames_in_flight_across_a_rotation_alone() {
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-A");
+    let member = identity_sorting_after(&t.identity.public_id());
+    t.cm.test_set_room_members("SN-A", "room", &[member.public_id()]);
+    t.cm.test_mint_group_key("room");
+    t.cm.test_rotate_group_key("room");
+
+    t.cm.handle_inbound(room_audio_on_epoch(&member, "room", 0))
+        .await;
+    assert!(group_key_epochs_sealed_to(&member, &harness::drain_ws(&mut sn)).is_empty());
+}
+
+/// The member half of the 2026-09-12 split, through the real inbound pipeline:
+/// holding epoch 1, it installs the elected keyer's epoch 5 and acks it.
+#[tokio::test]
+async fn member_on_an_old_epoch_installs_the_keyers_current_one() {
+    use serde_json::Value;
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-A");
+    let keyer = identity_sorting_before(&t.identity.public_id());
+    t.cm.test_set_room_members("SN-A", "default", &[keyer.public_id()]);
+    t.cm.test_mint_group_key("default");
+    t.cm.test_rotate_group_key("default");
+    assert_eq!(t.cm.test_group_key_epoch("default"), 1);
+
+    let mut offer =
+        crate::protocol::SignalingMessage::new(MessageType::SfuGroupKey, keyer.public_id());
+    offer
+        .payload
+        .insert("room_id".into(), Value::String("default".into()));
+    offer
+        .payload
+        .insert("epoch".into(), Value::Number(5u64.into()));
+    offer.payload.insert(
+        "key".into(),
+        Value::String(crate::crypto::b64url_encode(&[7u8; 32])),
+    );
+    harness::sign(&keyer, &mut offer);
+    t.cm.handle_inbound(offer).await;
+
+    assert_eq!(t.cm.test_group_key_epoch("default"), 5);
+    let keyer_id = keyer.public_id();
+    assert!(
+        harness::drain_ws(&mut sn).iter().any(|m| {
+            m.msg_type == MessageType::EncryptedSignal
+                && m.target.as_deref() == Some(keyer_id.as_str())
+        }),
+        "the install must be acked so the keyer stops resending"
+    );
+}
+
+/// Solo key defer closes the dual-keyer bootstrap race (architecture + opacity).
+#[test]
+fn should_mint_first_room_key_defers_when_solo_or_not_elected() {
+    // Elected + no real key + another member present → mint.
+    assert!(should_mint_first_room_key(true, false, 1));
+    assert!(should_mint_first_room_key(true, false, 3));
+
+    // Alone (union empty of others) → wait (fail-closed until peer arrives).
+    assert!(!should_mint_first_room_key(true, false, 0));
+
+    // Already have real key → not a "first mint".
+    assert!(!should_mint_first_room_key(true, true, 1));
+
+    // Non-elected never mints.
+    assert!(!should_mint_first_room_key(false, false, 2));
+    assert!(!should_mint_first_room_key(false, false, 0));
+}
+
+/// Outbound room audio/chat/file must not ship under the deterministic fallback.
+#[test]
+fn may_send_room_e2e_content_requires_real_key() {
+    assert!(!may_send_room_e2e_content(false));
+    assert!(may_send_room_e2e_content(true));
+}
+
+/// Wire reason strings the client rolls back on (`SfuJoinResult` / create deny)
+/// stay stable — renames would break UX without a protocol bump.
+#[test]
+fn sfu_deny_and_join_result_wire_strings_are_stable() {
+    use crate::protocol::MessageType;
+    assert_eq!(MessageType::SfuJoinResult.as_wire_str(), "sfu_join_result");
+    assert_eq!(
+        MessageType::SfuRoomCreated.as_wire_str(),
+        "sfu_room_created"
+    );
+    // Reason tokens (supernode → client) used by RoomJoinRejected / create deny.
+    for reason in [
+        "room_absent",
+        "not_allowed",
+        "room_full",
+        "join_failed",
+        "public_rooms_disabled",
+        "private_rooms_disabled",
+    ] {
+        assert!(!reason.is_empty());
+        assert!(reason.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
+    }
+}
+
+/// Deterministic seal still works without real key — which is exactly why
+/// `may_send_room_e2e_content` must gate outbound paths before seal.
+#[test]
+fn deterministic_seal_without_real_key_is_why_outbound_gate_exists() {
+    use crate::group_key::{seal_voice_frame, SenderKeysGroup};
+    let keys = SenderKeysGroup::new();
+    assert!(!keys.has_real_key("room-x"));
+    // Seal would succeed under the non-opaque deterministic key if we allowed it.
+    let sealed = seal_voice_frame(&keys, "room-x", "sender", 1, b"opus");
+    assert!(
+        sealed.is_some(),
+        "deterministic fallback still seals — outbound must check has_real_key first"
+    );
+    assert!(
+        !may_send_room_e2e_content(keys.has_real_key("room-x")),
+        "gate must block before that seal is ever transmitted"
+    );
+}
+
+// ── Materialize / auto-join / private-invite policy ─────────────────────────
+//
+// Regression surface for: reconnect rematerialize must not auto-join voice;
+// user create must auto-join; denied create must no-op; invite path only for
+// non-creator private rooms with a token and not yet admitted.
+
+#[test]
+fn room_scope_key_is_stable_composite() {
+    assert_eq!(room_scope_key("sn-A", "room-1"), "sn-A:room-1");
+}
+
+#[test]
+fn normalize_room_type_private_or_public() {
+    assert_eq!(normalize_room_type("private"), "private");
+    assert_eq!(normalize_room_type("PRIVATE"), "private");
+    assert_eq!(normalize_room_type(" private "), "private");
+    assert_eq!(normalize_room_type("public"), "public");
+    assert_eq!(normalize_room_type(""), "public");
+    assert_eq!(normalize_room_type("garbage"), "public");
+}
+
+#[test]
+fn pending_materialize_tracking_requires_id_and_flag() {
+    assert!(should_track_pending_materialize(true, Some("abc")));
+    assert!(!should_track_pending_materialize(true, Some("")));
+    assert!(!should_track_pending_materialize(true, None));
+    assert!(!should_track_pending_materialize(false, Some("abc")));
+}
+
+/// Regression: rematerialize can legitimately fire twice for the same room
+/// before either `SfuRoomCreated` reply lands (e.g. connect + a racing
+/// cluster-roster update both call `CreateRoom(materialize_only: true)`).
+/// A bare set-membership flag would have the *second* reply find nothing
+/// pending and fall through to a real, unwanted voice join — this is
+/// exactly the "single click silently joins voice" bug. A count must let
+/// both replies independently see "yes, this was materialize-only".
+#[test]
+fn pending_materialize_survives_two_in_flight_creates() {
+    let mut t = harness::test_cm();
+    t.cm.test_seed_pending_materialize("SN-AAAA", "room-1", 2);
+
+    assert!(
+        t.cm.test_take_pending_materialize("SN-AAAA", "room-1"),
+        "first SfuRoomCreated reply must see the pending materialize"
+    );
+    assert!(
+        t.cm.test_take_pending_materialize("SN-AAAA", "room-1"),
+        "second SfuRoomCreated reply must ALSO see it — this is the bug \
+         a plain HashSet would fail to catch"
+    );
+    assert!(
+        !t.cm.test_take_pending_materialize("SN-AAAA", "room-1"),
+        "a third, unexpected reply has nothing left to consume"
+    );
+}
+
+#[test]
+fn auto_join_on_room_created_decision_table() {
+    // User-initiated create → auto-join.
+    assert!(should_auto_join_on_room_created(false, false, false));
+    // Materialize-only reconnect → list only, no join.
+    assert!(!should_auto_join_on_room_created(false, false, true));
+    // Denied create → never join.
+    assert!(!should_auto_join_on_room_created(true, false, false));
+    assert!(!should_auto_join_on_room_created(true, false, true));
+    // Empty room_id → never join.
+    assert!(!should_auto_join_on_room_created(false, true, false));
+    assert!(!should_auto_join_on_room_created(false, true, true));
+}
+
+#[test]
+fn private_room_invite_path_decision_table() {
+    // Non-creator private with token → always invite path (cold cluster members
+    // rematerialize the token; "already admitted" is not host-scoped).
+    assert!(should_use_private_room_invite(false, true, false, true));
+    assert!(should_use_private_room_invite(true, true, false, true));
+    // Creator → plain join (self-admit via creator_id on any cluster member).
+    assert!(!should_use_private_room_invite(false, true, true, true));
+    // Public room → plain join.
+    assert!(!should_use_private_room_invite(false, false, false, true));
+    // Private non-creator but no token → plain join (may be denied server-side).
+    assert!(!should_use_private_room_invite(false, true, false, false));
+}
+
+/// Wire type + signed-ack envelope for group-key install confirmation.
+/// Mirrors the SfuGroupKeyAck path: member signs an ack, seals it to the
+/// keyer under the pairwise key (same as SfuGroupKey distribution).
+#[test]
+fn sfu_group_key_ack_round_trips_sealed() {
+    use crate::crypto::{b64url_decode, b64url_encode, decrypt_blob, encrypt_blob};
+    use crate::identity::Identity;
+    use crate::protocol::{MessageType, SignalingMessage};
+    use base64::Engine;
+    use serde_json::Value;
+
+    assert_eq!(
+        MessageType::SfuGroupKeyAck.as_wire_str(),
+        "sfu_group_key_ack"
+    );
+
+    let keyer = Identity::generate();
+    let member = Identity::generate();
+
+    let mut ack = SignalingMessage::new(MessageType::SfuGroupKeyAck, member.public_id());
+    ack.payload
+        .insert("room_id".into(), Value::String("default".into()));
+    ack.payload
+        .insert("epoch".into(), Value::Number(0u64.into()));
+    let canon = ack.canonical_bytes().unwrap();
+    ack.signature = Some(base64::engine::general_purpose::URL_SAFE.encode(member.sign(&canon)));
+    assert!(ConnectionManager::verify_inbound_signature_for_test(&ack));
+
+    let key = member
+        .derive_pairwise_relay_key(&keyer.public_id())
+        .unwrap();
+    let ct = encrypt_blob(&key, ack.to_json().unwrap().as_bytes()).unwrap();
+    let mut env = SignalingMessage::new(MessageType::EncryptedSignal, member.public_id());
+    env.target = Some(keyer.public_id());
+    env.payload
+        .insert("ciphertext".into(), Value::String(b64url_encode(&ct)));
+    let env_canon = env.canonical_bytes().unwrap();
+    env.signature = Some(base64::engine::general_purpose::URL_SAFE.encode(member.sign(&env_canon)));
+
+    let key_k = keyer
+        .derive_pairwise_relay_key(&member.public_id())
+        .unwrap();
+    assert_eq!(key, key_k);
+    let recovered = decrypt_blob(
+        &key_k,
+        &b64url_decode(env.payload.get("ciphertext").unwrap().as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let inner = SignalingMessage::from_json(std::str::from_utf8(&recovered).unwrap()).unwrap();
+    assert_eq!(inner.msg_type, MessageType::SfuGroupKeyAck);
+    assert_eq!(
+        inner.payload.get("room_id").unwrap().as_str().unwrap(),
+        "default"
+    );
+    assert_eq!(inner.payload.get("epoch").unwrap().as_u64().unwrap(), 0);
+    assert!(ConnectionManager::verify_inbound_signature_for_test(&inner));
+}
+
+/// Room group-key "elected keyer" tie-break (`is_elected_keyer`), the fix for
+/// the reliability gap in `backlog.md` "Crypto — group key reliability": any
+/// member holding real key material can distribute it, chosen deterministically
+/// (lexicographically smallest `public_id` present) so every member agrees on
+/// a single actor without a fixed room "creator" — the property that lets the
+/// built-in ownerless `default` room get keyed at all.
+#[test]
+fn elected_keyer_is_the_lexicographically_smallest_member() {
+    let members = vec!["bob".to_owned(), "alice".to_owned(), "carol".to_owned()];
+    assert!(is_elected_keyer(&members, "alice"));
+    assert!(!is_elected_keyer(&members, "bob"));
+    assert!(!is_elected_keyer(&members, "carol"));
+}
+
+#[test]
+fn elected_keyer_requires_membership() {
+    let members = vec!["bob".to_owned(), "carol".to_owned()];
+    // Not present in the room at all → never the keyer, even if our id would
+    // otherwise sort first.
+    assert!(!is_elected_keyer(&members, "alice"));
+}
+
+#[test]
+fn elected_keyer_is_unique_for_a_given_snapshot() {
+    // Every member of the same snapshot must agree on exactly one keyer.
+    let members = vec!["zeta".to_owned(), "mid".to_owned(), "aaa".to_owned()];
+    let winners: Vec<&str> = members
+        .iter()
+        .filter(|m| is_elected_keyer(&members, m))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(winners, vec!["aaa"]);
+}
+
+#[test]
+fn elected_keyer_recomputes_when_the_smallest_member_leaves() {
+    // Simulates the keyer departing: the next-smallest remaining member takes
+    // over automatically on the next membership snapshot (default-room
+    // continuity + reconnect-after-drop, without a fixed owner).
+    let before = vec!["aaa".to_owned(), "mid".to_owned(), "zeta".to_owned()];
+    assert!(is_elected_keyer(&before, "aaa"));
+
+    let after_aaa_left = vec!["mid".to_owned(), "zeta".to_owned()];
+    assert!(!is_elected_keyer(&after_aaa_left, "aaa"));
+    assert!(is_elected_keyer(&after_aaa_left, "mid"));
+}
+
+#[test]
+fn single_member_room_is_its_own_keyer() {
+    // The very first member of a room (e.g. the built-in `default` room,
+    // which has no client-side creator) bootstraps its own real key.
+    let members = vec!["solo".to_owned()];
+    assert!(is_elected_keyer(&members, "solo"));
+}
+
+// ── Cluster-wide room membership union (`union_members_for_room`) ────────────
+//
+// The regression these guard against: with cluster multi-homing the same room
+// has one membership snapshot per supernode. Diffing a single node's snapshot
+// made a peer that simply hadn't joined on THIS node yet look like it had left,
+// firing a spurious group-key rotation that stranded that peer on a stale epoch
+// and silenced E2E audio. Keyer decisions must diff the union across nodes.
+
+fn snap(pairs: &[(&str, &[&str])]) -> HashMap<String, HashSet<String>> {
+    pairs
+        .iter()
+        .map(|(k, members)| {
+            (
+                (*k).to_owned(),
+                members.iter().map(|m| (*m).to_owned()).collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn room_union_merges_members_across_supernode_snapshots() {
+    // peer2 is joined on A and C but not yet on B — the union still has it, so
+    // no node's lagging snapshot can make it look departed.
+    let snaps = snap(&[
+        ("A:default", &["peer2"]),
+        ("B:default", &[]),
+        ("C:default", &["peer2", "peer3"]),
+    ]);
+    let mut got: Vec<String> = union_members_for_room(&snaps, "default")
+        .into_iter()
+        .collect();
+    got.sort();
+    assert_eq!(got, vec!["peer2".to_owned(), "peer3".to_owned()]);
+}
+
+#[test]
+fn room_union_does_not_leak_other_rooms() {
+    // A room-id suffix match must not pull members from a different room on the
+    // same supernode.
+    let snaps = snap(&[("A:room-aaa", &["peerX"]), ("A:room-bbb", &["peerY"])]);
+    let got = union_members_for_room(&snaps, "room-aaa");
+    assert_eq!(got, HashSet::from(["peerX".to_owned()]));
+}
+
+#[test]
+fn room_union_is_empty_when_room_absent() {
+    let snaps = snap(&[("A:default", &["peer2"])]);
+    assert!(union_members_for_room(&snaps, "unheard-of").is_empty());
+}
+
+// ── Cluster failover selection (`plan_cluster_failover`) ────────────────────
+//
+// The regression these guard against: eager multi-homing opens a session to
+// every sibling up front, so a failover selector that *excludes* siblings we
+// already have a session with finds nothing and the room is silently dropped
+// when its host dies. Failover must instead prefer exactly those live sessions.
+
+fn targets(ids: &[&str]) -> Vec<(String, String)> {
+    ids.iter()
+        .map(|id| ((*id).to_owned(), format!("ws://{id}.example:34935")))
+        .collect()
+}
+
+#[test]
+fn failover_fans_out_to_every_live_sibling() {
+    // Both siblings have live sessions (eager multi-homing). Because a denied
+    // join is silent, we can't know which one still holds the room, so both are
+    // attempted at once and none are left cold.
+    let t = targets(&["B", "C"]);
+    let plan = plan_cluster_failover(&t, |_| Some(true));
+    assert_eq!(
+        plan,
+        FailoverPlan::Fanout {
+            live: vec!["B".to_owned(), "C".to_owned()],
+            cold: vec![],
+        }
+    );
+}
+
+#[test]
+fn failover_regression_live_sibling_is_never_excluded() {
+    // The original bug: the selector excluded siblings we already had a session
+    // with, and eager multi-homing meant that was *all* of them — so failover
+    // found nothing and the room was silently dropped. A live sibling must now
+    // always appear in `live`, never be filtered away.
+    let t = targets(&["B", "C"]);
+    let plan = plan_cluster_failover(&t, |id| match id {
+        "B" => Some(true), // already have a live session — must still be a target
+        _ => None,
+    });
+    let FailoverPlan::Fanout { live, cold } = plan else {
+        panic!("expected a fan-out plan, got {plan:?}");
+    };
+    assert_eq!(live, vec!["B".to_owned()]);
+    assert_eq!(
+        cold,
+        vec![("C".to_owned(), "ws://C.example:34935".to_owned())]
+    );
+}
+
+#[test]
+fn failover_treats_a_down_session_as_cold() {
+    // A sibling whose session exists but is disconnected can't accept a join
+    // now, so it is armed as cold (a live one, C, is attempted immediately).
+    let t = targets(&["B", "C"]);
+    let plan = plan_cluster_failover(&t, |id| match id {
+        "B" => Some(false), // session exists but down
+        "C" => Some(true),
+        _ => None,
+    });
+    assert_eq!(
+        plan,
+        FailoverPlan::Fanout {
+            live: vec!["C".to_owned()],
+            cold: vec![("B".to_owned(), "ws://B.example:34935".to_owned())],
+        }
+    );
+}
+
+#[test]
+fn failover_all_cold_when_none_are_live() {
+    // Whole cluster momentarily unreachable: no live attempt, every sibling is
+    // armed cold so the first to reconnect resumes the room.
+    let t = targets(&["B", "C"]);
+    let plan = plan_cluster_failover(&t, |id| match id {
+        "B" => Some(false), // session exists but down
+        _ => None,          // never dialed
+    });
+    assert_eq!(
+        plan,
+        FailoverPlan::Fanout {
+            live: vec![],
+            cold: t,
+        }
+    );
+}
+
+#[test]
+fn failover_without_a_roster_is_a_noop() {
+    // A standalone (non-clustered) supernode has no siblings to move to.
+    let plan = plan_cluster_failover(&[], |_| None);
+    assert_eq!(plan, FailoverPlan::None);
+}
+
+#[test]
+fn failover_preserves_roster_order_within_live_and_cold() {
+    // Determinism: siblings keep roster order within each bucket, so all clients
+    // sharing the roster attempt the same members in the same order.
+    let t = targets(&["B", "C", "D"]);
+    let plan = plan_cluster_failover(&t, |id| match id {
+        "B" => Some(true),
+        "D" => Some(true),
+        _ => None, // C is cold
+    });
+    assert_eq!(
+        plan,
+        FailoverPlan::Fanout {
+            live: vec!["B".to_owned(), "D".to_owned()],
+            cold: vec![("C".to_owned(), "ws://C.example:34935".to_owned())],
+        }
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Sprint A: peer-relay fan-out + direct-QUIC reconnect backoff
+// ---------------------------------------------------------------------------
+
+#[test]
+fn peer_relay_fanout_for_ordinary_peers_not_supernodes() {
+    // Peer-targeted traffic that missed direct QUIC must fan out so multi-homed
+    // recipients are not stranded on a wrong cluster member.
+    assert!(should_fanout_peer_relay(true, false));
+    // Supernode-targeted messages stay single-homed (room create/list/join).
+    assert!(!should_fanout_peer_relay(true, true));
+    // Untargeted broadcasts use first-successful delivery, not full fan-out.
+    assert!(!should_fanout_peer_relay(false, false));
+    assert!(!should_fanout_peer_relay(false, true));
+}
+
+#[test]
+fn peer_reconnect_backoff_doubles_then_caps() {
+    assert_eq!(peer_reconnect_backoff(0), Duration::from_secs(1));
+    assert_eq!(peer_reconnect_backoff(1), Duration::from_secs(2));
+    assert_eq!(peer_reconnect_backoff(2), Duration::from_secs(4));
+    assert_eq!(peer_reconnect_backoff(3), Duration::from_secs(8));
+    assert_eq!(peer_reconnect_backoff(5), Duration::from_secs(32));
+    assert_eq!(peer_reconnect_backoff(6), Duration::from_secs(60));
+    assert_eq!(peer_reconnect_backoff(10), Duration::from_secs(60));
+    assert_eq!(peer_reconnect_backoff(100), Duration::from_secs(60));
+}
+
+// ---------------------------------------------------------------------------
+// Sprint C: in-process integration harness — outbound routing matrix and the
+// direct-call → private-room fallback flow, driven against a real
+// ConnectionManager with fake supernode WS sessions (no network).
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Presence
+// ---------------------------------------------------------------------------
+
+/// Build a peer whose `peer_id` and `identity_pub` differ the way real ones do:
+/// a hex SHA-256 of the key versus base64url of the key itself.
+fn presence_peer(peer_id: &str, identity_pub: &str) -> crate::peer_store::PeerRecord {
+    crate::peer_store::PeerRecord {
+        peer_id: peer_id.to_owned(),
+        identity_pub: identity_pub.to_owned(),
+        auto_connect: true,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn presence_from_an_identity_key_resolves_to_the_list_peer_id() {
+    let mut context = harness::test_cm();
+    context
+        .store
+        .write()
+        .upsert(presence_peer("hexpeerid", "base64identity"));
+
+    // A reply, so the manager records it without answering back.
+    context
+        .cm
+        .note_peer_presence("base64identity", "online", true)
+        .await;
+
+    let event = context.events.try_recv().expect("presence event");
+    match event {
+        ConnectionEvent::PresenceUpdated { peer_id, status } => {
+            // The UIs key their lists on peer_id; emitting the raw sender here
+            // is the bug this test exists to catch — it matches nothing.
+            assert_eq!(peer_id, "hexpeerid");
+            assert_eq!(status, "online");
+        }
+        other => panic!("expected PresenceUpdated, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn presence_tolerates_the_relay_padding_split() {
+    let mut context = harness::test_cm();
+    // Stored padded, announced bare — the relay strips `=` while signaling
+    // keeps it, so the same key arrives both ways depending on the path.
+    context
+        .store
+        .write()
+        .upsert(presence_peer("hexpeerid", "base64identity=="));
+
+    context
+        .cm
+        .note_peer_presence("base64identity", "online", true)
+        .await;
+
+    match context.events.try_recv().expect("presence event") {
+        ConnectionEvent::PresenceUpdated { peer_id, .. } => assert_eq!(peer_id, "hexpeerid"),
+        other => panic!("expected PresenceUpdated, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn presence_from_an_unknown_peer_is_ignored() {
+    let mut context = harness::test_cm();
+    context
+        .cm
+        .note_peer_presence("nobody-we-know", "online", true)
+        .await;
+    assert!(
+        context.events.try_recv().is_err(),
+        "an untrusted announce must not create a peer-list entry"
+    );
+}
+
+#[tokio::test]
+async fn a_peer_that_stops_announcing_ages_out() {
+    let mut context = harness::test_cm();
+    context
+        .store
+        .write()
+        .upsert(presence_peer("hexpeerid", "base64identity"));
+    context
+        .cm
+        .note_peer_presence("base64identity", "online", true)
+        .await;
+    let _ = context.events.try_recv();
+
+    // Still inside the window: nothing retires.
+    context.cm.test_set_presence_age(
+        "hexpeerid",
+        Duration::from_secs(super::manager::PRESENCE_TTL_S / 2),
+    );
+    context.cm.expire_stale_presence();
+    assert!(context.events.try_recv().is_err());
+    assert!(context.cm.test_presence_is_fresh("hexpeerid"));
+
+    // Past it: a peer that closed its laptop sends no farewell, so only the
+    // sweep can ever turn the dot off.
+    context.cm.test_set_presence_age(
+        "hexpeerid",
+        Duration::from_secs(super::manager::PRESENCE_TTL_S + 1),
+    );
+    context.cm.expire_stale_presence();
+    match context.events.try_recv().expect("offline event") {
+        ConnectionEvent::PresenceUpdated { peer_id, status } => {
+            assert_eq!(peer_id, "hexpeerid");
+            assert_eq!(status, "offline");
+        }
+        other => panic!("expected PresenceUpdated, got {other:?}"),
+    }
+    assert!(!context.cm.test_presence_is_fresh("hexpeerid"));
+}
+
+#[tokio::test]
+async fn an_announce_is_answered_once_and_an_answer_is_not() {
+    let mut context = harness::test_cm();
+    context
+        .store
+        .write()
+        .upsert(presence_peer("hexpeerid", "base64identity"));
+    let mut outbound = context.cm.test_add_supernode_session("supernode");
+
+    // First contact: answer immediately so the peer sees us without waiting
+    // out a full interval.
+    context
+        .cm
+        .note_peer_presence("base64identity", "online", false)
+        .await;
+    assert!(
+        outbound.try_recv().is_ok(),
+        "a first-contact announce must be answered"
+    );
+
+    // Answering an answer is what would loop forever.
+    context
+        .cm
+        .note_peer_presence("base64identity", "online", true)
+        .await;
+    assert!(
+        outbound.try_recv().is_err(),
+        "an answer must not be answered back"
+    );
+}
+
+#[tokio::test]
+async fn presence_is_addressed_to_the_identity_the_relay_routes_on() {
+    let context = harness::test_cm();
+    context
+        .store
+        .write()
+        .upsert(presence_peer("hexpeerid", "base64identity"));
+    context.store.write().upsert(crate::peer_store::PeerRecord {
+        peer_id: "hexblocked".to_owned(),
+        identity_pub: "base64blocked".to_owned(),
+        blocked: true,
+        ..Default::default()
+    });
+    context.store.write().upsert(crate::peer_store::PeerRecord {
+        peer_id: "hexsupernode".to_owned(),
+        identity_pub: "base64supernode".to_owned(),
+        is_supernode: true,
+        ..Default::default()
+    });
+
+    let targets = context.cm.presence_targets();
+    // identity_pub, not peer_id: the supernode keys its sockets by identity,
+    // so a peer_id target resolves to nothing and is dropped in silence.
+    assert_eq!(targets, vec!["base64identity".to_owned()]);
+}
+
+#[tokio::test]
+async fn no_announces_are_sent_while_nothing_can_carry_them() {
+    let mut context = harness::test_cm();
+    context
+        .store
+        .write()
+        .upsert(presence_peer("hexpeerid", "base64identity"));
+
+    // No supernode session and no direct peer: the dispatcher would warn once
+    // per trusted peer per tick, so the sweep has to stay quiet instead.
+    assert!(!context.cm.has_any_outbound_path());
+    context.cm.broadcast_presence().await;
+
+    let mut outbound = context.cm.test_add_supernode_session("supernode");
+    assert!(context.cm.has_any_outbound_path());
+    context.cm.broadcast_presence().await;
+    assert!(
+        outbound.try_recv().is_ok(),
+        "an announce goes out as soon as a path exists"
+    );
+}
+
+mod harness {
+    use super::super::events::ConnectionEvent;
+    use super::super::ConnectionManager;
+    use crate::identity::Identity;
+    use crate::peer_store::PeerStore;
+    use crate::protocol::SignalingMessage;
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    pub(super) struct TestCm {
+        pub cm: ConnectionManager,
+        pub events: mpsc::Receiver<ConnectionEvent>,
+        pub identity: Arc<Identity>,
+        pub store: Arc<RwLock<PeerStore>>,
+        // Keeps the peer-store file alive for the duration of the test.
+        _dir: tempfile::TempDir,
+    }
+
+    pub(super) fn test_cm() -> TestCm {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Arc::new(Identity::generate());
+        let store = PeerStore::open(&identity, Some(&dir.path().join("peers.dat"))).unwrap();
+        let store = Arc::new(RwLock::new(store));
+        let (cm, events) =
+            ConnectionManager::new_for_test(Arc::clone(&identity), Arc::clone(&store));
+        TestCm {
+            cm,
+            events,
+            identity,
+            store,
+            _dir: dir,
+        }
+    }
+
+    /// Ed25519-sign `msg` in place the same way peers/supernodes do on the wire.
+    pub(super) fn sign(identity: &Identity, msg: &mut SignalingMessage) {
+        use base64::Engine;
+        let canonical = msg.canonical_bytes().unwrap();
+        let sig = identity.sign(&canonical);
+        msg.signature = Some(base64::engine::general_purpose::URL_SAFE.encode(sig));
+    }
+
+    /// Drain everything currently queued on a fake supernode WS session and
+    /// parse the Text frames back into `SignalingMessage`s.
+    pub(super) fn drain_ws(rx: &mut mpsc::Receiver<WsMessage>) -> Vec<SignalingMessage> {
+        let mut out = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let WsMessage::Text(text) = frame {
+                if let Ok(msg) = SignalingMessage::from_json(&text) {
+                    out.push(msg);
+                }
+            }
+        }
+        out
+    }
+}
+
+#[tokio::test]
+async fn routing_fans_out_peer_traffic_and_single_homes_supernode_traffic() {
+    use crate::protocol::{MessageType, SignalingMessage};
+    use serde_json::Value;
+
+    let mut t = harness::test_cm();
+    let mut sn_a = t.cm.test_add_supernode_session("SN-AAAA");
+    let mut sn_b = t.cm.test_add_supernode_session("SN-BBBB");
+
+    // Peer-targeted chat with no direct QUIC session must fan out to every
+    // connected supernode — a multi-homed recipient may be live on only one.
+    let mut chat = SignalingMessage::new(MessageType::ChatMessage, t.identity.public_id());
+    chat.target = Some("some-remote-peer".to_owned());
+    chat.payload
+        .insert("message_id".to_owned(), Value::String("m1".to_owned()));
+    chat.payload
+        .insert("body".to_owned(), Value::String("hello".to_owned()));
+    t.cm.dispatch_outbound(chat).await;
+
+    let got_a = harness::drain_ws(&mut sn_a);
+    let got_b = harness::drain_ws(&mut sn_b);
+    assert_eq!(got_a.len(), 1, "fan-out must reach supernode A");
+    assert_eq!(got_b.len(), 1, "fan-out must reach supernode B");
+
+    // Supernode-targeted signaling stays single-homed on that session.
+    let mut list = SignalingMessage::new(MessageType::SfuRoomList, t.identity.public_id());
+    list.target = Some("SN-AAAA".to_owned());
+    t.cm.dispatch_outbound(list).await;
+
+    let got_a = harness::drain_ws(&mut sn_a);
+    let got_b = harness::drain_ws(&mut sn_b);
+    assert_eq!(
+        got_a.len(),
+        1,
+        "supernode-targeted message must reach its target"
+    );
+    assert_eq!(got_a[0].msg_type, MessageType::SfuRoomList);
+    assert!(
+        got_b.is_empty(),
+        "supernode-targeted message must not fan out"
+    );
+}
+
+#[tokio::test]
+async fn chat_without_any_route_fails_fast_with_event() {
+    use super::events::ConnectionEvent;
+    use crate::protocol::{MessageType, SignalingMessage};
+    use serde_json::Value;
+
+    let mut t = harness::test_cm();
+    // No supernode sessions, no direct QUIC: the send must fail immediately
+    // with ChatSendFailed rather than vanishing.
+    let mut chat = SignalingMessage::new(MessageType::ChatMessage, t.identity.public_id());
+    chat.target = Some("unreachable-peer".to_owned());
+    chat.payload
+        .insert("message_id".to_owned(), Value::String("m2".to_owned()));
+    t.cm.dispatch_outbound(chat).await;
+
+    match t.events.try_recv() {
+        Ok(ConnectionEvent::ChatSendFailed {
+            peer_id,
+            message_id,
+            reason,
+        }) => {
+            assert_eq!(peer_id, "unreachable-peer");
+            assert_eq!(message_id, "m2");
+            assert_eq!(reason, "peer is offline");
+        }
+        other => panic!("expected ChatSendFailed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn direct_call_fallback_creates_private_room_then_invites_peer() {
+    use super::events::ConnectionEvent;
+    use crate::identity::Identity;
+    use crate::peer_store::PeerRecord;
+    use crate::protocol::{MessageType, SignalingMessage};
+    use serde_json::Value;
+
+    let mut t = harness::test_cm();
+
+    // A trusted supernode with a live (fake) session.
+    let sn_identity = Identity::generate();
+    let sn_id = sn_identity.public_id();
+    {
+        let mut store = t.store.write();
+        store.upsert(PeerRecord {
+            peer_id: sn_identity.peer_id(),
+            identity_pub: sn_id.clone(),
+            is_supernode: true,
+            ..Default::default()
+        });
+    }
+    let mut sn_rx = t.cm.test_add_supernode_session(&sn_id);
+
+    // 1) Kick off the fallback: a private `direct-…` room create must go to
+    //    the trusted supernode.
+    t.cm.start_direct_call_fallback("remote-callee").await;
+    let sent = harness::drain_ws(&mut sn_rx);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].msg_type, MessageType::SfuRoomCreate);
+    let room_id = sent[0].payload["room_id"].as_str().unwrap().to_owned();
+    assert!(room_id.starts_with("direct-"), "temp room id: {room_id}");
+    assert_eq!(sent[0].payload["room_type"], "private");
+
+    // Re-entrancy guard: a second start for the same peer is a no-op.
+    t.cm.start_direct_call_fallback("remote-callee").await;
+    assert!(harness::drain_ws(&mut sn_rx).is_empty());
+
+    // 2) The supernode acks the create. The manager must auto-join and send
+    //    the callee a CallRequest carrying the room coordinates + token.
+    let mut ack = SignalingMessage::new(MessageType::SfuRoomCreated, sn_id.clone());
+    for (k, v) in [
+        ("room_id", room_id.as_str()),
+        ("room_name", "Direct call"),
+        ("room_type", "private"),
+        ("invite_token", "tok-123"),
+    ] {
+        ack.payload
+            .insert(k.to_owned(), Value::String(v.to_owned()));
+    }
+    harness::sign(&sn_identity, &mut ack);
+    t.cm.handle_inbound_from_supernode(sn_id.clone(), ack).await;
+
+    let sent = harness::drain_ws(&mut sn_rx);
+    let kinds: Vec<_> = sent.iter().map(|m| m.msg_type.clone()).collect();
+    assert!(
+        kinds.contains(&MessageType::SfuJoin),
+        "must join the temp room, got {kinds:?}"
+    );
+    let call_req = sent
+        .iter()
+        .find(|m| m.msg_type == MessageType::CallRequest)
+        .expect("CallRequest with fallback coordinates must be relayed");
+    assert_eq!(call_req.target.as_deref(), Some("remote-callee"));
+    assert_eq!(call_req.payload["fallback_supernode_id"], sn_id.as_str());
+    assert_eq!(call_req.payload["fallback_room_id"], room_id.as_str());
+    assert_eq!(call_req.payload["fallback_invite_token"], "tok-123");
+
+    // 3) The caller UI is told to switch to room audio; the temp room must NOT
+    //    surface as a normal RoomCreated (no sidebar / room-store entry).
+    let mut saw_fallback_ready = false;
+    while let Ok(ev) = t.events.try_recv() {
+        match ev {
+            ConnectionEvent::CallFallbackRoomReady {
+                peer_id,
+                supernode_id,
+                room_id: rid,
+            } => {
+                assert_eq!(peer_id, "remote-callee");
+                assert_eq!(supernode_id, sn_id);
+                assert_eq!(rid, room_id);
+                saw_fallback_ready = true;
+            }
+            ConnectionEvent::RoomCreated { .. } => {
+                panic!("temp direct-call room must not emit RoomCreated")
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_fallback_ready, "CallFallbackRoomReady must be emitted");
+}
+
+#[tokio::test]
+async fn inbound_call_request_surfaces_fallback_room_coordinates() {
+    use super::events::ConnectionEvent;
+    use crate::identity::Identity;
+    use crate::peer_store::PeerRecord;
+    use crate::protocol::{MessageType, SignalingMessage};
+    use serde_json::Value;
+
+    let mut t = harness::test_cm();
+
+    // Callee side: the caller must be a trusted peer (Call* trust gate).
+    let caller = Identity::generate();
+    {
+        let mut store = t.store.write();
+        store.upsert(PeerRecord {
+            peer_id: caller.peer_id(),
+            identity_pub: caller.public_id(),
+            ..Default::default()
+        });
+    }
+
+    let mut req = SignalingMessage::new(MessageType::CallRequest, caller.public_id());
+    req.target = Some(t.identity.public_id());
+    for (k, v) in [
+        ("fallback_supernode_id", "SN-XYZ"),
+        ("fallback_room_id", "direct-abc-def-1"),
+        ("fallback_invite_token", "tok-9"),
+    ] {
+        req.payload
+            .insert(k.to_owned(), Value::String(v.to_owned()));
+    }
+    harness::sign(&caller, &mut req);
+    t.cm.handle_inbound(req).await;
+
+    match t.events.try_recv() {
+        Ok(ConnectionEvent::CallRequest {
+            peer_id,
+            fallback_supernode_id,
+            fallback_room_id,
+            fallback_invite_token,
+        }) => {
+            assert_eq!(peer_id, caller.peer_id());
+            assert_eq!(fallback_supernode_id, "SN-XYZ");
+            assert_eq!(fallback_room_id, "direct-abc-def-1");
+            assert_eq!(fallback_invite_token, "tok-9");
+        }
+        other => panic!("expected CallRequest event, got {other:?}"),
+    }
+}
+
+/// `room_absent` means the room lives on another cluster member and hasn't
+/// been gossiped to this one yet (see `cluster_link::RoomRoster`) — a
+/// transient condition right after that member restarts. It must be retried
+/// on the same supernode, not surfaced as an immediate hard failure.
+#[tokio::test]
+async fn sfu_join_result_room_absent_is_retried_not_surfaced() {
+    use crate::identity::Identity;
+    use crate::protocol::{MessageType, SignalingMessage};
+    use serde_json::Value;
+
+    let mut t = harness::test_cm();
+    let sn_identity = Identity::generate();
+    let sn_id = sn_identity.public_id();
+    let mut sn_ws = t.cm.test_add_supernode_session(&sn_id);
+
+    let mut deny = SignalingMessage::new(MessageType::SfuJoinResult, sn_id.clone());
+    deny.payload
+        .insert("room_id".to_owned(), Value::String("room-1".to_owned()));
+    deny.payload
+        .insert("accepted".to_owned(), Value::Bool(false));
+    deny.payload
+        .insert("reason".to_owned(), Value::String("room_absent".to_owned()));
+    harness::sign(&sn_identity, &mut deny);
+    t.cm.handle_inbound(deny).await;
+
+    assert!(
+        t.events.try_recv().is_err(),
+        "room_absent must be retried silently, not surfaced as RoomJoinRejected"
+    );
+
+    // Fast-forward past the retry's backoff (real time isn't advanced in a
+    // unit test) and confirm the join gets replayed to the same supernode.
+    t.cm.test_arm_room_join_retry(
+        &sn_id,
+        "room-1",
+        0,
+        std::time::Instant::now() - Duration::from_secs(1),
+    );
+    t.cm.test_retry_pending_room_joins().await;
+    let sent = harness::drain_ws(&mut sn_ws);
+    assert!(
+        sent.iter().any(|m| m.msg_type == MessageType::SfuJoin
+            && m.payload.get("room_id").and_then(Value::as_str) == Some("room-1")),
+        "expected a retried SfuJoin for room-1, got {sent:?}"
+    );
+}
+
+/// Non-transient deny reasons (room full, not on the ACL, ...) must still
+/// surface immediately — only `room_absent` gets the silent-retry treatment.
+#[tokio::test]
+async fn sfu_join_result_not_allowed_surfaces_rejection_immediately() {
+    use super::events::ConnectionEvent;
+    use crate::identity::Identity;
+    use crate::protocol::{MessageType, SignalingMessage};
+    use serde_json::Value;
+
+    let mut t = harness::test_cm();
+    let sn_identity = Identity::generate();
+    let sn_id = sn_identity.public_id();
+    let _sn_ws = t.cm.test_add_supernode_session(&sn_id);
+
+    let mut deny = SignalingMessage::new(MessageType::SfuJoinResult, sn_id.clone());
+    deny.payload
+        .insert("room_id".to_owned(), Value::String("room-1".to_owned()));
+    deny.payload
+        .insert("accepted".to_owned(), Value::Bool(false));
+    deny.payload
+        .insert("reason".to_owned(), Value::String("not_allowed".to_owned()));
+    harness::sign(&sn_identity, &mut deny);
+    t.cm.handle_inbound(deny).await;
+
+    match t.events.try_recv() {
+        Ok(ConnectionEvent::RoomJoinRejected {
+            supernode_id,
+            room_id,
+            reason,
+        }) => {
+            assert_eq!(supernode_id, sn_id);
+            assert_eq!(room_id, "room-1");
+            assert_eq!(reason, "not_allowed");
+        }
+        other => panic!("expected RoomJoinRejected, got {other:?}"),
+    }
+}
+
+/// A `room_absent` retry that never resolves must stop after
+/// `ROOM_JOIN_MAX_ATTEMPTS` and surface the failure the UI never got —
+/// otherwise a permanently roomless node retries forever with no feedback.
+#[tokio::test]
+async fn room_join_retry_gives_up_after_max_attempts() {
+    use super::events::ConnectionEvent;
+    use super::manager::ROOM_JOIN_MAX_ATTEMPTS;
+    use crate::protocol::MessageType;
+
+    let mut t = harness::test_cm();
+    let sn_id = "SN-STALE".to_owned();
+    let mut sn_ws = t.cm.test_add_supernode_session(&sn_id);
+    t.cm.test_arm_room_join_retry(
+        &sn_id,
+        "room-1",
+        ROOM_JOIN_MAX_ATTEMPTS,
+        std::time::Instant::now(),
+    );
+    t.cm.test_retry_pending_room_joins().await;
+
+    match t.events.try_recv() {
+        Ok(ConnectionEvent::RoomJoinRejected {
+            supernode_id,
+            room_id,
+            reason,
+        }) => {
+            assert_eq!(supernode_id, sn_id);
+            assert_eq!(room_id, "room-1");
+            assert_eq!(reason, "room_absent");
+        }
+        other => panic!("expected RoomJoinRejected after exhausting retries, got {other:?}"),
+    }
+    let sent = harness::drain_ws(&mut sn_ws);
+    assert!(
+        !sent.iter().any(|m| m.msg_type == MessageType::SfuJoin),
+        "must not resend once retries are exhausted, got {sent:?}"
+    );
+}
+
+// ── Transport matrix: {direct P2P, SFU room} x {text, voice, video} ──────────
+//
+// Every cell must ride DoubleSlash's own transport over QUIC. These tests pin the
+// *routing decision* — which lane a payload leaves by, and with which channel
+// tag — because that is where this feature set has repeatedly broken silently:
+// a path with a live handler but no emitter, or a sender gated on room state it
+// does not have, produces no error anywhere. It simply never sends.
+
+/// Direct 1:1 text goes out on the peer's QUIC reliable stream, not the
+/// supernode, whenever a direct session exists.
+#[tokio::test]
+async fn p2p_text_prefers_direct_quic_over_the_supernode() {
+    use crate::protocol::{MessageType, SignalingMessage};
+    use doubleslash_features::channel_frame;
+    use serde_json::Value;
+
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-AAAA");
+    let mut peer = t.cm.test_add_peer_session("peer-direct");
+
+    let mut chat = SignalingMessage::new(MessageType::ChatMessage, t.identity.public_id());
+    chat.target = Some("peer-direct".to_owned());
+    chat.payload
+        .insert("message_id".to_owned(), Value::String("m1".to_owned()));
+    chat.payload
+        .insert("body".to_owned(), Value::String("hi".to_owned()));
+    t.cm.dispatch_outbound(chat).await;
+
+    let frame = peer.try_recv().expect("direct QUIC must carry the chat");
+    let bytes = match frame {
+        super::internal::PeerOutbound::Reliable(b) => b,
+        other => panic!("chat must use the reliable stream, got {other:?}"),
+    };
+    assert_eq!(
+        bytes[0],
+        channel_frame::CHAT_TAG,
+        "direct chat must ride the chat channel tag"
+    );
+    assert!(
+        harness::drain_ws(&mut sn).is_empty(),
+        "a live direct session must not also relay through the supernode"
+    );
+}
+
+/// Direct voice rides an unreliable QUIC datagram under the audio tag.
+/// Reliability is deliberately not wanted: a retransmitted Opus frame arrives
+/// too late to play and only adds latency behind it.
+#[tokio::test]
+async fn p2p_voice_uses_a_quic_datagram_with_the_audio_tag() {
+    use doubleslash_features::channel_frame;
+
+    let mut t = harness::test_cm();
+    let mut peer = t.cm.test_add_peer_session("peer-direct");
+
+    t.cm.test_send_audio_datagram("peer-direct", vec![0xAA; 80])
+        .await;
+
+    let frame = peer.try_recv().expect("audio must reach the peer");
+    match frame {
+        super::internal::PeerOutbound::Datagram(b) => {
+            assert_eq!(b[0], channel_frame::AUDIO_TAG);
+        }
+        other => panic!("audio must be a datagram, got {other:?}"),
+    }
+}
+
+/// Direct video rides QUIC datagrams under the video tag, fragmented — one
+/// encoded frame does not fit a single datagram the way an Opus frame does.
+#[tokio::test]
+async fn p2p_video_fragments_across_quic_datagrams_with_the_video_tag() {
+    use doubleslash_features::channel_frame;
+
+    let mut t = harness::test_cm();
+    let mut peer = t.cm.test_add_peer_session("peer-direct");
+
+    // Comfortably larger than one datagram, so fragmentation is exercised.
+    t.cm.test_send_video_datagram("peer-direct", vec![0x5A; 8000], true)
+        .await;
+
+    let mut fragments = 0usize;
+    while let Ok(frame) = peer.try_recv() {
+        match frame {
+            super::internal::PeerOutbound::Datagram(b) => {
+                assert_eq!(
+                    b[0],
+                    channel_frame::VIDEO_TAG,
+                    "direct video must ride the direct video tag, not the room one"
+                );
+                assert!(
+                    b.len() <= crate::video::DEFAULT_MAX_DATAGRAM,
+                    "fragment of {} bytes exceeds the datagram budget",
+                    b.len()
+                );
+                fragments += 1;
+            }
+            other => panic!("video must be datagrams, got {other:?}"),
+        }
+    }
+    assert!(
+        fragments > 1,
+        "an 8000-byte frame must fragment; got {fragments}"
+    );
+}
+
+/// A direct peer that is not connected must not silently swallow video.
+#[tokio::test]
+async fn p2p_video_without_a_session_sends_nothing() {
+    let mut t = harness::test_cm();
+    let mut peer = t.cm.test_add_peer_session("peer-direct");
+    // A different peer id: nothing is connected for this one.
+    t.cm.test_send_video_datagram("peer-absent", vec![0x11; 4000], true)
+        .await;
+    assert!(
+        peer.try_recv().is_err(),
+        "video for an absent peer must not leak onto another peer's session"
+    );
+}
+
+/// Room text is supernode-targeted, so it leaves via the supernode lane rather
+/// than any direct peer session that happens to exist — and only once the room
+/// is keyed.
+#[tokio::test]
+async fn sfu_text_targets_the_supernode_not_a_direct_peer() {
+    use crate::protocol::MessageType;
+
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-AAAA");
+    let mut peer = t.cm.test_add_peer_session("peer-direct");
+    t.cm.test_set_room("SN-AAAA", "room-1");
+    t.cm.test_mint_group_key("room-1");
+
+    t.cm.test_send_sfu_chat("SN-AAAA", "room-1", "hello room", "me", "msg-1")
+        .await;
+
+    let sent = harness::drain_ws(&mut sn);
+    let chat = sent
+        .iter()
+        .find(|m| m.msg_type == MessageType::SfuChat)
+        .unwrap_or_else(|| panic!("room chat must reach the supernode, got {sent:?}"));
+    // The body on the wire is sealed under the room key, never the plaintext.
+    let body = chat
+        .payload
+        .get("body")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        !body.contains("hello room"),
+        "room chat body must be sealed, not cleartext: {body}"
+    );
+    assert_eq!(
+        chat.payload.get("e2e").and_then(serde_json::Value::as_bool),
+        Some(true),
+        "room chat must be flagged e2e"
+    );
+    assert!(
+        peer.try_recv().is_err(),
+        "room chat must not be sent down a direct peer session"
+    );
+}
+
+/// Room chat fails **closed** before keying. The deterministic fallback key can
+/// still seal, but it is not confidential against the supernode (which knows
+/// the room id), so sending under it would be worse than not sending — the user
+/// would believe the message was private.
+#[tokio::test]
+async fn sfu_text_is_dropped_until_the_room_is_keyed() {
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-AAAA");
+    t.cm.test_set_room("SN-AAAA", "room-1");
+    // Deliberately no test_mint_group_key here.
+
+    t.cm.test_send_sfu_chat("SN-AAAA", "room-1", "secret", "me", "msg-1")
+        .await;
+
+    assert!(
+        harness::drain_ws(&mut sn).is_empty(),
+        "unkeyed room chat must be dropped rather than sent"
+    );
+}
+
+/// Direct content audio rides QUIC datagrams under `CONTENT_AUDIO_TAG` as a
+/// single (unfragmented) frame — one Opus packet always fits a datagram. The
+/// tag must be the direct one, not the room tag, or a peer session would never
+/// classify the frame.
+#[tokio::test]
+async fn p2p_content_audio_rides_the_content_audio_tag() {
+    use doubleslash_features::channel_frame;
+
+    let mut t = harness::test_cm();
+    let mut peer = t.cm.test_add_peer_session("peer-direct");
+
+    t.cm.test_send_content_audio_datagram("peer-direct", vec![0xAA; 80], 1_234)
+        .await;
+
+    let frame = peer
+        .try_recv()
+        .expect("direct content audio must leave on the peer session");
+    match frame {
+        super::internal::PeerOutbound::Datagram(b) => {
+            assert_eq!(
+                b[0],
+                channel_frame::CONTENT_AUDIO_TAG,
+                "direct content audio must ride CONTENT_AUDIO_TAG, not the room tag"
+            );
+            assert!(b.len() > 1, "frame must carry a body after the channel tag");
+            let parsed = crate::content_audio::parse_frame(&b[1..])
+                .expect("payload after the tag must be a valid content-audio frame");
+            assert_eq!(parsed.pts_us, 1_234);
+            assert_eq!(parsed.payload, vec![0xAA; 80]);
+        }
+        other => panic!("content audio must be a datagram, got {other:?}"),
+    }
+    assert!(
+        peer.try_recv().is_err(),
+        "one Opus frame is one datagram; nothing else should have been sent"
+    );
+}
+
+/// A direct peer that is not connected must not leak content audio onto another
+/// peer's session (same isolation rule as direct video).
+#[tokio::test]
+async fn p2p_content_audio_without_a_session_sends_nothing() {
+    let mut t = harness::test_cm();
+    let mut peer = t.cm.test_add_peer_session("peer-direct");
+    t.cm.test_send_content_audio_datagram("peer-absent", vec![0x11; 40], 500)
+        .await;
+    assert!(
+        peer.try_recv().is_err(),
+        "content audio for an absent peer must not leak onto another peer's session"
+    );
+}
+
+/// Content audio must fail closed exactly as room chat, voice, file and video
+/// do. It is the newest room content type and the easiest to forget: the
+/// deterministic fallback key is derived from the room id, so a supernode could
+/// re-derive it, and emitting under it would hand the relay content it is not
+/// trusted with.
+#[tokio::test]
+async fn unkeyed_room_content_audio_is_dropped_not_sent() {
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-AAAA");
+    t.cm.test_set_room("SN-AAAA", "room-1");
+
+    t.cm.test_send_room_content_audio(vec![0xAA; 80], 1_000)
+        .await;
+
+    assert!(
+        harness::drain_ws(&mut sn).is_empty(),
+        "unkeyed room content audio must be dropped rather than sent"
+    );
+}
+
+/// Content audio joins room voice and video on the relay-datagram-only rule.
+/// It exists to be synchronised with video, so a frame delivered late by a
+/// reliable retry is worse than one never delivered — it drags the timeline.
+#[tokio::test]
+async fn content_audio_does_not_fall_back_to_websocket() {
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-AAAA");
+    t.cm.test_set_room("SN-AAAA", "room-1");
+
+    t.cm.test_send_room_content_audio(vec![0xAA; 80], 2_000)
+        .await;
+
+    let sent = harness::drain_ws(&mut sn);
+    assert!(
+        sent.is_empty(),
+        "content audio must not be emitted as WebSocket signaling, got {sent:?}"
+    );
+}
+
+/// A burst of relay grants must spawn exactly one dial.
+///
+/// `quic_relays` only fills in once a connect *completes*, so it cannot
+/// de-dupe concurrent dials: every grant in a join burst saw an empty map and
+/// spawned its own. The supernode keeps only the newest connection it accepts
+/// and the client only the last one to finish, so the two settle on different
+/// connections and room audio is written into a socket the server already
+/// dropped — while WebSocket signaling keeps working, making it look like
+/// everyone is present but nobody can be heard.
+#[tokio::test]
+async fn concurrent_relay_grants_spawn_a_single_dial() {
+    let mut t = harness::test_cm();
+
+    // Four grants back-to-back, as a room join produces. Nothing is awaited
+    // between them, so no spawned dial can resolve and clear its marker.
+    for _ in 0..4 {
+        t.cm.spawn_relay_client_connect("SN-AAAA".to_owned(), "127.0.0.1".to_owned(), 1, false);
+    }
+
+    assert_eq!(
+        t.cm.test_relay_connects_in_flight(),
+        1,
+        "a burst of grants must collapse to one in-flight dial"
+    );
+}
+
+/// Room voice and video are relay-datagram only. With no QUIC relay session
+/// they must drop rather than fall back to the WebSocket: the WS lane cannot
+/// carry binary media frames, and silently "succeeding" there would look like
+/// working audio that no one receives.
+#[tokio::test]
+async fn sfu_media_does_not_fall_back_to_websocket() {
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-AAAA");
+    t.cm.test_set_room("SN-AAAA", "room-1");
+
+    t.cm.test_send_room_audio(vec![0xAA; 80]).await;
+    t.cm.test_send_room_video(vec![0x5A; 4000], true).await;
+
+    let sent = harness::drain_ws(&mut sn);
+    assert!(
+        sent.is_empty(),
+        "room media must not be emitted as WebSocket signaling, got {sent:?}"
+    );
+}
+
+/// Video subscriptions carry the whole set, are suppressed when unchanged, and
+/// are replayed after a failover.
+///
+/// The replay is the part worth pinning: the supernode's copy is per-connection,
+/// so a sibling that takes the room over defaults to forwarding *every* sender.
+/// Without the replay a failover silently undoes the saving and nothing would
+/// ever restore it, because the local set has not changed and the suppression
+/// below would swallow any re-send.
+#[tokio::test]
+async fn video_subscriptions_replace_suppress_and_replay() {
+    use crate::protocol::MessageType;
+
+    fn subscriptions(sent: &[crate::protocol::SignalingMessage]) -> Vec<Vec<String>> {
+        sent.iter()
+            .filter(|m| m.msg_type == MessageType::SfuVideoSubscribe)
+            .map(|m| {
+                m.payload
+                    .get("senders")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|s| s.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-AAAA");
+    t.cm.test_set_room("SN-AAAA", "room-1");
+
+    // Sorted on the way out, so an unchanged set is recognisable whatever
+    // order the UI happened to list its tiles in.
+    t.cm.test_set_video_subscriptions(vec!["bob".into(), "alice".into()])
+        .await;
+    assert_eq!(
+        subscriptions(&harness::drain_ws(&mut sn)),
+        vec![vec!["alice".to_owned(), "bob".to_owned()]],
+        "the first announcement must go out, sorted"
+    );
+
+    // Same set, different order and with a duplicate: nothing on the wire.
+    t.cm.test_set_video_subscriptions(vec!["bob".into(), "alice".into(), "bob".into()])
+        .await;
+    assert!(
+        subscriptions(&harness::drain_ws(&mut sn)).is_empty(),
+        "an unchanged set must not be re-sent"
+    );
+
+    // Closing every tile is a real subscription, not an absence of one.
+    t.cm.test_set_video_subscriptions(vec![]).await;
+    assert_eq!(
+        subscriptions(&harness::drain_ws(&mut sn)),
+        vec![Vec::<String>::new()],
+        "an empty set must be announced — it is what stops the fan-out"
+    );
+
+    // Failover: re-sent even though the set is identical, because the node
+    // being told is a different one.
+    t.cm.test_resend_video_subscriptions().await;
+    assert_eq!(
+        subscriptions(&harness::drain_ws(&mut sn)),
+        vec![Vec::<String>::new()],
+        "failover must re-announce to a supernode that has never heard it"
+    );
+}
+
+/// Before the UI has said anything there is no set to replay, and announcing an
+/// empty one would be wrong: the supernode's default is "forward everything",
+/// which is exactly right until the first tile decision is made.
+#[tokio::test]
+async fn a_failover_before_any_subscription_announces_nothing() {
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-AAAA");
+    t.cm.test_set_room("SN-AAAA", "room-1");
+
+    t.cm.test_resend_video_subscriptions().await;
+    let sent = harness::drain_ws(&mut sn);
+    assert!(
+        !sent
+            .iter()
+            .any(|m| m.msg_type == crate::protocol::MessageType::SfuVideoSubscribe),
+        "nothing to replay yet, so nothing may be sent"
+    );
+}
+
+/// Camera-state announcements pick their lane from the session kind. Both are
+/// covered because the direct arm was missing entirely at first: the sender was
+/// gated on being in a room, so a 1:1 call announced nothing and the peer's
+/// indicator never lit.
+#[tokio::test]
+async fn video_state_announces_on_whichever_lane_is_live() {
+    use crate::protocol::MessageType;
+
+    // Room session: announcement goes to the supernode.
+    {
+        let mut t = harness::test_cm();
+        let mut sn = t.cm.test_add_supernode_session("SN-AAAA");
+        t.cm.test_set_room("SN-AAAA", "room-1");
+        t.cm.test_send_video_state(true, None).await;
+        let sent = harness::drain_ws(&mut sn);
+        assert!(
+            sent.iter()
+                .any(|m| m.msg_type == MessageType::SfuVideoState),
+            "room camera state must reach the supernode, got {sent:?}"
+        );
+    }
+
+    // Direct call: announcement goes to the peer over QUIC.
+    {
+        let mut t = harness::test_cm();
+        let mut sn = t.cm.test_add_supernode_session("SN-AAAA");
+        let mut peer = t.cm.test_add_peer_session("peer-direct");
+        t.cm.test_send_video_state(true, Some("peer-direct".to_owned()))
+            .await;
+        assert!(
+            peer.try_recv().is_ok(),
+            "direct camera state must be sent to the peer"
+        );
+        assert!(
+            harness::drain_ws(&mut sn).is_empty(),
+            "a direct announcement must not also go to the supernode"
+        );
+    }
+}
+
+/// The join-time replay. `SfuVideoState` is one message per toggle, so without
+/// this a member who joined while we were already streaming would show us as
+/// camera-off for the rest of the session.
+#[tokio::test]
+async fn a_peer_joining_mid_stream_is_told_the_camera_is_on() {
+    use crate::protocol::MessageType;
+
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-AAAA");
+    t.cm.test_set_room("SN-AAAA", "room-1");
+    t.cm.test_send_video_state(true, None).await;
+    let _ = harness::drain_ws(&mut sn); // The original toggle.
+
+    t.cm.test_reannounce_video_state("room-1").await;
+
+    let sent = harness::drain_ws(&mut sn);
+    let replay = sent
+        .iter()
+        .find(|m| m.msg_type == MessageType::SfuVideoState)
+        .expect("a join must replay the camera state");
+    assert_eq!(
+        replay.payload.get("active").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+}
+
+/// Only "on" is replayed, and only for the room we are actually in. A member
+/// who never heard from us already assumes camera-off, so announcing it on
+/// every join would be a signed message per join conveying nothing.
+#[tokio::test]
+async fn a_join_replays_nothing_when_the_camera_is_off_or_the_room_differs() {
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-AAAA");
+    t.cm.test_set_room("SN-AAAA", "room-1");
+
+    // Never streamed.
+    t.cm.test_reannounce_video_state("room-1").await;
+    assert!(
+        harness::drain_ws(&mut sn).is_empty(),
+        "camera-off must not be replayed on join"
+    );
+
+    // Streaming, but the join is in some other room we also subscribe to.
+    t.cm.test_send_video_state(true, None).await;
+    let _ = harness::drain_ws(&mut sn);
+    t.cm.test_reannounce_video_state("room-2").await;
+    assert!(
+        harness::drain_ws(&mut sn).is_empty(),
+        "a join in another room must not announce our camera"
+    );
+
+    // Turned off again: a later join learns nothing.
+    t.cm.test_send_video_state(false, None).await;
+    let _ = harness::drain_ws(&mut sn);
+    t.cm.test_reannounce_video_state("room-1").await;
+    assert!(
+        harness::drain_ws(&mut sn).is_empty(),
+        "a stopped camera must not be replayed as on"
+    );
+}

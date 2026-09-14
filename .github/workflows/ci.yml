@@ -38,8 +38,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-            rust/conquerd-client/target
-          key: linux-cargo-ci-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/conquerd-client/Cargo.lock') }}
+            rust/doubleslash-client/target
+          key: linux-cargo-ci-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/doubleslash-client/Cargo.lock') }}
 
       - name: Install system dependencies (Linux)
         run: sudo apt-get update -qq && sudo apt-get install -y libasound2-dev libdbus-1-dev libclang-dev
@@ -51,28 +51,28 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
-            rust/conquerd-opus/opus/dnn/lace_data.c
-            rust/conquerd-opus/opus/dnn/lace_data.h
-            rust/conquerd-opus/opus/dnn/nolace_data.c
-            rust/conquerd-opus/opus/dnn/nolace_data.h
-            rust/conquerd-opus/opus/dnn/fargan_data.c
-            rust/conquerd-opus/opus/dnn/fargan_data.h
-            rust/conquerd-opus/opus/dnn/pitchdnn_data.c
-            rust/conquerd-opus/opus/dnn/pitchdnn_data.h
-            rust/conquerd-opus/opus/dnn/plc_data.c
-            rust/conquerd-opus/opus/dnn/plc_data.h
-            rust/conquerd-opus/opus/dnn/dred_rdovae_constants.h
-            rust/conquerd-opus/opus/dnn/dred_rdovae_enc_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_enc_data.h
-            rust/conquerd-opus/opus/dnn/dred_rdovae_dec_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_dec_data.h
-            rust/conquerd-opus/opus/dnn/dred_rdovae_stats_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_stats_data.h
-            rust/conquerd-opus/opus/dnn/bbwenet_data.c
-            rust/conquerd-opus/opus/dnn/bbwenet_data.h
-            rust/conquerd-opus/opus/dnn/lossgen_data.c
-            rust/conquerd-opus/opus/dnn/lossgen_data.h
-            rust/conquerd-opus/opus/dnn/models
+            rust/doubleslash-opus/opus/dnn/lace_data.c
+            rust/doubleslash-opus/opus/dnn/lace_data.h
+            rust/doubleslash-opus/opus/dnn/nolace_data.c
+            rust/doubleslash-opus/opus/dnn/nolace_data.h
+            rust/doubleslash-opus/opus/dnn/fargan_data.c
+            rust/doubleslash-opus/opus/dnn/fargan_data.h
+            rust/doubleslash-opus/opus/dnn/pitchdnn_data.c
+            rust/doubleslash-opus/opus/dnn/pitchdnn_data.h
+            rust/doubleslash-opus/opus/dnn/plc_data.c
+            rust/doubleslash-opus/opus/dnn/plc_data.h
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_constants.h
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_enc_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_enc_data.h
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_dec_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_dec_data.h
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_stats_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_stats_data.h
+            rust/doubleslash-opus/opus/dnn/bbwenet_data.c
+            rust/doubleslash-opus/opus/dnn/bbwenet_data.h
+            rust/doubleslash-opus/opus/dnn/lossgen_data.c
+            rust/doubleslash-opus/opus/dnn/lossgen_data.h
+            rust/doubleslash-opus/opus/dnn/models
           key: opus-dnn-tarlist-a5177ec6fb7d15058e99e57029746100121f68e4890b1467d4094aa336b6013e
 
       - name: Fetch Opus DNN model weights
@@ -88,7 +88,7 @@ jobs:
         working-directory: rust
 
       - name: Release manifest signer self-test
-        run: cargo run -p conquerd-installer --bin sign-release-manifest -- --self-test
+        run: cargo run -p doubleslash-installer --bin sign-release-manifest -- --self-test
         working-directory: rust
 
       # --- Tests ------------------------------------------------------------
@@ -97,25 +97,25 @@ jobs:
         run: cargo test --all --release
 
       - name: Test client workspace (headless, no qt-ui feature)
-        working-directory: rust/conquerd-client
+        working-directory: rust/doubleslash-client
         run: cargo test
 
       # Client workspace also needs its own fmt/clippy pass (separate Cargo workspace)
       - name: Check formatting (client workspace)
         run: cargo fmt --all -- --check
-        working-directory: rust/conquerd-client
+        working-directory: rust/doubleslash-client
 
       - name: Clippy (client workspace, headless)
-        run: cargo clippy -p conquerd-client --no-default-features -- -D warnings
-        working-directory: rust/conquerd-client
+        run: cargo clippy -p doubleslash-client --no-default-features -- -D warnings
+        working-directory: rust/doubleslash-client
 
       # Lints the macOS-only capture module from Linux. Clippy type-checks
       # without linking, so the Rust half needs no Mac; this catches lints
       # that fire solely under cfg(target_os = "macos") without waiting on
       # the macOS runner. Only the Objective-C half genuinely needs macOS.
       - name: Clippy (macOS capture module, cross-linted)
-        run: cargo clippy -p conquerd-client --no-default-features --features lint-macos -- -D warnings
-        working-directory: rust/conquerd-client
+        run: cargo clippy -p doubleslash-client --no-default-features --features lint-macos -- -D warnings
+        working-directory: rust/doubleslash-client
 
       # --- Security ---------------------------------------------------------
       # Lockfiles live under rust/ (two separate Cargo workspaces, not repo root).
@@ -141,7 +141,7 @@ jobs:
 
       - name: Security audit (client workspace)
         run: cargo audit --file Cargo.lock
-        working-directory: rust/conquerd-client
+        working-directory: rust/doubleslash-client
 
   # Line/region coverage % via cargo-llvm-cov (report-only; raise floors later).
   # High-ROI packages: features + supernode + headless client. See scripts/coverage.sh.
@@ -169,8 +169,8 @@ jobs:
             ~/.cargo/git
             ~/.cargo/bin
             rust/target
-            rust/conquerd-client/target
-          key: linux-cargo-cov-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/conquerd-client/Cargo.lock') }}
+            rust/doubleslash-client/target
+          key: linux-cargo-cov-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/doubleslash-client/Cargo.lock') }}
 
       - name: Install system dependencies (Linux)
         run: sudo apt-get update -qq && sudo apt-get install -y libasound2-dev libdbus-1-dev libclang-dev
@@ -184,28 +184,28 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
-            rust/conquerd-opus/opus/dnn/lace_data.c
-            rust/conquerd-opus/opus/dnn/lace_data.h
-            rust/conquerd-opus/opus/dnn/nolace_data.c
-            rust/conquerd-opus/opus/dnn/nolace_data.h
-            rust/conquerd-opus/opus/dnn/fargan_data.c
-            rust/conquerd-opus/opus/dnn/fargan_data.h
-            rust/conquerd-opus/opus/dnn/pitchdnn_data.c
-            rust/conquerd-opus/opus/dnn/pitchdnn_data.h
-            rust/conquerd-opus/opus/dnn/plc_data.c
-            rust/conquerd-opus/opus/dnn/plc_data.h
-            rust/conquerd-opus/opus/dnn/dred_rdovae_constants.h
-            rust/conquerd-opus/opus/dnn/dred_rdovae_enc_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_enc_data.h
-            rust/conquerd-opus/opus/dnn/dred_rdovae_dec_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_dec_data.h
-            rust/conquerd-opus/opus/dnn/dred_rdovae_stats_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_stats_data.h
-            rust/conquerd-opus/opus/dnn/bbwenet_data.c
-            rust/conquerd-opus/opus/dnn/bbwenet_data.h
-            rust/conquerd-opus/opus/dnn/lossgen_data.c
-            rust/conquerd-opus/opus/dnn/lossgen_data.h
-            rust/conquerd-opus/opus/dnn/models
+            rust/doubleslash-opus/opus/dnn/lace_data.c
+            rust/doubleslash-opus/opus/dnn/lace_data.h
+            rust/doubleslash-opus/opus/dnn/nolace_data.c
+            rust/doubleslash-opus/opus/dnn/nolace_data.h
+            rust/doubleslash-opus/opus/dnn/fargan_data.c
+            rust/doubleslash-opus/opus/dnn/fargan_data.h
+            rust/doubleslash-opus/opus/dnn/pitchdnn_data.c
+            rust/doubleslash-opus/opus/dnn/pitchdnn_data.h
+            rust/doubleslash-opus/opus/dnn/plc_data.c
+            rust/doubleslash-opus/opus/dnn/plc_data.h
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_constants.h
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_enc_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_enc_data.h
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_dec_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_dec_data.h
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_stats_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_stats_data.h
+            rust/doubleslash-opus/opus/dnn/bbwenet_data.c
+            rust/doubleslash-opus/opus/dnn/bbwenet_data.h
+            rust/doubleslash-opus/opus/dnn/lossgen_data.c
+            rust/doubleslash-opus/opus/dnn/lossgen_data.h
+            rust/doubleslash-opus/opus/dnn/models
           key: opus-dnn-tarlist-a5177ec6fb7d15058e99e57029746100121f68e4890b1467d4094aa336b6013e
 
       - name: Fetch Opus DNN model weights
@@ -257,8 +257,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-            rust/conquerd-client/target
-          key: windows-cargo-ci-ninja-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/conquerd-client/Cargo.lock') }}
+            rust/doubleslash-client/target
+          key: windows-cargo-ci-ninja-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/doubleslash-client/Cargo.lock') }}
 
       - name: Verify version metadata stays in sync
         shell: pwsh
@@ -268,28 +268,28 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
-            rust/conquerd-opus/opus/dnn/lace_data.c
-            rust/conquerd-opus/opus/dnn/lace_data.h
-            rust/conquerd-opus/opus/dnn/nolace_data.c
-            rust/conquerd-opus/opus/dnn/nolace_data.h
-            rust/conquerd-opus/opus/dnn/fargan_data.c
-            rust/conquerd-opus/opus/dnn/fargan_data.h
-            rust/conquerd-opus/opus/dnn/pitchdnn_data.c
-            rust/conquerd-opus/opus/dnn/pitchdnn_data.h
-            rust/conquerd-opus/opus/dnn/plc_data.c
-            rust/conquerd-opus/opus/dnn/plc_data.h
-            rust/conquerd-opus/opus/dnn/dred_rdovae_constants.h
-            rust/conquerd-opus/opus/dnn/dred_rdovae_enc_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_enc_data.h
-            rust/conquerd-opus/opus/dnn/dred_rdovae_dec_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_dec_data.h
-            rust/conquerd-opus/opus/dnn/dred_rdovae_stats_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_stats_data.h
-            rust/conquerd-opus/opus/dnn/bbwenet_data.c
-            rust/conquerd-opus/opus/dnn/bbwenet_data.h
-            rust/conquerd-opus/opus/dnn/lossgen_data.c
-            rust/conquerd-opus/opus/dnn/lossgen_data.h
-            rust/conquerd-opus/opus/dnn/models
+            rust/doubleslash-opus/opus/dnn/lace_data.c
+            rust/doubleslash-opus/opus/dnn/lace_data.h
+            rust/doubleslash-opus/opus/dnn/nolace_data.c
+            rust/doubleslash-opus/opus/dnn/nolace_data.h
+            rust/doubleslash-opus/opus/dnn/fargan_data.c
+            rust/doubleslash-opus/opus/dnn/fargan_data.h
+            rust/doubleslash-opus/opus/dnn/pitchdnn_data.c
+            rust/doubleslash-opus/opus/dnn/pitchdnn_data.h
+            rust/doubleslash-opus/opus/dnn/plc_data.c
+            rust/doubleslash-opus/opus/dnn/plc_data.h
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_constants.h
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_enc_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_enc_data.h
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_dec_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_dec_data.h
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_stats_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_stats_data.h
+            rust/doubleslash-opus/opus/dnn/bbwenet_data.c
+            rust/doubleslash-opus/opus/dnn/bbwenet_data.h
+            rust/doubleslash-opus/opus/dnn/lossgen_data.c
+            rust/doubleslash-opus/opus/dnn/lossgen_data.h
+            rust/doubleslash-opus/opus/dnn/models
           key: opus-dnn-tarlist-a5177ec6fb7d15058e99e57029746100121f68e4890b1467d4094aa336b6013e
 
       - name: Fetch Opus DNN model weights
@@ -308,7 +308,7 @@ jobs:
 
       - name: Release manifest signer self-test
         shell: pwsh
-        run: cargo run -p conquerd-installer --bin sign-release-manifest -- --self-test
+        run: cargo run -p doubleslash-installer --bin sign-release-manifest -- --self-test
         working-directory: rust
 
       - name: Run Rust tests (rust/ workspace, non-Qt)
@@ -319,12 +319,12 @@ jobs:
       - name: Test client workspace (headless, no qt-ui)
         shell: pwsh
         run: cargo test
-        working-directory: rust/conquerd-client
+        working-directory: rust/doubleslash-client
 
       - name: Clippy (client workspace, headless)
         shell: pwsh
-        run: cargo clippy -p conquerd-client --no-default-features -- -D warnings
-        working-directory: rust/conquerd-client
+        run: cargo clippy -p doubleslash-client --no-default-features -- -D warnings
+        working-directory: rust/doubleslash-client
 
   test-linux-arm64:
     name: Supernode build (Linux ARM64)
@@ -354,12 +354,12 @@ jobs:
         run: cargo fmt --all -- --check
         working-directory: rust
 
-      - name: Clippy (conquerd-supernode, deny warnings)
-        run: cargo clippy -p conquerd-supernode -- -D warnings
+      - name: Clippy (doubleslash-supernode, deny warnings)
+        run: cargo clippy -p doubleslash-supernode -- -D warnings
         working-directory: rust
 
-      - name: Run conquerd-supernode tests
-        run: cargo test -p conquerd-supernode --release
+      - name: Run doubleslash-supernode tests
+        run: cargo test -p doubleslash-supernode --release
         working-directory: rust
 
       - name: Package supernode (linux-aarch64)
@@ -389,12 +389,12 @@ jobs:
             rust/target
           key: linux-x86_64-supernode-ci-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}
 
-      - name: Clippy (conquerd-supernode, deny warnings)
-        run: cargo clippy -p conquerd-supernode -- -D warnings
+      - name: Clippy (doubleslash-supernode, deny warnings)
+        run: cargo clippy -p doubleslash-supernode -- -D warnings
         working-directory: rust
 
-      - name: Run conquerd-supernode tests
-        run: cargo test -p conquerd-supernode --release
+      - name: Run doubleslash-supernode tests
+        run: cargo test -p doubleslash-supernode --release
         working-directory: rust
 
       - name: Package supernode (linux-x86_64)
@@ -424,14 +424,14 @@ jobs:
             rust/target
           key: windows-supernode-ci-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}
 
-      - name: Clippy (conquerd-supernode, deny warnings)
+      - name: Clippy (doubleslash-supernode, deny warnings)
         shell: pwsh
-        run: cargo clippy -p conquerd-supernode -- -D warnings
+        run: cargo clippy -p doubleslash-supernode -- -D warnings
         working-directory: rust
 
-      - name: Run conquerd-supernode tests
+      - name: Run doubleslash-supernode tests
         shell: pwsh
-        run: cargo test -p conquerd-supernode --release
+        run: cargo test -p doubleslash-supernode --release
         working-directory: rust
 
       - name: Package supernode (win64)
@@ -470,13 +470,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-            rust/conquerd-client/target
-          key: macos-cargo-ci-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/conquerd-client/Cargo.lock') }}
+            rust/doubleslash-client/target
+          key: macos-cargo-ci-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/doubleslash-client/Cargo.lock') }}
 
       - name: Cache Opus DNN model weights
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          path: rust/conquerd-opus/opus/dnn
+          path: rust/doubleslash-opus/opus/dnn
           key: opus-dnn-${{ hashFiles('scripts/fetch_opus_weights.sh') }}
 
       - name: Fetch Opus DNN model weights
@@ -487,14 +487,14 @@ jobs:
       - name: Verify perl is available (vendored libvpx codegen)
         run: perl --version
 
-      - name: Build vendored VP8 (conquerd-vpx)
-        run: cargo test -p conquerd-vpx
+      - name: Build vendored VP8 (doubleslash-vpx)
+        run: cargo test -p doubleslash-vpx
         working-directory: rust
 
       - name: Test client workspace (headless, no qt-ui)
         run: cargo test
-        working-directory: rust/conquerd-client
+        working-directory: rust/doubleslash-client
 
       - name: Clippy (client workspace, headless)
-        run: cargo clippy -p conquerd-client --no-default-features -- -D warnings
-        working-directory: rust/conquerd-client
+        run: cargo clippy -p doubleslash-client --no-default-features -- -D warnings
+        working-directory: rust/doubleslash-client

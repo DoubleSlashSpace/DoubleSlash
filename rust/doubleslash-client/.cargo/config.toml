@@ -1,0 +1,9 @@
+# Redirect cargo output to the shared rust/target/ directory.
+# This keeps doubleslash-client artifacts alongside the other crates even though
+# doubleslash-client is its own workspace root (isolated from the cxx-qt patch).
+[build]
+target-dir = "../target"
+
+# CMake 4.x compatibility (required by doubleslash-opus/libopus cmake build).
+[env]
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"

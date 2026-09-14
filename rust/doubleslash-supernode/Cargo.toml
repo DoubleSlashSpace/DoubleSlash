@@ -1,0 +1,62 @@
+[package]
+name = "doubleslash-supernode"
+version = "1.0.0"
+edition = "2021"
+
+[[bin]]
+name = "doubleslash-supernode"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "signal", "fs"] }
+
+# QUIC relay
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rcgen = "0.13"
+
+# WebSocket signaling
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+
+# Crypto
+ed25519-dalek = { version = "2", features = ["rand_core", "pem", "serde"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ring = "0.17"
+sha2 = "0.10"
+hkdf = "0.12"
+aes-gcm = "0.10"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+toml = "0.8"
+
+# Utilities
+base64 = "0.22"
+hex = "0.4"
+rand = "0.8"
+bytes = "1"
+dashmap = "6"
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+thiserror = "1"
+time = { version = "0.3", features = ["std"] }
+
+# Capability framework
+doubleslash-features = { path = "../doubleslash-features" }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[build-dependencies]
+winresource = "0.1"
+# For computing a content hash of source files for stronger build attestation.
+sha2 = "0.10"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "test-util", "macros"] }
+tempfile = "3"

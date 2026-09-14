@@ -17,11 +17,11 @@ set "LEGACY_HOME=%ROOT%.clientOllama_home"
 set "LEGACY_PROFILE_LINK=%LEGACY_HOME%\.conquerd"
 set "SETTINGS=%CONQUERD_HOME%\settings.json"
 set "LOG_DIR=%CONQUERD_HOME%\logs"
-set "LOG_FILE=%LOG_DIR%\conquerd-client.log"
+set "LOG_FILE=%LOG_DIR%\doubleslash-client.log"
 
 :: Prefer a freshly built binary (release, then debug), then the packaged dist client.
-set "RELEASE_BIN=%ROOT%rust\target\release\conquerd-client.exe"
-set "DEBUG_BIN=%ROOT%rust\target\debug\conquerd-client.exe"
+set "RELEASE_BIN=%ROOT%rust\target\release\doubleslash-client.exe"
+set "DEBUG_BIN=%ROOT%rust\target\debug\doubleslash-client.exe"
 set "DIST_BIN=%ROOT%dist\DoubleSlash\DoubleSlash.exe"
 set "BINARY="
 set "BINARY_KIND="
@@ -41,7 +41,7 @@ if exist "%RELEASE_BIN%" (
 )
 
 :: Prefer verbose client logs for AI debugging (overrides settings when set).
-if not defined RUST_LOG set "RUST_LOG=conquerd_client=debug,warn"
+if not defined RUST_LOG set "RUST_LOG=doubleslash_client=debug,warn"
 
 :: HiDPI: same notes as run_client.bat
 ::   set QT_SCALE_FACTOR=1.0
@@ -54,8 +54,8 @@ if not defined BINARY (
     echo   %DIST_BIN%
     echo.
     echo Build with:
-    echo   cd rust\conquerd-client
-    echo   cargo build -p conquerd-client --features "qt-ui,webengine,console"
+    echo   cd rust\doubleslash-client
+    echo   cargo build -p doubleslash-client --features "qt-ui,webengine,console"
     echo Or package via build_win64.ps1 so dist\DoubleSlash\DoubleSlash.exe exists.
     exit /b 1
 )

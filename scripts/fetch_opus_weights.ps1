@@ -1,6 +1,6 @@
 # fetch_opus_weights.ps1
 # Downloads and extracts the Opus DNN model data files required for the
-# conquerd-opus `dnn` feature (DRED + OSCE neural features).
+# doubleslash-opus `dnn` feature (DRED + OSCE neural features).
 #
 # Usage (from the repository root):
 #   powershell -ExecutionPolicy Bypass -File scripts/fetch_opus_weights.ps1
@@ -14,8 +14,8 @@ $DownloadAttempts = if ($env:OPUS_DNN_DOWNLOAD_ATTEMPTS) { [int]$env:OPUS_DNN_DO
 $DownloadRetryDelaySec = if ($env:OPUS_DNN_DOWNLOAD_RETRY_DELAY_SEC) { [int]$env:OPUS_DNN_DOWNLOAD_RETRY_DELAY_SEC } else { 20 }
 
 $SCRIPT_DIR = $PSScriptRoot
-$OPUS_SRC = Join-Path $SCRIPT_DIR '..\rust\conquerd-opus\opus'
-$BUNDLED_TAR = Join-Path $SCRIPT_DIR "..\rust\conquerd-opus\assets\opus_data-$DNN_HASH.tar.gz"
+$OPUS_SRC = Join-Path $SCRIPT_DIR '..\rust\doubleslash-opus\opus'
+$BUNDLED_TAR = Join-Path $SCRIPT_DIR "..\rust\doubleslash-opus\assets\opus_data-$DNN_HASH.tar.gz"
 $SENTINEL = Join-Path $OPUS_SRC 'dnn\lace_data.c'
 $TAR_LIST = Join-Path $OPUS_SRC 'tar_list.txt'
 
@@ -55,7 +55,7 @@ function Download-WithRetries ([string]$Url, [string]$Dest) {
     }
 }
 
-Write-Host 'conquerd-opus: checking Opus DNN model data files...'
+Write-Host 'doubleslash-opus: checking Opus DNN model data files...'
 
 if (Test-DnnFilesComplete) {
     Write-Host '  All DNN data files from tar_list.txt already present - nothing to do.'
@@ -97,5 +97,5 @@ try {
     if (Test-Path $tmpTar) { Remove-Item $tmpTar -ErrorAction SilentlyContinue }
 }
 
-Write-Host 'conquerd-opus: DNN model data files ready.'
-Write-Host '  You can now build with:  cargo build -p conquerd-client --features qt-ui'
+Write-Host 'doubleslash-opus: DNN model data files ready.'
+Write-Host '  You can now build with:  cargo build -p doubleslash-client --features qt-ui'

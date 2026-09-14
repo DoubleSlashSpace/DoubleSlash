@@ -39,7 +39,7 @@ esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUST_DIR="$REPO_ROOT/rust"
-CLIENT_DIR="$RUST_DIR/conquerd-client"
+CLIENT_DIR="$RUST_DIR/doubleslash-client"
 OUT_DIR="$REPO_ROOT/coverage"
 
 step() {
@@ -138,27 +138,27 @@ queue() {
 
 case "$SCOPE" in
     features)
-        queue conquerd-features "$RUST_DIR" "-p conquerd-features"
+        queue doubleslash-features "$RUST_DIR" "-p doubleslash-features"
         ;;
     supernode)
-        queue conquerd-supernode "$RUST_DIR" "-p conquerd-supernode"
+        queue doubleslash-supernode "$RUST_DIR" "-p doubleslash-supernode"
         ;;
     installer)
-        queue conquerd-installer "$RUST_DIR" "-p conquerd-installer"
+        queue doubleslash-installer "$RUST_DIR" "-p doubleslash-installer"
         ;;
     client)
-        queue conquerd-client "$CLIENT_DIR" ""
+        queue doubleslash-client "$CLIENT_DIR" ""
         ;;
     hot)
-        queue conquerd-features "$RUST_DIR" "-p conquerd-features"
-        queue conquerd-supernode "$RUST_DIR" "-p conquerd-supernode"
-        queue conquerd-client "$CLIENT_DIR" ""
+        queue doubleslash-features "$RUST_DIR" "-p doubleslash-features"
+        queue doubleslash-supernode "$RUST_DIR" "-p doubleslash-supernode"
+        queue doubleslash-client "$CLIENT_DIR" ""
         ;;
     all)
-        queue conquerd-features "$RUST_DIR" "-p conquerd-features"
-        queue conquerd-supernode "$RUST_DIR" "-p conquerd-supernode"
-        queue conquerd-installer "$RUST_DIR" "-p conquerd-installer"
-        queue conquerd-client "$CLIENT_DIR" ""
+        queue doubleslash-features "$RUST_DIR" "-p doubleslash-features"
+        queue doubleslash-supernode "$RUST_DIR" "-p doubleslash-supernode"
+        queue doubleslash-installer "$RUST_DIR" "-p doubleslash-installer"
+        queue doubleslash-client "$CLIENT_DIR" ""
         ;;
 esac
 
@@ -193,7 +193,7 @@ SUMMARY="$OUT_DIR/summary.md"
     fi
     echo ""
     echo "Notes:"
-    echo "- \`conquerd-opus\` (native C/DNN) is excluded — high ROI is protocol/SFU/features/client."
+    echo "- \`doubleslash-opus\` (native C/DNN) is excluded — high ROI is protocol/SFU/features/client."
     echo "- Client run is headless (no \`qt-ui\`); Qt/QML UI is not instrumented."
     echo "- Default CI scope is \`hot\`. Raise floors gradually with \`--fail-under-lines\`."
 } > "$SUMMARY"

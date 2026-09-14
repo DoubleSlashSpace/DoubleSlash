@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-    Build and package conquerd-supernode for Windows x86_64.
+    Build and package doubleslash-supernode for Windows x86_64.
 
 .DESCRIPTION
     Produces:
-      dist\conquerd-supernode-X.X.X-win64.zip
-      dist\conquerd-supernode-X.X.X-win64.zip.sha256
+      dist\doubleslash-supernode-X.X.X-win64.zip
+      dist\doubleslash-supernode-X.X.X-win64.zip.sha256
 
     Run from the repository root:
 
@@ -25,17 +25,17 @@ $Root = Split-Path -Parent $PSScriptRoot
 $RustDir = Join-Path $Root 'rust'
 $Dist = Join-Path $Root 'dist'
 
-$Version = (Select-String -Path (Join-Path $RustDir 'conquerd-supernode\Cargo.toml') -Pattern '^version\s*=' | Select-Object -First 1).Line -replace '.*"(.*)".*', '$1'
+$Version = (Select-String -Path (Join-Path $RustDir 'doubleslash-supernode\Cargo.toml') -Pattern '^version\s*=' | Select-Object -First 1).Line -replace '.*"(.*)".*', '$1'
 $Platform = 'win64'
 
 $Profile = 'debug'
-$CargoArgs = @('build', '-p', 'conquerd-supernode')
+$CargoArgs = @('build', '-p', 'doubleslash-supernode')
 if ($env:CONQUERD_RELEASE -eq '1' -or $env:CONQUERD_DEBUG -ne '1') {
     $Profile = 'release'
     $CargoArgs += '--release'
 }
 
-Write-Host "==> Building conquerd-supernode v$Version for $Platform (profile: $Profile)"
+Write-Host "==> Building doubleslash-supernode v$Version for $Platform (profile: $Profile)"
 
 Push-Location $RustDir
 try {
@@ -48,12 +48,12 @@ finally {
     Pop-Location
 }
 
-$Binary = Join-Path $RustDir "target\$Profile\conquerd-supernode.exe"
+$Binary = Join-Path $RustDir "target\$Profile\doubleslash-supernode.exe"
 if (-not (Test-Path $Binary)) {
     throw "Expected binary at $Binary"
 }
 
-$StagingName = "conquerd-supernode-$Version-$Platform"
+$StagingName = "doubleslash-supernode-$Version-$Platform"
 $Staging = Join-Path $Dist $StagingName
 $Archive = Join-Path $Dist "$StagingName.zip"
 
@@ -62,7 +62,7 @@ if (Test-Path $Staging) {
     Remove-Item -Recurse -Force $Staging
 }
 New-Item -ItemType Directory -Force -Path $Staging | Out-Null
-Copy-Item $Binary (Join-Path $Staging 'conquerd-supernode.exe') -Force
+Copy-Item $Binary (Join-Path $Staging 'doubleslash-supernode.exe') -Force
 
 if (Test-Path $Archive) {
     Remove-Item -Force $Archive

@@ -4,7 +4,7 @@
 
 This file is the privacy policy for the DoubleSlash **desktop** and **Android**
 clients. The public URL for store listings and in-app links is
-[github.com/ConquerD/DoubleSlash/blob/develop/PRIVACY.md](https://github.com/ConquerD/DoubleSlash/blob/develop/PRIVACY.md).
+[github.com/DoubleSlashSpace/DoubleSlash/blob/develop/PRIVACY.md](https://github.com/DoubleSlashSpace/DoubleSlash/blob/develop/PRIVACY.md).
 
 DoubleSlash is a local-first, invite-only peer-to-peer application. Voice, video,
 chat, and file transfer travel directly between clients you connect to, or
@@ -37,7 +37,7 @@ optional feature described below (updates, link previews, Ollama, and so on).
 | `my_rooms.dat` | Saved room invites (encrypted) |
 | OS keyring (`doubleslash` service, legacy `conquerd`) | Optional cached AES unlock key so you are not prompted for your passphrase every launch |
 | OS **Downloads** folder | Files received from peers (saved by the desktop client on completion) |
-| `installer.log` | Installer/updater activity log (written when `conquerd-installer` runs) |
+| `installer.log` | Installer/updater activity log (written when `doubleslash-installer` runs) |
 
 The desktop client logs to **stderr** via Rust `tracing` (controlled by the
 `RUST_LOG` environment variable). It does not write a persistent client log file
@@ -105,11 +105,11 @@ desktop client polls the GitHub Releases API at startup and once per hour while
 the app remains open to see whether a newer version is available. The Android
 client does not do this.
 
-**Endpoint:** `https://api.github.com/repos/vbawol/ConquerD/releases/latest`
+**Endpoint:** `https://api.github.com/repos/DoubleSlashSpace/DoubleSlash/releases/latest`
 
 **What is disclosed:** Your IP address is visible to GitHub (Microsoft Corp.) as
 part of the HTTPS request. The client sends `User-Agent:
-conquerd-client/{version}` (for example `conquerd-client/1.0.0`) and accepts
+doubleslash-client/{version}` (for example `doubleslash-client/1.0.0`) and accepts
 `application/vnd.github+json`. GitHub may log this alongside your IP. No
 personal information beyond what any HTTPS request carries is sent.
 
@@ -120,7 +120,7 @@ was already discovered or prevent you from applying that update manually.
 
 **How to limit:** Turn off *Check for updates automatically* in Settings. You
 can additionally block outbound HTTPS to `api.github.com`. When you choose to
-apply an update, `conquerd-installer` downloads release archives, checksums, and
+apply an update, `doubleslash-installer` downloads release archives, checksums, and
 (when published) `releases_manifest.json` from GitHub.
 
 ### UPnP port mapping — desktop only
@@ -249,7 +249,7 @@ your IP address for any HTTPS content they host. Portal traffic over
 `d://` is carried on your authenticated QUIC session to that supernode.
 
 On Android the portal runs in the system WebView with JavaScript enabled for
-the `window.conquerd` bridge. File and content-provider access are disabled.
+the `window.doubleslash` bridge. File and content-provider access are disabled.
 The page is fetched over the same authenticated QUIC session as desktop.
 
 ### Android connection notification
@@ -321,8 +321,8 @@ above.
 | [Qt 6 / CXX-Qt](https://www.qt.io/privacy-policy) | Desktop UI | None from Qt itself |
 | [Qt WebEngine](https://www.qt.io/privacy-policy) | Inline previews, supernode portal | Only when you load external or embed URLs (see above) |
 | [quinn](https://github.com/quinn-rs/quinn) | QUIC transport | None |
-| [libopus](https://opus-codec.org/) (vendored, `conquerd-opus`) | Voice and shared-audio codec | None |
-| [libvpx](https://www.webmproject.org/) (vendored, `conquerd-vpx`) | VP8 video codec on every platform | None |
+| [libopus](https://opus-codec.org/) (vendored, `doubleslash-opus`) | Voice and shared-audio codec | None |
+| [libvpx](https://www.webmproject.org/) (vendored, `doubleslash-vpx`) | VP8 video codec on every platform | None |
 | OS media APIs (Media Foundation, `Windows.Graphics.Capture`, WASAPI, V4L2, AVFoundation, CameraX, Oboe) | Camera / screen / audio capture and H.264 encode | None — local device access only |
 | [egui / eframe](https://github.com/emilk/egui) | Installer UI | None |
 | [Ollama](https://ollama.com/) (user-installed, optional) | Local AI backend | Only the URL you configure |
@@ -359,7 +359,7 @@ personal information from children.
 ## Changes to this policy
 
 Material changes will be noted in the
-[GitHub releases](https://github.com/ConquerD/ConquerD/releases) (and the README
+[GitHub releases](https://github.com/DoubleSlashSpace/DoubleSlash/releases) (and the README
 "Release Notes" section) and this file updated with a new effective date.
 
 ---
@@ -367,6 +367,6 @@ Material changes will be noted in the
 ## Contact
 
 For privacy concerns, open an issue at
-[github.com/ConquerD/DoubleSlash/issues](https://github.com/ConquerD/DoubleSlash/issues).
+[github.com/DoubleSlashSpace/DoubleSlash/issues](https://github.com/DoubleSlashSpace/DoubleSlash/issues).
 There is no DoubleSlash-operated support inbox and no personal data held on a
 server we could look up.

@@ -19,11 +19,11 @@ set "LEGACY_HOME=%ROOT%.clientA_home"
 set "LEGACY_PROFILE_LINK=%LEGACY_HOME%\.conquerd"
 set "SETTINGS=%CONQUERD_HOME%\settings.json"
 set "LOG_DIR=%CONQUERD_HOME%\logs"
-set "LOG_FILE=%LOG_DIR%\conquerd-client.log"
+set "LOG_FILE=%LOG_DIR%\doubleslash-client.log"
 set "PASS_FILE=%CONQUERD_HOME%\passphrase.local"
 
-set "HL_DEBUG=%ROOT%rust\target-headless\debug\conquerd-client.exe"
-set "HL_RELEASE=%ROOT%rust\target-headless\release\conquerd-client.exe"
+set "HL_DEBUG=%ROOT%rust\target-headless\debug\doubleslash-client.exe"
+set "HL_RELEASE=%ROOT%rust\target-headless\release\doubleslash-client.exe"
 set "BINARY="
 set "BINARY_KIND="
 
@@ -40,7 +40,7 @@ if /I "%~1"=="release" (
     set "BINARY_KIND=release"
 )
 
-if not defined RUST_LOG set "RUST_LOG=conquerd_client=info,warn"
+if not defined RUST_LOG set "RUST_LOG=doubleslash_client=info,warn"
 
 if not exist "%CONQUERD_HOME%\NUL" mkdir "%CONQUERD_HOME%"
 if not exist "%LOG_DIR%\NUL" mkdir "%LOG_DIR%"
@@ -49,10 +49,10 @@ if not exist "%LEGACY_PROFILE_LINK%\NUL" (
     mklink /J "%LEGACY_PROFILE_LINK%" "%CONQUERD_HOME%" >nul 2>nul
 )
 
-tasklist /FI "IMAGENAME eq conquerd-client.exe" 2>nul | find /I "conquerd-client.exe" >nul
+tasklist /FI "IMAGENAME eq doubleslash-client.exe" 2>nul | find /I "doubleslash-client.exe" >nul
 if not errorlevel 1 (
     echo.
-    echo ERROR: conquerd-client.exe is already running.
+    echo ERROR: doubleslash-client.exe is already running.
     echo Stop the other headless instance first.
     echo.
     goto :fail

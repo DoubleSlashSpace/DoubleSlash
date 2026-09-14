@@ -3,8 +3,7 @@
 # install_uri_scheme.sh — Register the DoubleSlash URI schemes on Linux
 # ============================================================================
 # Installs the .desktop file and registers it as the handler for
-# doubleslash://, d://, and legacy conquerd:// URLs so clicking invite links
-# launches DoubleSlash.
+# doubleslash:// and d:// URLs so clicking invite links launches DoubleSlash.
 #
 # Usage:
 #   ./packaging/install_uri_scheme.sh          # current user only
@@ -15,7 +14,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DESKTOP_FILE="$SCRIPT_DIR/doubleslash.desktop"
-LEGACY_DESKTOP_FILE="$SCRIPT_DIR/conquerd.desktop"
 
 if [ ! -f "$DESKTOP_FILE" ]; then
     echo "ERROR: doubleslash.desktop not found at $DESKTOP_FILE"
@@ -32,14 +30,10 @@ else
 fi
 
 cp "$DESKTOP_FILE" "$DEST/doubleslash.desktop"
-if [ -f "$LEGACY_DESKTOP_FILE" ]; then
-    cp "$LEGACY_DESKTOP_FILE" "$DEST/conquerd.desktop"
-fi
 update-desktop-database "$DEST" 2>/dev/null || true
 
 xdg-mime default doubleslash.desktop x-scheme-handler/doubleslash 2>/dev/null || true
 xdg-mime default doubleslash.desktop x-scheme-handler/d 2>/dev/null || true
-xdg-mime default doubleslash.desktop x-scheme-handler/conquerd 2>/dev/null || true
 
-echo "Done. The doubleslash:// and d:// URI schemes are now registered (legacy conquerd:// kept)."
+echo "Done. The doubleslash:// and d:// URI schemes are now registered."
 echo "Test with: xdg-open 'doubleslash://test'"

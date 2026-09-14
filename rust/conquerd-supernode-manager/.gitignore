@@ -1,9 +1,0 @@
-/target/
-/bin/
-/inventory.toml
-/cluster_cache.toml
-/secrets.toml
-/secrets.local.ps1
-*.swp
-*.swo
-.DS_Store

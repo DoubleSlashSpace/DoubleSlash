@@ -50,4 +50,4 @@ REM set supernode_access_code=changeme
 REM --- Demo mode (shows nav links to all portal pages regardless of active mode) ---
 set supernode_demo_links=1
 
-"%~dp0rust\target\release\conquerd-supernode.exe"
+"%~dp0rust\target\release\doubleslash-supernode.exe"

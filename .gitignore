@@ -34,6 +34,7 @@ build/
 Thumbs.db
 
 # Identity keys (never commit!)
+.doubleslash/
 .conquerd/
 
 # Logs
@@ -59,9 +60,11 @@ rust/check_out.txt
 
 # Local debug / run capture artifacts (from client and tools)
 debug_*.txt
+rust/doubleslash-client/debug_*.txt
 rust/conquerd-client/debug_*.txt
 
 # Loose compiled extensions (dev-only copies)
+doubleslash_*.dll
 conquerd_crypto.dll
 conquerd_quic.dll
 conquerd_audio.dll
@@ -83,8 +86,10 @@ ruff_audit.json
 /.clientB
 /.clientC
 /rust/target
+/rust/doubleslash-client/target-check
 /rust/conquerd-client/target-check
 /rust/target-check
+/rust/doubleslash-client/target
 /rust/conquerd-client/target
 /terminals
 /agent-tools
@@ -100,8 +105,25 @@ rust/sz2.html
 # Android client
 # Gradle sets CARGO_TARGET_DIR here so Android objects stay out of rust/target.
 /rust/target-android
-# Default cargo target for the JNI workspace (`cd rust/conquerd-android && cargo ndk …`).
+# Default cargo target for the JNI workspace (`cd rust/doubleslash-android && cargo ndk …`).
+/rust/doubleslash-android/target
 /rust/conquerd-android/target
+
+# Supernode-manager workspace (nested .gitignore also covers these)
+/rust/doubleslash-supernode-manager/target
+/rust/doubleslash-supernode-manager/bin
+/rust/doubleslash-supernode-manager/terminals
+/rust/doubleslash-supernode-manager/agent-tools
+
+# Leftover pre-rename crate copies (git-mv remnants; do not commit)
+/rust/conquerd-client/
+/rust/conquerd-android/
+/rust/conquerd-opus/
+/rust/conquerd-features/
+/rust/conquerd-supernode/
+/rust/conquerd-installer/
+/rust/conquerd-vpx/
+/rust/conquerd-supernode-manager/
 /android/.gradle
 /android/.kotlin
 /android/.cxx

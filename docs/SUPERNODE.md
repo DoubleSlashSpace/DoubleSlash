@@ -1,6 +1,6 @@
 # DoubleSlash Supernode Operator Guide
 
-This guide covers running a production or volunteer `conquerd-supernode`.
+This guide covers running a production or volunteer `doubleslash-supernode`.
 
 The supernode provides optional transport assistance (QUIC relay, SFU rooms) and hosts opt-in feature modules including an **in-app portal** (`web.host.app.v1`). It is **never** an identity or trust authority — all trust comes from the invite + handshake between peers. There is no public WebTransport / HTTPS game surface.
 
@@ -9,10 +9,10 @@ The supernode provides optional transport assistance (QUIC relay, SFU rooms) and
 ```bash
 # Build from the outer Rust workspace
 cd rust
-cargo build -p conquerd-supernode --release
+cargo build -p doubleslash-supernode --release
 
 # Run with defaults (data in $HOME/.doubleslash, or an existing $HOME/.conquerd)
-./target/release/conquerd-supernode
+./target/release/doubleslash-supernode
 ```
 
 ### Pre-built binaries (GitHub Releases)
@@ -21,29 +21,29 @@ Official tagged releases and the rolling `nightly` prerelease ship standalone su
 
 | Platform | Tagged release asset | Nightly asset |
 |---|---|---|
-| Linux x86_64 | `conquerd-supernode-<version>-linux-x86_64.tar.gz` | `conquerd-supernode-nightly-linux-x86_64.tar.gz` |
-| Linux ARM64 (`aarch64`) | `conquerd-supernode-<version>-linux-aarch64.tar.gz` | `conquerd-supernode-nightly-linux-aarch64.tar.gz` |
-| Windows x86_64 | `conquerd-supernode-<version>-win64.zip` | `conquerd-supernode-nightly-win64.zip` |
+| Linux x86_64 | `doubleslash-supernode-<version>-linux-x86_64.tar.gz` | `doubleslash-supernode-nightly-linux-x86_64.tar.gz` |
+| Linux ARM64 (`aarch64`) | `doubleslash-supernode-<version>-linux-aarch64.tar.gz` | `doubleslash-supernode-nightly-linux-aarch64.tar.gz` |
+| Windows x86_64 | `doubleslash-supernode-<version>-win64.zip` | `doubleslash-supernode-nightly-win64.zip` |
 
 **Linux x86_64** (typical VPS / cloud VM):
 
 ```bash
-tar -xzf conquerd-supernode-1.0.0-linux-x86_64.tar.gz
-sudo install -m 755 conquerd-supernode-1.0.0-linux-x86_64/conquerd-supernode /usr/local/bin/
+tar -xzf doubleslash-supernode-1.0.0-linux-x86_64.tar.gz
+sudo install -m 755 doubleslash-supernode-1.0.0-linux-x86_64/doubleslash-supernode /usr/local/bin/
 ```
 
 **Linux ARM64** (Raspberry Pi, ARM VPS):
 
 ```bash
-tar -xzf conquerd-supernode-1.0.0-linux-aarch64.tar.gz
-sudo install -m 755 conquerd-supernode-1.0.0-linux-aarch64/conquerd-supernode /usr/local/bin/
+tar -xzf doubleslash-supernode-1.0.0-linux-aarch64.tar.gz
+sudo install -m 755 doubleslash-supernode-1.0.0-linux-aarch64/doubleslash-supernode /usr/local/bin/
 ```
 
 **Windows x86_64**:
 
 ```powershell
-Expand-Archive conquerd-supernode-1.0.0-win64.zip -DestinationPath .
-# Run: .\conquerd-supernode-1.0.0-win64\conquerd-supernode.exe
+Expand-Archive doubleslash-supernode-1.0.0-win64.zip -DestinationPath .
+# Run: .\doubleslash-supernode-1.0.0-win64\doubleslash-supernode.exe
 ```
 
 ### Build and package locally
@@ -52,7 +52,7 @@ On Linux or macOS, `scripts/build_supernode.sh` detects the host platform and em
 
 ```bash
 CONQUERD_RELEASE=1 ./scripts/build_supernode.sh
-# e.g. dist/conquerd-supernode-1.0.0-linux-x86_64.tar.gz
+# e.g. dist/doubleslash-supernode-1.0.0-linux-x86_64.tar.gz
 ```
 
 On Windows, use the companion script (`.zip` output):
@@ -60,7 +60,7 @@ On Windows, use the companion script (`.zip` output):
 ```powershell
 $env:CONQUERD_RELEASE = '1'
 .\scripts\build_supernode.ps1
-# e.g. dist\conquerd-supernode-1.0.0-win64.zip
+# e.g. dist\doubleslash-supernode-1.0.0-win64.zip
 ```
 
 Supported local package suffixes: `linux-x86_64`, `linux-aarch64`, `macos-arm64`, `macos-x86_64` (shell script), and `win64` (PowerShell script).
@@ -110,7 +110,7 @@ enabled = true
 cdylib_manifest = "plugins/acme-matchmaker.toml"
 ```
 
-See `rust/conquerd-supernode/src/manifest.rs` for the full schema. The example above is the current starting point; the binary does not expose a manifest-printing CLI flag.
+See `rust/doubleslash-supernode/src/manifest.rs` for the full schema. The example above is the current starting point; the binary does not expose a manifest-printing CLI flag.
 
 ## Key Features & Hosting
 
@@ -179,7 +179,7 @@ Graceful shutdown is supported (closes QUIC endpoints cleanly).
 ## Security Notes
 
 - The supernode only sees encrypted traffic and metadata it needs for routing (peer indices, room membership).
-- All feature dispatch goes through `conquerd-features` (auth tier + quota enforcement).
+- All feature dispatch goes through `doubleslash-features` (auth tier + quota enforcement).
 - Never trust the supernode for identity — only for transport assistance and opt-in hosting.
 
 ## Monitoring & Stats
@@ -203,7 +203,7 @@ After=network.target
 
 [Service]
 Environment=CONQUERD_HOME=/var/lib/conquerd
-ExecStart=/usr/local/bin/conquerd-supernode
+ExecStart=/usr/local/bin/doubleslash-supernode
 User=conquerd
 Restart=on-failure
 LimitNOFILE=65536

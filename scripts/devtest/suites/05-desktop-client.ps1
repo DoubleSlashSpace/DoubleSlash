@@ -1,7 +1,7 @@
 <#
     Desktop-side checks, read from the profile the real app uses.
 
-    The log assertions read .clientA/logs/conquerd-client.log - the same file
+    The log assertions read .clientA/logs/doubleslash-client.log - the same file
     run_client.bat writes - so they describe the client you actually ran rather
     than a synthetic one.
 
@@ -140,7 +140,7 @@ if ($inviteUrl -eq '') {
 $out = Invoke-HeadlessClient -EnvVars @{
     CONQUERD_ACCEPT_INVITE = $inviteUrl
     CONQUERD_SIMULATE_EXIT = '1'
-    RUST_LOG               = 'conquerd_client=info,warn'
+    RUST_LOG               = 'doubleslash_client=info,warn'
 } -TimeoutSec 90
 
 if ($null -eq $out) {

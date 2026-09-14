@@ -23,19 +23,16 @@ extern "C" bool doubleslash_fetch_sync(const char* raw, size_t len,
     char** contentType, size_t* ctLen, uint8_t** body, size_t* bodyLen)
 {
     const QUrl url(QString::fromUtf8(raw, static_cast<qsizetype>(len)));
-    auto path = url.path();
-    if (path.startsWith("/_doubleslash/")) {
-        path = QString("/_conquerd/") + path.mid(QString("/_doubleslash/").size());
-    }
+    const auto path = url.path();
     const auto host = url.host();
     const QUrlQuery query(url);
     QByteArray bytes, type("application/json");
-    if (path == "/_conquerd/ctx.json") {
+    if (path == "/_doubleslash/ctx.json") {
         bytes = QJsonDocument(QJsonObject{{"myPeerId",host},{"version","fixture"}}).toJson();
-    } else if (path == "/_conquerd/channel/open") {
+    } else if (path == "/_doubleslash/channel/open") {
         peers[host] = Peer{query.queryItemValue("room"), {}};
         bytes = "{\"ok\":true}";
-    } else if (path == "/_conquerd/channel/send") {
+    } else if (path == "/_doubleslash/channel/send") {
         const auto room = peers.value(host).room;
         for (auto i = peers.begin(); i != peers.end(); ++i) {
             if (i.key() != host && !room.isEmpty() && i->room == room) {
@@ -43,13 +40,13 @@ extern "C" bool doubleslash_fetch_sync(const char* raw, size_t len,
             }
         }
         bytes = "{\"ok\":true}";
-    } else if (path == "/_conquerd/channel/poll") {
+    } else if (path == "/_doubleslash/channel/poll") {
         bytes = QJsonDocument(QJsonObject{{"frames", peers[host].queue}}).toJson();
         peers[host].queue = {};
-    } else if (path == "/_conquerd/channel/close") {
+    } else if (path == "/_doubleslash/channel/close") {
         peers.remove(host); bytes = "{\"ok\":true}";
     } else if (path.startsWith("/games/") || path.startsWith("/web-sdk/") || path == "/") {
-        auto rel = path == "/" ? QString("rust/conquerd-supernode/templates/web_index.html") : path.mid(1);
+        auto rel = path == "/" ? QString("rust/doubleslash-supernode/templates/web_index.html") : path.mid(1);
         if (rel.endsWith('/')) rel += "index.html";
         rel = QDir::cleanPath(rel);
         if (rel.startsWith("../")) return false;

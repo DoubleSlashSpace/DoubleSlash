@@ -19,7 +19,7 @@ DoubleSlash is a high-information-density, privacy-focused P2P application. The 
 - Fluid micro-animations on state changes.
 - Full light mode support via `Theme.isDark`.
 
-**Source of truth**: `rust/conquerd-client/qml/Theme.qml` + this document.
+**Source of truth**: `rust/doubleslash-client/qml/Theme.qml` + this document.
 All new QML must consume tokens from `Theme.*` — never hardcode colors, sizes, or radii.
 
 **Design Principles**:
@@ -178,7 +178,7 @@ Adaptive audio normalization uses a 30Hz peak envelope tracker (`peakTimer`) and
 Inline file preview using `DoubleSlashWebView`. Supports: images, PDF, HTML, text/code, video (HTML5 `<video>`), audio (HTML5 `<audio>`). Navigation restricted to `file://` and `data:` URIs — no outbound network. Shows "cannot preview" message for unsupported types.
 
 ### DoubleSlashWebView
-Shared secure `QtWebEngine` wrapper. Always off-the-record (no persistent cookies, cache, localStorage, or history). Navigation whitelist: only hosts matching `allowedDomains` suffixes are allowed; `file://` and `data:` are always permitted. `allowAll: true` bypasses the whitelist (browser panel). `allowPortal: true` permits `conquerd://` URLs for supernode portal pages. No `QWebChannel` bridge — zero access to Rust/AppBridge peer data.
+Shared secure `QtWebEngine` wrapper. Always off-the-record (no persistent cookies, cache, localStorage, or history). Navigation whitelist: only hosts matching `allowedDomains` suffixes are allowed; `file://` and `data:` are always permitted. `allowAll: true` bypasses the whitelist (browser panel). `allowPortal: true` permits `doubleslash://` URLs for supernode portal pages. No `QWebChannel` bridge — zero access to Rust/AppBridge peer data.
 
 ## States & Interactions
 

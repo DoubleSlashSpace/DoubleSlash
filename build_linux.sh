@@ -25,7 +25,7 @@
 #   extracts archive members only during its one sequential scan, and rustc
 #   places the rlib defining `cxx_qt_init_*` before the --whole-archive
 #   call-init archives that reference them, so gold ends the link with
-#   "undefined reference to 'cxx_qt_init_crate_conquerd_client'". lld keeps
+#   "undefined reference to 'cxx_qt_init_crate_doubleslash_client'". lld keeps
 #   archive members as lazy symbols and resolves them whatever the order.
 #
 # Usage:
@@ -38,7 +38,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 RUST_DIR="$ROOT/rust"
-CLIENT_DIR="$RUST_DIR/conquerd-client"
+CLIENT_DIR="$RUST_DIR/doubleslash-client"
 
 # ── Auto-detect Qt 6 ─────────────────────────────────────────────────────────
 if [ -z "${QT_DIR:-}" ]; then
@@ -64,7 +64,7 @@ export CMAKE_PREFIX_PATH="$QT_DIR"
 export QMAKE="$QT_DIR/bin/qmake"
 
 # ── Read version from Cargo.toml ─────────────────────────────────────────────
-VERSION=$(grep -m1 '^version' "$RUST_DIR/conquerd-client/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
+VERSION=$(grep -m1 '^version' "$RUST_DIR/doubleslash-client/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
 echo "==> Building DoubleSlash v${VERSION} for Linux"
 
 PROFILE="debug"
@@ -75,19 +75,19 @@ if [ "${DOUBLESLASH_RELEASE:-${CONQUERD_RELEASE:-0}}" = "1" ]; then
 fi
 
 # ── Build ─────────────────────────────────────────────────────────────────────
-# conquerd-client is its own workspace root (see rust/conquerd-client/Cargo.toml).
+# doubleslash-client is its own workspace root (see rust/doubleslash-client/Cargo.toml).
 echo ""
-echo "==> cargo build --features qt-ui $CARGO_FLAGS  (conquerd-client workspace)"
+echo "==> cargo build --features qt-ui $CARGO_FLAGS  (doubleslash-client workspace)"
 cd "$CLIENT_DIR"
 cargo build --features qt-ui $CARGO_FLAGS
 
 echo ""
-echo "==> cargo build -p conquerd-installer $CARGO_FLAGS"
+echo "==> cargo build -p doubleslash-installer $CARGO_FLAGS"
 cd "$RUST_DIR"
-cargo build -p conquerd-installer $CARGO_FLAGS
+cargo build -p doubleslash-installer $CARGO_FLAGS
 
-BINARY="$RUST_DIR/target/$PROFILE/conquerd-client"
-INSTALLER_BIN="$RUST_DIR/target/$PROFILE/conquerd-installer"
+BINARY="$RUST_DIR/target/$PROFILE/doubleslash-client"
+INSTALLER_BIN="$RUST_DIR/target/$PROFILE/doubleslash-installer"
 
 # ── Assemble AppDir ───────────────────────────────────────────────────────────
 DIST="$ROOT/dist"
@@ -101,15 +101,13 @@ mkdir -p "$APPDIR/usr/share/applications"
 mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
 cp "$BINARY" "$APPDIR/usr/bin/doubleslash"
-cp "$INSTALLER_BIN" "$APPDIR/usr/bin/conquerd-installer"
-ln -s doubleslash "$APPDIR/usr/bin/conquerd"
-chmod +x "$APPDIR/usr/bin/doubleslash" "$APPDIR/usr/bin/conquerd-installer"
+cp "$INSTALLER_BIN" "$APPDIR/usr/bin/doubleslash-installer"
+chmod +x "$APPDIR/usr/bin/doubleslash" "$APPDIR/usr/bin/doubleslash-installer"
 
 # Desktop integration
 cp "$ROOT/packaging/AppRun" "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
 cp "$ROOT/packaging/doubleslash.desktop" "$APPDIR/usr/share/applications/doubleslash.desktop"
-cp "$ROOT/packaging/conquerd.desktop" "$APPDIR/usr/share/applications/conquerd.desktop"
 ln -sf usr/share/applications/doubleslash.desktop "$APPDIR/doubleslash.desktop"
 
 # Icon (PNG)
@@ -137,7 +135,7 @@ echo "==> Running linuxdeployqt..."
 LDQT="${LINUXDEPLOYQT:-$(command -v linuxdeployqt 2>/dev/null || true)}"
 if [ -n "$LDQT" ] && [ -f "$LDQT" ]; then
     "$LDQT" "$APPDIR/usr/bin/doubleslash" -appimage \
-        -qmldir="$RUST_DIR/conquerd-client/qml" \
+        -qmldir="$RUST_DIR/doubleslash-client/qml" \
         -no-translations
 else
     # linuxdeployqt not found — copy Qt libs manually + use windeployqt-style copy

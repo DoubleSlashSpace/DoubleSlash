@@ -2,11 +2,11 @@
 setlocal EnableExtensions
 
 :: ---------------------------------------------------------------------------
-:: Build the headless conquerd-client (no Qt UI) for integration testing.
+:: Build the headless doubleslash-client (no Qt UI) for integration testing.
 ::
 :: Output:
-::   rust\target-headless\debug\conquerd-client.exe     (default)
-::   rust\target-headless\release\conquerd-client.exe   (release mode)
+::   rust\target-headless\debug\doubleslash-client.exe     (default)
+::   rust\target-headless\release\doubleslash-client.exe   (release mode)
 ::
 :: Usage:
 ::   build_headless.bat              :: debug + console
@@ -20,7 +20,7 @@ setlocal EnableExtensions
 :: ---------------------------------------------------------------------------
 
 set "ROOT=%~dp0"
-set "CLIENT_DIR=%ROOT%rust\conquerd-client"
+set "CLIENT_DIR=%ROOT%rust\doubleslash-client"
 set "CARGO_TARGET_DIR=%ROOT%rust\target-headless"
 set "MODE=%~1"
 if "%MODE%"=="" set "MODE=debug"
@@ -39,7 +39,7 @@ echo.
 
 pushd "%CLIENT_DIR%"
 if /I "%MODE%"=="test" (
-    cargo test -p conquerd-client --features console
+    cargo test -p doubleslash-client --features console
     if errorlevel 1 (
         popd
         echo.
@@ -53,23 +53,23 @@ if /I "%MODE%"=="test" (
 )
 
 if /I "%MODE%"=="release" (
-    cargo build -p conquerd-client --features console --release
+    cargo build -p doubleslash-client --features console --release
     if errorlevel 1 (
         popd
         echo.
         echo Build FAILED.
         exit /b 1
     )
-    set "BIN=%CARGO_TARGET_DIR%\release\conquerd-client.exe"
+    set "BIN=%CARGO_TARGET_DIR%\release\doubleslash-client.exe"
 ) else if /I "%MODE%"=="debug" (
-    cargo build -p conquerd-client --features console
+    cargo build -p doubleslash-client --features console
     if errorlevel 1 (
         popd
         echo.
         echo Build FAILED.
         exit /b 1
     )
-    set "BIN=%CARGO_TARGET_DIR%\debug\conquerd-client.exe"
+    set "BIN=%CARGO_TARGET_DIR%\debug\doubleslash-client.exe"
 ) else (
     popd
     echo Unknown mode: %MODE%

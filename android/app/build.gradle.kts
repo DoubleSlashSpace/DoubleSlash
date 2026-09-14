@@ -21,17 +21,17 @@ fun firstProp(vararg names: String): String? =
 fun firstEnv(vararg names: String): String? =
     names.firstNotNullOfOrNull { providers.environmentVariable(it).orNull }
 
-val conquerdAbis: List<String> =
-    (firstProp("doubleslash.abis", "conquerd.abis") ?: "arm64-v8a")
+val doubleslashAbis: List<String> =
+    (firstProp("doubleslash.abis") ?: "arm64-v8a")
         .split(",")
         .map { it.trim() }
         .filter { it.isNotEmpty() }
 
 /// Android API level the Rust side compiles against. Must match `minSdk`.
-val conquerdNdkApi: String = firstProp("doubleslash.ndkApi", "conquerd.ndkApi") ?: "26"
+val doubleslashNdkApi: String = firstProp("doubleslash.ndkApi") ?: "26"
 
 /// Overridable so a machine with a non-PATH toolchain can point at its own.
-val cargoExecutable: String = firstProp("doubleslash.cargo", "conquerd.cargo") ?: "cargo"
+val cargoExecutable: String = firstProp("doubleslash.cargo") ?: "cargo"
 
 /// Keystore that signs the APK, when CI supplies one.
 ///
@@ -46,17 +46,17 @@ val cargoExecutable: String = firstProp("doubleslash.cargo", "conquerd.cargo") ?
 /// Unset on a developer machine, where the build falls through to the debug
 /// keystore Gradle manages itself. That is what has always signed local
 /// builds, so it is also what the CI secret should hold.
-val signingKeystore: String? = firstEnv("DOUBLESLASH_KEYSTORE", "CONQUERD_KEYSTORE")
+val signingKeystore: String? = firstEnv("DOUBLESLASH_KEYSTORE")
 
 /// Passwords for [signingKeystore]. The defaults are the published
 /// debug-keystore credentials, so reusing a debug keystore needs no secret
 /// beyond the file itself; a real release keystore overrides all three.
 val signingStorePassword: String =
-    firstEnv("DOUBLESLASH_KEYSTORE_PASSWORD", "CONQUERD_KEYSTORE_PASSWORD") ?: "android"
+    firstEnv("DOUBLESLASH_KEYSTORE_PASSWORD") ?: "android"
 val signingKeyAlias: String =
-    firstEnv("DOUBLESLASH_KEY_ALIAS", "CONQUERD_KEY_ALIAS") ?: "androiddebugkey"
+    firstEnv("DOUBLESLASH_KEY_ALIAS") ?: "androiddebugkey"
 val signingKeyPassword: String =
-    firstEnv("DOUBLESLASH_KEY_PASSWORD", "CONQUERD_KEY_PASSWORD") ?: "android"
+    firstEnv("DOUBLESLASH_KEY_PASSWORD") ?: "android"
 
 /// Build stamp appended to the version name, so a side-loaded APK can be
 /// identified from the device Settings screen.
@@ -66,10 +66,10 @@ val signingKeyPassword: String =
 /// a later local build could only be installed by uninstalling first - which
 /// costs the identity key and the message store. versionName carries no such
 /// rule, so it is the safe place to put a build number.
-val conquerdBuildStamp: String =
-    firstEnv("DOUBLESLASH_BUILD_ID", "CONQUERD_BUILD_ID")?.let { "-$it" } ?: ""
+val doubleslashBuildStamp: String =
+    firstEnv("DOUBLESLASH_BUILD_ID")?.let { "-$it" } ?: ""
 
-val rustCrateDir = rootProject.layout.projectDirectory.dir("../rust/conquerd-android")
+val rustCrateDir = rootProject.layout.projectDirectory.dir("../rust/doubleslash-android")
 val jniLibsDir = layout.projectDirectory.dir("src/main/jniLibs")
 
 /// Register one cargo-ndk invocation.
@@ -86,9 +86,9 @@ fun registerCargoBuild(taskName: String, releaseProfile: Boolean) =
         workingDir = rustCrateDir.asFile
 
         val arguments = mutableListOf("ndk")
-        conquerdAbis.forEach { abi -> arguments += listOf("-t", abi) }
+        doubleslashAbis.forEach { abi -> arguments += listOf("-t", abi) }
         arguments += listOf(
-            "--platform", conquerdNdkApi,
+            "--platform", doubleslashNdkApi,
             // cargo-ndk writes <dir>/<abi>/lib<name>.so itself, which is
             // exactly the layout AGP expects from a jniLibs source dir.
             "-o", jniLibsDir.asFile.absolutePath,
@@ -113,7 +113,7 @@ fun registerCargoBuild(taskName: String, releaseProfile: Boolean) =
         inputs.dir(rustCrateDir)
         // The core itself, not just the JNI shim — a change in either has to
         // rebuild the .so.
-        inputs.dir(rootProject.layout.projectDirectory.dir("../rust/conquerd-client/src"))
+        inputs.dir(rootProject.layout.projectDirectory.dir("../rust/doubleslash-client/src"))
         outputs.dir(jniLibsDir)
     }
 
@@ -121,7 +121,7 @@ val cargoBuildDebug = registerCargoBuild("cargoBuildDebug", releaseProfile = fal
 val cargoBuildRelease = registerCargoBuild("cargoBuildRelease", releaseProfile = true)
 
 android {
-    namespace = "com.conquerd.client"
+    namespace = "com.doubleslash.client"
     compileSdk = 36
 
     // Pinned rather than "whatever is installed": the NDK version decides the
@@ -130,14 +130,14 @@ android {
     ndkVersion = "28.2.13676358"
 
     defaultConfig {
-        applicationId = "com.conquerd.client"
+        applicationId = "com.doubleslash.client"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "1.0.0$conquerdBuildStamp"
+        versionName = "1.0.0$doubleslashBuildStamp"
 
         ndk {
-            abiFilters += conquerdAbis
+            abiFilters += doubleslashAbis
         }
     }
 

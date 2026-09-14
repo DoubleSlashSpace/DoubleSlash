@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Verify that conquerd-client/Cargo.toml [package].version matches every other
+    Verify that doubleslash-client/Cargo.toml [package].version matches every other
     tracked crate shipped in a release.
 
 .DESCRIPTION
@@ -26,12 +26,12 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot    = Split-Path -Parent $PSScriptRoot
 $rustDir     = Join-Path $repoRoot 'rust'
-$clientCargo = Join-Path (Join-Path $rustDir 'conquerd-client') 'Cargo.toml'
+$clientCargo = Join-Path (Join-Path $rustDir 'doubleslash-client') 'Cargo.toml'
 
 $trackedCrates = @(
-    'conquerd-features',
-    'conquerd-installer',
-    'conquerd-supernode'
+    'doubleslash-features',
+    'doubleslash-installer',
+    'doubleslash-supernode'
 )
 
 function Get-CrateVersion {
@@ -89,15 +89,15 @@ if ($BumpTo) {
 }
 
 if ($mismatches.Count -gt 0) {
-    Write-Host "Version drift detected (conquerd-client version=$expected):" -ForegroundColor Red
+    Write-Host "Version drift detected (doubleslash-client version=$expected):" -ForegroundColor Red
     foreach ($m in $mismatches) {
         Write-Host "  rust/$($m.Crate)/Cargo.toml = $($m.Version)" -ForegroundColor Red
     }
-    Write-Host "Bump every crate's [package].version to match conquerd-client." -ForegroundColor Red
+    Write-Host "Bump every crate's [package].version to match doubleslash-client." -ForegroundColor Red
     exit 1
 }
 
-Write-Host "OK: all $($trackedCrates.Count) Rust crates match conquerd-client version=$expected"
+Write-Host "OK: all $($trackedCrates.Count) Rust crates match doubleslash-client version=$expected"
 exit 0
 
 

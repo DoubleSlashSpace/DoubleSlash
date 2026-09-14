@@ -19,7 +19,7 @@
     <string>DoubleSlash</string>
 
     <key>CFBundleIdentifier</key>
-    <string>com.conquerd.app</string>
+    <string>com.doubleslash.app</string>
 
     <key>CFBundleVersion</key>
     <string>@VERSION@</string>
@@ -48,7 +48,6 @@
     <key>NSMicrophoneUsageDescription</key>
     <string>DoubleSlash needs microphone access for voice calls.</string>
 
-    <!-- Invite hand-off + portal schemes (legacy conquerd:// kept) -->
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
@@ -58,7 +57,6 @@
             <array>
                 <string>doubleslash</string>
                 <string>d</string>
-                <string>conquerd</string>
             </array>
         </dict>
     </array>

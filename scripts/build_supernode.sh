@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ============================================================================
-# build_supernode.sh — Build and package conquerd-supernode for the host platform
+# build_supernode.sh — Build and package doubleslash-supernode for the host platform
 # ============================================================================
 # Produces:
-#   dist/conquerd-supernode-X.X.X-<platform>.tar.gz
-#   dist/conquerd-supernode-X.X.X-<platform>.tar.gz.sha256
+#   dist/doubleslash-supernode-X.X.X-<platform>.tar.gz
+#   dist/doubleslash-supernode-X.X.X-<platform>.tar.gz.sha256
 #
 # Supported platform suffixes:
 #   linux-x86_64, linux-aarch64, macos-arm64, macos-x86_64
@@ -25,7 +25,7 @@ RUST_DIR="$ROOT/rust"
 DIST="$ROOT/dist"
 
 VERSION="$(
-    grep -m1 '^version' "$RUST_DIR/conquerd-supernode/Cargo.toml" \
+    grep -m1 '^version' "$RUST_DIR/doubleslash-supernode/Cargo.toml" \
         | sed 's/.*"\(.*\)".*/\1/'
 )"
 
@@ -49,26 +49,26 @@ if [ "${CONQUERD_RELEASE:-0}" = "1" ] || [ "${CONQUERD_DEBUG:-0}" != "1" ]; then
     CARGO_FLAGS="--release"
 fi
 
-echo "==> Building conquerd-supernode v${VERSION} for ${PLATFORM} (profile: ${PROFILE})"
+echo "==> Building doubleslash-supernode v${VERSION} for ${PLATFORM} (profile: ${PROFILE})"
 
 cd "$RUST_DIR"
-cargo build -p conquerd-supernode $CARGO_FLAGS
+cargo build -p doubleslash-supernode $CARGO_FLAGS
 
-BINARY="$RUST_DIR/target/$PROFILE/conquerd-supernode"
+BINARY="$RUST_DIR/target/$PROFILE/doubleslash-supernode"
 if [ ! -f "$BINARY" ]; then
     echo "ERROR: expected binary at $BINARY"
     exit 1
 fi
 
-STAGING_NAME="conquerd-supernode-${VERSION}-${PLATFORM}"
+STAGING_NAME="doubleslash-supernode-${VERSION}-${PLATFORM}"
 STAGING="$DIST/$STAGING_NAME"
 ARCHIVE="$DIST/${STAGING_NAME}.tar.gz"
 
 mkdir -p "$DIST"
 rm -rf "$STAGING"
 mkdir -p "$STAGING"
-cp "$BINARY" "$STAGING/conquerd-supernode"
-chmod +x "$STAGING/conquerd-supernode"
+cp "$BINARY" "$STAGING/doubleslash-supernode"
+chmod +x "$STAGING/doubleslash-supernode"
 
 tar -czf "$ARCHIVE" -C "$DIST" "$STAGING_NAME"
 if command -v sha256sum >/dev/null 2>&1; then

@@ -21,16 +21,16 @@ $Root = Split-Path -Parent $PSScriptRoot
 $HomeDir = Join-Path $Root $Profile
 $Settings = Join-Path $HomeDir "settings.json"
 
-$Bin = Join-Path $Root "rust\target-headless\debug\conquerd-client.exe"
+$Bin = Join-Path $Root "rust\target-headless\debug\doubleslash-client.exe"
 if (-not (Test-Path $Bin)) {
-    $Bin = Join-Path $Root "rust\target-headless\release\conquerd-client.exe"
+    $Bin = Join-Path $Root "rust\target-headless\release\doubleslash-client.exe"
 }
 if (-not (Test-Path $Bin)) {
     Write-Host "Headless binary not found. Running build_headless.bat ..."
     $build = Join-Path $Root "build_headless.bat"
     & $build debug
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    $Bin = Join-Path $Root "rust\target-headless\debug\conquerd-client.exe"
+    $Bin = Join-Path $Root "rust\target-headless\debug\doubleslash-client.exe"
 }
 if (-not (Test-Path $Bin)) {
     throw "Headless binary missing after build: $Bin"
@@ -58,7 +58,7 @@ $env:CONQUERD_HOME = $HomeDir
 $env:CONQUERD_KEY_DIR = $HomeDir
 $env:CONQUERD_OLLAMA_ONLY = "1"
 $env:CONQUERD_SIMULATE_INBOUND_CHAT = $Prompt
-$env:RUST_LOG = "conquerd_client=info,warn"
+$env:RUST_LOG = "doubleslash_client=info,warn"
 
 & $Bin
 exit $LASTEXITCODE

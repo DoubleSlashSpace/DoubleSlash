@@ -15,9 +15,9 @@ Every feature area lists three things:
 
 | Field | Meaning |
 |---|---|
-| **Core** | The module in `rust/conquerd-client/src/`. Shared by every client — if it is here, you do not reimplement it, you expose it. |
+| **Core** | The module in `rust/doubleslash-client/src/`. Shared by every client — if it is here, you do not reimplement it, you expose it. |
 | **Desktop** | The `#[qinvokable]` methods on `AppBridge` (`src/ui/bridge.rs`) and the QML that drives them. This is the full desktop surface: 98 invokables. |
-| **Android** | The command name in `rust/conquerd-android/src/command.rs` (`KNOWN_COMMANDS`), or what is missing. |
+| **Android** | The command name in `rust/doubleslash-android/src/command.rs` (`KNOWN_COMMANDS`), or what is missing. |
 
 The core is the same Rust library in both clients. A feature missing on Android
 is almost never missing from the core — it is missing a command, a UI, or both.
@@ -198,7 +198,7 @@ signed, and admission is proved against it rather than asserted.
 ### 7. Direct voice calls
 
 * **Core** — `call_controller.rs` (lifecycle state machine), `aec.rs`,
-  jitter buffering, Opus via `conquerd-opus`.
+  jitter buffering, Opus via `doubleslash-opus`.
 * **Desktop** — `startCall`, `acceptCall`, `rejectCall`, `endCall`, `setMuted`,
   plus the full audio stack: `listAudioDevices`, `setAudioDevices`,
   `setInputVolume`, `setOutputVolume`, `startMicTest`, `stopMicTest`,
@@ -227,7 +227,7 @@ peer-to-peer, sealed under the room sender key.
 ### 9. Video
 
 * **Core** — `video/`: camera capture, codec seam (VP8 everywhere via
-  `conquerd-vpx`, H.264 via Media Foundation on Windows), fragmentation over
+  `doubleslash-vpx`, H.264 via Media Foundation on Windows), fragmentation over
   datagrams, picture-in-picture compositing before encode.
 * **Desktop** — `setVideoEnabled`, `setVideoPreviewEnabled`, `listVideoDevices`,
   `listVideoCodecs`, `setVideoAdaptiveBitrate`, `setVideoSubscriptions`, plus
@@ -313,7 +313,7 @@ client's QUIC channels — the multiplayer game demos run on this.
   loss.
 
   `addJavascriptInterface` can only pass strings, so `PortalBridge.BOOTSTRAP_JS`
-  builds the promise-shaped `window.conquerd` the SDK awaits on top of the
+  builds the promise-shaped `window.doubleslash` the SDK awaits on top of the
   string calls. Every bridge call returns JSON rather than throwing: an
   exception across that boundary reaches the page as a bare "Error", losing
   what the core said.
@@ -369,7 +369,7 @@ hosting an image.
 
 * **Core** — `github_updater.rs`, polling GitHub Releases.
 * **Desktop** — `applyUpdate`, `setAutomaticUpdateChecks`; hands off to
-  `conquerd-installer`.
+  `doubleslash-installer`.
 * **Android** — not applicable in this form; distribution is the store or a
   sideloaded APK.
 
@@ -462,11 +462,11 @@ The desktop surface is enumerable, so drift is detectable:
 
 ```bash
 # Every desktop capability
-grep -A2 '#\[qinvokable\]' rust/conquerd-client/src/ui/bridge.rs \
+grep -A2 '#\[qinvokable\]' rust/doubleslash-client/src/ui/bridge.rs \
   | grep -oE 'fn [a-zA-Z_]+' | sed 's/fn //' | sort
 
 # Every Android capability
-sed -n '/KNOWN_COMMANDS/,/];/p' rust/conquerd-android/src/command.rs
+sed -n '/KNOWN_COMMANDS/,/];/p' rust/doubleslash-android/src/command.rs
 ```
 
 `KNOWN_COMMANDS` is enforced by a test — every entry must have a match arm — so

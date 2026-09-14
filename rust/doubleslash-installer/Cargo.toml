@@ -1,0 +1,52 @@
+[package]
+name = "doubleslash-installer"
+version = "1.0.0"
+edition = "2021"
+description = "DoubleSlash standalone installer and updater"
+
+[[bin]]
+name = "doubleslash-installer"
+path = "src/main.rs"
+
+[[bin]]
+name = "sign-release-manifest"
+path = "src/bin/sign_release_manifest.rs"
+
+[dependencies]
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "wgpu", "persistence", "x11", "wayland"] }
+egui = "0.31"
+egui_extras = { version = "0.31", features = ["svg"] }
+# Successor to `sevenz-rust`, which was abandoned with an unfixed arbitrary
+# file write (RUSTSEC-2026-0245) and whose advisory names this crate as the
+# migration target.
+#
+# 0.21 is the first series with the fork's own traversal check (`safe_join`),
+# and it needs rustc 1.93 — hence the toolchain floor this crate imposes on the
+# repo. `extract::entry_name_is_safe` screens entry names at our call site as
+# well; that is deliberate belt-and-braces on a component that writes to a
+# user's filesystem, and it is what kept us safe on 0.20 before this bump.
+sevenz-rust2 = "0.21"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+image = { version = "0.25", default-features = false, features = ["png", "ico"] }
+dirs = "6"
+open = "5"
+ureq = { version = "2", features = ["json"] }
+ed25519-dalek = { version = "2", features = [] }
+hex = "0.4"
+base64 = "0.22"
+pem = "3"
+
+[build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+sevenz-rust2 = { version = "0.21", features = ["compress"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }

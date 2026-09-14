@@ -46,7 +46,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$PackageId = "com.conquerd.client"
+$PackageId = "com.doubleslash.client"
 # Must match DoubleSlashCore.homeDir on the Kotlin side.
 $RemoteHome = "files/doubleslash"
 
@@ -149,7 +149,7 @@ Write-Host ""
 # SQLite keeps recent writes in the -wal sidecar, so copying chat_history.db
 # alone from a running client silently loses them. Checkpoint by closing the
 # desktop client, or accept the loss.
-$desktop = @(Get-Process -Name "DoubleSlash", "ConquerD", "conquerd-client" -ErrorAction SilentlyContinue)
+$desktop = @(Get-Process -Name "DoubleSlash", "ConquerD", "doubleslash-client" -ErrorAction SilentlyContinue)
 if ($desktop.Count -gt 0) {
     throw @"
 The desktop client is still running (PID $($desktop[0].Id)).

@@ -46,7 +46,7 @@ try {
     Write-Host "==> sign-release-manifest wrapper" -ForegroundColor Cyan
 
     # The workspace root is rust/Cargo.toml
-    & cargo run -p conquerd-installer --manifest-path rust/Cargo.toml --bin sign-release-manifest -- @RemainingArgs
+    & cargo run -p doubleslash-installer --manifest-path rust/Cargo.toml --bin sign-release-manifest -- @RemainingArgs
 
     if ($LASTEXITCODE -ne 0) {
         throw "sign-release-manifest failed with exit code $LASTEXITCODE"

@@ -11,5 +11,4 @@ Keywords=voice;chat;p2p;privacy;encrypted;doubleslash;
 StartupWMClass=DoubleSlash
 StartupNotify=true
 
-# Invite hand-off is doubleslash:// (and d://). conquerd:// is a portal alias.
-MimeType=x-scheme-handler/doubleslash;x-scheme-handler/d;x-scheme-handler/conquerd;
+MimeType=x-scheme-handler/doubleslash;x-scheme-handler/d;

@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The full "DoubleSlash://" wordmark, traced from the desktop client's
+  rust/doubleslash-client/qml/icons/logo-full.svg so both clients draw the
+  identical geometry. Keep the 486x90 viewport: coordinates are flattened
+  (no per-glyph groups) so the single linear gradient below spans the whole
+  gradient-lettered span (x 54-398) the same way the SVG's does.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="243dp"
+    android:height="45dp"
+    android:viewportWidth="486"
+    android:viewportHeight="90">
+
+    <!-- D: pentagon with the counter cut out. -->
+    <path
+        android:fillColor="@color/logo"
+        android:fillType="evenOdd"
+        android:pathData="M0,17 L36,17 L48,45 L36,73 L0,73 Z M11,28 L28,28 L37,45 L28,62 L11,62 Z" />
+
+    <!-- o u b l e S l a s h — gradient white -> purple, matching the desktop wordmark. -->
+    <path android:fillType="evenOdd"
+        android:pathData="M66,33 L78,33 L90,53 L78,73 L66,73 L54,53 Z M69,42 L75,42 L83,53 L75,64 L69,64 L61,53 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54" android:startY="0"
+                android:endX="398" android:endY="0"
+                android:startColor="#FFFFFFFF"
+                android:endColor="#FFA78BFA" />
+        </aapt:attr>
+    </path>
+    <path android:pathData="M96,33 L107,33 L107,58 L119,66 L119,33 L130,33 L130,73 L113,73 L96,58 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54" android:startY="0"
+                android:endX="398" android:endY="0"
+                android:startColor="#FFFFFFFF"
+                android:endColor="#FFA78BFA" />
+        </aapt:attr>
+    </path>
+    <path android:fillType="evenOdd"
+        android:pathData="M136,17 L147,17 L147,33 L160,33 L172,53 L160,73 L147,73 L136,73 Z M150,42 L157,42 L165,53 L157,64 L150,64 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54" android:startY="0"
+                android:endX="398" android:endY="0"
+                android:startColor="#FFFFFFFF"
+                android:endColor="#FFA78BFA" />
+        </aapt:attr>
+    </path>
+    <path android:pathData="M178,17 L189,17 L189,73 L178,73 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54" android:startY="0"
+                android:endX="398" android:endY="0"
+                android:startColor="#FFFFFFFF"
+                android:endColor="#FFA78BFA" />
+        </aapt:attr>
+    </path>
+    <path android:pathData="M207,33 L231,33 L231,42 L206,42 L206,49 L228,49 L228,57 L206,57 L206,64 L231,64 L231,73 L195,73 L195,53 L207,33 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54" android:startY="0"
+                android:endX="398" android:endY="0"
+                android:startColor="#FFFFFFFF"
+                android:endColor="#FFA78BFA" />
+        </aapt:attr>
+    </path>
+    <path android:pathData="M237,17 L267,17 L267,28 L249,28 L249,34 L267,50 L267,73 L237,73 L237,62 L255,62 L255,56 L237,40 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54" android:startY="0"
+                android:endX="398" android:endY="0"
+                android:startColor="#FFFFFFFF"
+                android:endColor="#FFA78BFA" />
+        </aapt:attr>
+    </path>
+    <path android:pathData="M273,17 L284,17 L284,73 L273,73 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54" android:startY="0"
+                android:endX="398" android:endY="0"
+                android:startColor="#FFFFFFFF"
+                android:endColor="#FFA78BFA" />
+        </aapt:attr>
+    </path>
+    <path android:fillType="evenOdd"
+        android:pathData="M290,53 L302,33 L326,33 L326,73 L302,73 Z M298,53 L306,42 L319,42 L319,64 L306,64 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54" android:startY="0"
+                android:endX="398" android:endY="0"
+                android:startColor="#FFFFFFFF"
+                android:endColor="#FFA78BFA" />
+        </aapt:attr>
+    </path>
+    <path android:pathData="M332,33 L358,33 L358,43 L342,43 L342,48 L358,58 L358,73 L332,73 L332,63 L348,63 L348,58 L332,48 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54" android:startY="0"
+                android:endX="398" android:endY="0"
+                android:startColor="#FFFFFFFF"
+                android:endColor="#FFA78BFA" />
+        </aapt:attr>
+    </path>
+    <path android:pathData="M364,17 L375,17 L375,40 L387,33 L398,33 L398,73 L387,73 L387,44 L375,51 L375,73 L364,73 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54" android:startY="0"
+                android:endX="398" android:endY="0"
+                android:startColor="#FFFFFFFF"
+                android:endColor="#FFA78BFA" />
+        </aapt:attr>
+    </path>
+
+    <!-- Colon: two squares with a 1-unit corner radius, matching ic_logo.xml. -->
+    <path
+        android:fillColor="@color/logo"
+        android:pathData="M409,34 L415,34 A1,1 0 0 1 416,35 L416,41 A1,1 0 0 1 415,42 L409,42 A1,1 0 0 1 408,41 L408,35 A1,1 0 0 1 409,34 Z" />
+    <path
+        android:fillColor="@color/logo"
+        android:pathData="M409,58 L415,58 A1,1 0 0 1 416,59 L416,65 A1,1 0 0 1 415,66 L409,66 A1,1 0 0 1 408,65 L408,59 A1,1 0 0 1 409,58 Z" />
+
+    <!-- Double slash. -->
+    <path
+        android:fillColor="@color/logo"
+        android:pathData="M426,73 L437,73 L455,17 L444,17 Z" />
+    <path
+        android:fillColor="@color/logo"
+        android:pathData="M442,73 L453,73 L471,17 L460,17 Z" />
+</vector>

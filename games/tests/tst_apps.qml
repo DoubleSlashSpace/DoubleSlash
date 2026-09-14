@@ -18,7 +18,7 @@ Item {
         }
         function open(host, app) {
             var view = createTemporaryObject(browser, root)
-            view.url = "conquerd://" + host + "/games/" + app + "/?room=fixture"
+            view.url = "doubleslash://" + host + "/games/" + app + "/?room=fixture"
             tryVerify(function() { return js(view, "document.querySelector('#status')?.className") === "connected" }, 15000)
             return view
         }
@@ -70,7 +70,7 @@ Item {
         }
         function test_portalLaunchpad() {
             var view=createTemporaryObject(browser,root)
-            view.url="conquerd://hub/"
+            view.url="doubleslash://hub/"
             tryVerify(function(){return js(view,"document.querySelector('#main')?.classList.contains('visible')")},10000)
             compare(js(view,"document.querySelectorAll('.game-card').length"),7)
             js(view,"document.querySelector('#demo-room').value='Friday night';document.querySelector('#demo-room').dispatchEvent(new Event('input'))")

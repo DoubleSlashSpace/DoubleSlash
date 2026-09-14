@@ -7,7 +7,7 @@ is invite-only peer-to-peer software. There is no DoubleSlash account and no
 central service that hosts your messages.
 
 The privacy policy is [PRIVACY.md](PRIVACY.md)
-([public URL](https://github.com/ConquerD/DoubleSlash/blob/develop/PRIVACY.md)).
+([public URL](https://github.com/DoubleSlashSpace/DoubleSlash/blob/develop/PRIVACY.md)).
 
 ## 1. Your identity, your invites
 
@@ -60,4 +60,4 @@ The software is provided under the MIT License, as-is, without warranty.
 
 ## Contact
 
-Reports and privacy questions: [GitHub issues](https://github.com/ConquerD/DoubleSlash/issues).
+Reports and privacy questions: [GitHub issues](https://github.com/DoubleSlashSpace/DoubleSlash/issues).

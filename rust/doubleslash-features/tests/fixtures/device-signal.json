@@ -1,0 +1,1 @@
+{"payload":{"ciphertext":"opaque"},"sender":"sender","source_device":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"target":"recipient","target_device":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"timestamp":1234.5,"type":"encrypted_signal","v":2}

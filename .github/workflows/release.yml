@@ -99,8 +99,8 @@ jobs:
       - name: Reject all-zero RELEASE_SIGNER_PUBKEY_HEX placeholder (safety net)
         run: |
           PLACEHOLDER=$(printf '%064d' 0)
-          if grep -q "$PLACEHOLDER" rust/conquerd-installer/src/release_manifest.rs; then
-            echo "ERROR: all-zero RELEASE_SIGNER_PUBKEY_HEX placeholder found in conquerd-installer/src/release_manifest.rs"
+          if grep -q "$PLACEHOLDER" rust/doubleslash-installer/src/release_manifest.rs; then
+            echo "ERROR: all-zero RELEASE_SIGNER_PUBKEY_HEX placeholder found in doubleslash-installer/src/release_manifest.rs"
             echo "A real Ed25519 public key must be configured before releasing."
             exit 1
           fi
@@ -113,7 +113,7 @@ jobs:
         run: |
           if [ -f releases_manifest.json ]; then
             echo "Found releases_manifest.json — running strict signature verification..."
-            cargo run -p conquerd-installer --manifest-path rust/Cargo.toml --bin sign-release-manifest -- --verify -i releases_manifest.json
+            cargo run -p doubleslash-installer --manifest-path rust/Cargo.toml --bin sign-release-manifest -- --verify -i releases_manifest.json
           else
             echo "No releases_manifest.json present in this checkout."
             echo "For the first release you may add+sign it together with the tag (or upload manually to the draft release)."
@@ -145,23 +145,23 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-          key: windows-cargo-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/conquerd-client/Cargo.lock') }}
+          key: windows-cargo-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/doubleslash-client/Cargo.lock') }}
 
       - name: Cache Opus DNN model weights
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
-            rust/conquerd-opus/opus/dnn/lace_data.c
-            rust/conquerd-opus/opus/dnn/nolace_data.c
-            rust/conquerd-opus/opus/dnn/fargan_data.c
-            rust/conquerd-opus/opus/dnn/pitchdnn_data.c
-            rust/conquerd-opus/opus/dnn/plc_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_enc_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_dec_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_stats_data.c
-            rust/conquerd-opus/opus/dnn/bbwenet_data.c
-            rust/conquerd-opus/opus/dnn/lossgen_data.c
-            rust/conquerd-opus/opus/dnn/models
+            rust/doubleslash-opus/opus/dnn/lace_data.c
+            rust/doubleslash-opus/opus/dnn/nolace_data.c
+            rust/doubleslash-opus/opus/dnn/fargan_data.c
+            rust/doubleslash-opus/opus/dnn/pitchdnn_data.c
+            rust/doubleslash-opus/opus/dnn/plc_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_enc_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_dec_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_stats_data.c
+            rust/doubleslash-opus/opus/dnn/bbwenet_data.c
+            rust/doubleslash-opus/opus/dnn/lossgen_data.c
+            rust/doubleslash-opus/opus/dnn/models
           key: opus-dnn-a5177ec6fb7d15058e99e57029746100121f68e4890b1467d4094aa336b6013e
 
       - name: Fetch Opus DNN model weights
@@ -208,7 +208,7 @@ jobs:
 
       - name: Copy installer for separate upload
         shell: pwsh
-        run: Copy-Item "dist\DoubleSlash\conquerd-installer.exe" "dist\conquerd-installer.exe"
+        run: Copy-Item "dist\DoubleSlash\doubleslash-installer.exe" "dist\doubleslash-installer.exe"
 
       - name: Verify artifacts
         shell: pwsh
@@ -216,8 +216,8 @@ jobs:
           if (-not (Get-ChildItem "dist\DoubleSlash-*-win64.7z" -ErrorAction SilentlyContinue)) {
             throw "Release archive not found in dist/"
           }
-          if (-not (Test-Path "dist\conquerd-installer.exe")) {
-            throw "conquerd-installer.exe not found in dist/"
+          if (-not (Test-Path "dist\doubleslash-installer.exe")) {
+            throw "doubleslash-installer.exe not found in dist/"
           }
           $bundle = "dist\DoubleSlash"
           if (-not (Test-Path "$bundle\Qt6WebEngineCore.dll")) {
@@ -240,7 +240,7 @@ jobs:
           path: |
             dist/DoubleSlash-*-win64.7z
             dist/DoubleSlash-*-win64.7z.sha256
-            dist/conquerd-installer.exe
+            dist/doubleslash-installer.exe
 
   sign-windows:
     needs: build-windows
@@ -329,7 +329,7 @@ jobs:
           # from a previous workspace path (repo rename ConquerD → DoubleSlash)
           # leaves those links dangling and panics:
           # "Could not create symlink for include_prefix cxx-qt".
-          key: macos-cargo-${{ github.repository }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/conquerd-client/Cargo.lock') }}
+          key: macos-cargo-${{ github.repository }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/doubleslash-client/Cargo.lock') }}
 
       - name: Drop rust/target if cxx-qt include symlinks are dangling
         run: |
@@ -354,17 +354,17 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
-            rust/conquerd-opus/opus/dnn/lace_data.c
-            rust/conquerd-opus/opus/dnn/nolace_data.c
-            rust/conquerd-opus/opus/dnn/fargan_data.c
-            rust/conquerd-opus/opus/dnn/pitchdnn_data.c
-            rust/conquerd-opus/opus/dnn/plc_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_enc_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_dec_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_stats_data.c
-            rust/conquerd-opus/opus/dnn/bbwenet_data.c
-            rust/conquerd-opus/opus/dnn/lossgen_data.c
-            rust/conquerd-opus/opus/dnn/models
+            rust/doubleslash-opus/opus/dnn/lace_data.c
+            rust/doubleslash-opus/opus/dnn/nolace_data.c
+            rust/doubleslash-opus/opus/dnn/fargan_data.c
+            rust/doubleslash-opus/opus/dnn/pitchdnn_data.c
+            rust/doubleslash-opus/opus/dnn/plc_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_enc_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_dec_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_stats_data.c
+            rust/doubleslash-opus/opus/dnn/bbwenet_data.c
+            rust/doubleslash-opus/opus/dnn/lossgen_data.c
+            rust/doubleslash-opus/opus/dnn/models
           key: opus-dnn-a5177ec6fb7d15058e99e57029746100121f68e4890b1467d4094aa336b6013e
 
       - name: Fetch Opus DNN model weights
@@ -414,7 +414,7 @@ jobs:
       - name: Notarize DMG
         if: env.APPLE_NOTARY_KEY != '' && env.APPLE_NOTARY_KEY_ID != '' && env.APPLE_NOTARY_ISSUER != ''
         run: |
-          VERSION=$(grep -m1 '^version' rust/conquerd-client/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          VERSION=$(grep -m1 '^version' rust/doubleslash-client/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
           DMG="dist/DoubleSlash-${VERSION}-macos-arm64.dmg"
           KEY_PATH=$RUNNER_TEMP/notary-key.p8
           echo "$APPLE_NOTARY_KEY" | base64 --decode > "$KEY_PATH"
@@ -423,7 +423,7 @@ jobs:
 
       - name: Generate and verify SHA-256
         run: |
-          VERSION=$(grep -m1 '^version' rust/conquerd-client/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          VERSION=$(grep -m1 '^version' rust/doubleslash-client/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
           FILE="dist/DoubleSlash-${VERSION}-macos-arm64.dmg"
           shasum -a 256 "$FILE" > "${FILE}.sha256"
           shasum -a 256 -c "${FILE}.sha256"
@@ -464,7 +464,7 @@ jobs:
           # from a previous workspace path (repo rename ConquerD → DoubleSlash)
           # leaves those links dangling and panics:
           # "Could not create symlink for include_prefix cxx-qt".
-          key: linux-cargo-${{ github.repository }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/conquerd-client/Cargo.lock') }}
+          key: linux-cargo-${{ github.repository }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/doubleslash-client/Cargo.lock') }}
 
       - name: Drop rust/target if cxx-qt include symlinks are dangling
         run: |
@@ -489,17 +489,17 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
-            rust/conquerd-opus/opus/dnn/lace_data.c
-            rust/conquerd-opus/opus/dnn/nolace_data.c
-            rust/conquerd-opus/opus/dnn/fargan_data.c
-            rust/conquerd-opus/opus/dnn/pitchdnn_data.c
-            rust/conquerd-opus/opus/dnn/plc_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_enc_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_dec_data.c
-            rust/conquerd-opus/opus/dnn/dred_rdovae_stats_data.c
-            rust/conquerd-opus/opus/dnn/bbwenet_data.c
-            rust/conquerd-opus/opus/dnn/lossgen_data.c
-            rust/conquerd-opus/opus/dnn/models
+            rust/doubleslash-opus/opus/dnn/lace_data.c
+            rust/doubleslash-opus/opus/dnn/nolace_data.c
+            rust/doubleslash-opus/opus/dnn/fargan_data.c
+            rust/doubleslash-opus/opus/dnn/pitchdnn_data.c
+            rust/doubleslash-opus/opus/dnn/plc_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_enc_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_dec_data.c
+            rust/doubleslash-opus/opus/dnn/dred_rdovae_stats_data.c
+            rust/doubleslash-opus/opus/dnn/bbwenet_data.c
+            rust/doubleslash-opus/opus/dnn/lossgen_data.c
+            rust/doubleslash-opus/opus/dnn/models
           key: opus-dnn-a5177ec6fb7d15058e99e57029746100121f68e4890b1467d4094aa336b6013e
 
       - name: Fetch Opus DNN model weights
@@ -598,16 +598,16 @@ jobs:
 
       - name: Verify artifacts
         run: |
-          ls dist/conquerd-supernode-*-linux-aarch64.tar.gz
-          ls dist/conquerd-supernode-*-linux-aarch64.tar.gz.sha256
+          ls dist/doubleslash-supernode-*-linux-aarch64.tar.gz
+          ls dist/doubleslash-supernode-*-linux-aarch64.tar.gz.sha256
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: supernode-linux-arm64-release
           path: |
-            dist/conquerd-supernode-*-linux-aarch64.tar.gz
-            dist/conquerd-supernode-*-linux-aarch64.tar.gz.sha256
+            dist/doubleslash-supernode-*-linux-aarch64.tar.gz
+            dist/doubleslash-supernode-*-linux-aarch64.tar.gz.sha256
 
   build-supernode-linux-x86_64:
     runs-on: ubuntu-22.04
@@ -651,16 +651,16 @@ jobs:
 
       - name: Verify artifacts
         run: |
-          ls dist/conquerd-supernode-*-linux-x86_64.tar.gz
-          ls dist/conquerd-supernode-*-linux-x86_64.tar.gz.sha256
+          ls dist/doubleslash-supernode-*-linux-x86_64.tar.gz
+          ls dist/doubleslash-supernode-*-linux-x86_64.tar.gz.sha256
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: supernode-linux-x86_64-release
           path: |
-            dist/conquerd-supernode-*-linux-x86_64.tar.gz
-            dist/conquerd-supernode-*-linux-x86_64.tar.gz.sha256
+            dist/doubleslash-supernode-*-linux-x86_64.tar.gz
+            dist/doubleslash-supernode-*-linux-x86_64.tar.gz.sha256
 
   build-supernode-windows:
     runs-on: windows-2022
@@ -707,10 +707,10 @@ jobs:
       - name: Verify artifacts
         shell: pwsh
         run: |
-          if (-not (Get-ChildItem "dist\conquerd-supernode-*-win64.zip" -ErrorAction SilentlyContinue)) {
+          if (-not (Get-ChildItem "dist\doubleslash-supernode-*-win64.zip" -ErrorAction SilentlyContinue)) {
             throw "Supernode zip not found in dist/"
           }
-          if (-not (Get-ChildItem "dist\conquerd-supernode-*-win64.zip.sha256" -ErrorAction SilentlyContinue)) {
+          if (-not (Get-ChildItem "dist\doubleslash-supernode-*-win64.zip.sha256" -ErrorAction SilentlyContinue)) {
             throw "Supernode zip checksum not found in dist/"
           }
 
@@ -719,8 +719,8 @@ jobs:
         with:
           name: supernode-win64-release
           path: |
-            dist/conquerd-supernode-*-win64.zip
-            dist/conquerd-supernode-*-win64.zip.sha256
+            dist/doubleslash-supernode-*-win64.zip
+            dist/doubleslash-supernode-*-win64.zip.sha256
 
   attest:
     needs: [build-macos, build-linux, sign-windows, windows-unsigned-fallback]
@@ -740,7 +740,7 @@ jobs:
         with:
           subject-path: |
             artifacts/DoubleSlash-*-win64.7z
-            artifacts/conquerd-installer.exe
+            artifacts/doubleslash-installer.exe
             artifacts/DoubleSlash-*-macos-arm64.dmg
             artifacts/DoubleSlash-*-x86_64.AppImage
 
@@ -769,9 +769,9 @@ jobs:
         run: |
           set -euo pipefail
           find artifacts -type f \( \
-            -name 'conquerd-supernode-*-linux-aarch64.tar.gz*' -o \
-            -name 'conquerd-supernode-*-linux-x86_64.tar.gz*' -o \
-            -name 'conquerd-supernode-*-win64.zip*' \
+            -name 'doubleslash-supernode-*-linux-aarch64.tar.gz*' -o \
+            -name 'doubleslash-supernode-*-linux-x86_64.tar.gz*' -o \
+            -name 'doubleslash-supernode-*-win64.zip*' \
             \) -exec cp -f {} artifacts/ \;
           find artifacts -type d -empty -delete 2>/dev/null || true
 
@@ -804,7 +804,7 @@ jobs:
           set -euo pipefail
 
           echo "==> Generating unsigned skeleton..."
-          cargo run -p conquerd-installer --manifest-path rust/Cargo.toml --bin sign-release-manifest -- \
+          cargo run -p doubleslash-installer --manifest-path rust/Cargo.toml --bin sign-release-manifest -- \
             --generate-unsigned -o /tmp/unsigned.json
 
           echo "==> Locating build artifacts and hashes..."
@@ -854,7 +854,7 @@ jobs:
             }' > /tmp/populated.json
 
           echo "==> Signing manifest with project private key..."
-          cargo run -p conquerd-installer --manifest-path rust/Cargo.toml --bin sign-release-manifest -- \
+          cargo run -p doubleslash-installer --manifest-path rust/Cargo.toml --bin sign-release-manifest -- \
             -i /tmp/populated.json \
             -o releases_manifest.json \
             --private-key /tmp/release-signer-private.pem
@@ -865,7 +865,7 @@ jobs:
       - name: Verify the just-signed manifest against the committed public key
         if: env.RELEASE_SIGNER_PRIVATE_PEM != ''
         run: |
-          cargo run -p conquerd-installer --manifest-path rust/Cargo.toml --bin sign-release-manifest -- \
+          cargo run -p doubleslash-installer --manifest-path rust/Cargo.toml --bin sign-release-manifest -- \
             --verify -i releases_manifest.json
           echo "Manifest signature verified successfully."
 
@@ -878,17 +878,17 @@ jobs:
           files: |
             artifacts/DoubleSlash-*-win64.7z
             artifacts/DoubleSlash-*-win64.7z.sha256
-            artifacts/conquerd-installer.exe
+            artifacts/doubleslash-installer.exe
             artifacts/DoubleSlash-*-macos-arm64.dmg
             artifacts/DoubleSlash-*-macos-arm64.dmg.sha256
             artifacts/DoubleSlash-*-x86_64.AppImage
             artifacts/DoubleSlash-*-x86_64.AppImage.sha256
-            artifacts/conquerd-supernode-*-linux-aarch64.tar.gz
-            artifacts/conquerd-supernode-*-linux-aarch64.tar.gz.sha256
-            artifacts/conquerd-supernode-*-linux-x86_64.tar.gz
-            artifacts/conquerd-supernode-*-linux-x86_64.tar.gz.sha256
-            artifacts/conquerd-supernode-*-win64.zip
-            artifacts/conquerd-supernode-*-win64.zip.sha256
+            artifacts/doubleslash-supernode-*-linux-aarch64.tar.gz
+            artifacts/doubleslash-supernode-*-linux-aarch64.tar.gz.sha256
+            artifacts/doubleslash-supernode-*-linux-x86_64.tar.gz
+            artifacts/doubleslash-supernode-*-linux-x86_64.tar.gz.sha256
+            artifacts/doubleslash-supernode-*-win64.zip
+            artifacts/doubleslash-supernode-*-win64.zip.sha256
             releases_manifest.json
 
   publish-nightly:
@@ -951,7 +951,7 @@ jobs:
 
           mkdir -p artifacts/_staging
           find artifacts -type f \
-            \( -name 'DoubleSlash-*' -o -name 'conquerd-installer*.exe' -o -name 'conquerd-supernode-*' \) \
+            \( -name 'DoubleSlash-*' -o -name 'doubleslash-installer*.exe' -o -name 'doubleslash-supernode-*' \) \
             -exec cp -f {} artifacts/_staging/ \;
           rm -rf artifacts/dist
           for f in artifacts/_staging/*; do
@@ -963,17 +963,17 @@ jobs:
           shopt -s nullglob
           for f in DoubleSlash-*-win64.7z; do mv "$f" "DoubleSlash-nightly-win64.7z"; done
           for f in DoubleSlash-*-win64.7z.sha256; do mv "$f" "DoubleSlash-nightly-win64.7z.sha256"; done
-          [ -f "conquerd-installer.exe" ] && mv "conquerd-installer.exe" "conquerd-installer-nightly.exe"
+          [ -f "doubleslash-installer.exe" ] && mv "doubleslash-installer.exe" "doubleslash-installer-nightly.exe"
           for f in DoubleSlash-*-macos-arm64.dmg; do mv "$f" "DoubleSlash-nightly-macos-arm64.dmg"; done
           for f in DoubleSlash-*-macos-arm64.dmg.sha256; do mv "$f" "DoubleSlash-nightly-macos-arm64.dmg.sha256"; done
           for f in DoubleSlash-*-x86_64.AppImage; do mv "$f" "DoubleSlash-nightly-x86_64.AppImage"; done
           for f in DoubleSlash-*-x86_64.AppImage.sha256; do mv "$f" "DoubleSlash-nightly-x86_64.AppImage.sha256"; done
-          for f in conquerd-supernode-*-linux-aarch64.tar.gz; do mv "$f" "conquerd-supernode-nightly-linux-aarch64.tar.gz"; done
-          for f in conquerd-supernode-*-linux-aarch64.tar.gz.sha256; do mv "$f" "conquerd-supernode-nightly-linux-aarch64.tar.gz.sha256"; done
-          for f in conquerd-supernode-*-linux-x86_64.tar.gz; do mv "$f" "conquerd-supernode-nightly-linux-x86_64.tar.gz"; done
-          for f in conquerd-supernode-*-linux-x86_64.tar.gz.sha256; do mv "$f" "conquerd-supernode-nightly-linux-x86_64.tar.gz.sha256"; done
-          for f in conquerd-supernode-*-win64.zip; do mv "$f" "conquerd-supernode-nightly-win64.zip"; done
-          for f in conquerd-supernode-*-win64.zip.sha256; do mv "$f" "conquerd-supernode-nightly-win64.zip.sha256"; done
+          for f in doubleslash-supernode-*-linux-aarch64.tar.gz; do mv "$f" "doubleslash-supernode-nightly-linux-aarch64.tar.gz"; done
+          for f in doubleslash-supernode-*-linux-aarch64.tar.gz.sha256; do mv "$f" "doubleslash-supernode-nightly-linux-aarch64.tar.gz.sha256"; done
+          for f in doubleslash-supernode-*-linux-x86_64.tar.gz; do mv "$f" "doubleslash-supernode-nightly-linux-x86_64.tar.gz"; done
+          for f in doubleslash-supernode-*-linux-x86_64.tar.gz.sha256; do mv "$f" "doubleslash-supernode-nightly-linux-x86_64.tar.gz.sha256"; done
+          for f in doubleslash-supernode-*-win64.zip; do mv "$f" "doubleslash-supernode-nightly-win64.zip"; done
+          for f in doubleslash-supernode-*-win64.zip.sha256; do mv "$f" "doubleslash-supernode-nightly-win64.zip.sha256"; done
 
           echo "==> Nightly assets ready:"
           find . -maxdepth 1 -type f | sort
@@ -981,17 +981,17 @@ jobs:
           REQUIRED=(
             DoubleSlash-nightly-win64.7z
             DoubleSlash-nightly-win64.7z.sha256
-            conquerd-installer-nightly.exe
+            doubleslash-installer-nightly.exe
             DoubleSlash-nightly-macos-arm64.dmg
             DoubleSlash-nightly-macos-arm64.dmg.sha256
             DoubleSlash-nightly-x86_64.AppImage
             DoubleSlash-nightly-x86_64.AppImage.sha256
-            conquerd-supernode-nightly-linux-aarch64.tar.gz
-            conquerd-supernode-nightly-linux-aarch64.tar.gz.sha256
-            conquerd-supernode-nightly-linux-x86_64.tar.gz
-            conquerd-supernode-nightly-linux-x86_64.tar.gz.sha256
-            conquerd-supernode-nightly-win64.zip
-            conquerd-supernode-nightly-win64.zip.sha256
+            doubleslash-supernode-nightly-linux-aarch64.tar.gz
+            doubleslash-supernode-nightly-linux-aarch64.tar.gz.sha256
+            doubleslash-supernode-nightly-linux-x86_64.tar.gz
+            doubleslash-supernode-nightly-linux-x86_64.tar.gz.sha256
+            doubleslash-supernode-nightly-win64.zip
+            doubleslash-supernode-nightly-win64.zip.sha256
           )
           missing=0
           for f in "${REQUIRED[@]}"; do
@@ -1015,7 +1015,7 @@ jobs:
           # of the tree being built. This ensures correct build_id even for scheduled runs.
           NIGHTLY_SHA=$(git rev-parse HEAD)
 
-          cargo run -p conquerd-installer --manifest-path rust/Cargo.toml --bin sign-release-manifest -- \
+          cargo run -p doubleslash-installer --manifest-path rust/Cargo.toml --bin sign-release-manifest -- \
             --generate-unsigned -o /tmp/nightly-manifest.json
 
           # Populate with real values from the just-built artifacts (no signing for nightlies)
@@ -1068,7 +1068,7 @@ jobs:
             - Build ID in binaries: see the attached manifest or run the app with --version / check attestation.
 
             **Not signed** with the release key. For testing and development only.
-            Use at your own risk. The `conquerd-installer` can consume these for updates (basic sha256 verification).
+            Use at your own risk. The `doubleslash-installer` can consume these for updates (basic sha256 verification).
 
             Artifacts:
             - Windows portable 7z + standalone installer
@@ -1081,15 +1081,15 @@ jobs:
           files: |
             artifacts/DoubleSlash-nightly-win64.7z
             artifacts/DoubleSlash-nightly-win64.7z.sha256
-            artifacts/conquerd-installer-nightly.exe
+            artifacts/doubleslash-installer-nightly.exe
             artifacts/DoubleSlash-nightly-macos-arm64.dmg
             artifacts/DoubleSlash-nightly-macos-arm64.dmg.sha256
             artifacts/DoubleSlash-nightly-x86_64.AppImage
             artifacts/DoubleSlash-nightly-x86_64.AppImage.sha256
-            artifacts/conquerd-supernode-nightly-linux-aarch64.tar.gz
-            artifacts/conquerd-supernode-nightly-linux-aarch64.tar.gz.sha256
-            artifacts/conquerd-supernode-nightly-linux-x86_64.tar.gz
-            artifacts/conquerd-supernode-nightly-linux-x86_64.tar.gz.sha256
-            artifacts/conquerd-supernode-nightly-win64.zip
-            artifacts/conquerd-supernode-nightly-win64.zip.sha256
+            artifacts/doubleslash-supernode-nightly-linux-aarch64.tar.gz
+            artifacts/doubleslash-supernode-nightly-linux-aarch64.tar.gz.sha256
+            artifacts/doubleslash-supernode-nightly-linux-x86_64.tar.gz
+            artifacts/doubleslash-supernode-nightly-linux-x86_64.tar.gz.sha256
+            artifacts/doubleslash-supernode-nightly-win64.zip
+            artifacts/doubleslash-supernode-nightly-win64.zip.sha256
             releases_manifest.json

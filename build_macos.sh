@@ -25,7 +25,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 RUST_DIR="$ROOT/rust"
-CLIENT_DIR="$RUST_DIR/conquerd-client"
+CLIENT_DIR="$RUST_DIR/doubleslash-client"
 
 # ── Auto-detect Qt 6 ─────────────────────────────────────────────────────────
 if [ -z "${QT_DIR:-}" ]; then
@@ -50,7 +50,7 @@ export CMAKE_PREFIX_PATH="$QT_DIR"
 export QMAKE="$QT_DIR/bin/qmake"
 
 # ── Read version ─────────────────────────────────────────────────────────────
-VERSION=$(grep -m1 '^version' "$RUST_DIR/conquerd-client/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
+VERSION=$(grep -m1 '^version' "$RUST_DIR/doubleslash-client/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
 echo "==> Building DoubleSlash v${VERSION} for macOS"
 
 PROFILE="debug"
@@ -61,19 +61,19 @@ if [ "${DOUBLESLASH_RELEASE:-${CONQUERD_RELEASE:-0}}" = "1" ]; then
 fi
 
 # ── Build ─────────────────────────────────────────────────────────────────────
-# conquerd-client is its own workspace root (see rust/conquerd-client/Cargo.toml).
+# doubleslash-client is its own workspace root (see rust/doubleslash-client/Cargo.toml).
 echo ""
-echo "==> cargo build --features qt-ui $CARGO_FLAGS  (conquerd-client workspace)"
+echo "==> cargo build --features qt-ui $CARGO_FLAGS  (doubleslash-client workspace)"
 cd "$CLIENT_DIR"
 cargo build --features qt-ui $CARGO_FLAGS
 
 echo ""
-echo "==> cargo build -p conquerd-installer $CARGO_FLAGS"
+echo "==> cargo build -p doubleslash-installer $CARGO_FLAGS"
 cd "$RUST_DIR"
-cargo build -p conquerd-installer $CARGO_FLAGS
+cargo build -p doubleslash-installer $CARGO_FLAGS
 
-BINARY="$RUST_DIR/target/$PROFILE/conquerd-client"
-INSTALLER_BIN="$RUST_DIR/target/$PROFILE/conquerd-installer"
+BINARY="$RUST_DIR/target/$PROFILE/doubleslash-client"
+INSTALLER_BIN="$RUST_DIR/target/$PROFILE/doubleslash-installer"
 
 # ── Assemble .app bundle ───────────────────────────────────────────────────────
 DIST="$ROOT/dist"
@@ -90,8 +90,8 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS" "$RESOURCES" "$FRAMEWORKS"
 
 cp "$BINARY" "$MACOS/doubleslash"
-cp "$INSTALLER_BIN" "$MACOS/conquerd-installer"
-chmod +x "$MACOS/doubleslash" "$MACOS/conquerd-installer"
+cp "$INSTALLER_BIN" "$MACOS/doubleslash-installer"
+chmod +x "$MACOS/doubleslash" "$MACOS/doubleslash-installer"
 
 # Info.plist (from packaging template, with version substitution)
 PLIST_TEMPLATE="$ROOT/packaging/Info.plist.in"
@@ -105,7 +105,7 @@ else
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>              <string>DoubleSlash</string>
-  <key>CFBundleIdentifier</key>       <string>com.conquerd.client</string>
+  <key>CFBundleIdentifier</key>       <string>com.doubleslash.client</string>
   <key>CFBundleVersion</key>          <string>${VERSION}</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundleExecutable</key>       <string>doubleslash</string>
@@ -115,7 +115,7 @@ else
   <key>CFBundleURLTypes</key>
   <array>
     <dict>
-      <key>CFBundleURLSchemes</key><array><string>doubleslash</string><string>d</string><string>conquerd</string></array>
+      <key>CFBundleURLSchemes</key><array><string>doubleslash</string><string>d</string></array>
       <key>CFBundleURLName</key>   <string>DoubleSlash URL</string>
     </dict>
   </array>
@@ -135,7 +135,7 @@ fi
 echo ""
 echo "==> Running macdeployqt..."
 macdeployqt "$APP_BUNDLE" \
-    -qmldir="$RUST_DIR/conquerd-client/qml" \
+    -qmldir="$RUST_DIR/doubleslash-client/qml" \
     -no-strip
 
 # ── Code signing (optional) ────────────────────────────────────────────────────
