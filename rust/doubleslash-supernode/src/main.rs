@@ -3177,8 +3177,9 @@ impl SupernodeHandler {
                     reason,
                     room_name
                 );
-                self.state.send_signed(
-                    &msg.sender,
+                self.state.signaling.send_signed_reply(
+                    &self.state.identity,
+                    msg,
                     MessageType::SfuRoomCreated,
                     json!({
                         "room_id": "",
@@ -3262,8 +3263,9 @@ impl SupernodeHandler {
             }
         }
 
-        self.state.send_signed(
-            &msg.sender,
+        self.state.signaling.send_signed_reply(
+            &self.state.identity,
+            msg,
             MessageType::SfuRoomCreated,
             json!({
                 "room_id": room_id_out,

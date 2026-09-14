@@ -484,6 +484,23 @@ impl SignalingServer {
             .send_to_endpoint(identity_pub, device, json, false)
     }
 
+    /// A request acknowledgement belongs only to the endpoint that requested it.
+    /// In particular, room restoration on a sibling must not look like a local
+    /// room creation and trigger an unsolicited voice join.
+    pub fn send_signed_reply(
+        &self,
+        identity: &crate::identity::Identity,
+        request: &SignalingMessage,
+        msg_type: MessageType,
+        payload: serde_json::Value,
+    ) -> bool {
+        let mut reply = SignalingMessage::new(msg_type, &identity.public_id(), payload)
+            .with_target(&request.sender);
+        reply.target_device = request.source_device;
+        let reply = reply.sign(identity);
+        self.send_to_endpoint(&request.sender, request.source_device, &reply.to_json())
+    }
+
     /// Register a peer's reliable QUIC relay signaling-stream sender. Called
     /// by the relay signaling hook when a peer opens its signaling stream.
     pub fn register_quic_sender(
@@ -1441,6 +1458,66 @@ mod tests {
         assert!(state.send_to_endpoint("owner", None, "legacy only", false));
         assert_eq!(legacy_rx.try_recv().as_deref(), Some("legacy only"));
         assert!(phone_rx.try_recv().is_none());
+    }
+
+    #[test]
+    fn room_created_reply_cannot_trigger_sibling_voice_join() {
+        let node = crate::identity::Identity::generate();
+        let owner = crate::identity::Identity::generate();
+        let server = SignalingServer::new(node.public_id());
+        let phone = DeviceId([2; 32]);
+        let desktop = DeviceId([1; 32]);
+        let (phone_tx, mut phone_rx) = peer_channel();
+        let (desktop_tx, mut desktop_rx) = peer_channel();
+        let (legacy_tx, mut legacy_rx) = peer_channel();
+        {
+            let mut state = server.state.write();
+            state
+                .peer_sockets
+                .register_device(owner.public_id(), phone, phone_tx)
+                .unwrap();
+            state
+                .peer_sockets
+                .register_device(owner.public_id(), desktop, desktop_tx)
+                .unwrap();
+            state.peer_sockets.insert(owner.public_id(), legacy_tx);
+        }
+        for device in [Some(phone), Some(desktop), None] {
+            for denied in [false, true] {
+                let mut request = SignalingMessage::new(
+                    MessageType::SfuRoomCreate,
+                    &owner.public_id(),
+                    serde_json::json!({"room_id": "saved-room"}),
+                );
+                request.source_device = device;
+                let request = request.sign(&owner);
+                assert!(server.send_signed_reply(
+                    &node,
+                    &request,
+                    MessageType::SfuRoomCreated,
+                    serde_json::json!({"room_id": "saved-room", "denied": denied})
+                ));
+                let received = [
+                    phone_rx.try_recv(),
+                    desktop_rx.try_recv(),
+                    legacy_rx.try_recv(),
+                ];
+                for (endpoint, raw) in [Some(phone), Some(desktop), None].into_iter().zip(received)
+                {
+                    if endpoint != device {
+                        assert!(
+                            raw.is_none(),
+                            "sibling received a room creation acknowledgement"
+                        );
+                        continue;
+                    }
+                    let reply = SignalingMessage::from_json(&raw.unwrap()).unwrap();
+                    assert_eq!(reply.target_device, device);
+                    assert_eq!(reply.target.as_deref(), Some(owner.public_id().as_str()));
+                    assert!(reply.verify());
+                }
+            }
+        }
     }
 
     #[test]

@@ -160,6 +160,11 @@ subscribed devices under the same identity, and charges outgoing quotas per copy
 Desktop history marks messages received from another own device as sent by the
 user; they do not trigger automatic replies.
 
+Room-creation and restoration acknowledgements return only to the requesting
+endpoint, including denials. Broadcasting these replies to sibling devices could
+make an unsolicited restoration acknowledgement trigger a voice join on a device
+that never requested one. Shared room rosters still reach all subscribed devices.
+
 `connection_manager/manager/device_session.rs` coordinates room keys between own
 devices. Before an elected endpoint creates a key, it asks its currently rostered
 siblings for an existing key using an encrypted, signed, device-targeted exchange
