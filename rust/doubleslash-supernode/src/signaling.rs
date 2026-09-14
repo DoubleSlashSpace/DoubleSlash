@@ -3,7 +3,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::RwLock;
@@ -96,7 +97,7 @@ impl FileFrameLimiter {
     }
 }
 
-/// Hard ceiling on bytes queued for one peer's writer task.
+/// Hard ceiling on bytes queued across one identity's registered writers.
 ///
 /// The queue stays unbounded — `send_to_peer` runs under a read lock in sync
 /// context and cannot await — so this counter is what actually bounds memory.
@@ -114,33 +115,50 @@ pub(crate) const PEER_QUEUE_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// A connected peer's write channel, bounded by queued bytes.
 #[derive(Clone)]
 pub struct PeerTx {
-    tx: mpsc::UnboundedSender<String>,
-    queued: Arc<std::sync::atomic::AtomicUsize>,
+    tx: mpsc::UnboundedSender<QueuedFrame>,
+    budget: Arc<RwLock<Arc<AtomicUsize>>>,
+    closed: Arc<AtomicBool>,
     overflow: Arc<tokio::sync::Notify>,
 }
 
 /// Receiving half of a [`PeerTx`]. Draining it releases the queued-byte
 /// accounting, and it reports end-of-stream once the ceiling has been breached.
 pub struct PeerRx {
-    rx: mpsc::UnboundedReceiver<String>,
-    queued: Arc<std::sync::atomic::AtomicUsize>,
+    rx: mpsc::UnboundedReceiver<QueuedFrame>,
+    closed: Arc<AtomicBool>,
     overflow: Arc<tokio::sync::Notify>,
+}
+
+/// The reservation follows the frame, including failed sends and receiver drop.
+/// Rebinding a connection during registration cannot release another budget.
+struct QueuedFrame {
+    json: String,
+    bytes: usize,
+    budget: Arc<AtomicUsize>,
+}
+
+impl Drop for QueuedFrame {
+    fn drop(&mut self) {
+        self.budget.fetch_sub(self.bytes, Ordering::AcqRel);
+    }
 }
 
 /// Create a byte-bounded peer write channel.
 pub(crate) fn peer_channel() -> (PeerTx, PeerRx) {
-    let (tx, rx) = mpsc::unbounded_channel::<String>();
-    let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (tx, rx) = mpsc::unbounded_channel();
+    let budget = Arc::new(RwLock::new(Arc::new(AtomicUsize::new(0))));
+    let closed = Arc::new(AtomicBool::new(false));
     let overflow = Arc::new(tokio::sync::Notify::new());
     (
         PeerTx {
             tx,
-            queued: queued.clone(),
+            budget,
+            closed: closed.clone(),
             overflow: overflow.clone(),
         },
         PeerRx {
             rx,
-            queued,
+            closed,
             overflow,
         },
     )
@@ -153,20 +171,32 @@ impl PeerTx {
     /// transport is being torn down — never a silent drop of a frame the
     /// caller believed was delivered.
     pub fn send(&self, json: &str) -> bool {
-        use std::sync::atomic::Ordering;
+        if self.closed.load(Ordering::Acquire) || self.tx.is_closed() {
+            return false;
+        }
         let len = json.len();
-        if self.queued.fetch_add(len, Ordering::AcqRel) + len > PEER_QUEUE_MAX_BYTES {
-            self.queued.fetch_sub(len, Ordering::AcqRel);
+        let budget = self.budget.read().clone();
+        if budget
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                queued
+                    .checked_add(len)
+                    .filter(|total| *total <= PEER_QUEUE_MAX_BYTES)
+            })
+            .is_err()
+        {
+            self.closed.store(true, Ordering::Release);
             // Wakes the writer task, which then closes the transport. A stored
             // permit covers the case where it is not parked yet.
             self.overflow.notify_one();
             return false;
         }
-        if self.tx.send(json.to_owned()).is_err() {
-            self.queued.fetch_sub(len, Ordering::AcqRel);
-            return false;
-        }
-        true
+        self.tx
+            .send(QueuedFrame {
+                json: json.to_owned(),
+                bytes: len,
+                budget,
+            })
+            .is_ok()
     }
 
     /// True when both handles belong to the same underlying channel.
@@ -179,29 +209,24 @@ impl PeerRx {
     /// Next queued frame, or `None` once the peer disconnected or overran
     /// [`PEER_QUEUE_MAX_BYTES`].
     pub async fn recv(&mut self) -> Option<String> {
-        use std::sync::atomic::Ordering;
-        let PeerRx {
-            rx,
-            queued,
-            overflow,
-        } = self;
+        if self.closed.load(Ordering::Acquire) {
+            return None;
+        }
+        let PeerRx { rx, overflow, .. } = self;
         tokio::select! {
             biased;
             _ = overflow.notified() => None,
             msg = rx.recv() => {
-                let json = msg?;
-                queued.fetch_sub(json.len(), Ordering::AcqRel);
-                Some(json)
+                let mut frame = msg?;
+                Some(std::mem::take(&mut frame.json))
             }
         }
     }
 
     #[cfg(test)]
     fn try_recv(&mut self) -> Option<String> {
-        use std::sync::atomic::Ordering;
-        let json = self.rx.try_recv().ok()?;
-        self.queued.fetch_sub(json.len(), Ordering::AcqRel);
-        Some(json)
+        let mut frame = self.rx.try_recv().ok()?;
+        Some(std::mem::take(&mut frame.json))
     }
 }
 
@@ -243,6 +268,9 @@ pub struct SignalingState {
     pub quic_senders: DeviceRoutes<PeerTx>,
     /// Number of connected peers
     pub connected_count: usize,
+    /// Weak entries retain reconnect accounting while old writers still drain,
+    /// without retaining departed identities indefinitely.
+    queue_budgets: HashMap<String, Weak<AtomicUsize>>,
 }
 
 impl SignalingState {
@@ -252,7 +280,23 @@ impl SignalingState {
             peer_id_aliases: HashMap::new(),
             quic_senders: DeviceRoutes::default(),
             connected_count: 0,
+            queue_budgets: HashMap::new(),
         }
+    }
+
+    /// Call under the state write lock before publishing an authenticated route.
+    /// All devices and both transports for an identity share the same ceiling.
+    fn bind_queue_budget(&mut self, identity: &str, tx: &PeerTx) {
+        self.queue_budgets
+            .retain(|_, budget| budget.strong_count() > 0);
+        let key = normalize_public_id(identity);
+        let budget = self
+            .queue_budgets
+            .get(&key)
+            .and_then(Weak::upgrade)
+            .unwrap_or_else(|| Arc::new(AtomicUsize::new(0)));
+        self.queue_budgets.insert(key, Arc::downgrade(&budget));
+        *tx.budget.write() = budget;
     }
 
     /// Resolve a routing target to a live WebSocket, whichever spelling of the
@@ -411,10 +455,9 @@ impl SignalingServer {
     /// Register a peer's reliable QUIC relay signaling-stream sender. Called
     /// by the relay signaling hook when a peer opens its signaling stream.
     pub fn register_quic_sender(&self, identity_pub: &str, tx: PeerTx) {
-        self.state
-            .write()
-            .quic_senders
-            .insert(identity_pub.to_string(), tx);
+        let mut state = self.state.write();
+        state.bind_queue_budget(identity_pub, &tx);
+        state.quic_senders.insert(identity_pub.to_string(), tx);
     }
 
     /// Remove a peer's QUIC signaling sender, but only if it is still the
@@ -560,7 +603,7 @@ async fn handle_ws_connection(
     // Writer task: forward queued messages to WebSocket. On graceful shutdown
     // send a proper Close frame (1001 "going away") so the client takes its
     // clean-close reconnect path instead of seeing a TCP reset.
-    let write_task = tokio::spawn(async move {
+    let mut write_task = tokio::spawn(async move {
         loop {
             tokio::select! {
                 // `None` is disconnect *or* an overrun of
@@ -607,15 +650,19 @@ async fn handle_ws_connection(
     let mut file_limiter = FileFrameLimiter::new();
 
     // Read loop
-    while let Some(msg) = ws_rx.next().await {
+    loop {
         // The writer is gone: either the socket died or this peer overran
         // PEER_QUEUE_MAX_BYTES. Splitting the stream means dropping the write
         // half alone does not close the connection, so stop reading too —
         // otherwise the peer keeps talking into a socket that answers nothing.
-        if write_task.is_finished() {
-            debug!("Writer for {} exited — closing read side", addr);
-            break;
-        }
+        let msg = tokio::select! {
+            biased;
+            _ = &mut write_task => break,
+            msg = ws_rx.next() => match msg {
+                Some(msg) => msg,
+                None => break,
+            },
+        };
         let msg = match msg {
             Ok(Message::Text(t)) => t.to_string(),
             Ok(Message::Close(_)) => break,
@@ -735,6 +782,7 @@ async fn handle_ws_connection(
         if peer_id.is_none() {
             peer_id = Some(parsed.sender.clone());
             let mut st = state.write();
+            st.bind_queue_budget(&parsed.sender, &tx);
             let replaced = st.peer_sockets.insert(parsed.sender.clone(), tx.clone());
             if let Some(alias) = peer_id_alias_for(&parsed.sender) {
                 st.peer_id_aliases.insert(alias, parsed.sender.clone());
@@ -889,6 +937,50 @@ mod tests {
         );
         assert!(received.try_recv().is_err());
         assert!(!server.is_peer_connected(&first.public_id()));
+        server.close_all();
+    }
+
+    #[tokio::test]
+    async fn writer_exit_removes_idle_websocket_without_another_inbound_frame() {
+        let server = SignalingServer::new("supernode".into());
+        let (events, mut received) = mpsc::unbounded_channel();
+        let port = server
+            .start(
+                "127.0.0.1:0".parse().expect("loopback address"),
+                Arc::new(SenderBoundaryHandler(events)),
+            )
+            .await
+            .expect("start signaling");
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}"))
+            .await
+            .expect("connect websocket");
+        let identity = crate::identity::Identity::generate();
+        let hello = SignalingMessage::new(
+            MessageType::Hello,
+            &identity.public_id(),
+            serde_json::json!({}),
+        )
+        .sign(&identity);
+        ws.send(Message::Text(hello.to_json()))
+            .await
+            .expect("hello");
+        for _ in 0..2 {
+            tokio::time::timeout(std::time::Duration::from_secs(2), received.recv())
+                .await
+                .expect("registration event timeout")
+                .expect("registration event");
+        }
+        // One oversized queued frame deterministically closes the writer while
+        // the client stays idle. Cleanup must not depend on another client send.
+        assert!(!server.send_to_peer(&identity.public_id(), &"x".repeat(PEER_QUEUE_MAX_BYTES + 1)));
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), received.recv())
+                .await
+                .expect("disconnect timeout")
+                .expect("disconnect event"),
+            format!("disconnected:{}", identity.public_id()),
+        );
+        assert!(!server.is_peer_connected(&identity.public_id()));
         server.close_all();
     }
 
@@ -1171,6 +1263,81 @@ mod tests {
             assert!(tx.send(&frame), "steady drain must never hit the ceiling");
             assert!(rx.try_recv().is_some());
         }
+    }
+
+    #[test]
+    fn identity_queue_budget_survives_reconnect_and_transport_changes() {
+        let owner = crate::identity::Identity::generate().public_id();
+        let mut state = SignalingState::new();
+        let (old, old_rx) = peer_channel();
+        let (replacement, mut replacement_rx) = peer_channel();
+        state.bind_queue_budget(&owner, &old);
+        state.bind_queue_budget(owner.trim_end_matches('='), &replacement);
+        let half = "x".repeat(PEER_QUEUE_MAX_BYTES / 2);
+        assert!(old.send(&half));
+        assert!(replacement.send(&half));
+        assert_eq!(replacement_rx.try_recv().as_deref(), Some(half.as_str()));
+        // The disconnected writer's queued frames keep their reservation until
+        // they are drained or dropped; a new transport cannot reset the limit.
+        let (third, _third_rx) = peer_channel();
+        state.bind_queue_budget(&owner, &third);
+        assert!(!third.send(&"x".repeat(PEER_QUEUE_MAX_BYTES)));
+        drop(old_rx);
+        assert!(replacement.send(&"x".repeat(PEER_QUEUE_MAX_BYTES)));
+        // A failed send must not leave a reservation behind.
+        assert!(!old.send("closed"));
+        assert!(replacement_rx.try_recv().is_some());
+        assert_eq!(replacement.budget.read().load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn identity_queue_budgets_are_isolated_and_expire() {
+        let mut state = SignalingState::new();
+        let (first, first_rx) = peer_channel();
+        let (second, mut second_rx) = peer_channel();
+        state.bind_queue_budget("first", &first);
+        state.bind_queue_budget("second", &second);
+        let full = "x".repeat(PEER_QUEUE_MAX_BYTES);
+        assert!(first.send(&full));
+        assert!(second.send(&full));
+        drop(first);
+        drop(first_rx);
+        state.bind_queue_budget("second", &second);
+        assert_eq!(state.queue_budgets.len(), 1);
+        assert!(second_rx.try_recv().is_some());
+        assert!(second.send(&full));
+    }
+
+    #[test]
+    fn concurrent_device_sends_share_one_atomic_ceiling() {
+        let mut state = SignalingState::new();
+        let channels: Vec<_> = (0..8).map(|_| peer_channel()).collect();
+        for (tx, _) in &channels {
+            state.bind_queue_budget("owner", tx);
+        }
+        let admitted: usize = std::thread::scope(|scope| {
+            let workers: Vec<_> = channels
+                .iter()
+                .map(|(tx, _)| {
+                    scope.spawn(move || {
+                        let frame = "x".repeat(64 * 1024);
+                        let mut admitted = 0;
+                        while tx.send(&frame) {
+                            admitted += frame.len();
+                        }
+                        admitted
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().expect("sender thread"))
+                .sum()
+        });
+        assert_eq!(admitted, PEER_QUEUE_MAX_BYTES);
+        let budget = channels[0].0.budget.read().clone();
+        drop(channels);
+        assert_eq!(budget.load(Ordering::Acquire), 0);
     }
 
     /// Overrunning the ceiling closes the peer out: `recv` reports
