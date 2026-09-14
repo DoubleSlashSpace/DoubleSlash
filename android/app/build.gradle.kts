@@ -95,6 +95,9 @@ fun registerCargoBuild(taskName: String, releaseProfile: Boolean) =
             "build", "--lib",
         )
         if (releaseProfile) arguments += "--release"
+        if (firstProp("doubleslash.deviceRouting") == "true") {
+            arguments += listOf("--features", "device-routing")
+        }
 
         commandLine(listOf(cargoExecutable) + arguments)
 

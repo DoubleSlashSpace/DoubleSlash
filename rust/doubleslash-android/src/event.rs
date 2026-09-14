@@ -308,6 +308,9 @@ pub fn to_json(event: &ConnectionEvent) -> Option<Value> {
             json!({ "event": "invite_accepted", "peer_id": peer_id, "handle": handle })
         }
         E::InviteFailed { reason } => json!({ "event": "invite_failed", "reason": reason }),
+        E::DeviceRoutingUnsupported { peer_id } => {
+            json!({ "event": "device_routing_unsupported", "peer_id": peer_id })
+        }
 
         // ── Capabilities ──────────────────────────────────────────────────
         E::CapabilityAnnounced { peer_id, caps_json } => json!({

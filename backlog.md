@@ -478,19 +478,25 @@ exchanged, no message sent, no supernode reached from the device.
    rationale turns every direct LAN session into a relayed one, with no error to explain
    it. Do not declare the permission early — declaring it is what revokes the implicit grant.
 
-11. **Multi-device (one identity, several live endpoints).** Not supported. The local
-   `device.rs` credential/registry groundwork and explicit storage-subkey constructors
-   are present but not wired into network sessions yet. The failure remains silent
-   rather than refused. `relay.rs` (`peers.insert`), `signaling.rs` (`register_quic_sender`)
-   and the endpoint mailbox all key on identity alone, so a second live connection evicts the
-   first; room group keys are sealed per *member identity* to one signaling target, so the losing
-   device fails closed and sees nothing. Real support needs per-device subkeys under the identity
-   key, a device registry peers can learn, and group-key sealing per device rather than per member
-   — plus a history-sync story, since the stores are local and unsynced. Until then the supported
-   answers are "export a `.dbackup`, restore it, and run one at a time"
-   ([Devices and backups](docs/DEVICES_AND_BACKUPS.md); the debug-only script is still available)
-   or "give the phone its own identity and trust it as a
-   peer". Worth deciding deliberately: it changes the `SfuGroupKey` fan-out and the ACL shape.
+11. **Multi-device (one identity, several live endpoints).** Explicit preview; live acceptance pending.
+   The 2026-09-14 implementation adds root-authorized device TLS identities,
+   separate QUIC relay indices and direct routes, sibling-safe disconnects,
+   per-device SFU membership/chat fan-out, and encrypted own-device room-key
+   handoff. The `device-routing` Cargo feature enables the preview; defaults retain
+   legacy routing. Compatibility negotiation precedes registration. Encrypted relay
+   copies reach missing direct siblings; calls select and confirm one answering device.
+   Still required: device discovery, file/room-media/game endpoint
+   state, cluster roster coordination, and installed desktop/phone acceptance.
+   Continuous local-data sync and delegated device authorization are unfinished.
+   Accepted registry persistence uses encrypted SQLite with transactional
+   version/fork checks; backups preserve revocations and reject damaged registry
+   data. This delegated trust store is not consumed by live authentication yet;
+   the current gated device routes require full root identity authority.
+   Desktop/phone direct and private-room chat passed with distinct identities on
+   2026-09-13. Shared-identity validation currently uses automated tests, including
+   real localhost WebSocket and QUIC connections. The installed applications
+   still use legacy routing. See [Devices and backups](docs/DEVICES_AND_BACKUPS.md)
+   for backup/restore instructions and the remaining acceptance work.
 
 12. **CI.** No Android job exists. It needs the NDK, `cargo-ndk`, and `cmake;3.31.6` specifically —
    CMake 4 rejects libopus's declared `cmake_minimum_required`.

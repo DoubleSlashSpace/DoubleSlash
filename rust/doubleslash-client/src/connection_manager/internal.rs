@@ -1,5 +1,6 @@
 //! Internal connection-manager state and helpers.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -8,6 +9,13 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::protocol::SignalingMessage;
 use crate::quic_relay_client::QuicRelayClient;
+use doubleslash_features::device::{DeviceId, MAX_LIVE_DEVICE_ROUTES};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct DirectEndpoint {
+    pub device: Option<DeviceId>,
+    pub connection_id: usize,
+}
 
 // ---------------------------------------------------------------------------
 // Peer connection tracking
@@ -38,6 +46,7 @@ pub(super) struct PeerConnection {
     /// Outbound path into `run_quic_peer_session` (reliable + datagram).
     pub(super) quic_out_tx: Option<mpsc::Sender<PeerOutbound>>,
     pub(super) connected_at: Option<Instant>,
+    pub(super) endpoints: BTreeMap<Option<DeviceId>, (usize, mpsc::Sender<PeerOutbound>)>,
 }
 
 impl PeerConnection {
@@ -47,7 +56,61 @@ impl PeerConnection {
             state: PeerConnectionState::Disconnected,
             quic_out_tx: None,
             connected_at: None,
+            endpoints: BTreeMap::new(),
         }
+    }
+
+    pub(super) fn register_endpoint(
+        &mut self,
+        endpoint: DirectEndpoint,
+        tx: mpsc::Sender<PeerOutbound>,
+    ) -> bool {
+        if endpoint.device.is_some()
+            && !self.endpoints.contains_key(&endpoint.device)
+            && self
+                .endpoints
+                .keys()
+                .filter(|device| device.is_some())
+                .count()
+                >= MAX_LIVE_DEVICE_ROUTES
+        {
+            return false;
+        }
+        self.endpoints
+            .insert(endpoint.device, (endpoint.connection_id, tx));
+        self.refresh_endpoint_state();
+        true
+    }
+
+    pub(super) fn has_endpoint(&self, endpoint: DirectEndpoint) -> bool {
+        self.endpoints
+            .get(&endpoint.device)
+            .is_some_and(|(id, _)| *id == endpoint.connection_id)
+    }
+
+    pub(super) fn remove_endpoint(&mut self, endpoint: DirectEndpoint) -> bool {
+        if !self.has_endpoint(endpoint) {
+            return false;
+        }
+        self.endpoints.remove(&endpoint.device);
+        self.refresh_endpoint_state();
+        true
+    }
+
+    fn refresh_endpoint_state(&mut self) {
+        // A sibling arriving must not move an existing media stream.
+        if !self.quic_out_tx.as_ref().is_some_and(|selected| {
+            self.endpoints
+                .values()
+                .any(|(_, tx)| tx.same_channel(selected))
+        }) {
+            self.quic_out_tx = self.endpoints.values().next().map(|(_, tx)| tx.clone());
+        }
+        self.state = if self.quic_out_tx.is_some() {
+            PeerConnectionState::Connected
+        } else {
+            PeerConnectionState::Disconnected
+        };
     }
 }
 
@@ -59,10 +122,12 @@ impl PeerConnection {
 pub(super) enum InternalEvent {
     QuicConnected {
         peer_id: String,
+        endpoint: DirectEndpoint,
         out_tx: mpsc::Sender<PeerOutbound>,
     },
     QuicDisconnected {
         peer_id: String,
+        endpoint: Option<DirectEndpoint>,
     },
     QuicStats {
         peer_id: String,
@@ -73,9 +138,13 @@ pub(super) enum InternalEvent {
     },
     QuicSignalingData {
         peer_id: String,
+        endpoint: DirectEndpoint,
         data: Vec<u8>,
     },
     WsConnected {
+        peer_id: String,
+    },
+    DeviceRoutingUnsupported {
         peer_id: String,
     },
     WsDisconnected {

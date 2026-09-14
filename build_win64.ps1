@@ -47,6 +47,10 @@ $PROFILE_NAME = if ($env:CONQUERD_DEBUG -eq "1") { "debug" } else { "release" }
 # Debug console toggle: set CONQUERD_DEBUG_CONSOLE=1 to keep the terminal window
 # attached (enables the `console` Cargo feature which removes windows_subsystem = "windows").
 $_features = "qt-ui"
+if ($env:DOUBLESLASH_DEVICE_ROUTING -eq "1") {
+    $_features += ",device-routing"
+    Write-Host "    [preview] Simultaneous identity routing enabled"
+}
 if ($env:CONQUERD_DEBUG_CONSOLE -eq "1") {
     $_features += ",console"
     Write-Host "    [debug] Console window enabled (CONQUERD_DEBUG_CONSOLE=1)"

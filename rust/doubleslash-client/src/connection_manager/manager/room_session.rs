@@ -10,7 +10,6 @@ use crate::group_key::GroupKeySource;
 use crate::protocol::{MessageType, SignalingMessage};
 
 use super::super::events::ConnectionEvent;
-use super::super::internal::PeerConnectionState;
 use super::ConnectionManager;
 
 use crate::connection_fallback::{DirectFallbackCoordinator, PendingFallback};
@@ -467,6 +466,8 @@ impl ConnectionManager {
         let mut env =
             SignalingMessage::new(MessageType::EncryptedSignal, self.identity.public_id());
         env.target = Some(member_pub.to_owned());
+        env.source_device = self.device_id;
+        env.target_device = inner.target_device;
         env.payload
             .insert("ciphertext".to_owned(), Value::String(ciphertext_b64));
         Some(env)
@@ -498,6 +499,7 @@ impl ConnectionManager {
         let key_b64 = crate::crypto::b64url_encode(key);
         for member in members {
             let mut inner = SignalingMessage::new(MessageType::SfuGroupKey, sender.clone());
+            inner.source_device = self.device_id;
             inner
                 .payload
                 .insert("room_id".to_owned(), Value::String(room_id.to_owned()));
@@ -548,7 +550,16 @@ impl ConnectionManager {
     /// join race) and the epoch to pass [`accept_group_key_epoch`]: current or
     /// ahead by at most [`MAX_EPOCH_ADVANCE`], or any epoch when we have no real
     /// key yet.
-    pub(super) fn accept_group_key_from(&self, sender: &str, room_id: &str, epoch: u8) -> bool {
+    pub(super) fn accept_group_key_from(
+        &self,
+        sender: &str,
+        device: Option<doubleslash_features::DeviceId>,
+        room_id: &str,
+        epoch: u8,
+    ) -> bool {
+        if !self.elected_room_device(room_id, sender, device) {
+            return false;
+        }
         let me = self.identity.public_id();
         let union = union_members_for_room(&self.room_group_members, room_id);
         let mut present: Vec<String> = union.iter().cloned().collect();
@@ -584,6 +595,7 @@ impl ConnectionManager {
     pub(super) async fn send_group_key_ack(&mut self, room_id: &str, epoch: u8, keyer: &str) {
         let mut inner =
             SignalingMessage::new(MessageType::SfuGroupKeyAck, self.identity.public_id());
+        inner.source_device = self.device_id;
         inner
             .payload
             .insert("room_id".to_owned(), Value::String(room_id.to_owned()));
@@ -631,7 +643,10 @@ impl ConnectionManager {
             }
             let mut present: Vec<String> = union.iter().cloned().collect();
             present.push(me.clone());
-            if !is_elected_keyer(&present, &me) {
+            if !is_elected_keyer(&present, &me)
+                || !self.elected_room_device(room_id, &me, self.device_id)
+                || !self.own_room_key_ready(room_id)
+            {
                 // Another peer is now keyer — they will distribute.
                 drop_keys.push((room_id.clone(), member.clone()));
                 continue;
@@ -779,16 +794,25 @@ impl ConnectionManager {
         // snapshot, then apply the snapshot and recompute. Snapshots exclude us,
         // so the union does too.
         let union_old = union_members_for_room(&self.room_group_members, room_id);
-        let node_new: HashSet<String> = members.iter().filter(|m| **m != me).cloned().collect();
+        let has_sibling = self.device_id.is_some() && self.room_devices(room_id, &me).len() > 1;
+        let node_new: HashSet<String> = members
+            .iter()
+            .filter(|m| **m != me || has_sibling)
+            .cloned()
+            .collect();
         self.room_group_members.insert(room_key, node_new);
         let union_new = union_members_for_room(&self.room_group_members, room_id);
+        self.request_own_room_key(room_id).await;
 
         // Keyer election over the union (plus us): only the deterministic winner
         // across the whole cluster distributes, so members never disagree on who
         // keys or race competing epochs once they share a view.
         let mut present: Vec<String> = union_new.iter().cloned().collect();
         present.push(me.clone());
-        if !is_elected_keyer(&present, &me) {
+        if !is_elected_keyer(&present, &me)
+            || !self.elected_room_device(room_id, &me, self.device_id)
+            || !self.own_room_key_ready(room_id)
+        {
             // Not the keyer: drop any pending seals we queued while we briefly
             // thought we were (solo bootstrap race). Keep installed key material
             // until a legitimate keyer's SfuGroupKey overwrites it.
@@ -858,7 +882,10 @@ impl ConnectionManager {
         let union = union_members_for_room(&self.room_group_members, room_id);
         let mut present: Vec<String> = union.iter().cloned().collect();
         present.push(me.clone());
-        if !is_elected_keyer(&present, &me) {
+        if !is_elected_keyer(&present, &me)
+            || !self.elected_room_device(room_id, &me, self.device_id)
+            || !self.own_room_key_ready(room_id)
+        {
             // Someone else keys this room; they will distribute and we will be
             // sent the epoch we are missing.
             return;
@@ -914,7 +941,10 @@ impl ConnectionManager {
         let me = self.identity.public_id();
         let mut present: Vec<String> = union.into_iter().collect();
         present.push(me.clone());
-        if !is_elected_keyer(&present, &me) {
+        if !is_elected_keyer(&present, &me)
+            || !self.elected_room_device(room_id, &me, self.device_id)
+            || !self.own_room_key_ready(room_id)
+        {
             return;
         }
         let pending = (room_id.to_owned(), member.clone());
@@ -1806,11 +1836,7 @@ impl ConnectionManager {
             .collect();
         for peer_id in due {
             self.pending_call_fallback_checks.remove(&peer_id);
-            let direct_connected = self
-                .peers
-                .get(&peer_id)
-                .map(|p| p.state == PeerConnectionState::Connected)
-                .unwrap_or(false);
+            let direct_connected = self.direct_media_sender(&peer_id).is_some();
             if !direct_connected {
                 info!(
                     "No direct QUIC to {} within fallback grace — starting private-room fallback",

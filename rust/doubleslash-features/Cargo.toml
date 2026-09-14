@@ -8,6 +8,9 @@ description = "Capability registry and feature module spine for the Conquerd pee
 name = "doubleslash_features"
 crate-type = ["rlib"]
 
+[features]
+device-routing = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

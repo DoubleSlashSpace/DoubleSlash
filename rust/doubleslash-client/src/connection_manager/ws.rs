@@ -83,6 +83,7 @@ enum WsSessionEnd {
 /// re-dials immediately instead of sitting out a delay earned on a dead one.
 pub(super) async fn supernode_ws_task(
     identity: Arc<Identity>,
+    device_id: Option<doubleslash_features::DeviceId>,
     peer_id: String,
     candidates: Vec<String>,
     mut send_rx: mpsc::Receiver<WsMessage>,
@@ -113,7 +114,7 @@ pub(super) async fn supernode_ws_task(
         // is wrong" from "the link died under a working endpoint".
         let mut established = false;
         let outcome = connect_and_run_ws(
-            &identity,
+            (&identity, device_id),
             &peer_id,
             ws_url,
             &mut send_rx,
@@ -211,7 +212,7 @@ async fn wait_before_retry(delay: Duration, reconnect_now: &Notify) {
 }
 
 async fn connect_and_run_ws(
-    identity: &Identity,
+    endpoint: (&Identity, Option<doubleslash_features::DeviceId>),
     peer_id: &str,
     ws_url: &str,
     send_rx: &mut mpsc::Receiver<WsMessage>,
@@ -221,15 +222,50 @@ async fn connect_and_run_ws(
 ) -> std::result::Result<WsSessionEnd, Box<dyn std::error::Error + Send + Sync>> {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-    let (ws_stream, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(ws_url))
+    let mut request = ws_url.into_client_request()?;
+    if endpoint.1.is_some() {
+        request.headers_mut().insert(
+            "Sec-WebSocket-Protocol",
+            tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                doubleslash_features::device::DEVICE_WEBSOCKET_PROTOCOL,
+            ),
+        );
+    }
+    let connection = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
         .await
-        .map_err(|_| format!("connect to {ws_url} timed out after {CONNECT_TIMEOUT:?}"))??;
+        .map_err(|_| format!("connect to {ws_url} timed out after {CONNECT_TIMEOUT:?}"))?;
+    let (mut ws_stream, response) = match connection {
+        Ok(connection) => connection,
+        Err(error) => {
+            if endpoint.1.is_some() && matches!(&error, tokio_tungstenite::tungstenite::Error::Protocol(
+                tokio_tungstenite::tungstenite::error::ProtocolError::SecWebSocketSubProtocolError(_))) {
+                let _ = internal_tx.send(InternalEvent::DeviceRoutingUnsupported { peer_id: peer_id.to_owned() }).await;
+            }
+            return Err(Box::new(error));
+        }
+    };
+    if endpoint.1.is_some()
+        && response
+            .headers()
+            .get("Sec-WebSocket-Protocol")
+            .and_then(|value| value.to_str().ok())
+            != Some(doubleslash_features::device::DEVICE_WEBSOCKET_PROTOCOL)
+    {
+        let _ = ws_stream.close(None).await;
+        let _ = internal_tx
+            .send(InternalEvent::DeviceRoutingUnsupported {
+                peer_id: peer_id.to_owned(),
+            })
+            .await;
+        return Err("This node needs an update for simultaneous identity use".into());
+    }
     info!("WebSocket connected to supernode {}", peer_id);
     let (mut ws_sink, mut ws_stream) = ws_stream.split();
 
     // Send HELLO
-    let hello = build_hello(identity)?;
+    let hello = build_hello(endpoint.0, endpoint.1)?;
     ws_sink.send(WsMessage::Text(hello)).await?;
 
     *established = true;
@@ -320,9 +356,17 @@ async fn connect_and_run_ws(
     }
 }
 
-pub(super) fn build_hello(identity: &Identity) -> std::result::Result<String, serde_json::Error> {
+pub(super) fn build_hello(
+    identity: &Identity,
+    device_id: Option<doubleslash_features::DeviceId>,
+) -> std::result::Result<String, serde_json::Error> {
     let sender = identity.public_id();
     let mut msg = SignalingMessage::new(MessageType::Hello, sender.clone());
+    msg.source_device = device_id;
+    if device_id.is_some() {
+        msg.payload
+            .insert("device_routing".to_owned(), Value::from(1));
+    }
     msg.payload
         .insert("public_id".to_owned(), Value::String(sender.clone()));
     msg.payload
@@ -343,6 +387,44 @@ mod tests {
     use futures_util::{SinkExt, StreamExt};
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
+
+    #[tokio::test]
+    async fn device_client_rejects_old_node_before_registering_identity() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(socket).await.unwrap();
+            let first = tokio::time::timeout(Duration::from_secs(3), websocket.next())
+                .await
+                .unwrap();
+            assert!(
+                !matches!(first, Some(Ok(WsMessage::Text(_)))),
+                "identity must not register on a legacy node"
+            );
+        });
+        let identity = Identity::generate();
+        let (_send, mut outbound) = mpsc::channel(8);
+        let (events, mut incoming) = mpsc::channel(8);
+        let mut established = false;
+        let result = connect_and_run_ws(
+            (&identity, Some(doubleslash_features::DeviceId([1; 32]))),
+            "old-node",
+            &url,
+            &mut outbound,
+            &events,
+            &Notify::new(),
+            &mut established,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(!established);
+        assert!(matches!(
+            incoming.try_recv(),
+            Ok(InternalEvent::DeviceRoutingUnsupported { .. })
+        ));
+        server.await.unwrap();
+    }
 
     /// What a test server does with each connection after the handshake.
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -418,6 +500,7 @@ mod tests {
         let reconnect_now = Arc::new(Notify::new());
         let task = tokio::spawn(supernode_ws_task(
             Arc::new(Identity::generate()),
+            None,
             "supernode-under-test".to_owned(),
             vec![url.to_owned()],
             send_rx,

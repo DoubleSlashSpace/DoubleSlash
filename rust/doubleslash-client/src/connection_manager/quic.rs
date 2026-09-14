@@ -17,7 +17,7 @@ use bytes::Bytes;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use super::internal::{InternalEvent, PeerOutbound};
+use super::internal::{DirectEndpoint, InternalEvent, PeerOutbound};
 
 // ---------------------------------------------------------------------------
 // QUIC peer session task
@@ -36,11 +36,28 @@ pub(super) async fn run_quic_peer_session(
     peer_id: String,
     internal_tx: mpsc::Sender<InternalEvent>,
 ) {
+    let device = connection
+        .peer_identity()
+        .and_then(|identity| {
+            identity
+                .downcast::<Vec<rustls::pki_types::CertificateDer>>()
+                .ok()
+        })
+        .and_then(|certs| {
+            certs
+                .first()
+                .and_then(crate::quic_tls::device_from_cert_der)
+        });
+    let endpoint = DirectEndpoint {
+        device,
+        connection_id: connection.stable_id(),
+    };
     let (out_tx, mut out_rx) = mpsc::channel::<PeerOutbound>(128);
 
     let _ = internal_tx
         .send(InternalEvent::QuicConnected {
             peer_id: peer_id.clone(),
+            endpoint,
             out_tx,
         })
         .await;
@@ -91,7 +108,7 @@ pub(super) async fn run_quic_peer_session(
 
     // Outbound: one long-lived uni for reliable frames; datagrams for audio.
     let write_conn = connection.clone();
-    let write_task = tokio::spawn(async move {
+    let mut write_task = tokio::spawn(async move {
         let mut send_stream: Option<quinn::SendStream> = None;
         while let Some(msg) = out_rx.recv().await {
             match msg {
@@ -167,13 +184,14 @@ pub(super) async fn run_quic_peer_session(
     // streams do not head-of-line-block datagram reception (direct audio).
     loop {
         tokio::select! {
+            _ = &mut write_task => break,
             stream = connection.accept_uni() => {
                 match stream {
                     Ok(recv_stream) => {
                         let peer = peer_id_r.clone();
                         let tx = internal_tx.clone();
                         tokio::spawn(async move {
-                            let _ = read_quic_signaling_stream(recv_stream, &peer, &tx).await;
+                            let _ = read_quic_signaling_stream(recv_stream, &peer, endpoint, &tx).await;
                         });
                     }
                     Err(_) => break,
@@ -185,7 +203,7 @@ pub(super) async fn run_quic_peer_session(
                         let peer = peer_id_r.clone();
                         let tx = internal_tx.clone();
                         tokio::spawn(async move {
-                            let _ = read_quic_signaling_stream(recv_stream, &peer, &tx).await;
+                            let _ = read_quic_signaling_stream(recv_stream, &peer, endpoint, &tx).await;
                         });
                     }
                     Err(_) => break,
@@ -197,6 +215,7 @@ pub(super) async fn run_quic_peer_session(
                         let _ = internal_tx
                             .send(InternalEvent::QuicSignalingData {
                                 peer_id: peer_id_r.clone(),
+                                endpoint,
                                 data: bytes.to_vec(),
                             })
                             .await;
@@ -210,7 +229,10 @@ pub(super) async fn run_quic_peer_session(
     write_task.abort();
     connection.close(0u32.into(), b"bye");
     let _ = internal_tx
-        .send(InternalEvent::QuicDisconnected { peer_id: peer_id_r })
+        .send(InternalEvent::QuicDisconnected {
+            peer_id: peer_id_r,
+            endpoint: Some(endpoint),
+        })
         .await;
 }
 
@@ -222,6 +244,7 @@ pub(super) async fn run_quic_peer_session(
 async fn read_quic_signaling_stream(
     mut recv_stream: quinn::RecvStream,
     peer_id: &str,
+    endpoint: DirectEndpoint,
     internal_tx: &mpsc::Sender<InternalEvent>,
 ) -> bool {
     let mut len_buf = [0u8; 4];
@@ -244,6 +267,7 @@ async fn read_quic_signaling_stream(
                 let _ = internal_tx
                     .send(InternalEvent::QuicSignalingData {
                         peer_id: peer_id.to_owned(),
+                        endpoint,
                         data: payload,
                     })
                     .await;

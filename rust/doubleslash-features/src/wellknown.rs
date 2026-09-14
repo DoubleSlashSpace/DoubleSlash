@@ -186,6 +186,18 @@ pub fn core_chat_v1() -> CapabilityDescriptor {
         .with_auth(AuthTier::TrustedPeer)
 }
 
+/// Root-authorized endpoint routing and own-device coordination.
+pub fn core_devices_v1() -> CapabilityDescriptor {
+    CapabilityDescriptor::new("core.devices.v1", "1.0", ChannelKind::Stream)
+        .with_params(json!({
+            "quota_bytes_per_sec": 32 * 1024,
+            "quota_datagrams_per_sec": 50,
+            "root_authorized_endpoints": true,
+            "max_live_devices": crate::device::MAX_LIVE_DEVICE_ROUTES,
+        }))
+        .with_auth(AuthTier::TrustedPeer)
+}
+
 /// `core.file.v1` — chunked file transfer.
 pub fn core_file_v1() -> CapabilityDescriptor {
     CapabilityDescriptor::new("core.file.v1", "1.0", ChannelKind::Stream)

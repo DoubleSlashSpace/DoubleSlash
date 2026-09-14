@@ -174,6 +174,11 @@ fn build_feature_registry(
         let _ = registry.upsert(cap);
     }
 
+    if doubleslash_features::device::DEVICE_ROUTING_READY {
+        let _ = registry.register_module(Arc::new(
+            doubleslash_features::client_modules::CoreDevicesModule,
+        ));
+    }
     registry
 }
 
@@ -466,22 +471,27 @@ impl SupernodeState {
         if !self.replication_seen.write().insert_new(message_id) {
             return; // already delivered
         }
+        let Ok(message) = SignalingMessage::from_json(raw) else {
+            return;
+        };
+        self.deliver_room_chat(room_id, &message, raw);
+    }
+
+    fn deliver_room_chat(&self, room_id: &str, message: &SignalingMessage, raw: &str) {
         let Some(ref sfu) = self.sfu else {
             return;
         };
-        let sender = SignalingMessage::from_json(raw)
-            .map(|m| m.sender)
+        let endpoints = sfu
+            .read()
+            .get_room(room_id)
+            .map(|room| room.chat_delivery_endpoints(&message.sender, message.source_device))
             .unwrap_or_default();
-        let recipients = sfu.read().get_chat_recipients(room_id);
-        for peer in &recipients {
-            if is_room_frame_author(peer, &sender) {
-                continue;
-            }
+        for (peer, device) in endpoints {
             if self
                 .features
-                .gate_through_feature("room.chat.v1", peer, raw.len())
+                .gate_through_feature("room.chat.v1", &peer, raw.len())
             {
-                self.signaling.send_to_peer(peer, raw);
+                self.signaling.send_to_endpoint(&peer, device, raw);
             }
         }
     }
@@ -986,18 +996,23 @@ impl SupernodeState {
         let Some(ref sfu) = self.sfu else {
             return;
         };
-        let (members, chat_members) = {
+        let (members, chat_members, devices) = {
             let s = sfu.read();
             let members = s
                 .get_room(room_id)
                 .map(|r| r.participant_ids())
                 .unwrap_or_default();
-            (members, s.get_chat_recipients(room_id))
+            let devices = s
+                .get_room(room_id)
+                .map(|room| room.device_roster())
+                .unwrap_or_default();
+            (members, s.get_chat_recipients(room_id), devices)
         };
         let payload = json!({
             "room_id": room_id,
             "members": members,
             "chat_members": chat_members,
+            "devices": devices,
         });
         for peer in &chat_members {
             self.send_signed(peer, MessageType::SfuMembers, payload.clone());
@@ -1936,6 +1951,7 @@ fn canonical_peer_id(relay_cn: &str) -> String {
 async fn handle_relay_signaling_stream(
     state: Arc<SupernodeState>,
     relay_peer_id: String,
+    device: Option<doubleslash_features::DeviceId>,
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
 ) {
@@ -1945,9 +1961,14 @@ async fn handle_relay_signaling_stream(
     // Outbound: `send_to_peer` pushes JSON into this channel; the writer task
     // frames it onto the QUIC stream as `[u32 BE len][json]`.
     let (tx, mut rx) = signaling::peer_channel();
-    state.signaling.register_quic_sender(&peer_id, tx.clone());
+    if !state
+        .signaling
+        .register_quic_sender(&peer_id, device, tx.clone())
+    {
+        return;
+    }
 
-    let writer = tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         // `None` is disconnect *or* an overrun of PEER_QUEUE_MAX_BYTES; both
         // mean tear the stream down rather than buffer without bound.
         while let Some(json) = rx.recv().await {
@@ -1986,7 +2007,11 @@ async fn handle_relay_signaling_stream(
             break;
         }
         let mut len_buf = [0u8; 4];
-        if recv.read_exact(&mut len_buf).await.is_err() {
+        let read = tokio::select! {
+            result = recv.read_exact(&mut len_buf) => result,
+            _ = &mut writer => break,
+        };
+        if read.is_err() {
             break;
         }
         let len = u32::from_be_bytes(len_buf) as usize;
@@ -2000,7 +2025,10 @@ async fn handle_relay_signaling_stream(
         let Ok(raw) = String::from_utf8(buf) else {
             continue;
         };
-        let Some(msg) = state.signaling.accept_signed(&raw) else {
+        let Some(msg) = state
+            .signaling
+            .accept_signed(&raw, Some((&peer_id, device)))
+        else {
             continue;
         };
         if msg.sender != peer_id {
@@ -2038,7 +2066,15 @@ async fn handle_relay_signaling_stream(
         }
     }
 
-    state.signaling.unregister_quic_sender(&peer_id, &tx);
+    if state
+        .signaling
+        .unregister_quic_sender(&peer_id, device, &tx)
+    {
+        handler.on_endpoint_disconnected(&peer_id, device);
+        if !state.signaling.is_peer_connected(&peer_id) {
+            handler.on_peer_disconnected(&peer_id);
+        }
+    }
     writer.abort();
 }
 
@@ -2315,6 +2351,25 @@ impl SignalingHandler for SupernodeHandler {
             }
         }
     }
+
+    fn on_endpoint_disconnected(
+        &self,
+        identity_pub: &str,
+        device: Option<doubleslash_features::DeviceId>,
+    ) {
+        if let Some(ref relay) = self.state.relay {
+            relay.leave_room_endpoint(identity_pub, device);
+        }
+        if let Some(ref sfu) = self.state.sfu {
+            let rooms = sfu.write().remove_endpoint_from_all(identity_pub, device);
+            for room_id in &rooms {
+                self.state.broadcast_sfu_members(room_id);
+            }
+            if !rooms.is_empty() {
+                self.state.broadcast_room_list();
+            }
+        }
+    }
 }
 
 impl SupernodeHandler {
@@ -2543,7 +2598,12 @@ impl SupernodeHandler {
             }
         }
 
-        let (ok, members) = sfu.write().join_room(&msg.sender, room_id);
+        let (ok, members) = if msg.source_device.is_some() {
+            sfu.write()
+                .join_room_endpoint(&msg.sender, msg.source_device, room_id)
+        } else {
+            sfu.write().join_room(&msg.sender, room_id)
+        };
         if !ok {
             // Machine-readable reason for the client; detail stays in logs only.
             let (reason, detail) = {
@@ -2587,7 +2647,11 @@ impl SupernodeHandler {
 
         // Join relay room too
         if let Some(ref relay) = self.state.relay {
-            relay.join_room(&msg.sender, room_id);
+            if msg.source_device.is_some() {
+                relay.join_room_endpoint(&msg.sender, msg.source_device, room_id);
+            } else {
+                relay.join_room(&msg.sender, room_id);
+            }
         }
 
         // Send member list to joiner. Include `chat_members` (participants +
@@ -2595,10 +2659,15 @@ impl SupernodeHandler {
         // else's from the first snapshot — otherwise a members-only frame could
         // race the broadcast below and transiently drop subscribers from keying.
         let chat_members = sfu.read().get_chat_recipients(room_id);
+        let devices = sfu
+            .read()
+            .get_room(room_id)
+            .map(|room| room.device_roster())
+            .unwrap_or_default();
         self.state.send_signed(
             &msg.sender,
             MessageType::SfuMembers,
-            json!({"room_id": room_id, "members": members, "chat_members": chat_members}),
+            json!({"room_id": room_id, "members": members, "chat_members": chat_members, "devices": devices}),
         );
 
         // Notify existing members
@@ -2647,18 +2716,32 @@ impl SupernodeHandler {
             .and_then(|v| v.as_str())
             .unwrap_or(sfu::DEFAULT_ROOM_ID);
 
-        let remaining = sfu.write().leave_room(&msg.sender, room_id);
+        let remaining = if msg.source_device.is_some() {
+            sfu.write()
+                .leave_room_endpoint(&msg.sender, msg.source_device, room_id)
+        } else {
+            sfu.write().leave_room(&msg.sender, room_id)
+        };
 
         if let Some(ref relay) = self.state.relay {
-            relay.leave_room(&msg.sender);
+            if msg.source_device.is_some() {
+                relay.leave_room_endpoint(&msg.sender, msg.source_device);
+            } else {
+                relay.leave_room(&msg.sender);
+            }
         }
 
-        for member in &remaining {
-            self.state.send_signed(
-                member,
-                MessageType::SfuPeerLeft,
-                json!({"peer_id": msg.sender, "room_id": room_id}),
-            );
+        if !remaining
+            .iter()
+            .any(|peer| canonical_peer_id(peer) == canonical_peer_id(&msg.sender))
+        {
+            for member in &remaining {
+                self.state.send_signed(
+                    member,
+                    MessageType::SfuPeerLeft,
+                    json!({"peer_id": msg.sender, "room_id": room_id}),
+                );
+            }
         }
 
         // Reannounce the key roster to text-only subscribers too (they don't
@@ -2846,7 +2929,11 @@ impl SupernodeHandler {
             .get("room_id")
             .and_then(|v| v.as_str())
             .unwrap_or(sfu::DEFAULT_ROOM_ID);
-        if !sfu.read().is_chat_sender(room_id, &msg.sender) {
+        if !sfu.read().get_room(room_id).is_some_and(|room| {
+            room.chat_endpoints().iter().any(|(peer, device)| {
+                is_room_frame_author(peer, &msg.sender) && *device == msg.source_device
+            })
+        }) {
             // warn: silent drops here look like "bot replied in terminal but peer
             // never saw it" when multi-homed clients hit the wrong node path.
             tracing::warn!(
@@ -2856,21 +2943,7 @@ impl SupernodeHandler {
             );
             return;
         }
-        // Membership stores normalized ids; wire `msg.sender` may differ by pad.
-        let recipients = sfu.read().get_chat_recipients(room_id);
-        let wire_bytes = raw.len();
-        for peer in &recipients {
-            if is_room_frame_author(peer, &msg.sender) {
-                continue;
-            }
-            if self
-                .state
-                .features
-                .gate_through_feature("room.chat.v1", peer, wire_bytes)
-            {
-                self.state.signaling.send_to_peer(peer, raw);
-            }
-        }
+        self.state.deliver_room_chat(room_id, msg, raw);
         // Fan the same opaque frame out to cluster peers that host members of
         // this room, so a member attached to a different supernode still
         // receives it. No-op when standalone.
@@ -3010,7 +3083,12 @@ impl SupernodeHandler {
         if room_id.is_empty() {
             return;
         }
-        let ok = sfu.write().subscribe(&msg.sender, room_id);
+        let ok = if msg.source_device.is_some() {
+            sfu.write()
+                .subscribe_endpoint(&msg.sender, msg.source_device, room_id)
+        } else {
+            sfu.write().subscribe(&msg.sender, room_id)
+        };
         if ok {
             debug!(
                 "Peer {} subscribed to room {} text chat",
@@ -3036,7 +3114,12 @@ impl SupernodeHandler {
         if room_id.is_empty() {
             return;
         }
-        sfu.write().unsubscribe(&msg.sender, room_id);
+        if msg.source_device.is_some() {
+            sfu.write()
+                .unsubscribe_endpoint(&msg.sender, msg.source_device, room_id);
+        } else {
+            sfu.write().unsubscribe(&msg.sender, room_id);
+        }
         debug!(
             "Peer {} unsubscribed from room {} text chat",
             &msg.sender[..12.min(msg.sender.len())],
@@ -3727,12 +3810,15 @@ async fn main() -> anyhow::Result<()> {
     if state.sfu.is_some() {
         if let Some(ref relay) = state.relay {
             let weak = std::sync::Arc::downgrade(&state);
-            let hook: relay::SignalStreamHook = std::sync::Arc::new(move |peer_id, send, recv| {
-                let Some(state) = weak.upgrade() else {
-                    return;
-                };
-                tokio::spawn(handle_relay_signaling_stream(state, peer_id, send, recv));
-            });
+            let hook: relay::SignalStreamHook =
+                std::sync::Arc::new(move |peer_id, device, send, recv| {
+                    let Some(state) = weak.upgrade() else {
+                        return;
+                    };
+                    tokio::spawn(handle_relay_signaling_stream(
+                        state, peer_id, device, send, recv,
+                    ));
+                });
             relay.set_signal_hook(hook);
             info!(
                 "[features] room.chat.v1/room.file.v1 reliable broadcast over QUIC relay enabled"
@@ -4740,20 +4826,22 @@ mod build_feature_registry_tests {
         let mut ids: Vec<String> = registry.snapshot().iter().map(|c| c.id.clone()).collect();
         ids.sort();
         // Manifest declares chat only; relay + room quota descriptors are always upserted.
-        assert_eq!(
-            ids,
-            vec![
-                "core.audio.opus".to_string(),
-                "core.chat.v1".to_string(),
-                "core.file.v1".to_string(),
-                "core.video.v1".to_string(),
-                "game.relay.v1".to_string(),
-                "room.audio.sfu".to_string(),
-                "room.chat.v1".to_string(),
-                "room.file.v1".to_string(),
-                "room.video.sfu".to_string(),
-            ]
-        );
+        let mut expected = vec![
+            "core.audio.opus".to_string(),
+            "core.chat.v1".to_string(),
+            "core.file.v1".to_string(),
+            "core.video.v1".to_string(),
+            "game.relay.v1".to_string(),
+            "room.audio.sfu".to_string(),
+            "room.chat.v1".to_string(),
+            "room.file.v1".to_string(),
+            "room.video.sfu".to_string(),
+        ];
+        if doubleslash_features::device::DEVICE_ROUTING_READY {
+            expected.push("core.devices.v1".to_string());
+            expected.sort();
+        }
+        assert_eq!(ids, expected);
     }
 }
 

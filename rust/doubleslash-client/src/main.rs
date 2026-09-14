@@ -863,6 +863,9 @@ async fn handle_event(
             info!("Peer disconnected: {}", pid);
             let _ = call_cmd_tx.try_send(call_controller::CallCommand::RemovePeer { peer_id: pid });
         }
+        ConnectionEvent::DeviceRoutingUnsupported { peer_id } => {
+            warn!("Node {peer_id} needs an update for simultaneous identity use");
+        }
         ConnectionEvent::SupernodeConnected(u) => {
             info!("Supernode connected: {}", u);
             let host_key = u.trim_end_matches('=').to_owned();

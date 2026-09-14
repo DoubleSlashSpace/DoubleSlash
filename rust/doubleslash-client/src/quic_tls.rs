@@ -27,7 +27,15 @@ pub const ALPN: &[u8] = b"doubleslash/1";
 /// verification is handled by `AcceptAnyCert` / `AcceptAnyClient` which
 /// accept any valid cert — callers must verify the peer_id from the cert CN.
 pub fn make_quic_endpoint(signing_key: &SigningKey, port: u16) -> anyhow::Result<quinn::Endpoint> {
-    let (cert_chain, key_der) = generate_self_signed_cert(signing_key)?;
+    make_quic_endpoint_with_device(signing_key, port, None)
+}
+
+pub fn make_quic_endpoint_with_device(
+    signing_key: &SigningKey,
+    port: u16,
+    device: Option<doubleslash_features::DeviceId>,
+) -> anyhow::Result<quinn::Endpoint> {
+    let (cert_chain, key_der) = generate_self_signed_cert(signing_key, device)?;
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
 
@@ -97,7 +105,51 @@ pub fn peer_id_from_pub_bytes(pub_bytes: &[u8]) -> String {
 
 /// Extract the hex-encoded CN from a DER-encoded self-signed certificate.
 pub fn cn_from_cert_der(cert_der: &CertificateDer<'_>) -> Option<String> {
-    parse_cn_from_der(cert_der.as_ref())
+    let cn = parse_cn_from_der(cert_der.as_ref())?;
+    Some(
+        cn.split_once('.')
+            .map_or(cn.as_str(), |(identity, _)| identity)
+            .to_owned(),
+    )
+}
+
+/// Device route authenticated by the root's TLS CertificateVerify signature.
+pub fn device_from_cert_der(
+    cert_der: &CertificateDer<'_>,
+) -> Option<doubleslash_features::DeviceId> {
+    let cn = parse_cn_from_der(cert_der.as_ref())?;
+    let (_, device) = cn.split_once('.')?;
+    let bytes = crate::crypto::b64url_decode(device).ok()?;
+    Some(doubleslash_features::DeviceId(bytes.try_into().ok()?))
+}
+
+fn verify_device_root_signature(
+    message: &[u8],
+    cert: &CertificateDer<'_>,
+    dss: &rustls::DigitallySignedStruct,
+) -> Result<(), rustls::Error> {
+    let cn = parse_cn_from_der(cert.as_ref()).ok_or(rustls::Error::InvalidCertificate(
+        rustls::CertificateError::BadEncoding,
+    ))?;
+    if !cn.contains('.') {
+        return Ok(());
+    }
+    let check = || -> Option<()> {
+        device_from_cert_der(cert)?;
+        let root: [u8; 32] = hex::decode(cn.split_once('.')?.0).ok()?.try_into().ok()?;
+        if dss.scheme != rustls::SignatureScheme::ED25519 {
+            return None;
+        }
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&root).ok()?;
+        key.verify_strict(
+            message,
+            &ed25519_dalek::Signature::from_slice(dss.signature()).ok()?,
+        )
+        .ok()
+    };
+    check().ok_or(rustls::Error::InvalidCertificate(
+        rustls::CertificateError::BadSignature,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -106,9 +158,15 @@ pub fn cn_from_cert_der(cert_der: &CertificateDer<'_>) -> Option<String> {
 
 fn generate_self_signed_cert(
     signing_key: &SigningKey,
+    device: Option<doubleslash_features::DeviceId>,
 ) -> anyhow::Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
     let pub_bytes = signing_key.verifying_key().as_bytes().to_vec();
-    let cn = hex::encode(&pub_bytes);
+    let mut cn = hex::encode(&pub_bytes);
+    if let Some(device) = device {
+        use base64::Engine;
+        cn.push('.');
+        cn.push_str(&base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(device.0));
+    }
 
     let pkcs8 = build_ed25519_pkcs8(signing_key);
     let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pkcs8));
@@ -184,6 +242,7 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
         cert: &CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        verify_device_root_signature(message, cert, dss)?;
         rustls::crypto::verify_tls13_signature(
             message,
             cert,
@@ -232,6 +291,7 @@ impl rustls::server::danger::ClientCertVerifier for AcceptAnyClient {
         cert: &CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        verify_device_root_signature(message, cert, dss)?;
         rustls::crypto::verify_tls13_signature(
             message,
             cert,
@@ -345,5 +405,85 @@ fn encode_asn1_length(len: usize, buf: &mut Vec<u8>) {
         buf.extend_from_slice(&[0x81, len as u8]);
     } else {
         buf.extend_from_slice(&[0x82, (len >> 8) as u8, len as u8]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use doubleslash_features::DeviceId;
+
+    #[tokio::test]
+    async fn direct_tls_authenticates_distinct_devices_under_one_root() {
+        let key = SigningKey::from_bytes(&[31; 32]);
+        let desktop = make_quic_endpoint_with_device(&key, 0, Some(DeviceId([1; 32]))).unwrap();
+        let phone = make_quic_endpoint_with_device(&key, 0, Some(DeviceId([2; 32]))).unwrap();
+        let address =
+            std::net::SocketAddr::from(([127, 0, 0, 1], desktop.local_addr().unwrap().port()));
+        let connect = phone.connect(address, "doubleslash").unwrap();
+        let server = async { desktop.accept().await.unwrap().await.unwrap() };
+        let (client, server) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(connect, server)
+        })
+        .await
+        .unwrap();
+        let client = client.unwrap();
+        for (connection, device) in [(&client, DeviceId([1; 32])), (&server, DeviceId([2; 32]))] {
+            let certs = connection
+                .peer_identity()
+                .unwrap()
+                .downcast::<Vec<CertificateDer>>()
+                .unwrap();
+            assert_eq!(device_from_cert_der(&certs[0]), Some(device));
+            assert_eq!(
+                cn_from_cert_der(&certs[0]),
+                Some(hex::encode(key.verifying_key().as_bytes()))
+            );
+        }
+        desktop.close(0u32.into(), b"test complete");
+        phone.close(0u32.into(), b"test complete");
+    }
+
+    #[tokio::test]
+    async fn direct_tls_rejects_device_claim_signed_by_another_root() {
+        let attacker = SigningKey::from_bytes(&[42; 32]);
+        let owner = SigningKey::from_bytes(&[43; 32]);
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(build_ed25519_pkcs8(&attacker)));
+        let pair = KeyPair::from_der_and_sign_algo(&key, &PKCS_ED25519).unwrap();
+        let mut params = CertificateParams::default();
+        params.distinguished_name.push(
+            DnType::CommonName,
+            format!(
+                "{}.{}",
+                hex::encode(owner.verifying_key().as_bytes()),
+                crate::crypto::b64url_encode(&[1; 32])
+            ),
+        );
+        let cert = params.self_signed(&pair).unwrap();
+        let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.der().clone()], key)
+        .unwrap();
+        config.alpn_protocols = vec![ALPN.to_vec()];
+        let config = quinn::ServerConfig::with_crypto(Arc::new(
+            quinn::crypto::rustls::QuicServerConfig::try_from(config).unwrap(),
+        ));
+        let server = quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap()).unwrap();
+        let client = make_quic_endpoint(&owner, 0).unwrap();
+        let connect = client
+            .connect(server.local_addr().unwrap(), "doubleslash")
+            .unwrap();
+        let accept = async { server.accept().await.unwrap().await };
+        let (client_result, server_result) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(connect, accept)
+        })
+        .await
+        .unwrap();
+        assert!(client_result.is_err());
+        assert!(server_result.is_err());
     }
 }

@@ -6,6 +6,41 @@ use crate::room_store::RoomEntry;
 const PASSWORD: &[u8] = b"backup password independent of login";
 const LOCAL_PASSWORD: &[u8] = b"new local password for restore";
 
+#[test]
+fn corrupt_device_trust_is_not_silently_omitted_from_backup() -> anyhow::Result<()> {
+    let source = tempfile::tempdir()?;
+    fs::write(
+        source.path().join(DEVICE_TRUST_FILE),
+        b"damaged trust database",
+    )?;
+    assert!(fixture(source.path(), false).is_err());
+    assert_eq!(
+        fs::read(source.path().join(DEVICE_TRUST_FILE))?,
+        b"damaged trust database"
+    );
+    Ok(())
+}
+
+#[test]
+fn malformed_device_trust_prevents_backup_publication() -> anyhow::Result<()> {
+    let source = tempfile::tempdir()?;
+    let mut snapshot = fixture(source.path(), false)?;
+    let path = snapshot.directory.path().join(DEVICE_TRUST_FILE);
+    fs::write(&path, b"not a valid trust database")?;
+    let size = fs::metadata(&path)?.len();
+    snapshot.sources.push(path);
+    snapshot.manifest.entries.push(Entry {
+        name: DEVICE_TRUST_FILE.into(),
+        size,
+    });
+    snapshot.manifest.summary.files += 1;
+    snapshot.manifest.summary.bytes += size;
+    let archive = source.path().join("invalid.dbackup");
+    assert!(snapshot.write(&archive, PASSWORD).is_err());
+    assert!(!archive.exists());
+    Ok(())
+}
+
 fn fixture(root: &Path, include_attachments: bool) -> Result<BackupSnapshot> {
     let identity = Identity::from_seed(&[7; 32])?;
     identity.save_encrypted(b"original password plus unavailable keyfile", root)?;
@@ -60,6 +95,21 @@ fn backup_restores_identity_wal_history_hidden_rooms_and_attachments() -> anyhow
     let archive = source.path().join("backup.dbackup");
     let original_device =
         crate::device::DeviceKey::load_or_create(&Identity::from_seed(&[7; 32])?, source.path())?;
+    let owner = Identity::from_seed(&[7; 32])?;
+    let peer = Identity::from_seed(&[8; 32])?;
+    let initial =
+        crate::device::DeviceRegistry::create(&peer, original_device.entry("Lost phone"))?;
+    let mut revoked_entry = original_device.entry("Lost phone");
+    revoked_entry.revoked = true;
+    let revoked = initial.update(&peer, revoked_entry)?;
+    // Keep the source open in WAL mode; copying the raw main DB would miss
+    // committed authorization state that has not been checkpointed yet.
+    let trust_path = source.path().join(DEVICE_TRUST_FILE);
+    let mut trust = DeviceTrustStore::open(&owner, &trust_path)?;
+    let wal = rusqlite::Connection::open(&trust_path)?;
+    wal.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")?;
+    trust.accept(&peer.public_key_bytes(), &initial.to_bytes()?)?;
+    trust.accept(&peer.public_key_bytes(), &revoked.to_bytes()?)?;
     let summary = fixture(source.path(), true)?.write(&archive, PASSWORD)?;
     assert_eq!(summary.messages, 1);
     assert_eq!(summary.attachments, 1);
@@ -75,6 +125,14 @@ fn backup_restores_identity_wal_history_hidden_rooms_and_attachments() -> anyhow
     assert!(!restored.join("device-key.dat").exists());
     let restored_device = crate::device::DeviceKey::load_or_create(&identity, &restored)?;
     assert_ne!(original_device.id(), restored_device.id());
+    let mut restored_trust = DeviceTrustStore::open(&identity, &restored.join(DEVICE_TRUST_FILE))?;
+    assert!(!restored_trust
+        .get(&peer.public_key_bytes())?
+        .ok_or_else(|| invalid("Missing device registry"))?
+        .authorizes(original_device.id()));
+    assert!(restored_trust
+        .accept(&peer.public_key_bytes(), &initial.to_bytes()?)
+        .is_err());
     assert!(Identity::load_with_passphrase(PASSWORD, &restored).is_err());
     let peers = PeerStore::open(&identity, Some(&restored.join("peers.dat")))?;
     assert!(peers.get("friend").is_some_and(|p| p.blocked));

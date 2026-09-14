@@ -753,6 +753,7 @@ impl ConnectionManager {
                 .insert("joiner_public_hint".into(), Value::String(hint));
         }
 
+        msg.source_device = self.device_id;
         if let Ok(canonical) = msg.canonical_bytes() {
             let sig = self.identity.sign(&canonical);
             use base64::Engine;

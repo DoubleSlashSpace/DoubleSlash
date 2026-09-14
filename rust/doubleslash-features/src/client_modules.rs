@@ -77,6 +77,15 @@ impl FeatureModule for CoreChatModule {
 /// via `gate_through_feature` before every send.
 pub struct CoreAudioOpusModule;
 
+/// Device routing uses authenticated signaling; payloads retain their feature's quota.
+pub struct CoreDevicesModule;
+
+impl FeatureModule for CoreDevicesModule {
+    fn descriptor(&self) -> CapabilityDescriptor {
+        wellknown::core_devices_v1()
+    }
+}
+
 impl FeatureModule for CoreAudioOpusModule {
     fn descriptor(&self) -> CapabilityDescriptor {
         wellknown::core_audio_opus()
@@ -288,6 +297,9 @@ pub fn register_client_modules_with_video_codecs(
     ];
     for m in modules {
         registry.register_module(m)?;
+    }
+    if crate::device::DEVICE_ROUTING_READY {
+        registry.register_module(Arc::new(CoreDevicesModule))?;
     }
     Ok(())
 }

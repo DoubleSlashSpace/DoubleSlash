@@ -1577,6 +1577,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             "invite_failed" ->
                 _state.update { it.copy(error = event.string("reason") ?: "invite failed") }
 
+            "device_routing_unsupported" ->
+                _state.update { it.copy(error = "This node needs an update before it can connect multiple devices using one identity.") }
+
             // Carries the canonical peer id (the core resolves the sender's
             // identity key to it), so it matches the ids the peer list uses.
             "presence_updated" -> {

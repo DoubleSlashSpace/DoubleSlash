@@ -253,7 +253,11 @@ impl ConnectionManager {
             let Some(candidate) = preferred.checked_add(offset) else {
                 break;
             };
-            match quic_tls::make_quic_endpoint(self.identity.signing_key(), candidate) {
+            match quic_tls::make_quic_endpoint_with_device(
+                self.identity.signing_key(),
+                candidate,
+                self.device_id,
+            ) {
                 Ok(ep) => {
                     info!(
                         "QUIC endpoint bound on {}",
@@ -348,6 +352,7 @@ impl ConnectionManager {
                     let _ = internal_tx
                         .send(InternalEvent::QuicDisconnected {
                             peer_id: peer_id_owned,
+                            endpoint: None,
                         })
                         .await;
                     return;
@@ -361,6 +366,7 @@ impl ConnectionManager {
                     let _ = internal_tx
                         .send(InternalEvent::QuicDisconnected {
                             peer_id: peer_id_owned,
+                            endpoint: None,
                         })
                         .await;
                     return;
@@ -376,6 +382,20 @@ impl ConnectionManager {
                     Some(quic_tls::peer_id_from_pub_bytes(&pub_bytes))
                 });
             if actual_peer_id.as_deref() != Some(peer_id_owned.as_str()) {
+                let device_certificate = connection
+                    .peer_identity()
+                    .and_then(|id| id.downcast::<Vec<rustls::pki_types::CertificateDer>>().ok())
+                    .and_then(|certs| certs.first().and_then(quic_tls::device_from_cert_der));
+                if device_certificate.is_some() {
+                    connection.close(0u32.into(), b"device identity mismatch");
+                    let _ = internal_tx
+                        .send(InternalEvent::QuicDisconnected {
+                            peer_id: peer_id_owned,
+                            endpoint: None,
+                        })
+                        .await;
+                    return;
+                }
                 warn!(
                     "QUIC peer id mismatch for {addr}: expected {}, got {}; waiting for signed invite handshake",
                     &peer_id_owned[..8.min(peer_id_owned.len())],
@@ -607,8 +627,15 @@ impl ConnectionManager {
             .peers
             .entry(canonical_peer_id.to_owned())
             .or_insert_with(|| PeerConnection::new(canonical_peer_id));
-        entry.state = provisional.state;
-        entry.quic_out_tx = provisional.quic_out_tx.take();
+        for (device, (connection_id, tx)) in std::mem::take(&mut provisional.endpoints) {
+            entry.register_endpoint(
+                super::super::internal::DirectEndpoint {
+                    device,
+                    connection_id,
+                },
+                tx,
+            );
+        }
         entry.connected_at = provisional.connected_at;
 
         if let Some(stats) = self.transport_stats.remove(current_peer_id) {
@@ -658,10 +685,6 @@ impl ConnectionManager {
     /// If the peer has no QUIC connection the frame is silently dropped (UDP
     /// semantics — losing a frame is acceptable for real-time audio).
     pub(super) async fn send_audio_datagram(&self, peer_id: &str, opus_data: Vec<u8>) {
-        let conn = match self.peers.get(peer_id) {
-            Some(c) => c,
-            None => return,
-        };
         // Outbound quota gate (via dedicated helper to make the invariant obvious).
         if !self.check_audio_quota(peer_id, opus_data.len()) {
             debug!(
@@ -672,7 +695,7 @@ impl ConnectionManager {
         }
         // Real QUIC datagrams (not a per-frame uni stream). Same wire layout as
         // before: `[AUDIO_TAG][id_len][peer_id][opus]`.
-        if let Some(ref qtx) = conn.quic_out_tx {
+        if let Some(qtx) = self.direct_media_sender(peer_id) {
             let id_bytes = peer_id.as_bytes();
             let mut frame = Vec::with_capacity(2 + id_bytes.len() + opus_data.len());
             frame.push(AUDIO_CHANNEL_TAG);
@@ -741,7 +764,7 @@ impl ConnectionManager {
         opus: Vec<u8>,
         pts_us: u64,
     ) {
-        let Some(qtx) = self.peers.get(peer_id).and_then(|c| c.quic_out_tx.clone()) else {
+        let Some(qtx) = self.direct_media_sender(peer_id) else {
             return; // No QUIC (or no peer): drop. Content audio never falls back to WS.
         };
 
@@ -819,7 +842,7 @@ impl ConnectionManager {
     ) {
         // Clone the sender handle so the `self.peers` borrow ends before the
         // per-peer sequence counter is advanced below.
-        let Some(qtx) = self.peers.get(peer_id).and_then(|c| c.quic_out_tx.clone()) else {
+        let Some(qtx) = self.direct_media_sender(peer_id) else {
             return; // No QUIC (or no peer): drop. Video never falls back to WS.
         };
 

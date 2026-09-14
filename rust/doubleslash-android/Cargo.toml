@@ -10,6 +10,9 @@ description = "JNI bridge exposing the DoubleSlash client core to the Android ap
 name = "doubleslash_android"
 crate-type = ["cdylib"]
 
+[features]
+device-routing = ["doubleslash-client/device-routing", "doubleslash-features/device-routing"]
+
 [dependencies]
 # The whole client core — transport, crypto, stores, rooms, files. Built
 # without `qt-ui`, which is what keeps Qt out of the Android graph entirely.

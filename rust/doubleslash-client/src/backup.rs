@@ -14,6 +14,7 @@ use zeroize::Zeroizing;
 
 use crate::chat_store::ChatStore;
 use crate::crypto::{aesgcm_decrypt, aesgcm_encrypt, argon2id_kdf, decrypt_blob};
+use crate::device::{DeviceTrustStore, DEVICE_TRUST_FILE};
 use crate::error::{ClientError, Result};
 use crate::identity::Identity;
 use crate::peer_store::PeerStore;
@@ -122,6 +123,12 @@ impl BackupSnapshot {
             "my_rooms.dat".to_owned(),
             "chat_history.db".to_owned(),
         ];
+        let device_trust = source.directory.join(DEVICE_TRUST_FILE);
+        if device_trust.try_exists()? {
+            DeviceTrustStore::read_existing(source.identity, &device_trust)?
+                .backup_snapshot(&directory.path().join(DEVICE_TRUST_FILE))?;
+            names.push(DEVICE_TRUST_FILE.to_owned());
+        }
         for name in ["settings.json", "android-settings.json"] {
             let path = source.directory.join(name);
             if path.exists() || name == "settings.json" {
@@ -328,7 +335,11 @@ fn validate_manifest(manifest: &Manifest) -> Result<()> {
     let mut seen = HashSet::new();
     let mut total = 0u64;
     for entry in &manifest.entries {
+        if entry.name == DEVICE_TRUST_FILE && entry.size > 512 * 1024 * 1024 {
+            return Err(invalid("Device trust database is too large"));
+        }
         if entry.name != "chat_history.db"
+            && entry.name != DEVICE_TRUST_FILE
             && !entry.name.starts_with("attachments/")
             && entry.size > (16 * CHUNK) as u64
         {
@@ -341,6 +352,7 @@ fn validate_manifest(manifest: &Manifest) -> Result<()> {
                 | "chat_history.db"
                 | "settings.json"
                 | "android-settings.json"
+                | DEVICE_TRUST_FILE
         ) || entry.name.strip_prefix("attachments/").is_some_and(|n| {
             !n.is_empty() && n.len() <= 6 && n.bytes().all(|b| b.is_ascii_digit())
         });
@@ -387,8 +399,32 @@ fn read_archive(
     if identity.public_id() != manifest.summary.public_id {
         return Err(invalid("Backup identity does not match its manifest"));
     }
+    // During export verification, retain just the optional trust database so
+    // its actual archived bytes can be validated without duplicating attachments.
+    let trust_copy = if destination.is_none()
+        && manifest
+            .entries
+            .iter()
+            .any(|entry| entry.name == DEVICE_TRUST_FILE)
+    {
+        Some(
+            tempfile::Builder::new()
+                .prefix(".verify-trust-")
+                .tempdir_in(
+                    path.parent()
+                        .ok_or_else(|| invalid("Backup path has no parent"))?,
+                )?,
+        )
+    } else {
+        None
+    };
     for entry in &manifest.entries {
-        let mut output = if let Some(directory) = destination {
+        let extract_to = destination.or_else(|| {
+            (entry.name == DEVICE_TRUST_FILE)
+                .then(|| trust_copy.as_ref().map(TempDir::path))
+                .flatten()
+        });
+        let mut output = if let Some(directory) = extract_to {
             let path = directory.join(&entry.name);
             if entry.name.starts_with("attachments/") {
                 fs::create_dir_all(directory.join("attachments"))?;
@@ -416,6 +452,10 @@ fn read_archive(
         || input.read(&mut [0u8; 1])? != 0
     {
         return Err(invalid("Incomplete backup or unexpected trailing data"));
+    }
+    if let Some(copy) = trust_copy {
+        DeviceTrustStore::read_existing(&identity, &copy.path().join(DEVICE_TRUST_FILE))?
+            .validate_all()?;
     }
     Ok((manifest, identity))
 }
@@ -483,6 +523,10 @@ impl PreparedRestore {
             }
         }
         RoomStore::open(&identity, Some(&directory.path().join("my_rooms.dat")))?;
+        let device_trust = directory.path().join(DEVICE_TRUST_FILE);
+        if device_trust.try_exists()? {
+            DeviceTrustStore::read_existing(&identity, &device_trust)?.validate_all()?;
+        }
         for name in ["settings.json", "android-settings.json"] {
             let path = directory.path().join(name);
             if path.exists() {

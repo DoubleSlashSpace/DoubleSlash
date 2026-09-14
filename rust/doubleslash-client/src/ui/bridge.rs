@@ -2088,6 +2088,24 @@ impl ffi::AppBridge {
             return;
         }
 
+        let device_id = if doubleslash_features::device::DEVICE_ROUTING_READY {
+            match crate::device::DeviceKey::load_or_create(
+                &identity,
+                &crate::identity::Identity::default_key_dir(),
+            ) {
+                Ok(device) => Some(device.id()),
+                Err(error) => {
+                    error!("Cannot open this profile's device key: {error}");
+                    self.as_mut().set_session_banner(QString::from(
+                        "Unable to open this device's identity. Your profile has been preserved.",
+                    ));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+
         self.as_mut()
             .rust_mut()
             .my_peer_id
@@ -2178,10 +2196,11 @@ impl ffi::AppBridge {
         }
 
         let (conn_cmd_tx, conn_event_rx, conn_fut) =
-            crate::connection_manager::ConnectionManager::split_with_registry(
+            crate::connection_manager::ConnectionManager::split_with_registry_and_device(
                 Arc::clone(&identity),
                 Arc::clone(&peer_store),
                 Arc::clone(&feature_registry),
+                device_id,
             );
         let (call_cmd_tx, call_event_rx, call_fut) =
             crate::call_controller::CallController::split(Some(conn_cmd_tx.clone()));
@@ -8254,6 +8273,12 @@ fn dispatch_event(
                     .set_connection_mode(QString::from("offline"));
             });
         }
+        ConnectionEvent::DeviceRoutingUnsupported { .. } => {
+            let _ = qt_thread.queue(|mut bridge| {
+                bridge.as_mut().set_session_banner(QString::from(
+                    "This node needs an update before it can connect multiple devices using one identity."));
+            });
+        }
         ConnectionEvent::ClusterMembersUpdated {
             supernode_id,
             members,
@@ -9103,6 +9128,10 @@ fn dispatch_event(
                 );
                 let display_sender =
                     room_chat_display_sender(bridge.rust(), &sender_handle, &sender_id);
+                let mine = !bridge.rust().my_public_id.is_empty()
+                    && (sender_id.trim_end_matches('=')
+                        == bridge.rust().my_public_id.trim_end_matches('=')
+                        || sender_id == bridge.rust().my_peer_id);
                 let json = serde_json::json!({
                     "msg_id": message_id.clone(),
                     "sender": display_sender.clone(),
@@ -9110,7 +9139,7 @@ fn dispatch_event(
                     "body": body.clone(),
                     "timestamp": timestamp,
                     "kind": "text",
-                    "mine": false,
+                    "mine": mine,
                     "is_room": true,
                     "status": "delivered",
                     "supernode_id": sn.clone(),
@@ -9126,7 +9155,7 @@ fn dispatch_event(
                         recipient: room_id.clone(),
                         body: body.clone(),
                         timestamp,
-                        is_self: false,
+                        is_self: mine,
                         status: crate::chat_store::MessageStatus::Delivered,
                         kind: crate::chat_store::MessageKind::Text,
                         attachment_name: String::new(),
@@ -9161,11 +9190,7 @@ fn dispatch_event(
                         .room_chat_received(QString::from(json.as_str()));
                 }
 
-                // Don't auto-reply to our own room messages (shouldn't appear
-                // here, but sender_id check is the hard gate).
-                let mine = !bridge.rust().my_public_id.is_empty()
-                    && (sender_id == bridge.rust().my_public_id
-                        || sender_id == bridge.rust().my_peer_id);
+                // Messages from our other devices must not trigger auto-replies.
                 if !mine {
                     maybe_start_auto_reply(
                         bridge.as_mut(),

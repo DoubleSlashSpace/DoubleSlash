@@ -94,6 +94,10 @@ impl ConnectionManager {
         &mut self,
         mut msg: SignalingMessage,
     ) -> bool {
+        msg.source_device = self.device_id;
+        if !self.prepare_device_call(&mut msg) {
+            return false;
+        }
         let chat_attempt = if msg.msg_type == MessageType::ChatMessage {
             msg.target.clone().and_then(|peer_id| {
                 msg.payload
@@ -148,6 +152,7 @@ impl ConnectionManager {
         // before signing/sending.  This is symmetric with the inbound quota
         // enforcement in QuotaRegistry::try_consume that applies to inbound
         // messages dispatched via FeatureRegistry::dispatch_message.
+        let mut outbound_feature = None;
         if let Some(ref target) = msg.target.clone() {
             let feature_gate = match msg.msg_type {
                 // core.chat.v1 covers text chat and related control messages.
@@ -169,8 +174,13 @@ impl ConnectionManager {
                 | MessageType::SfuFileComplete => Some("room.file.v1"),
                 // room.chat.v1 covers SFU room text chat broadcast.
                 MessageType::SfuChat => Some("room.chat.v1"),
+                MessageType::CallRequest
+                | MessageType::CallAccept
+                | MessageType::CallReject
+                | MessageType::CallEnd => Some("core.audio.opus"),
                 _ => None,
             };
+            outbound_feature = feature_gate;
             if let Some(fid) = feature_gate {
                 // Estimate outbound byte cost from the payload values so we
                 // don't have to re-serialize the whole message.  A floor of
@@ -245,32 +255,75 @@ impl ConnectionManager {
             .unwrap_or_else(|| json.clone());
 
         // Route: QUIC direct > relay WS > supernode WS fallback
+        let mut direct_delivered = false;
         if let Some(target) = &msg.target.clone() {
             // Clone the sender so we don't hold a borrow of `self.peers`
             // while emitting a failure event on `self.event_tx` below.
-            let quic_out_tx = self.peers.get(target).and_then(|peer| {
-                if peer.state == PeerConnectionState::Connected {
-                    peer.quic_out_tx.clone()
-                } else {
-                    None
-                }
-            });
-            if let Some(out_tx) = quic_out_tx {
+            let direct_target = self.canonical_peer_id_for_sender(target);
+            let quic_out_txs: Vec<_> = self
+                .peers
+                .get(&direct_target)
+                .map(|peer| {
+                    if peer.state == PeerConnectionState::Connected {
+                        peer.endpoints
+                            .iter()
+                            .filter(|(device, _)| {
+                                msg.target_device.is_none() || **device == msg.target_device
+                            })
+                            .map(|(_, (_, tx))| tx.clone())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                })
+                .unwrap_or_default();
+            if !quic_out_txs.is_empty() {
                 // Every peer-stream frame is tagged: chat/file dedicated
                 // tags, control for all other signaling.
                 let tag = Self::channel_tag_for(msg_type.clone());
                 let bytes = channel_frame::encode_frame(tag, json.as_bytes());
-                if out_tx.try_send(PeerOutbound::Reliable(bytes)).is_ok() {
-                    return true;
+                let mut delivered = false;
+                for (index, out_tx) in quic_out_txs.into_iter().enumerate() {
+                    if index > 0
+                        && outbound_feature.is_some_and(|feature| {
+                            !self.feature_registry.gate_through_feature(
+                                feature,
+                                target,
+                                bytes.len().max(64),
+                            )
+                        })
+                    {
+                        break;
+                    }
+                    delivered |= out_tx
+                        .try_send(PeerOutbound::Reliable(bytes.clone()))
+                        .is_ok();
                 }
-                if Self::is_ordered_file_payload(&msg_type) {
+                if delivered {
+                    // A contact's phone may have only a relay route while its
+                    // desktop is directly connected. Preserve opaque fan-out
+                    // for identity-wide control/chat; exact targets and ordered
+                    // file payloads remain on their selected transport.
+                    let relay_siblings = self.device_id.is_some()
+                        && msg.target_device.is_none()
+                        && !Self::is_ordered_file_payload(&msg_type)
+                        && (relay_json != json || msg_type == MessageType::EncryptedSignal)
+                        && self.supernodes.values().any(|sn| sn.connected);
+                    if !relay_siblings {
+                        return true;
+                    }
+                    direct_delivered = true;
+                }
+                if !delivered && Self::is_ordered_file_payload(&msg_type) {
                     // Backpressure the pump instead of splitting the transfer
                     // across QUIC and the supernode WS fallback.
                     return false;
                 }
                 // Full or closing QUIC channel: fall back to supernode relay
                 // when available so chat / call / file are not stranded.
-                if self.supernodes.values().any(|sn| sn.connected) {
+                if delivered {
+                    debug!("Delivering opaque signaling to remaining device routes");
+                } else if self.supernodes.values().any(|sn| sn.connected) {
                     debug!(
                         "QUIC signaling channel busy for {:?}; falling back to supernode relay",
                         msg_type
@@ -375,10 +428,21 @@ impl ConnectionManager {
             .is_some();
         let peer_relay_fanout = should_fanout_peer_relay(msg.target.is_some(), target_is_supernode);
         if peer_relay_fanout {
-            let mut delivered_any = false;
+            let mut delivered_any = direct_delivered;
             let mut fanout_drops = 0u32;
             for sn in self.supernodes.values() {
                 if sn.connected {
+                    if delivered_any
+                        && outbound_feature.is_some_and(|feature| {
+                            !self.feature_registry.gate_through_feature(
+                                feature,
+                                msg.target.as_deref().unwrap_or_default(),
+                                relay_json.len().max(64),
+                            )
+                        })
+                    {
+                        break;
+                    }
                     if sn
                         .send_tx
                         .try_send(WsMessage::Text(relay_json.clone()))
@@ -469,6 +533,8 @@ impl ConnectionManager {
             SignalingMessage::new(MessageType::EncryptedSignal, self.identity.public_id());
         // Route by the same target the plaintext message would have used.
         env.target = inner.target.clone();
+        env.source_device = self.device_id;
+        env.target_device = inner.target_device;
         env.payload
             .insert("ciphertext".to_owned(), Value::String(ciphertext_b64));
         let canonical = env.canonical_bytes().ok()?;
@@ -482,6 +548,7 @@ impl ConnectionManager {
     /// serialized JSON, mirroring the signing step in [`Self::dispatch_outbound`].
     /// Returns `None` if canonicalization or serialization fails.
     pub(super) fn sign_message_json(&self, msg: &mut SignalingMessage) -> Option<String> {
+        msg.source_device = self.device_id;
         let canonical = msg.canonical_bytes().ok()?;
         let sig = self.identity.sign(&canonical);
         use base64::Engine;

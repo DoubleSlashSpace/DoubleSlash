@@ -23,6 +23,12 @@ pub struct DeviceId(pub [u8; 32]);
 /// Live device routes per identity; historical registry tombstones are separate.
 pub const MAX_LIVE_DEVICE_ROUTES: usize = 8;
 
+/// Release gate shared by clients and relays while endpoint-aware room keys,
+/// direct sessions and call arbitration are being integrated.
+pub const DEVICE_ROUTING_READY: bool = cfg!(feature = "device-routing");
+
+pub const DEVICE_WEBSOCKET_PROTOCOL: &str = "doubleslash.devices.v1";
+
 #[derive(Debug, thiserror::Error)]
 #[error("identity has reached its live device route limit")]
 pub struct DeviceRouteLimit;
@@ -72,6 +78,29 @@ impl<T> DeviceRoutes<T> {
 
     pub fn get_endpoint(&self, identity: &str, device: Option<DeviceId>) -> Option<&T> {
         self.identities.get(&identity_key(identity))?.get(&device)
+    }
+
+    pub fn get_mut(&mut self, identity: &str) -> Option<&mut T> {
+        self.get_endpoint_mut(identity, None)
+    }
+
+    pub fn get_endpoint_mut(&mut self, identity: &str, device: Option<DeviceId>) -> Option<&mut T> {
+        self.identities
+            .get_mut(&identity_key(identity))?
+            .get_mut(&device)
+    }
+
+    /// Total live endpoints, including legacy slots, for transport capacity.
+    pub fn len(&self) -> usize {
+        self.identities.values().map(BTreeMap::len).sum()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, Option<DeviceId>, &T)> {
+        self.identities.iter().flat_map(|(identity, routes)| {
+            routes
+                .iter()
+                .map(move |(device, value)| (identity, *device, value))
+        })
     }
 
     /// Only remove the caller's connection, even if a reconnect replaced it

@@ -7,6 +7,8 @@
 //! - [`peer_session`] — direct QUIC, aliases, reconnect, direct audio
 //! - [`invite`] — peer + room invite URLs and handshake
 
+mod device_calls;
+mod device_session;
 mod inbound;
 mod invite;
 mod peer_session;
@@ -131,6 +133,10 @@ pub use invite::ROOM_INVITE_TTL_SECS;
 
 pub struct ConnectionManager {
     identity: Arc<Identity>,
+    device_id: Option<doubleslash_features::DeviceId>,
+    room_device_rosters: HashMap<String, Vec<device_session::RoomEndpoint>>,
+    own_room_key_rounds: HashMap<String, device_session::OwnKeyRound>,
+    device_calls: HashMap<String, device_calls::DeviceCall>,
     peer_store: Arc<RwLock<PeerStore>>,
 
     event_tx: mpsc::Sender<ConnectionEvent>,
@@ -389,6 +395,20 @@ impl ConnectionManager {
         mpsc::Receiver<ConnectionEvent>,
         impl std::future::Future<Output = ()> + Send,
     ) {
+        Self::split_with_device(identity, peer_store, None)
+    }
+
+    /// Root-authorized endpoint session. The device identifier must come from
+    /// this profile's persistent DeviceKey, never from a copied backup.
+    pub fn split_with_device(
+        identity: Arc<Identity>,
+        peer_store: Arc<RwLock<PeerStore>>,
+        device_id: Option<doubleslash_features::DeviceId>,
+    ) -> (
+        mpsc::Sender<ConnectionCommand>,
+        mpsc::Receiver<ConnectionEvent>,
+        impl std::future::Future<Output = ()> + Send,
+    ) {
         // Build the feature registry and bind the three first-party
         // client modules. `register_client_modules` registers them as
         // advertisement-only — message hooks are wired separately by
@@ -403,8 +423,12 @@ impl ConnectionManager {
         {
             error!("failed to seed feature registry: {e}");
         }
-        let (cmd_tx, event_rx, fut) =
-            Self::split_with_registry(identity, peer_store, Arc::clone(&feature_registry));
+        let (cmd_tx, event_rx, fut) = Self::split_with_registry_and_device(
+            identity,
+            peer_store,
+            Arc::clone(&feature_registry),
+            device_id,
+        );
         // Drop the registry handle here — the manager owns its own clone.
         drop(feature_registry);
         (cmd_tx, event_rx, fut)
@@ -424,7 +448,21 @@ impl ConnectionManager {
         mpsc::Receiver<ConnectionEvent>,
         impl std::future::Future<Output = ()> + Send,
     ) {
-        let (cmd_tx, event_rx, mgr) = Self::construct(identity, peer_store, feature_registry);
+        Self::split_with_registry_and_device(identity, peer_store, feature_registry, None)
+    }
+
+    pub fn split_with_registry_and_device(
+        identity: Arc<Identity>,
+        peer_store: Arc<RwLock<PeerStore>>,
+        feature_registry: Arc<FeatureRegistry>,
+        device_id: Option<doubleslash_features::DeviceId>,
+    ) -> (
+        mpsc::Sender<ConnectionCommand>,
+        mpsc::Receiver<ConnectionEvent>,
+        impl std::future::Future<Output = ()> + Send,
+    ) {
+        let (cmd_tx, event_rx, mut mgr) = Self::construct(identity, peer_store, feature_registry);
+        mgr.device_id = device_id;
         (cmd_tx, event_rx, mgr.run_inner())
     }
 
@@ -451,6 +489,10 @@ impl ConnectionManager {
             mpsc::unbounded_channel::<RelayContentAudioInbound>();
 
         let mgr = Self {
+            device_id: None,
+            room_device_rosters: HashMap::new(),
+            own_room_key_rounds: HashMap::new(),
+            device_calls: HashMap::new(),
             identity,
             peer_store,
             event_tx,
@@ -592,8 +634,9 @@ impl ConnectionManager {
             PeerConnection {
                 peer_id: peer_id.to_owned(),
                 state: PeerConnectionState::Connected,
-                quic_out_tx: Some(out_tx),
+                quic_out_tx: Some(out_tx.clone()),
                 connected_at: Some(std::time::Instant::now()),
+                endpoints: [(None, (0, out_tx))].into_iter().collect(),
             },
         );
         out_rx
@@ -1043,6 +1086,7 @@ impl ConnectionManager {
                                 self.pending_group_key_acks
                                     .retain(|(r, _), _| r != &room_id);
                                 self.room_group_members.remove(&room_key);
+                                self.forget_room_device_scope(&supernode_id, &room_id);
                             }
                             self.send_room_leave(&supernode_id, &room_id).await;
                             // SfuLeave drops voice participation only; text chat
@@ -1076,6 +1120,7 @@ impl ConnectionManager {
                                 self.pending_group_key_acks
                                     .retain(|(r, _), _| r != &room_id);
                                 self.room_group_members.remove(&room_key);
+                                self.forget_room_device_scope(&supernode_id, &room_id);
                             }
                             self.send_room_unsubscribe(&supernode_id, &room_id).await;
                         }
@@ -1175,6 +1220,7 @@ impl ConnectionManager {
                             if let Some(conn) = self.peers.get_mut(&peer_id) {
                                 conn.state = PeerConnectionState::Disconnected;
                                 conn.quic_out_tx = None;
+                                conn.endpoints.clear();
                             }
                             info!("Peer {} blocked", &peer_id[..8.min(peer_id.len())]);
                         }
@@ -1456,6 +1502,9 @@ impl ConnectionManager {
                 }
                 _ = group_key_retry.tick() => {
                     self.retry_pending_group_keys().await;
+                    self.retry_own_room_key_sync().await;
+                    self.expire_device_calls();
+                    self.retry_device_call_selections().await;
                 }
                 _ = peer_reconnect_interval.tick() => {
                     self.tick_peer_reconnects().await;
@@ -1622,6 +1671,7 @@ impl ConnectionManager {
         // Spawn a dedicated task for this supernode connection
         let ws_task = tokio::spawn(supernode_ws_task(
             identity,
+            self.device_id,
             peer_id_clone,
             candidates,
             send_rx,
@@ -1653,6 +1703,7 @@ impl ConnectionManager {
         }
         let prefix = format!("{supernode_id}:");
         self.chat_active_rooms.retain(|k| !k.starts_with(&prefix));
+        self.forget_host_device_rosters(supernode_id);
         if let Some(sn) = self.supernodes.remove(supernode_id) {
             sn.ws_task.abort();
             let _ = sn.send_tx.try_send(WsMessage::Close(None));
@@ -1698,13 +1749,21 @@ impl ConnectionManager {
     pub(super) async fn handle_internal_event(&mut self, event: InternalEvent) {
         match event {
             // ── QUIC events ──────────────────────────────────────────────────────────────
-            InternalEvent::QuicConnected { peer_id, out_tx } => {
+            InternalEvent::QuicConnected {
+                peer_id,
+                endpoint,
+                out_tx,
+            } => {
+                if endpoint.device.is_some() && self.device_id.is_none() {
+                    return;
+                }
                 let entry = self
                     .peers
                     .entry(peer_id.clone())
                     .or_insert_with(|| PeerConnection::new(&peer_id));
-                entry.state = PeerConnectionState::Connected;
-                entry.quic_out_tx = Some(out_tx);
+                if !entry.register_endpoint(endpoint, out_tx) {
+                    return;
+                }
                 entry.connected_at = Some(Instant::now());
                 // Successful session clears reconnect backoff.
                 self.cancel_peer_reconnect(&peer_id);
@@ -1723,10 +1782,12 @@ impl ConnectionManager {
                 self.send_local_avatar_config(&peer_id).await;
                 // Direct path recovered — a pending private-room call fallback
                 // (or an armed grace-period check) for this peer is moot.
-                if self.direct_fallback.is_pending_for(&peer_id) {
-                    self.direct_fallback.cancel();
+                if self.device_id.is_none() || self.direct_media_sender(&peer_id).is_some() {
+                    if self.direct_fallback.is_pending_for(&peer_id) {
+                        self.direct_fallback.cancel();
+                    }
+                    self.pending_call_fallback_checks.remove(&peer_id);
                 }
-                self.pending_call_fallback_checks.remove(&peer_id);
                 self.emit_peer_session_state(&peer_id);
             }
             InternalEvent::QuicStats {
@@ -1748,8 +1809,31 @@ impl ConnectionManager {
                 );
                 self.emit_peer_session_state(&peer_id);
             }
-            InternalEvent::QuicDisconnected { peer_id } => {
+            InternalEvent::QuicDisconnected { peer_id, endpoint } => {
                 let canonical_peer_id = self.resolve_quic_peer_alias(&peer_id);
+                if let Some(conn) = self.peers.get_mut(&canonical_peer_id) {
+                    if let Some(endpoint) = endpoint {
+                        if !conn.remove_endpoint(endpoint) {
+                            return;
+                        }
+                        let siblings_remain = !conn.endpoints.is_empty();
+                        if self.device_id.is_some()
+                            && self.device_call_accepts_media(&canonical_peer_id, endpoint.device)
+                        {
+                            self.pending_call_fallback_checks.insert(
+                                canonical_peer_id.clone(),
+                                Instant::now() + Duration::from_secs(DIRECT_CALL_FALLBACK_GRACE_S),
+                            );
+                        }
+                        if siblings_remain {
+                            return;
+                        }
+                    } else if !conn.endpoints.is_empty() {
+                        return;
+                    }
+                } else {
+                    return;
+                }
                 self.quic_peer_aliases.remove(&peer_id);
                 self.transport_stats.remove(&canonical_peer_id);
                 if let Some(conn) = self.peers.get_mut(&peer_id) {
@@ -1787,11 +1871,30 @@ impl ConnectionManager {
                 }
                 self.emit_peer_session_state(&canonical_peer_id);
             }
-            InternalEvent::QuicSignalingData { peer_id, data } => {
+            InternalEvent::QuicSignalingData {
+                peer_id,
+                endpoint,
+                data,
+            } => {
                 let canonical_peer_id = self.resolve_quic_peer_alias(&peer_id);
+                if !self
+                    .peers
+                    .get(&canonical_peer_id)
+                    .is_some_and(|peer| peer.has_endpoint(endpoint))
+                {
+                    return;
+                }
                 // The QUIC peer stream multiplexes channels via a 1-byte
                 // leading tag. Untagged frames are rejected.
-                match channel_frame::classify(&data) {
+                let frame = channel_frame::classify(&data);
+                if matches!(
+                    &frame,
+                    Some(FrameClass::Audio(_) | FrameClass::Video(_) | FrameClass::ContentAudio(_))
+                ) && !self.device_call_accepts_media(&canonical_peer_id, endpoint.device)
+                {
+                    return;
+                }
+                match frame {
                     // Direct peer audio: `[AUDIO_TAG][id_len][peer_id][opus]`.
                     Some(FrameClass::Audio(rest)) if rest.len() > 1 => {
                         let id_len = rest[0] as usize;
@@ -1862,6 +1965,18 @@ impl ConnectionManager {
                     ) => {
                         if let Ok(text) = std::str::from_utf8(body) {
                             if let Ok(msg) = SignalingMessage::from_json(text) {
+                                if msg.source_device != endpoint.device {
+                                    return;
+                                }
+                                if endpoint.device.is_some()
+                                    && crate::crypto::b64url_decode(&msg.sender)
+                                        .ok()
+                                        .map(|key| crate::quic_tls::peer_id_from_pub_bytes(&key))
+                                        .as_deref()
+                                        != Some(canonical_peer_id.as_str())
+                                {
+                                    return;
+                                }
                                 self.handle_inbound_from_quic(peer_id.clone(), msg).await;
                             } else {
                                 debug!("Non-JSON QUIC signaling data from {peer_id}");
@@ -1929,7 +2044,11 @@ impl ConnectionManager {
                     self.emit_room_invite_ready(&peer_id, &entry);
                 }
             }
+            InternalEvent::DeviceRoutingUnsupported { peer_id } => {
+                self.emit_event(ConnectionEvent::DeviceRoutingUnsupported { peer_id });
+            }
             InternalEvent::WsDisconnected { peer_id } => {
+                self.forget_host_device_rosters(&peer_id);
                 if let Some(sn) = self.supernodes.get_mut(&peer_id) {
                     sn.connected = false;
                 }
@@ -2636,6 +2755,7 @@ impl ConnectionManager {
 
         let sender = self.identity.public_id();
         let mut ping_msg = SignalingMessage::new(MessageType::Ping, sender.clone());
+        ping_msg.source_device = self.device_id;
         // Sign the Ping — the supernode rejects unsigned messages.
         if let Ok(canonical) = ping_msg.canonical_bytes() {
             let sig = self.identity.sign(&canonical);

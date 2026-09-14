@@ -15,6 +15,8 @@ pub enum ConnectionEvent {
     PeerConnected(String),
     /// A peer's session ended.
     PeerDisconnected(String),
+    /// The node does not negotiate device routing; no identity was registered.
+    DeviceRoutingUnsupported { peer_id: String },
     /// An inbound signaling message for the app layer to handle.
     SignalingMessage(SignalingMessage),
     /// A text chat message arrived.

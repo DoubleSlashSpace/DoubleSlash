@@ -48,7 +48,9 @@ graph TD
 
         subgraph ID_LAYER["Identity & Crypto"]
             ID_C[identity.rs — Ed25519 keypair]
-            DEVICE_C["device.rs — device keys / signed registry<br/>foundation; no network integration yet"]
+            DEVICE_C["device.rs — device keys / signed registry<br/>endpoint startup behind disabled release gate"]
+            DEVICE_SESSION["manager/device_session.rs<br/>encrypted own-device room-key handoff"]
+            DEVICE_CALLS["manager/device_calls.rs<br/>one answering endpoint / direct media selection"]
             CRYPTO_C[crypto.rs — HKDF / AES-GCM]
             HS_C[handshake.rs]
             TLS_C[quic_tls.rs — self-signed cert]
@@ -56,6 +58,7 @@ graph TD
 
         subgraph STORE["Persistence"]
             PS_C[peer_store — trust graph]
+            DEVICE_STORE["device/store.rs — encrypted device registries<br/>transactional versions / revocations"]
             CS[chat_store — SQLite]
             RS[room_store — my_rooms.dat AES-GCM]
             SET[settings.json]
@@ -100,6 +103,7 @@ system or per-application"]
 
     subgraph FEATURES["doubleslash-features  (Shared Library)"]
         REG[FeatureRegistry]
+        DEVICE_ROUTES["device.rs — DeviceId / bounded endpoint routes<br/>device-routing preview / core.devices.v1"]
         DESC[CapabilityDescriptor]
         QUOTA[QuotaSystem — token buckets]
         CF[ChannelFraming — 1-byte tag]
@@ -111,6 +115,19 @@ room.audio.content.sfu
 web.host.app.v1 / game.relay.v1"]
         VCODEC_NEG[video_codec — frozen wire bytes + negotiate]
     end
+
+    DEVICE_C --> DEVICE_ROUTES
+    DEVICE_C --> DEVICE_STORE
+    CM --> DEVICE_SESSION
+    CM --> DEVICE_CALLS
+    DEVICE_CALLS --> REG
+    DEVICE_SESSION --> CRYPTO_C
+    DEVICE_SESSION --> REG
+    QUIC --> DEVICE_ROUTES
+    REL_S --> DEVICE_ROUTES
+    SFU_S --> DEVICE_ROUTES
+    BACKUP --> DEVICE_STORE
+    SIG --> DEVICE_ROUTES
 
     subgraph OPUS_LIB["doubleslash-opus  (Audio Codec)"]
         ENC[OpusEncoder — 48kHz / 128kbps]

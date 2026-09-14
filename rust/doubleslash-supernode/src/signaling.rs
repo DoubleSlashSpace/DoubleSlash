@@ -10,7 +10,7 @@ use futures_util::{SinkExt, StreamExt};
 use parking_lot::RwLock;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::{accept_hdr_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
 use crate::crypto::{b64url_decode, derive_peer_id, normalize_public_id};
@@ -271,6 +271,9 @@ pub struct SignalingState {
     /// Weak entries retain reconnect accounting while old writers still drain,
     /// without retaining departed identities indefinitely.
     queue_budgets: HashMap<String, Weak<AtomicUsize>>,
+    /// Switch only when relay indices and room delivery can use device routes.
+    /// Production remains legacy-only until that coordinated integration lands.
+    device_routing_ready: bool,
 }
 
 impl SignalingState {
@@ -281,6 +284,7 @@ impl SignalingState {
             quic_senders: DeviceRoutes::default(),
             connected_count: 0,
             queue_budgets: HashMap::new(),
+            device_routing_ready: doubleslash_features::device::DEVICE_ROUTING_READY,
         }
     }
 
@@ -323,8 +327,10 @@ impl SignalingState {
     /// that resolves to nothing, so the two are removed together.
     pub fn remove_peer_socket(&mut self, key: &str) {
         self.peer_sockets.remove(key);
-        if !self.peer_sockets.contains_key(key) {
-            self.peer_id_aliases.retain(|_, canonical| canonical != key);
+        if !self.peer_sockets.contains_key(key) && !self.quic_senders.contains_key(key) {
+            let identity = normalize_public_id(key);
+            self.peer_id_aliases
+                .retain(|_, canonical| normalize_public_id(canonical) != identity);
         }
     }
 
@@ -353,23 +359,35 @@ impl SignalingState {
                 })
                 .collect(),
         };
+        let mut delivered = false;
+        for endpoint in endpoints {
+            delivered |= self.send_to_endpoint(target, endpoint, json, prefer_ws);
+        }
+        delivered
+    }
+
+    /// `None` means the legacy endpoint here, never all devices.
+    fn send_to_endpoint(
+        &self,
+        target: &str,
+        device: Option<DeviceId>,
+        json: &str,
+        prefer_ws: bool,
+    ) -> bool {
+        let mut keys = identity_key_variants(target);
+        if let Some(alias) = self.peer_id_aliases.get(target) {
+            keys.extend(identity_key_variants(alias));
+        }
         let paths = if prefer_ws {
             [&self.peer_sockets, &self.quic_senders]
         } else {
             [&self.quic_senders, &self.peer_sockets]
         };
-        let mut delivered = false;
-        for endpoint in endpoints {
-            // Try all padding spellings on the preferred transport before its
-            // fallback. A stale QUIC slot must not mask a restarted WS stream.
-            let sent = paths.iter().any(|routes| {
-                keys.iter()
-                    .filter_map(|key| routes.get_endpoint(key, endpoint))
-                    .any(|sender| sender.send(json))
-            });
-            delivered |= sent;
-        }
-        delivered
+        paths.iter().any(|routes| {
+            keys.iter()
+                .filter_map(|key| routes.get_endpoint(key, device))
+                .any(|sender| sender.send(json))
+        })
     }
 }
 
@@ -396,6 +414,9 @@ pub trait SignalingHandler: Send + Sync + 'static {
 
     /// Called when a peer disconnects.
     fn on_peer_disconnected(&self, identity_pub: &str);
+
+    /// An endpoint left while sibling devices may still be present.
+    fn on_endpoint_disconnected(&self, _identity_pub: &str, _device: Option<DeviceId>) {}
 }
 
 /// The WebSocket signaling server.
@@ -452,21 +473,62 @@ impl SignalingServer {
             .send_to_target(identity_pub, None, json, true)
     }
 
+    pub fn send_to_endpoint(
+        &self,
+        identity_pub: &str,
+        device: Option<DeviceId>,
+        json: &str,
+    ) -> bool {
+        self.state
+            .read()
+            .send_to_endpoint(identity_pub, device, json, false)
+    }
+
     /// Register a peer's reliable QUIC relay signaling-stream sender. Called
     /// by the relay signaling hook when a peer opens its signaling stream.
-    pub fn register_quic_sender(&self, identity_pub: &str, tx: PeerTx) {
+    pub fn register_quic_sender(
+        &self,
+        identity_pub: &str,
+        device: Option<DeviceId>,
+        tx: PeerTx,
+    ) -> bool {
         let mut state = self.state.write();
+        if device.is_some() && !state.device_routing_ready {
+            return false;
+        }
         state.bind_queue_budget(identity_pub, &tx);
-        state.quic_senders.insert(identity_pub.to_string(), tx);
+        let replaced = if let Some(device) = device {
+            match state
+                .quic_senders
+                .register_device(identity_pub.to_owned(), device, tx)
+            {
+                Ok(replaced) => replaced,
+                Err(_) => return false,
+            }
+        } else {
+            state.quic_senders.insert(identity_pub.to_string(), tx)
+        };
+        if let Some(old) = replaced {
+            old.closed.store(true, Ordering::Release);
+            old.overflow.notify_one();
+        }
+        true
     }
 
     /// Remove a peer's QUIC signaling sender, but only if it is still the
     /// `tx` registered (guards against tearing down a newer stream after a
     /// reconnect replaced this one).
-    pub fn unregister_quic_sender(&self, identity_pub: &str, tx: &PeerTx) {
+    pub fn unregister_quic_sender(
+        &self,
+        identity_pub: &str,
+        device: Option<DeviceId>,
+        tx: &PeerTx,
+    ) -> bool {
         let mut st = self.state.write();
-        st.quic_senders
-            .remove_endpoint_if(identity_pub, None, |stored| stored.same_channel(tx));
+        let removed = st
+            .quic_senders
+            .remove_endpoint_if(identity_pub, device, |stored| stored.same_channel(tx));
+        removed && st.peer_sockets.get_endpoint(identity_pub, device).is_none()
     }
 
     /// Parse, verify (Ed25519 signature + 5-minute freshness), and run the
@@ -476,7 +538,11 @@ impl SignalingServer {
     /// signaling stream so it enforces exactly the same checks as the WS path
     /// (and shares the replay guard, so a frame replayed across transports is
     /// still caught). `SfuAudio` is never expected here (it rides datagrams).
-    pub fn accept_signed(&self, raw: &str) -> Option<SignalingMessage> {
+    pub fn accept_signed(
+        &self,
+        raw: &str,
+        endpoint: Option<(&str, Option<DeviceId>)>,
+    ) -> Option<SignalingMessage> {
         if raw.len() > 262_144 {
             warn!(
                 "Oversized relay signaling frame ({} bytes) — dropping",
@@ -496,7 +562,17 @@ impl SignalingServer {
         // Device authentication, relay indices and room membership must switch
         // together. Until negotiated registration is wired, never interpret a
         // device-addressed frame as legacy identity-wide traffic.
-        if parsed.source_device.is_some() || parsed.target_device.is_some() {
+        if endpoint.is_some_and(|(identity, device)| {
+            normalize_public_id(identity) != normalize_public_id(&parsed.sender)
+                || device != parsed.source_device
+        }) {
+            return None;
+        }
+        if (parsed.source_device.is_some() || parsed.target_device.is_some())
+            && (!self.state.read().device_routing_ready
+                || endpoint.is_none()
+                || parsed.source_device.is_none())
+        {
             warn!("Device-addressed signaling requires negotiated device routing");
             return None;
         }
@@ -586,6 +662,35 @@ impl SignalingServer {
 }
 
 /// Handle a single WebSocket connection.
+struct DeviceProtocolNegotiation {
+    ready: bool,
+}
+
+impl tokio_tungstenite::tungstenite::handshake::server::Callback for DeviceProtocolNegotiation {
+    fn on_request(
+        self,
+        request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+        mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
+    ) -> Result<
+        tokio_tungstenite::tungstenite::handshake::server::Response,
+        tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
+    > {
+        let protocol = doubleslash_features::device::DEVICE_WEBSOCKET_PROTOCOL;
+        let requested = request
+            .headers()
+            .get("Sec-WebSocket-Protocol")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.split(',').any(|entry| entry.trim() == protocol));
+        if requested && self.ready {
+            response.headers_mut().insert(
+                "Sec-WebSocket-Protocol",
+                tokio_tungstenite::tungstenite::http::HeaderValue::from_static(protocol),
+            );
+        }
+        Ok(response)
+    }
+}
+
 async fn handle_ws_connection(
     stream: TcpStream,
     addr: SocketAddr,
@@ -595,7 +700,10 @@ async fn handle_ws_connection(
     replay_guard: Arc<ReplayGuard>,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) -> anyhow::Result<()> {
-    let ws = accept_async(stream).await?;
+    let negotiation = DeviceProtocolNegotiation {
+        ready: state.read().device_routing_ready,
+    };
+    let ws = accept_hdr_async(stream, negotiation).await?;
     let (mut ws_tx, mut ws_rx) = ws.split();
 
     let (tx, mut rx) = peer_channel();
@@ -632,6 +740,7 @@ async fn handle_ws_connection(
     });
 
     let mut peer_id: Option<String> = None;
+    let mut peer_device: Option<DeviceId> = None;
 
     // Per-connection rate limiter: max 60 signaling messages per 10 seconds.
     const RATE_MAX: u32 = 60;
@@ -738,8 +847,32 @@ async fn handle_ws_connection(
             warn!("WebSocket sender changed after authentication; closing connection");
             break;
         }
-        if parsed.source_device.is_some() || parsed.target_device.is_some() {
-            warn!("Device-addressed signaling requires negotiated device routing");
+        if peer_id.is_some() {
+            if parsed.source_device != peer_device {
+                warn!("WebSocket device changed after authentication; closing connection");
+                break;
+            }
+        } else if parsed.source_device.is_some() {
+            // The root signature above authorizes this endpoint identifier for
+            // this connection. A device-only companion still needs delegated
+            // authentication; it cannot register by merely claiming a root id.
+            if !state.read().device_routing_ready
+                || parsed.msg_type != MessageType::Hello
+                || parsed
+                    .payload
+                    .get("device_routing")
+                    .and_then(serde_json::Value::as_u64)
+                    != Some(1)
+                || parsed.target_device.is_some()
+            {
+                warn!("Device-addressed signaling requires negotiated device routing");
+                break;
+            }
+        }
+        if parsed.target_device.is_some()
+            && (parsed.source_device.is_none() || !state.read().device_routing_ready)
+        {
+            warn!("Device target requires a device-authenticated connection");
             break;
         }
 
@@ -780,16 +913,36 @@ async fn handle_ws_connection(
 
         // Register peer socket on first message
         if peer_id.is_none() {
-            peer_id = Some(parsed.sender.clone());
             let mut st = state.write();
+            let already_present = st.peer_sockets.contains_key(&parsed.sender);
             st.bind_queue_budget(&parsed.sender, &tx);
-            let replaced = st.peer_sockets.insert(parsed.sender.clone(), tx.clone());
+            let replaced = if let Some(device) = parsed.source_device {
+                match st
+                    .peer_sockets
+                    .register_device(parsed.sender.clone(), device, tx.clone())
+                {
+                    Ok(replaced) => replaced,
+                    Err(_) => {
+                        warn!("Identity reached its live signaling device limit");
+                        break;
+                    }
+                }
+            } else {
+                st.peer_sockets.insert(parsed.sender.clone(), tx.clone())
+            };
+            peer_id = Some(parsed.sender.clone());
+            peer_device = parsed.source_device;
             if let Some(alias) = peer_id_alias_for(&parsed.sender) {
                 st.peer_id_aliases.insert(alias, parsed.sender.clone());
             }
-            if replaced.is_none() {
+            if !already_present {
                 st.connected_count += 1;
-            } else {
+            }
+            if let Some(old) = replaced {
+                // End the replaced writer now. Its cleanup must not remove the
+                // replacement or any sibling endpoint.
+                old.closed.store(true, Ordering::Release);
+                old.overflow.notify_one();
                 debug!(
                     "Peer {} reconnected from {} — replacing previous socket",
                     &parsed.sender[..12.min(parsed.sender.len())],
@@ -809,7 +962,9 @@ async fn handle_ws_connection(
         if let Some(ref target) = parsed.target {
             if target != our_id {
                 let st = state.read();
-                if let Some(target_tx) = st.socket_for_target(target) {
+                if st.device_routing_ready {
+                    st.send_to_target(target, parsed.target_device, &msg, true);
+                } else if let Some(target_tx) = st.socket_for_target(target) {
                     if target_tx.send(&msg) {
                         debug!(
                             "Relayed {:?} from {} → {}",
@@ -844,28 +999,23 @@ async fn handle_ws_connection(
     // Cleanup — only remove socket if it's still ours (not replaced by a newer connection)
     if let Some(ref pid) = peer_id {
         let mut st = state.write();
-        let is_ours = st
+        let removed = st
             .peer_sockets
-            .get(pid)
-            .is_some_and(|stored| stored.same_channel(&tx));
-        if is_ours {
+            .remove_endpoint_if(pid, peer_device, |stored| stored.same_channel(&tx));
+        let endpoint_gone = removed && st.quic_senders.get_endpoint(pid, peer_device).is_none();
+        let identity_gone =
+            removed && !st.peer_sockets.contains_key(pid) && !st.quic_senders.contains_key(pid);
+        if removed && !st.peer_sockets.contains_key(pid) {
             st.remove_peer_socket(pid);
             st.connected_count = st.connected_count.saturating_sub(1);
-            drop(st);
+        }
+        drop(st);
+        if endpoint_gone {
+            handler.on_endpoint_disconnected(pid, peer_device);
+        }
+        if identity_gone {
             replay_guard.forget_peer(pid);
             handler.on_peer_disconnected(pid);
-            debug!(
-                "Peer disconnected: {} from {}",
-                &pid[..12.min(pid.len())],
-                addr
-            );
-        } else {
-            drop(st);
-            debug!(
-                "Peer {} socket already replaced — skipping disconnect from {}",
-                &pid[..12.min(pid.len())],
-                addr,
-            );
         }
     }
 
@@ -876,6 +1026,7 @@ async fn handle_ws_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     struct SenderBoundaryHandler(mpsc::UnboundedSender<String>);
 
@@ -889,6 +1040,207 @@ mod tests {
         fn on_peer_disconnected(&self, identity: &str) {
             let _ = self.0.send(format!("disconnected:{identity}"));
         }
+    }
+
+    async fn connect_device(
+        port: u16,
+        identity: &crate::identity::Identity,
+        device: DeviceId,
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("ws://127.0.0.1:{port}")
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            "Sec-WebSocket-Protocol",
+            tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                doubleslash_features::device::DEVICE_WEBSOCKET_PROTOCOL,
+            ),
+        );
+        let (mut socket, response) = tokio_tungstenite::connect_async(request)
+            .await
+            .expect("device websocket");
+        assert_eq!(
+            response.headers()["Sec-WebSocket-Protocol"],
+            doubleslash_features::device::DEVICE_WEBSOCKET_PROTOCOL
+        );
+        let mut hello = SignalingMessage::new(
+            MessageType::Hello,
+            &identity.public_id(),
+            serde_json::json!({"device_routing": 1}),
+        );
+        hello.source_device = Some(device);
+        socket
+            .send(Message::Text(hello.sign(identity).to_json()))
+            .await
+            .expect("device hello");
+        socket
+    }
+
+    async fn next_boundary_event(events: &mut mpsc::UnboundedReceiver<String>) -> String {
+        tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("boundary event timeout")
+            .expect("boundary event")
+    }
+
+    #[tokio::test]
+    async fn two_live_devices_share_identity_without_replacing_each_other() {
+        let server = SignalingServer::new("supernode".into());
+        server.state.write().device_routing_ready = true;
+        let (events, mut received) = mpsc::unbounded_channel();
+        let port = server
+            .start(
+                "127.0.0.1:0".parse().unwrap(),
+                Arc::new(SenderBoundaryHandler(events)),
+            )
+            .await
+            .unwrap();
+        let owner = crate::identity::Identity::generate();
+        let desktop_id = DeviceId([1; 32]);
+        let phone_id = DeviceId([2; 32]);
+        let mut desktop = connect_device(port, &owner, desktop_id).await;
+        let mut phone = connect_device(port, &owner, phone_id).await;
+        for _ in 0..4 {
+            next_boundary_event(&mut received).await;
+        }
+        assert_eq!(server.state.read().connected_count, 1);
+        assert_eq!(
+            server
+                .state
+                .read()
+                .peer_sockets
+                .endpoints(&owner.public_id())
+                .count(),
+            2
+        );
+        assert!(server.send_to_peer(&owner.public_id(), "opaque identity-wide frame"));
+        for socket in [&mut desktop, &mut phone] {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), socket.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap(),
+                Message::Text("opaque identity-wide frame".into())
+            );
+        }
+        assert!(server.state.read().send_to_target(
+            &owner.public_id(),
+            Some(phone_id),
+            "phone only",
+            true
+        ));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), phone.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            Message::Text("phone only".into())
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), desktop.next())
+                .await
+                .is_err()
+        );
+        // Strip the endpoint from a freshly root-signed frame: it must close
+        // only this socket, never downgrade it to the shared legacy route.
+        let stripped =
+            SignalingMessage::new(MessageType::Ping, &owner.public_id(), serde_json::json!({}))
+                .sign(&owner);
+        phone.send(Message::Text(stripped.to_json())).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while server
+                .state
+                .read()
+                .peer_sockets
+                .endpoints(&owner.public_id())
+                .count()
+                != 1
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            received.try_recv().is_err(),
+            "a sibling disconnect must not tear down identity presence"
+        );
+        assert!(server.is_peer_connected(&owner.public_id()));
+        let mut ping =
+            SignalingMessage::new(MessageType::Ping, &owner.public_id(), serde_json::json!({}));
+        ping.source_device = Some(desktop_id);
+        desktop
+            .send(Message::Text(ping.sign(&owner).to_json()))
+            .await
+            .unwrap();
+        assert_eq!(
+            next_boundary_event(&mut received).await,
+            format!("message:{}", owner.public_id())
+        );
+        desktop.close(None).await.unwrap();
+        assert_eq!(
+            next_boundary_event(&mut received).await,
+            format!("disconnected:{}", owner.public_id())
+        );
+        assert_eq!(server.state.read().connected_count, 0);
+        server.close_all();
+    }
+
+    #[tokio::test]
+    async fn device_reconnect_replaces_only_its_own_socket() {
+        let server = SignalingServer::new("supernode".into());
+        server.state.write().device_routing_ready = true;
+        let (events, mut received) = mpsc::unbounded_channel();
+        let port = server
+            .start(
+                "127.0.0.1:0".parse().unwrap(),
+                Arc::new(SenderBoundaryHandler(events)),
+            )
+            .await
+            .unwrap();
+        let owner = crate::identity::Identity::generate();
+        let desktop_id = DeviceId([1; 32]);
+        let phone_id = DeviceId([2; 32]);
+        let mut old_desktop = connect_device(port, &owner, desktop_id).await;
+        let mut phone = connect_device(port, &owner, phone_id).await;
+        for _ in 0..4 {
+            next_boundary_event(&mut received).await;
+        }
+        let mut desktop = connect_device(port, &owner, desktop_id).await;
+        for _ in 0..2 {
+            next_boundary_event(&mut received).await;
+        }
+        // The old half closes, and its completion cannot remove the replacement.
+        let ended = tokio::time::timeout(Duration::from_secs(2), old_desktop.next())
+            .await
+            .unwrap();
+        assert!(!matches!(ended, Some(Ok(Message::Text(_)))));
+        assert!(server.send_to_peer(&owner.public_id(), "after reconnect"));
+        for socket in [&mut desktop, &mut phone] {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), socket.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap(),
+                Message::Text("after reconnect".into())
+            );
+        }
+        assert_eq!(
+            server
+                .state
+                .read()
+                .peer_sockets
+                .endpoints(&owner.public_id())
+                .count(),
+            2
+        );
+        assert_eq!(server.state.read().connected_count, 1);
+        assert!(received.try_recv().is_err());
+        server.close_all();
     }
 
     #[tokio::test]
@@ -985,6 +1337,61 @@ mod tests {
     }
 
     #[test]
+    fn quic_registration_and_verification_keep_device_bindings() {
+        let server = SignalingServer::new("supernode".into());
+        server.state.write().device_routing_ready = false;
+        let owner = crate::identity::Identity::generate();
+        let id = owner.public_id();
+        let desktop = DeviceId([1; 32]);
+        let phone = DeviceId([2; 32]);
+        let (desktop_tx, mut desktop_rx) = peer_channel();
+        assert!(!server.register_quic_sender(&id, Some(desktop), desktop_tx.clone()));
+        server.state.write().device_routing_ready = true;
+        assert!(server.register_quic_sender(&id, Some(desktop), desktop_tx.clone()));
+        let (phone_tx, mut old_phone_rx) = peer_channel();
+        assert!(server.register_quic_sender(&id, Some(phone), phone_tx.clone()));
+        let (replacement_tx, mut phone_rx) = peer_channel();
+        assert!(server.register_quic_sender(&id, Some(phone), replacement_tx));
+        server.unregister_quic_sender(&id, Some(phone), &phone_tx);
+        assert!(phone_tx.closed.load(Ordering::Acquire));
+        assert!(old_phone_rx.try_recv().is_none());
+        assert!(server.send_to_peer(&id, "both endpoints"));
+        assert_eq!(desktop_rx.try_recv().as_deref(), Some("both endpoints"));
+        assert_eq!(phone_rx.try_recv().as_deref(), Some("both endpoints"));
+
+        let mut message = SignalingMessage::new(
+            MessageType::SfuChat,
+            &id,
+            serde_json::json!({"room_id":"test"}),
+        );
+        message.source_device = Some(phone);
+        let raw = message.sign(&owner).to_json();
+        // Rejection on the wrong stream must not poison replay state for the
+        // correctly authenticated stream receiving the same signed frame.
+        assert!(server
+            .accept_signed(&raw, Some((&id, Some(desktop))))
+            .is_none());
+        assert!(server
+            .accept_signed(&raw, Some(("another identity", Some(phone))))
+            .is_none());
+        assert!(server
+            .accept_signed(&raw, Some((&id, Some(phone))))
+            .is_some());
+        assert!(server
+            .accept_signed(&raw, Some((&id, Some(phone))))
+            .is_none());
+        let unsigned_device =
+            SignalingMessage::new(MessageType::SfuChat, &id, serde_json::json!({})).sign(&owner);
+        assert!(server
+            .accept_signed(&unsigned_device.to_json(), Some((&id, Some(phone))))
+            .is_none());
+        server.unregister_quic_sender(&id, Some(desktop), &desktop_tx);
+        assert!(server.send_to_peer(&id, "phone survives"));
+        assert_eq!(phone_rx.try_recv().as_deref(), Some("phone survives"));
+        assert!(desktop_rx.try_recv().is_none());
+    }
+
+    #[test]
     fn device_delivery_prefers_quic_per_endpoint_and_falls_back_independently() {
         let mut state = SignalingState::new();
         let desktop = DeviceId([1; 32]);
@@ -1018,6 +1425,21 @@ mod tests {
         assert_eq!(phone_rx.try_recv().as_deref(), Some("phone only"));
         assert!(desktop_rx.try_recv().is_none());
         assert!(!state.send_to_target("owner", Some(DeviceId([9; 32])), "absent", false));
+        assert!(phone_rx.try_recv().is_none());
+    }
+
+    #[test]
+    fn exact_legacy_endpoint_does_not_fan_out_to_devices() {
+        let mut state = SignalingState::new();
+        let (legacy, mut legacy_rx) = peer_channel();
+        let (phone, mut phone_rx) = peer_channel();
+        state.peer_sockets.insert("owner".into(), legacy);
+        state
+            .peer_sockets
+            .register_device("owner".into(), DeviceId([2; 32]), phone)
+            .unwrap();
+        assert!(state.send_to_endpoint("owner", None, "legacy only", false));
+        assert_eq!(legacy_rx.try_recv().as_deref(), Some("legacy only"));
         assert!(phone_rx.try_recv().is_none());
     }
 
@@ -1064,7 +1486,7 @@ mod tests {
         message.source_device = Some(DeviceId([1; 32]));
         let message = message.sign(&identity);
         assert!(message.verify());
-        assert!(server.accept_signed(&message.to_json()).is_none());
+        assert!(server.accept_signed(&message.to_json(), None).is_none());
     }
 
     // ── SignalingState ──────────────────────────────────────────────────────
@@ -1403,9 +1825,12 @@ mod tests {
     #[test]
     fn accept_signed_rejects_unsigned_and_malformed() {
         let srv = SignalingServer::new("supernode-id".into());
-        assert!(srv.accept_signed("not-json").is_none());
+        assert!(srv.accept_signed("not-json", None).is_none());
         assert!(srv
-            .accept_signed(r#"{"type":"ping","sender":"x","timestamp":1.0,"v":2}"#)
+            .accept_signed(
+                r#"{"type":"ping","sender":"x","timestamp":1.0,"v":2}"#,
+                None
+            )
             .is_none());
     }
 
@@ -1422,13 +1847,13 @@ mod tests {
         let raw = msg.to_json();
 
         let first = srv
-            .accept_signed(&raw)
+            .accept_signed(&raw, None)
             .expect("fresh signed frame must be accepted");
         assert_eq!(first.msg_type, MessageType::Ping);
 
         // Same signature within the freshness window is a replay.
         assert!(
-            srv.accept_signed(&raw).is_none(),
+            srv.accept_signed(&raw, None).is_none(),
             "replay of the same signed frame must be dropped"
         );
     }

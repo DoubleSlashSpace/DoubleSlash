@@ -153,8 +153,16 @@ impl Session {
             .thread_name("conquerd-core")
             .build()?;
 
-        let (cmd_tx, event_rx, cm_fut) =
-            ConnectionManager::split(Arc::clone(&identity), Arc::clone(&peer_store));
+        let device_id = if doubleslash_features::device::DEVICE_ROUTING_READY {
+            Some(doubleslash_client::device::DeviceKey::load_or_create(&identity, &key_dir)?.id())
+        } else {
+            None
+        };
+        let (cmd_tx, event_rx, cm_fut) = ConnectionManager::split_with_device(
+            Arc::clone(&identity),
+            Arc::clone(&peer_store),
+            device_id,
+        );
         runtime.spawn(cm_fut);
 
         let (call_tx, call_events, call_fut) = CallController::split(Some(cmd_tx.clone()));

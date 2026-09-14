@@ -7,6 +7,9 @@ edition = "2021"
 name = "doubleslash-supernode"
 path = "src/main.rs"
 
+[features]
+device-routing = ["doubleslash-features/device-routing"]
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "signal", "fs"] }

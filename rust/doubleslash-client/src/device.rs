@@ -4,6 +4,9 @@
 //! A device key proves possession only. Authorization always requires a verified
 //! registry pinned to the expected contact identity, including its latest version.
 
+mod store;
+pub use store::{DeviceTrustStore, DEVICE_TRUST_FILE};
+
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::Path;

@@ -118,13 +118,13 @@ impl ConnectionManager {
         transport_peer_id: String,
         msg: SignalingMessage,
     ) {
-        self.handle_inbound_inner(msg, Some(transport_peer_id), None)
+        self.handle_inbound_inner(msg, Some(transport_peer_id), None, false)
             .await;
     }
 
     #[cfg(test)]
     pub(in crate::connection_manager) async fn handle_inbound(&mut self, msg: SignalingMessage) {
-        self.handle_inbound_inner(msg, None, None).await;
+        self.handle_inbound_inner(msg, None, None, false).await;
     }
 
     pub(in crate::connection_manager) async fn handle_inbound_from_supernode(
@@ -132,7 +132,7 @@ impl ConnectionManager {
         supernode_id: String,
         msg: SignalingMessage,
     ) {
-        self.handle_inbound_inner(msg, None, Some(supernode_id))
+        self.handle_inbound_inner(msg, None, Some(supernode_id), false)
             .await;
     }
 
@@ -141,17 +141,21 @@ impl ConnectionManager {
         msg: SignalingMessage,
         quic_peer_id: Option<String>,
         inbound_supernode_id: Option<String>,
+        encrypted: bool,
     ) {
         // Enforce signed-transcript model: every inbound signaling message
         // MUST carry a valid Ed25519 signature over its canonical bytes,
         // signed by the key whose public_id is `msg.sender`. Drop silently
         // (with a warning) on any failure — never dispatch unverified data.
-        if !Self::verify_inbound_signature(&msg) {
+        if !Self::verify_inbound_signature(&msg, self.device_id.is_some()) {
             warn!(
                 "[signaling] dropping {:?} from {} — signature missing or invalid",
                 msg.msg_type,
                 &msg.sender[..8.min(msg.sender.len())],
             );
+            return;
+        }
+        if msg.target_device.is_some() && msg.target_device != self.device_id {
             return;
         }
         // Sliding-window replay guard: reject re-delivery of an already-seen
@@ -211,7 +215,15 @@ impl ConnectionManager {
             );
             return;
         }
+        if !self.receive_device_call(&msg).await {
+            return;
+        }
         match msg.msg_type {
+            MessageType::SfuDeviceKeySync => {
+                if encrypted {
+                    self.handle_own_room_key_sync(&msg).await;
+                }
+            }
             // Supernode-relay E2E envelope: decrypt with the pairwise key derived
             // from our identity + the envelope sender's identity (`msg.sender`),
             // then re-dispatch the inner message through the full pipeline (its
@@ -273,15 +285,23 @@ impl ConnectionManager {
                 // The envelope author must be the inner message's author; this
                 // stops a paired peer from relaying a third party's signed
                 // message wrapped under their own envelope.
-                if inner.sender != msg.sender {
+                if inner.sender != msg.sender
+                    || inner.source_device != msg.source_device
+                    || inner.target_device != msg.target_device
+                {
                     warn!(
                         "[signaling] EncryptedSignal inner/outer sender mismatch from {} — dropped",
                         &msg.sender[..8.min(msg.sender.len())],
                     );
                     return;
                 }
-                Box::pin(self.handle_inbound_inner(inner, quic_peer_id, inbound_supernode_id))
-                    .await;
+                Box::pin(self.handle_inbound_inner(
+                    inner,
+                    quic_peer_id,
+                    inbound_supernode_id,
+                    true,
+                ))
+                .await;
             }
             MessageType::Pong => {
                 debug!("Pong from {}", msg.sender);
@@ -379,11 +399,7 @@ impl ConnectionManager {
                 // Caller side: the callee accepted, but real-time audio needs a
                 // direct QUIC session. Arm a grace-period check — if none forms
                 // in time, fall back to a temporary private SFU room.
-                let direct_connected = self
-                    .peers
-                    .get(&peer_id)
-                    .map(|p| p.state == PeerConnectionState::Connected)
-                    .unwrap_or(false);
+                let direct_connected = self.direct_media_sender(&peer_id).is_some();
                 if !direct_connected && !self.direct_fallback.is_pending_for(&peer_id) {
                     self.pending_call_fallback_checks.insert(
                         peer_id.clone(),
@@ -484,7 +500,12 @@ impl ConnectionManager {
                 let key_b64 = msg.payload.get("key").and_then(Value::as_str);
                 if let (false, Some(epoch), Some(key_b64)) = (room_id.is_empty(), epoch, key_b64) {
                     let epoch_u8 = epoch as u8;
-                    if !self.accept_group_key_from(&msg.sender, room_id, epoch_u8) {
+                    if !self.accept_group_key_from(
+                        &msg.sender,
+                        msg.source_device,
+                        room_id,
+                        epoch_u8,
+                    ) {
                         warn!(
                             "[group-key] rejecting key epoch {} for room {} from {} (not elected keyer or bad epoch)",
                             epoch_u8,
@@ -572,6 +593,18 @@ impl ConnectionManager {
                     .and_then(Value::as_str)
                     .unwrap_or("default")
                     .to_owned();
+                if self.device_id.is_some() {
+                    let suffix = format!(":{room_id}");
+                    let active = self.current_room_id == room_id
+                        || self
+                            .chat_active_rooms
+                            .iter()
+                            .any(|scope| scope.ends_with(&suffix))
+                        || self.failover_pending_room.as_deref() == Some(room_id.as_str());
+                    if !active || self.resolve_supernode_ws_target(&msg.sender).is_none() {
+                        return;
+                    }
+                }
                 let members: Vec<String> = msg
                     .payload
                     .get("members")
@@ -597,6 +630,9 @@ impl ConnectionManager {
                             .collect()
                     })
                     .unwrap_or_else(|| members.clone());
+                if !self.record_room_devices(&msg.sender, &room_id, msg.payload.get("devices")) {
+                    return;
+                }
                 // Confirmed on *some* member — any `room_absent` retries still
                 // in flight for this room (this node or a failover sibling) are
                 // moot now; drop them so the retry timer doesn't keep sending
@@ -2911,7 +2947,7 @@ impl ConnectionManager {
         }
     }
 
-    pub(super) fn verify_inbound_signature(msg: &SignalingMessage) -> bool {
+    pub(super) fn verify_inbound_signature(msg: &SignalingMessage, devices_enabled: bool) -> bool {
         let Some(sig_b64) = msg.signature.as_deref() else {
             return false;
         };
@@ -2931,7 +2967,7 @@ impl ConnectionManager {
         if !crate::crypto::ed25519_verify(&pub_bytes, &sig_bytes, &canonical) {
             return false;
         }
-        if msg.source_device.is_some() || msg.target_device.is_some() {
+        if !devices_enabled && (msg.source_device.is_some() || msg.target_device.is_some()) {
             warn!("[signaling] device-addressed message requires negotiated device routing");
             return false;
         }
@@ -2951,7 +2987,7 @@ impl ConnectionManager {
     /// Test hook for signature + freshness verification on the client path.
     #[cfg(test)]
     pub(crate) fn verify_inbound_signature_for_test(msg: &SignalingMessage) -> bool {
-        Self::verify_inbound_signature(msg)
+        Self::verify_inbound_signature(msg, false)
     }
 
     /// Sliding-window replay check, keyed on the message's Ed25519 signature.

@@ -14,6 +14,7 @@ use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use tokio::sync::Notify;
 use tracing::{debug, info, warn};
 
+use doubleslash_features::device::{DeviceId, DeviceRoutes, MAX_LIVE_DEVICE_ROUTES};
 use doubleslash_features::{feature_for_fixed_tag, FeatureRegistry};
 
 use crate::wire;
@@ -46,12 +47,16 @@ pub struct RelayState {
     /// `web.host.app.v1` portal stream — no room join, no datagram forwarding,
     /// no reliable signaling. Promoted into `allowed` once the gate is passed.
     portal_allowed: HashSet<String>,
-    /// Connected peers: identity_pub → RelayPeer.
-    peers: HashMap<String, RelayPeer>,
-    /// Reverse map: peer_index → identity_pub.
-    index_to_peer: HashMap<u8, String>,
+    /// Independently registered connections within each contact identity.
+    peers: DeviceRoutes<RelayPeer>,
+    /// Datagram indices identify endpoints, never just their shared identity.
+    index_to_peer: HashMap<u8, (String, Option<DeviceId>)>,
+    /// Activated together with signaling, room membership and client support.
+    device_routing_ready: bool,
     /// Room membership: room_id → set of identity_pubs.
     rooms: HashMap<String, HashSet<String>>,
+    /// Voice joins can arrive over WS before the matching QUIC connection.
+    room_assignments: DeviceRoutes<String>,
     /// Game-session membership (independent of SFU voice rooms): session_id → peers.
     /// Portal games join here via `GameRelayJoin` so voice room membership is
     /// not displaced when a peer opens a game demo.
@@ -83,9 +88,11 @@ impl RelayState {
         Self {
             allowed: HashSet::new(),
             portal_allowed: HashSet::new(),
-            peers: HashMap::new(),
+            peers: DeviceRoutes::default(),
             index_to_peer: HashMap::new(),
+            device_routing_ready: doubleslash_features::device::DEVICE_ROUTING_READY,
             rooms: HashMap::new(),
+            room_assignments: DeviceRoutes::default(),
             game_sessions: HashMap::new(),
             peer_game_session: HashMap::new(),
             video_subs: HashMap::new(),
@@ -149,24 +156,62 @@ impl RelayState {
     }
 
     fn remove_peer(&mut self, peer_id: &str) {
+        let devices: Vec<_> = self
+            .peers
+            .endpoints(peer_id)
+            .map(|(device, _)| device)
+            .collect();
+        for device in devices {
+            self.remove_endpoint(peer_id, device);
+        }
+        self.remove_identity_membership(peer_id);
+    }
+
+    fn remove_endpoint(&mut self, peer_id: &str, device: Option<DeviceId>) {
+        self.room_assignments
+            .remove_endpoint_if(peer_id, device, |_| true);
+        let Some(peer) = self.peers.get_endpoint(peer_id, device) else {
+            return;
+        };
+        let index = peer.peer_index;
+        let room = peer.room_id.clone();
+        self.peers.remove_endpoint_if(peer_id, device, |_| true);
+        self.index_to_peer.remove(&index);
+        if let Some(room) = room {
+            let sibling_in_room = self
+                .peers
+                .endpoints(peer_id)
+                .any(|(_, peer)| peer.room_id.as_deref() == Some(&room));
+            if !sibling_in_room {
+                if let Some(members) = self.rooms.get_mut(&room) {
+                    members.remove(peer_id);
+                    if members.is_empty() {
+                        self.rooms.remove(&room);
+                    }
+                }
+            }
+        }
+        if !self.peers.contains_key(peer_id) {
+            self.remove_identity_membership(peer_id);
+        }
+    }
+
+    fn remove_identity_membership(&mut self, peer_id: &str) {
+        let devices: Vec<_> = self
+            .room_assignments
+            .endpoints(peer_id)
+            .map(|(device, _)| device)
+            .collect();
+        for device in devices {
+            self.room_assignments
+                .remove_endpoint_if(peer_id, device, |_| true);
+        }
         // Subscriptions describe one connection's open tiles, so they must not
         // outlive it: a reconnecting peer re-announces, and until it does the
         // absence correctly reads as "send everything" rather than as a stale
         // set that would black out whatever it used to watch.
         self.video_subs
             .remove(&crate::crypto::normalize_public_id(peer_id));
-        if let Some(peer) = self.peers.remove(peer_id) {
-            self.index_to_peer.remove(&peer.peer_index);
-            // Remove from any room
-            if let Some(ref room_id) = peer.room_id {
-                if let Some(members) = self.rooms.get_mut(room_id) {
-                    members.remove(peer_id);
-                    if members.is_empty() {
-                        self.rooms.remove(room_id);
-                    }
-                }
-            }
-        }
         // Also clean up room entries even if the peer's room_id wasn't set
         // (join_room may have added to rooms map before relay connected).
         self.rooms.retain(|_, members| {
@@ -233,8 +278,9 @@ pub type BidiStreamHook =
 /// `room.chat.v1` / `room.file.v1` broadcasts both directions over the
 /// already-identity-verified relay connection. The hook owns the streams and
 /// spawns its own task. See `handle_relay_signaling_stream` in `main.rs`.
-pub type SignalStreamHook =
-    Arc<dyn Fn(String, quinn::SendStream, quinn::RecvStream) + Send + Sync + 'static>;
+pub type SignalStreamHook = Arc<
+    dyn Fn(String, Option<DeviceId>, quinn::SendStream, quinn::RecvStream) + Send + Sync + 'static,
+>;
 
 /// Hook invoked when the relay receives a broadcast `room.audio.sfu` datagram.
 ///
@@ -371,21 +417,15 @@ impl QUICRelayServer {
         // recipient silently falls back to the WebSocket path.
         let recipient = recipient.trim_end_matches('=');
         let st = self.state.read();
-        let peer = st.peers.get(recipient)?;
-        if peer.connection.close_reason().is_some() {
-            return None;
+        let mut result = None;
+        for (_, peer) in st.peers.endpoints(recipient) {
+            if peer.connection.close_reason().is_some() {
+                continue;
+            }
+            let sent = try_forward_datagram(&self.features, feature_id, recipient, fwd, peer);
+            result = Some(result.unwrap_or(false) || sent);
         }
-        if !self
-            .features
-            .gate_through_feature(feature_id, recipient, fwd.len())
-        {
-            return Some(false);
-        }
-        Some(
-            peer.connection
-                .send_datagram(Bytes::copy_from_slice(fwd))
-                .is_ok(),
-        )
+        result
     }
 
     /// Authorize a peer to connect via QUIC relay.
@@ -421,7 +461,7 @@ impl QUICRelayServer {
         let normalized = peer_id.trim_end_matches('=');
         let mut state = self.state.write();
         state.allowed.remove(normalized);
-        if let Some(peer) = state.peers.get(normalized) {
+        for (_, peer) in state.peers.endpoints(normalized) {
             peer.connection.close(0u32.into(), b"revoked");
         }
         state.remove_peer(normalized);
@@ -435,22 +475,51 @@ impl QUICRelayServer {
     /// If the peer already has a QUIC connection, sends bidirectional
     /// peer_joined notifications to all room members.
     pub fn join_room(&self, peer_id: &str, room_id: &str) {
+        self.join_room_endpoint(peer_id, None, room_id);
+    }
+
+    pub fn join_room_endpoint(&self, peer_id: &str, device: Option<DeviceId>, room_id: &str) {
         // Normalize: strip base64url padding to match extract_peer_id format
         let peer_id = peer_id.trim_end_matches('=');
         let peer_index = {
             let mut state = self.state.write();
+            if let Some(device) = device {
+                if state
+                    .room_assignments
+                    .register_device(peer_id.to_owned(), device, room_id.to_owned())
+                    .is_err()
+                {
+                    return;
+                }
+            } else {
+                state
+                    .room_assignments
+                    .insert(peer_id.to_owned(), room_id.to_owned());
+            }
             // Leave previous room if any
-            let old_room = state.peers.get(peer_id).and_then(|p| p.room_id.clone());
+            let old_room = state
+                .peers
+                .get_endpoint(peer_id, device)
+                .and_then(|p| p.room_id.clone());
+            let sibling_in_old = old_room.as_ref().is_some_and(|old| {
+                state
+                    .peers
+                    .endpoints(peer_id)
+                    .any(|(id, peer)| id != device && peer.room_id.as_ref() == Some(old))
+            });
             if let Some(ref old) = old_room {
-                if let Some(members) = state.rooms.get_mut(old) {
+                if let Some(members) = state.rooms.get_mut(old).filter(|_| !sibling_in_old) {
                     members.remove(peer_id);
                     if members.is_empty() {
                         state.rooms.remove(old);
                     }
                 }
             }
-            let idx = state.peers.get(peer_id).map(|p| p.peer_index);
-            if let Some(peer) = state.peers.get_mut(peer_id) {
+            let idx = state
+                .peers
+                .get_endpoint(peer_id, device)
+                .map(|p| p.peer_index);
+            if let Some(peer) = state.peers.get_endpoint_mut(peer_id, device) {
                 peer.room_id = Some(room_id.to_string());
             }
             state
@@ -462,21 +531,44 @@ impl QUICRelayServer {
         };
         // If already QUIC-connected, send bidirectional peer_joined notifications
         if let Some(idx) = peer_index {
-            notify_room_peer_joined(&self.state, peer_id, idx);
+            notify_room_peer_joined(&self.state, peer_id, device, idx);
         }
     }
 
     /// Remove a peer from their current room.
     pub fn leave_room(&self, peer_id: &str) {
+        self.leave_room_endpoint(peer_id, None);
+    }
+
+    pub fn leave_room_endpoint(&self, peer_id: &str, device: Option<DeviceId>) {
         // Normalize: strip base64url padding to match extract_peer_id format
         let peer_id = peer_id.trim_end_matches('=');
         let mut state = self.state.write();
-        if let Some(peer) = state.peers.get_mut(peer_id) {
-            if let Some(ref room_id) = peer.room_id.take() {
-                if let Some(members) = state.rooms.get_mut(room_id) {
+        let room = state
+            .peers
+            .get_endpoint_mut(peer_id, device)
+            .and_then(|peer| peer.room_id.take())
+            .or_else(|| {
+                device.and_then(|device| {
+                    state
+                        .room_assignments
+                        .get_endpoint(peer_id, Some(device))
+                        .cloned()
+                })
+            });
+        state
+            .room_assignments
+            .remove_endpoint_if(peer_id, device, |_| true);
+        if let Some(room) = room {
+            if !state
+                .peers
+                .endpoints(peer_id)
+                .any(|(_, peer)| peer.room_id.as_deref() == Some(&room))
+            {
+                if let Some(members) = state.rooms.get_mut(&room) {
                     members.remove(peer_id);
                     if members.is_empty() {
-                        state.rooms.remove(room_id);
+                        state.rooms.remove(&room);
                     }
                 }
             }
@@ -531,7 +623,12 @@ impl QUICRelayServer {
     /// Get a peer's observed remote address (for hole punch).
     pub fn get_peer_remote_addr(&self, peer_id: &str) -> Option<SocketAddr> {
         let peer_id = peer_id.trim_end_matches('=');
-        self.state.read().peers.get(peer_id).map(|p| p.remote_addr)
+        self.state
+            .read()
+            .peers
+            .endpoints(peer_id)
+            .next()
+            .map(|(_, p)| p.remote_addr)
     }
 
     /// Get peer IDs in a relay room.
@@ -659,7 +756,11 @@ async fn handle_connection(
     let remote_addr = connection.remote_address();
 
     // Extract peer_id from client certificate CN
-    let peer_id = extract_peer_id(&connection)?;
+    let (peer_id, device) = extract_relay_endpoint(&connection)?;
+    if device.is_some() && !state.read().device_routing_ready {
+        connection.close(0u32.into(), b"device_routing_unavailable");
+        return Ok(());
+    }
     debug!(
         "Relay connection from {} (peer: {})",
         remote_addr,
@@ -696,7 +797,17 @@ async fn handle_connection(
     // Allocate peer index
     let peer_index = {
         let mut st = state.write();
-        if st.peers.len() >= MAX_PEERS {
+        let replacing = st.peers.get_endpoint(&peer_id, device).is_some();
+        if !replacing
+            && (st.peers.len() >= MAX_PEERS
+                || (device.is_some()
+                    && st
+                        .peers
+                        .endpoints(&peer_id)
+                        .filter(|(device, _)| device.is_some())
+                        .count()
+                        >= MAX_LIVE_DEVICE_ROUTES))
+        {
             connection.close(0u32.into(), b"full");
             return Ok(());
         }
@@ -706,41 +817,52 @@ async fn handle_connection(
         // `rooms` + `peer.room_id`, so post-reconnect `room.audio.sfu`
         // datagrams were dropped while the client still treated the relay
         // send as success (no WS fallback) — one-way silence until re-join.
-        let prior_room = st.peers.get(&peer_id).and_then(|p| p.room_id.clone());
-        if let Some(old) = st.peers.remove(&peer_id) {
+        let prior_room = st
+            .peers
+            .get_endpoint(&peer_id, device)
+            .and_then(|p| p.room_id.clone());
+        if let Some(old) = st.peers.get_endpoint(&peer_id, device) {
             old.connection.close(0u32.into(), b"reconnected");
-            st.index_to_peer.remove(&old.peer_index);
+            let old_index = old.peer_index;
+            st.index_to_peer.remove(&old_index);
+            st.peers.remove_endpoint_if(&peer_id, device, |_| true);
             if let Some(ref room) = prior_room {
                 st.rooms
                     .entry(room.clone())
                     .or_default()
                     .insert(peer_id.clone());
             }
-            features.clear_peer_quotas(&peer_id);
-            features.clear_peer_outbound_quotas(&peer_id);
         }
         let idx = st
             .allocate_index()
             .ok_or_else(|| anyhow::anyhow!("no peer indices"))?;
         // Prefer the room we just preserved; also cover SFU join that arrived
         // via WebSocket before this QUIC relay connection was up.
-        let existing_room = prior_room.or_else(|| {
-            st.rooms
-                .iter()
-                .find(|(_, members)| members.contains(&peer_id))
-                .map(|(room_id, _)| room_id.clone())
-        });
-        st.index_to_peer.insert(idx, peer_id.clone());
-        st.peers.insert(
-            peer_id.clone(),
-            RelayPeer {
-                peer_index: idx,
-                connection: connection.clone(),
-                room_id: existing_room,
-                bytes_relayed: 0,
-                remote_addr,
-            },
-        );
+        let existing_room = prior_room
+            .or_else(|| st.room_assignments.get_endpoint(&peer_id, device).cloned())
+            .or_else(|| {
+                if device.is_none() {
+                    st.rooms
+                        .iter()
+                        .find(|(_, members)| members.contains(&peer_id))
+                        .map(|(room_id, _)| room_id.clone())
+                } else {
+                    None
+                }
+            });
+        st.index_to_peer.insert(idx, (peer_id.clone(), device));
+        let peer = RelayPeer {
+            peer_index: idx,
+            connection: connection.clone(),
+            room_id: existing_room,
+            bytes_relayed: 0,
+            remote_addr,
+        };
+        if let Some(device) = device {
+            st.peers.register_device(peer_id.clone(), device, peer)?;
+        } else {
+            st.peers.insert(peer_id.clone(), peer);
+        }
         idx
     };
 
@@ -751,7 +873,7 @@ async fn handle_connection(
     // Notify room members if peer is already in a room. Portal-only guests are
     // never room members, so skip.
     if !portal_only {
-        notify_room_peer_joined(&state, &peer_id, peer_index);
+        notify_room_peer_joined(&state, &peer_id, device, peer_index);
     }
 
     info!(
@@ -781,7 +903,16 @@ async fn handle_connection(
                 let signal = signal_lock.read().clone();
                 // Full access is re-read per stream so a mid-connection grant
                 // (portal guest → promoted) takes effect without reconnect.
-                let full_access = state_streams.read().allowed.contains(&peer);
+                let full_access = {
+                    let st = state_streams.read();
+                    st.allowed.contains(&peer)
+                        && st
+                            .peers
+                            .get_endpoint(&peer, device)
+                            .is_some_and(|registered| {
+                                registered.connection.stable_id() == conn_streams.stable_id()
+                            })
+                };
                 // Read the discriminating prefix on its own task so a slow
                 // client can't stall the accept loop for other streams.
                 tokio::spawn(async move {
@@ -795,7 +926,7 @@ async fn handle_connection(
                         // Portal-only guests get their signaling stream dropped.
                         if full_access {
                             if let Some(signal) = signal {
-                                (signal)(peer, send, recv);
+                                (signal)(peer, device, send, recv);
                             }
                         }
                     } else if let Some(hook) = hook {
@@ -833,6 +964,7 @@ async fn handle_connection(
                                 &room_audio_bridge_clone,
                                 &game_relay_bridge_clone,
                                 &peer_id_clone,
+                                (device, connection.stable_id()),
                                 &data,
                             );
                         }
@@ -851,24 +983,27 @@ async fn handle_connection(
         &peer_id[..12.min(peer_id.len())],
         peer_index
     );
-    let registered = {
-        let st = state.read();
-        st.peers
-            .get(&peer_id)
-            .is_some_and(|p| p.connection.stable_id() == connection.stable_id())
-    };
+    let mut st = state.write();
+    let registered = st
+        .peers
+        .get_endpoint(&peer_id, device)
+        .is_some_and(|p| p.connection.stable_id() == connection.stable_id());
     if registered {
-        let room_id = {
-            let st = state.read();
-            st.peers.get(&peer_id).and_then(|p| p.room_id.clone())
-        };
-        state.write().remove_peer(&peer_id);
+        let room_id = st
+            .peers
+            .get_endpoint(&peer_id, device)
+            .and_then(|p| p.room_id.clone());
+        st.remove_endpoint(&peer_id, device);
+        let last_endpoint = !st.peers.contains_key(&peer_id);
         // Quota symmetry: clear per-(feature, peer) buckets on disconnect.
-        features.clear_peer_quotas(&peer_id);
-        features.clear_peer_outbound_quotas(&peer_id);
+        if last_endpoint {
+            features.clear_peer_quotas(&peer_id);
+            features.clear_peer_outbound_quotas(&peer_id);
+        }
+        drop(st);
         // Notify remaining room members
         if let Some(room_id) = room_id {
-            notify_room_peer_left(&state, &peer_id, &room_id);
+            notify_room_peer_left(&state, &peer_id, device, &room_id);
         }
     }
 
@@ -930,8 +1065,10 @@ fn handle_datagram(
     room_audio_bridge: &Arc<RwLock<Option<RoomAudioBridgeHook>>>,
     game_relay_bridge: &Arc<RwLock<Option<GameRelayBridgeHook>>>,
     from_peer: &str,
+    endpoint: (Option<DeviceId>, usize),
     data: &[u8],
 ) {
+    let (from_device, connection_id) = endpoint;
     let Some((target_idx, payload)) = wire::parse_datagram(data) else {
         return;
     };
@@ -948,9 +1085,12 @@ fn handle_datagram(
     }
 
     let st = state.read();
-    let Some(from) = st.peers.get(from_peer) else {
+    let Some(from) = st.peers.get_endpoint(from_peer, from_device) else {
         return;
     };
+    if from.connection.stable_id() != connection_id {
+        return;
+    }
     let sender_index = from.peer_index;
 
     // Room audio broadcast: hand off to the SFU-aware bridge so the frame
@@ -974,7 +1114,7 @@ fn handle_datagram(
                     drop(st);
                     {
                         let mut stw = state.write();
-                        if let Some(peer) = stw.peers.get_mut(from_peer) {
+                        if let Some(peer) = stw.peers.get_endpoint_mut(from_peer, from_device) {
                             peer.room_id = Some(rid.clone());
                         }
                         stw.rooms
@@ -1016,10 +1156,10 @@ fn handle_datagram(
             if let Some(members) = st.game_sessions.get(&session_id) {
                 let fwd = wire::build_forwarded_datagram(sender_index, payload);
                 for member_id in members {
-                    if member_id == from_peer {
-                        continue;
-                    }
-                    if let Some(member) = st.peers.get(member_id) {
+                    for (device, member) in st.peers.endpoints(member_id) {
+                        if member_id == from_peer && device == from_device {
+                            continue;
+                        }
                         if try_forward_datagram(features, feature_id, member_id, &fwd, member) {
                             relayed += fwd.len() as u64;
                         }
@@ -1038,7 +1178,7 @@ fn handle_datagram(
                 if relayed > 0 {
                     let mut st = state.write();
                     st.total_bytes_relayed += relayed;
-                    if let Some(peer) = st.peers.get_mut(from_peer) {
+                    if let Some(peer) = st.peers.get_endpoint_mut(from_peer, from_device) {
                         peer.bytes_relayed += relayed;
                     }
                 }
@@ -1062,14 +1202,17 @@ fn handle_datagram(
             if let Some(members) = st.rooms.get(room_id) {
                 let fwd = wire::build_forwarded_datagram(sender_index, payload);
                 for member_id in members {
-                    if member_id != from_peer {
+                    for (device, member) in st.peers.endpoints(member_id) {
+                        if (member_id == from_peer && device == from_device)
+                            || member.room_id.as_ref() != Some(room_id)
+                        {
+                            continue;
+                        }
                         if filter_by_subscription && !st.wants_video(member_id, from_peer) {
                             continue;
                         }
-                        if let Some(member) = st.peers.get(member_id) {
-                            if try_forward_datagram(features, feature_id, member_id, &fwd, member) {
-                                relayed += fwd.len() as u64;
-                            }
+                        if try_forward_datagram(features, feature_id, member_id, &fwd, member) {
+                            relayed += fwd.len() as u64;
                         }
                     }
                 }
@@ -1078,8 +1221,8 @@ fn handle_datagram(
     } else {
         // Point-to-point forward — enforce same-room membership to prevent
         // cross-room datagram injection by a connected-but-wrong-room peer.
-        if let Some(target_peer_id) = st.index_to_peer.get(&target_idx) {
-            if let Some(target) = st.peers.get(target_peer_id) {
+        if let Some((target_peer_id, target_device)) = st.index_to_peer.get(&target_idx) {
+            if let Some(target) = st.peers.get_endpoint(target_peer_id, *target_device) {
                 // Both sender and target must be in the same non-None room.
                 let same_room = match (&from.room_id, &target.room_id) {
                     (Some(a), Some(b)) => a == b,
@@ -1110,7 +1253,7 @@ fn handle_datagram(
     drop(st);
     let mut st = state.write();
     st.total_bytes_relayed += relayed;
-    if let Some(peer) = st.peers.get_mut(from_peer) {
+    if let Some(peer) = st.peers.get_endpoint_mut(from_peer, from_device) {
         peer.bytes_relayed += relayed;
     }
 }
@@ -1128,9 +1271,14 @@ async fn send_cmd(conn: &quinn::Connection, cmd: &serde_json::Value) -> anyhow::
 /// Sends the new peer's info to all existing members AND sends
 /// all existing members' info back to the new peer so both sides
 /// can map sender indices to peer IDs for audio routing.
-fn notify_room_peer_joined(state: &Arc<RwLock<RelayState>>, peer_id: &str, peer_index: u8) {
+fn notify_room_peer_joined(
+    state: &Arc<RwLock<RelayState>>,
+    peer_id: &str,
+    device: Option<DeviceId>,
+    peer_index: u8,
+) {
     let st = state.read();
-    let Some(peer) = st.peers.get(peer_id) else {
+    let Some(peer) = st.peers.get_endpoint(peer_id, device) else {
         return;
     };
     let Some(ref room_id) = peer.room_id else {
@@ -1141,17 +1289,18 @@ fn notify_room_peer_joined(state: &Arc<RwLock<RelayState>>, peer_id: &str, peer_
     };
 
     // New peer info → existing members
-    let new_peer_cmd =
-        serde_json::json!({"relay_cmd": "peer_joined", "peer_id": peer_id, "index": peer_index});
+    let new_peer_cmd = serde_json::json!({"relay_cmd": "peer_joined", "peer_id": peer_id, "device": device, "index": peer_index});
     let new_peer_data = wire::encode_relay_cmd(&new_peer_cmd);
 
     let new_peer_conn = peer.connection.clone();
 
     for member_id in members {
-        if member_id == peer_id {
-            continue;
-        }
-        if let Some(member) = st.peers.get(member_id) {
+        for (member_device, member) in st.peers.endpoints(member_id) {
+            if (member_id == peer_id && member_device == device)
+                || member.room_id.as_ref() != Some(room_id)
+            {
+                continue;
+            }
             // Tell existing member about the new peer
             let conn = member.connection.clone();
             let data = new_peer_data.clone();
@@ -1166,6 +1315,7 @@ fn notify_room_peer_joined(state: &Arc<RwLock<RelayState>>, peer_id: &str, peer_
             let existing_cmd = serde_json::json!({
                 "relay_cmd": "peer_joined",
                 "peer_id": member_id,
+                "device": member_device,
                 "index": member.peer_index,
             });
             let existing_data = wire::encode_relay_cmd(&existing_cmd);
@@ -1181,18 +1331,25 @@ fn notify_room_peer_joined(state: &Arc<RwLock<RelayState>>, peer_id: &str, peer_
 }
 
 /// Notify room members that a peer has left.
-fn notify_room_peer_left(state: &Arc<RwLock<RelayState>>, peer_id: &str, room_id: &str) {
+fn notify_room_peer_left(
+    state: &Arc<RwLock<RelayState>>,
+    peer_id: &str,
+    device: Option<DeviceId>,
+    room_id: &str,
+) {
     let st = state.read();
     let Some(members) = st.rooms.get(room_id) else {
         return;
     };
 
-    let cmd = serde_json::json!({"relay_cmd": "peer_left", "peer_id": peer_id});
+    let cmd = serde_json::json!({"relay_cmd": "peer_left", "peer_id": peer_id, "device": device});
     let data = wire::encode_relay_cmd(&cmd);
 
     for member_id in members {
-        if member_id != peer_id {
-            if let Some(member) = st.peers.get(member_id) {
+        for (member_device, member) in st.peers.endpoints(member_id) {
+            if (member_id != peer_id || member_device != device)
+                && member.room_id.as_deref() == Some(room_id)
+            {
                 let conn = member.connection.clone();
                 let data = data.clone();
                 tokio::spawn(async move {
@@ -1209,18 +1366,20 @@ fn notify_room_peer_left(state: &Arc<RwLock<RelayState>>, peer_id: &str, room_id
 /// Remove disconnected peers.
 fn cleanup_stale_peers(state: &Arc<RwLock<RelayState>>, features: &FeatureRegistry) {
     let mut st = state.write();
-    let stale: Vec<String> = st
+    let stale: Vec<_> = st
         .peers
         .iter()
-        .filter(|(_, p)| p.connection.close_reason().is_some())
-        .map(|(id, _)| id.clone())
+        .filter(|(_, _, p)| p.connection.close_reason().is_some())
+        .map(|(id, device, _)| (id.trim_end_matches('=').to_owned(), device))
         .collect();
-    for id in stale {
+    for (id, device) in stale {
         debug!("Cleaning up stale relay peer: {}", &id[..12.min(id.len())]);
-        st.remove_peer(&id);
+        st.remove_endpoint(&id, device);
         // Quota symmetry: clear per-(feature, peer) buckets on removal.
-        features.clear_peer_quotas(&id);
-        features.clear_peer_outbound_quotas(&id);
+        if !st.peers.contains_key(&id) {
+            features.clear_peer_quotas(&id);
+            features.clear_peer_outbound_quotas(&id);
+        }
     }
 }
 
@@ -1228,6 +1387,10 @@ fn cleanup_stale_peers(state: &Arc<RwLock<RelayState>>, features: &FeatureRegist
 /// The client's self-signed cert has CN = hex(ed25519_pub_bytes).
 /// We convert to base64url to match the identity format used in the allowed set.
 pub(crate) fn extract_peer_id(conn: &quinn::Connection) -> anyhow::Result<String> {
+    Ok(extract_relay_endpoint(conn)?.0)
+}
+
+fn extract_relay_endpoint(conn: &quinn::Connection) -> anyhow::Result<(String, Option<DeviceId>)> {
     let identity = conn
         .peer_identity()
         .ok_or_else(|| anyhow::anyhow!("no peer certificate"))?;
@@ -1238,13 +1401,61 @@ pub(crate) fn extract_peer_id(conn: &quinn::Connection) -> anyhow::Result<String
         .first()
         .ok_or_else(|| anyhow::anyhow!("empty cert chain"))?;
     // Parse the certificate to extract CN (hex-encoded public key)
-    let cn_hex = x509_parser_lite(cert.as_ref())?;
+    let cn = x509_parser_lite(cert.as_ref())?;
+    let (root, device) = endpoint_from_cn(&cn)?;
     // Convert hex CN to base64url peer_id (matching Identity.public_id format)
-    let pub_bytes =
-        hex::decode(&cn_hex).map_err(|e| anyhow::anyhow!("invalid hex CN '{cn_hex}': {e}"))?;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
-    Ok(URL_SAFE_NO_PAD.encode(&pub_bytes))
+    Ok((URL_SAFE_NO_PAD.encode(root), device))
+}
+
+/// Device-aware certificates keep the contact identity and endpoint separate.
+/// TLS CertificateVerify must prove the root key named here, not merely some
+/// unrelated key placed in a certificate with a trusted identity's CN.
+fn endpoint_from_cn(cn: &str) -> anyhow::Result<([u8; 32], Option<DeviceId>)> {
+    use base64::Engine;
+    let (root, device) = cn
+        .split_once('.')
+        .map_or((cn, None), |(root, device)| (root, Some(device)));
+    let root: [u8; 32] = hex::decode(root)?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("identity key must be 32 bytes"))?;
+    let device = device
+        .map(|encoded| -> anyhow::Result<DeviceId> {
+            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded)?;
+            Ok(DeviceId(bytes.try_into().map_err(|_| {
+                anyhow::anyhow!("device key must be 32 bytes")
+            })?))
+        })
+        .transpose()?;
+    Ok((root, device))
+}
+
+fn verify_device_root_signature(
+    message: &[u8],
+    cert: &CertificateDer<'_>,
+    dss: &rustls::DigitallySignedStruct,
+) -> Result<(), rustls::Error> {
+    let cn = x509_parser_lite(cert.as_ref())
+        .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
+    // Existing cluster certificates retain their legacy identity binding.
+    if !cn.contains('.') {
+        return Ok(());
+    }
+    let check = || -> anyhow::Result<()> {
+        let (root, _) = endpoint_from_cn(&cn)?;
+        anyhow::ensure!(
+            dss.scheme == rustls::SignatureScheme::ED25519,
+            "device root requires Ed25519"
+        );
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&root)?;
+        key.verify_strict(
+            message,
+            &ed25519_dalek::Signature::from_slice(dss.signature())?,
+        )?;
+        Ok(())
+    };
+    check().map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadSignature))
 }
 
 /// Minimal X.509 CN extraction — the CN is the base64url public key.
@@ -1341,20 +1552,32 @@ impl ClientCertVerifier for AcceptAllClientCerts {
 
     fn verify_tls12_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        verify_device_root_signature(message, cert, dss)?;
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        verify_device_root_signature(message, cert, dss)?;
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
@@ -1453,6 +1676,9 @@ pub(crate) fn build_quinn_client_config(
 }
 
 #[cfg(test)]
+mod device_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1479,8 +1705,8 @@ mod tests {
     #[test]
     fn allocate_index_skips_occupied_slots() {
         let mut s = RelayState::new();
-        s.index_to_peer.insert(1, "peer-a".into());
-        s.index_to_peer.insert(2, "peer-b".into());
+        s.index_to_peer.insert(1, ("peer-a".into(), None));
+        s.index_to_peer.insert(2, ("peer-b".into(), None));
         // next_index = 1, both 1 and 2 occupied → first free is 3
         assert_eq!(s.allocate_index(), Some(3));
     }
@@ -1490,7 +1716,7 @@ mod tests {
         let mut s = RelayState::new();
         // Fill all 254 slots (1..=254)
         for i in 1u8..=254 {
-            s.index_to_peer.insert(i, format!("peer-{i}"));
+            s.index_to_peer.insert(i, (format!("peer-{i}"), None));
         }
         assert_eq!(s.allocate_index(), None);
     }
@@ -1529,7 +1755,7 @@ mod tests {
         assert!(!s.rooms.contains_key("room-solo"));
     }
 
-    fn test_features() -> Arc<FeatureRegistry> {
+    pub(super) fn test_features() -> Arc<FeatureRegistry> {
         let r = Arc::new(FeatureRegistry::new());
         for cap in [
             doubleslash_features::wellknown::core_audio_opus(),

@@ -8,6 +8,13 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::crypto::generate_nonce_hex;
+use doubleslash_features::device::{DeviceId, MAX_LIVE_DEVICE_ROUTES};
+
+#[derive(Clone, Copy, Debug, Default)]
+struct DeviceMembership {
+    voice: bool,
+    chat: bool,
+}
 
 /// Max participants per SFU room.
 pub const MAX_ROOM_SIZE: usize = 32;
@@ -94,6 +101,8 @@ pub struct SFURoom {
     active_speakers: Vec<String>,
     /// Text-chat subscribers (not voice-joined)
     subscribers: std::collections::HashSet<String>,
+    /// A contact remains present while any of its devices is participating.
+    device_members: HashMap<(String, Option<DeviceId>), DeviceMembership>,
     /// Allowed peers for private rooms
     allowed: std::collections::HashSet<String>,
     /// Invite tokens: token → InviteToken
@@ -139,6 +148,7 @@ impl SFURoom {
             speaker_scores: HashMap::new(),
             active_speakers: Vec::new(),
             subscribers: std::collections::HashSet::new(),
+            device_members: HashMap::new(),
             allowed: std::collections::HashSet::new(),
             invite_tokens: HashMap::new(),
             empty_since: None,
@@ -331,6 +341,8 @@ impl SFURoom {
     /// Remove a peer from both participants and subscribers.
     pub fn remove_peer_entirely(&mut self, peer_id: &str) -> bool {
         let peer_id = normalize_peer_id(peer_id);
+        self.device_members
+            .retain(|(identity, _), _| identity != &peer_id);
         let was_participant = self.participants.remove(&peer_id).is_some();
         let was_subscriber = self.subscribers.remove(&peer_id);
         if was_participant {
@@ -341,6 +353,98 @@ impl SFURoom {
             self.mark_unused_if_empty();
         }
         was_participant || was_subscriber
+    }
+
+    fn set_device_membership(
+        &mut self,
+        peer_id: &str,
+        device: Option<DeviceId>,
+        voice: Option<bool>,
+        chat: Option<bool>,
+    ) -> bool {
+        let peer_id = normalize_peer_id(peer_id);
+        let key = (peer_id.clone(), device);
+        let mut membership = self.device_members.get(&key).copied().unwrap_or_default();
+        if voice == Some(true) && !self.participants.contains_key(&peer_id) && self.is_full() {
+            return false;
+        }
+        if !self.device_members.contains_key(&key)
+            && device.is_some()
+            && self
+                .device_members
+                .keys()
+                .filter(|(identity, device)| identity == &peer_id && device.is_some())
+                .count()
+                >= MAX_LIVE_DEVICE_ROUTES
+        {
+            return false;
+        }
+        if let Some(voice) = voice {
+            membership.voice = voice;
+        }
+        if let Some(chat) = chat {
+            membership.chat = chat;
+        }
+        if membership.voice || membership.chat {
+            self.device_members.insert(key, membership);
+        } else {
+            self.device_members.remove(&key);
+        }
+        let voice = self
+            .device_members
+            .iter()
+            .any(|((identity, _), state)| identity == &peer_id && state.voice);
+        let chat = self
+            .device_members
+            .iter()
+            .any(|((identity, _), state)| identity == &peer_id && state.chat);
+        if voice {
+            self.add_participant(&peer_id);
+        } else {
+            self.remove_participant(&peer_id);
+        }
+        if chat && !voice {
+            self.subscribe(&peer_id);
+        } else {
+            self.unsubscribe(&peer_id);
+        }
+        true
+    }
+
+    /// Device roster for endpoint election; public contact IDs remain unchanged.
+    pub fn device_roster(&self) -> Vec<serde_json::Value> {
+        let mut entries: Vec<_> = self.device_members.iter().collect();
+        entries.sort_by_key(|(key, _)| *key);
+        entries
+            .into_iter()
+            .map(|((identity, device), state)| {
+                serde_json::json!({
+                    "identity": identity, "device": device, "voice": state.voice,
+                })
+            })
+            .collect()
+    }
+
+    /// Exact endpoints subscribed to chat, including voice participants.
+    pub fn chat_endpoints(&self) -> Vec<(String, Option<DeviceId>)> {
+        self.device_members
+            .iter()
+            .filter(|(_, state)| state.voice || state.chat)
+            .map(|(endpoint, _)| endpoint.clone())
+            .collect()
+    }
+
+    /// All peers who should receive text chat: participants + subscribers.
+    pub fn chat_delivery_endpoints(
+        &self,
+        sender: &str,
+        source_device: Option<DeviceId>,
+    ) -> Vec<(String, Option<DeviceId>)> {
+        let sender = normalize_peer_id(sender);
+        self.chat_endpoints()
+            .into_iter()
+            .filter(|(identity, device)| identity != &sender || *device != source_device)
+            .collect()
     }
 
     /// All peers who should receive text chat: participants + subscribers.
@@ -489,6 +593,15 @@ impl SFURoomManager {
 
     /// Join a peer to a room. Returns (success, member_list).
     pub fn join_room(&mut self, peer_id: &str, room_id: &str) -> (bool, Vec<String>) {
+        self.join_room_endpoint(peer_id, None, room_id)
+    }
+
+    pub fn join_room_endpoint(
+        &mut self,
+        peer_id: &str,
+        device: Option<DeviceId>,
+        room_id: &str,
+    ) -> (bool, Vec<String>) {
         let peer_id = normalize_peer_id(peer_id);
         let Some(room) = self.rooms.get_mut(room_id) else {
             return (false, vec![]);
@@ -496,7 +609,7 @@ impl SFURoomManager {
         if !room.is_peer_allowed(&peer_id) {
             return (false, vec![]);
         }
-        let ok = room.add_participant(&peer_id);
+        let ok = room.set_device_membership(&peer_id, device, Some(true), None);
         let members = room.participant_ids();
         (ok, members)
     }
@@ -517,10 +630,19 @@ impl SFURoomManager {
 
     /// Leave a room. Returns remaining member list.
     pub fn leave_room(&mut self, peer_id: &str, room_id: &str) -> Vec<String> {
+        self.leave_room_endpoint(peer_id, None, room_id)
+    }
+
+    pub fn leave_room_endpoint(
+        &mut self,
+        peer_id: &str,
+        device: Option<DeviceId>,
+        room_id: &str,
+    ) -> Vec<String> {
         let Some(room) = self.rooms.get_mut(room_id) else {
             return vec![];
         };
-        room.remove_participant(peer_id);
+        room.set_device_membership(peer_id, device, Some(false), None);
         room.mark_unused_if_empty();
         let members = room.participant_ids();
         // GC anonymous rooms (non-default, no creator) when empty
@@ -570,6 +692,23 @@ impl SFURoomManager {
 
     pub fn get_room(&self, room_id: &str) -> Option<&SFURoom> {
         self.rooms.get(room_id)
+    }
+
+    /// Remove one disconnected device without removing its sibling's presence.
+    pub fn remove_endpoint_from_all(
+        &mut self,
+        peer_id: &str,
+        device: Option<DeviceId>,
+    ) -> Vec<String> {
+        let peer_id = normalize_peer_id(peer_id);
+        let mut changed = Vec::new();
+        for (room_id, room) in &mut self.rooms {
+            if room.device_members.contains_key(&(peer_id.clone(), device)) {
+                room.set_device_membership(&peer_id, device, Some(false), Some(false));
+                changed.push(room_id.clone());
+            }
+        }
+        changed
     }
 
     /// Active-speaker gate for an inbound audio frame. Records `sender`'s
@@ -666,10 +805,18 @@ impl SFURoomManager {
 
     /// Subscribe a peer to a room's text chat without voice join.
     pub fn subscribe(&mut self, peer_id: &str, room_id: &str) -> bool {
+        self.subscribe_endpoint(peer_id, None, room_id)
+    }
+
+    pub fn subscribe_endpoint(
+        &mut self,
+        peer_id: &str,
+        device: Option<DeviceId>,
+        room_id: &str,
+    ) -> bool {
         if let Some(room) = self.rooms.get_mut(room_id) {
             if room.is_peer_allowed(peer_id) {
-                room.subscribe(peer_id);
-                return true;
+                return room.set_device_membership(peer_id, device, None, Some(true));
             }
         }
         false
@@ -677,8 +824,12 @@ impl SFURoomManager {
 
     /// Unsubscribe a peer from a room's text chat.
     pub fn unsubscribe(&mut self, peer_id: &str, room_id: &str) {
+        self.unsubscribe_endpoint(peer_id, None, room_id);
+    }
+
+    pub fn unsubscribe_endpoint(&mut self, peer_id: &str, device: Option<DeviceId>, room_id: &str) {
         if let Some(room) = self.rooms.get_mut(room_id) {
-            room.unsubscribe(peer_id);
+            room.set_device_membership(peer_id, device, None, Some(false));
         }
     }
 
@@ -842,6 +993,128 @@ pub struct SFURoomStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_identity_devices_keep_independent_voice_and_text_membership() {
+        let mut manager = SFURoomManager::new();
+        let desktop = Some(DeviceId([1; 32]));
+        let phone = Some(DeviceId([2; 32]));
+        let owner = crate::crypto::b64url_encode(&[8; 32]);
+        let padded = format!("{owner}=");
+        assert!(manager.subscribe_endpoint(&owner, desktop, DEFAULT_ROOM_ID));
+        assert!(manager.subscribe_endpoint(&padded, phone, DEFAULT_ROOM_ID));
+        assert!(manager.join_room_endpoint(&owner, phone, DEFAULT_ROOM_ID).0);
+        assert_eq!(
+            manager
+                .get_room(DEFAULT_ROOM_ID)
+                .unwrap()
+                .participant_count(),
+            1
+        );
+        assert_eq!(
+            manager.get_chat_recipients(DEFAULT_ROOM_ID),
+            vec![padded.clone()]
+        );
+        manager.unsubscribe_endpoint(&owner, desktop, DEFAULT_ROOM_ID);
+        assert!(manager.is_chat_sender(DEFAULT_ROOM_ID, &owner));
+        assert!(manager.subscribe_endpoint(&owner, desktop, DEFAULT_ROOM_ID));
+        assert!(
+            manager
+                .join_room_endpoint(&owner, desktop, DEFAULT_ROOM_ID)
+                .0
+        );
+        manager.leave_room_endpoint(&owner, phone, DEFAULT_ROOM_ID);
+        assert_eq!(
+            manager
+                .get_room(DEFAULT_ROOM_ID)
+                .unwrap()
+                .participant_count(),
+            1
+        );
+        manager.remove_endpoint_from_all(&owner, desktop);
+        let room = manager.get_room(DEFAULT_ROOM_ID).unwrap();
+        assert_eq!(room.participant_count(), 0);
+        assert_eq!(room.chat_recipient_ids(), vec![padded]);
+        assert_eq!(room.device_roster().len(), 1);
+        manager.unsubscribe_endpoint(&owner, phone, DEFAULT_ROOM_ID);
+        assert!(!manager.is_chat_sender(DEFAULT_ROOM_ID, &owner));
+        assert!(manager
+            .get_room(DEFAULT_ROOM_ID)
+            .unwrap()
+            .device_roster()
+            .is_empty());
+    }
+
+    #[test]
+    fn room_chat_reaches_own_other_device_but_only_while_subscribed() {
+        let mut manager = SFURoomManager::new();
+        let owner = normalize_peer_id(&crate::identity::Identity::generate().public_id());
+        let bare = owner.trim_end_matches('=');
+        let desktop = Some(DeviceId([1; 32]));
+        let phone = Some(DeviceId([2; 32]));
+        assert!(manager.subscribe_endpoint(bare, desktop, DEFAULT_ROOM_ID));
+        assert!(manager.subscribe_endpoint(&owner, phone, DEFAULT_ROOM_ID));
+        assert!(manager.subscribe(&owner, DEFAULT_ROOM_ID));
+        let recipients = manager
+            .get_room(DEFAULT_ROOM_ID)
+            .unwrap()
+            .chat_delivery_endpoints(bare, desktop);
+        assert_eq!(recipients.len(), 2);
+        assert!(recipients.contains(&(owner.clone(), phone)));
+        assert!(recipients.contains(&(owner.clone(), None)));
+        manager.unsubscribe_endpoint(&owner, phone, DEFAULT_ROOM_ID);
+        assert_eq!(
+            manager
+                .get_room(DEFAULT_ROOM_ID)
+                .unwrap()
+                .chat_delivery_endpoints(bare, desktop),
+            vec![(owner.clone(), None)]
+        );
+        manager.unsubscribe_endpoint(&owner, desktop, DEFAULT_ROOM_ID);
+        assert!(manager
+            .get_room(DEFAULT_ROOM_ID)
+            .unwrap()
+            .chat_delivery_endpoints(bare, None)
+            .is_empty());
+    }
+
+    #[test]
+    fn room_device_limit_is_shared_across_voice_and_chat() {
+        let mut manager = SFURoomManager::new();
+        for index in 0..MAX_LIVE_DEVICE_ROUTES {
+            assert!(manager.subscribe_endpoint(
+                "owner",
+                Some(DeviceId([index as u8; 32])),
+                DEFAULT_ROOM_ID
+            ));
+        }
+        assert!(
+            !manager
+                .join_room_endpoint("owner", Some(DeviceId([99; 32])), DEFAULT_ROOM_ID)
+                .0
+        );
+        assert_eq!(
+            manager
+                .get_room(DEFAULT_ROOM_ID)
+                .unwrap()
+                .participant_count(),
+            0
+        );
+        assert!(
+            manager
+                .join_room_endpoint("owner", Some(DeviceId([0; 32])), DEFAULT_ROOM_ID)
+                .0
+        );
+        assert!(manager.subscribe("owner", DEFAULT_ROOM_ID));
+        manager.unsubscribe("owner", DEFAULT_ROOM_ID);
+        assert!(manager.is_chat_sender(DEFAULT_ROOM_ID, "owner"));
+        manager.remove_peer_from_all("owner");
+        assert!(manager
+            .get_room(DEFAULT_ROOM_ID)
+            .unwrap()
+            .device_roster()
+            .is_empty());
+    }
 
     #[test]
     fn durable_descriptors_skip_default_and_anonymous_rooms() {

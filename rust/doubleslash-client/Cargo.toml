@@ -169,6 +169,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "test-util", "macros"] }
 tempfile = "3"
 
 [features]
+device-routing = ["doubleslash-features/device-routing"]
 # Enable this when Qt6 is installed and QTDIR is set.
 # Activates the cxx-qt bridge and QML UI layer.
 qt-ui = ["dep:cxx-qt", "dep:cxx-qt-lib", "dep:cxx", "dep:arboard"]
