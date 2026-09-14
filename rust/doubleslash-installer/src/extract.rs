@@ -124,11 +124,9 @@ fn decompress_archive(archive: &Path, dest_dir: &Path) -> Result<()> {
 
 /// Return the directory that contains the client exe inside an install tree.
 fn bundle_root(install_dir: &Path) -> PathBuf {
-    for folder in [crate::brand::WINDOWS_INSTALL_DIR] {
-        let nested = install_dir.join(folder);
-        if crate::brand::exe_in(&nested) {
-            return nested;
-        }
+    let nested = install_dir.join(crate::brand::WINDOWS_INSTALL_DIR);
+    if crate::brand::exe_in(&nested) {
+        return nested;
     }
     install_dir.to_path_buf()
 }

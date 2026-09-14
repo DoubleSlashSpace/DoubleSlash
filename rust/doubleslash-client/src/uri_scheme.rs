@@ -69,13 +69,11 @@ mod windows {
 
     fn exe_path() -> PathBuf {
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            for folder in ["DoubleSlash"] {
-                let installer = PathBuf::from(&local)
-                    .join(folder)
-                    .join("doubleslash-installer.exe");
-                if installer.exists() {
-                    return installer;
-                }
+            let installer = PathBuf::from(&local)
+                .join("DoubleSlash")
+                .join("doubleslash-installer.exe");
+            if installer.exists() {
+                return installer;
             }
         }
         std::env::current_exe().unwrap_or_else(|_| PathBuf::from("DoubleSlash.exe"))

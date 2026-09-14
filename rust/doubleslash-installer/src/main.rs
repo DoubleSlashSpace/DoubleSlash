@@ -151,15 +151,14 @@ fn is_client_archive(path: &std::path::Path) -> bool {
         return true;
     }
     let suffix = "-win64";
-    for prefix in ["DoubleSlash-"] {
-        if stem.len() > prefix.len() + suffix.len()
-            && stem[..prefix.len()].eq_ignore_ascii_case(prefix)
-            && stem.ends_with(suffix)
-        {
-            let version = &stem[prefix.len()..stem.len() - suffix.len()];
-            if version_token_is_semver(version) {
-                return true;
-            }
+    let prefix = "DoubleSlash-";
+    if stem.len() > prefix.len() + suffix.len()
+        && stem[..prefix.len()].eq_ignore_ascii_case(prefix)
+        && stem.ends_with(suffix)
+    {
+        let version = &stem[prefix.len()..stem.len() - suffix.len()];
+        if version_token_is_semver(version) {
+            return true;
         }
     }
     false

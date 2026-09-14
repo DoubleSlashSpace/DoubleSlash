@@ -158,24 +158,20 @@ pub fn is_newer(remote: &str, local: &str) -> bool {
 /// Kill all running DoubleSlash.exe processes (Windows).
 #[cfg(windows)]
 pub fn kill_running_instances() {
-    for image in [crate::brand::WINDOWS_EXE] {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/IM", image])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/IM", crate::brand::WINDOWS_EXE])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 #[cfg(not(windows))]
 pub fn kill_running_instances() {
-    for pattern in ["DoubleSlash"] {
-        let _ = std::process::Command::new("pkill")
-            .args(["-f", pattern])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
+    let _ = std::process::Command::new("pkill")
+        .args(["-f", "DoubleSlash"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 /// Installed launcher filename for the given update channel.

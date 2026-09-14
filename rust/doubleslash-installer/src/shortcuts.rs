@@ -89,11 +89,9 @@ fn create_lnk_shortcut(
 pub fn remove_shortcuts() -> Result<()> {
     // Desktop shortcut
     if let Some(desktop) = dirs::desktop_dir() {
-        for name in ["DoubleSlash.lnk"] {
-            let lnk = desktop.join(name);
-            if lnk.exists() {
-                std::fs::remove_file(&lnk)?;
-            }
+        let lnk = desktop.join("DoubleSlash.lnk");
+        if lnk.exists() {
+            std::fs::remove_file(&lnk)?;
         }
     }
 
@@ -101,11 +99,9 @@ pub fn remove_shortcuts() -> Result<()> {
     let appdata = std::env::var("APPDATA").unwrap_or_default();
     let programs =
         std::path::PathBuf::from(appdata).join("Microsoft\\Windows\\Start Menu\\Programs");
-    for name in ["DoubleSlash.lnk"] {
-        let start_menu = programs.join(name);
-        if start_menu.exists() {
-            std::fs::remove_file(&start_menu)?;
-        }
+    let start_menu = programs.join("DoubleSlash.lnk");
+    if start_menu.exists() {
+        std::fs::remove_file(&start_menu)?;
     }
 
     Ok(())
