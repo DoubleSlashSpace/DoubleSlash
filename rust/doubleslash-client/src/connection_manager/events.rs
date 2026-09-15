@@ -17,6 +17,10 @@ pub enum ConnectionEvent {
     PeerDisconnected(String),
     /// The node does not negotiate device routing; no identity was registered.
     DeviceRoutingUnsupported { peer_id: String },
+    /// Another device signed in with this identity runs a build without device
+    /// routing, so room keys for `room_id` cannot be coordinated and room chat
+    /// is paused until that device is updated. Emitted once per room.
+    OwnDeviceOutdated { room_id: String },
     /// An inbound signaling message for the app layer to handle.
     SignalingMessage(SignalingMessage),
     /// A text chat message arrived.

@@ -136,6 +136,9 @@ pub struct ConnectionManager {
     device_id: Option<doubleslash_features::DeviceId>,
     room_device_rosters: HashMap<String, Vec<device_session::RoomEndpoint>>,
     own_room_key_rounds: HashMap<String, device_session::OwnKeyRound>,
+    /// Rooms already warned about an own-identity device without device
+    /// routing (`ConnectionEvent::OwnDeviceOutdated`); cleared on recovery.
+    outdated_own_device_rooms: HashSet<String>,
     device_calls: HashMap<String, device_calls::DeviceCall>,
     peer_store: Arc<RwLock<PeerStore>>,
 
@@ -492,6 +495,7 @@ impl ConnectionManager {
             device_id: None,
             room_device_rosters: HashMap::new(),
             own_room_key_rounds: HashMap::new(),
+            outdated_own_device_rooms: HashSet::new(),
             device_calls: HashMap::new(),
             identity,
             peer_store,

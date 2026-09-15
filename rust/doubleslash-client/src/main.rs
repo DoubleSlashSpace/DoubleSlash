@@ -867,6 +867,9 @@ async fn handle_event(
         ConnectionEvent::DeviceRoutingUnsupported { peer_id } => {
             warn!("Node {peer_id} needs an update for simultaneous identity use");
         }
+        ConnectionEvent::OwnDeviceOutdated { room_id } => {
+            warn!("Another device on this identity needs an update; room {room_id} chat is paused");
+        }
         ConnectionEvent::SupernodeConnected(u) => {
             info!("Supernode connected: {}", u);
             let host_key = u.trim_end_matches('=').to_owned();

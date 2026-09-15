@@ -108,10 +108,28 @@ impl ConnectionManager {
         }
         self.room_device_rosters.insert(scope, roster);
         let devices = self.room_devices(room, &self.identity.public_id());
-        if devices.contains(&None) || devices.len() > MAX_LIVE_DEVICE_ROUTES {
+        if devices.contains(&None) {
+            // Another device signed in as us runs a build without device
+            // routing. Keys cannot be coordinated with it, so the round is
+            // abandoned and nobody in the room gets a key: say so once per room
+            // rather than leaving room chat silently dead.
+            if self.outdated_own_device_rooms.insert(room.to_owned()) {
+                tracing::warn!(
+                    "[own-room-key] {room}: another device on this identity lacks device routing; room keys paused until it is updated"
+                );
+                self.emit_event(
+                    crate::connection_manager::ConnectionEvent::OwnDeviceOutdated {
+                        room_id: room.to_owned(),
+                    },
+                );
+            }
+            self.own_room_key_rounds.remove(room);
+            return false;
+        }
+        self.outdated_own_device_rooms.remove(room);
+        if devices.len() > MAX_LIVE_DEVICE_ROUTES {
             tracing::debug!(
-                "[own-room-key] {room}: no round (legacy endpoint={}, devices={})",
-                devices.contains(&None),
+                "[own-room-key] {room}: no round ({} devices exceeds the live route limit)",
                 devices.len()
             );
             self.own_room_key_rounds.remove(room);
@@ -198,13 +216,20 @@ impl ConnectionManager {
         {
             return;
         }
-        round.last_request = Some(Instant::now());
+        // Ask only siblings that have not answered this round. Once every one
+        // has, the round is settled and there is nothing to ask; a changed
+        // roster starts a new round, which asks again. Re-asking a settled
+        // round on every tick was constant traffic between a user's devices.
         let targets: Vec<_> = round
             .members
             .iter()
             .copied()
-            .filter(|device| *device != me)
+            .filter(|device| *device != me && !round.heard.contains(device))
             .collect();
+        if targets.is_empty() {
+            return;
+        }
+        round.last_request = Some(Instant::now());
         let payload = json!({"room_id": room, "roster": round.fingerprint,
             "challenge": round.challenge, "request": true});
         tracing::debug!(
@@ -827,5 +852,65 @@ mod tests {
         phone.manager.handle_own_room_key_sync(&stale).await;
         assert!(!phone.manager.own_room_key_ready("room"));
         assert!(!phone.manager.group_keys.has_real_key("room"));
+    }
+
+    #[tokio::test]
+    async fn settled_round_stops_asking_siblings() {
+        let identity = Arc::new(crate::identity::Identity::generate());
+        let mut phone = client(identity.clone(), 1);
+        let mut desktop = client(identity, 2);
+        begin(&mut phone, &mut desktop).await;
+        settle(&mut phone, &mut desktop).await;
+        for client in [&mut phone, &mut desktop] {
+            assert!(client.manager.own_room_key_ready("room"));
+            // Past the resend throttle, a settled round must still send nothing.
+            client
+                .manager
+                .own_room_key_rounds
+                .get_mut("room")
+                .unwrap()
+                .last_request = None;
+            client.manager.request_own_room_key("room").await;
+            client.manager.retry_own_room_key_sync().await;
+            assert!(
+                client.outgoing.try_recv().is_err(),
+                "a settled round kept asking"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn outdated_own_device_warns_once_and_rearms_after_recovery() {
+        use crate::connection_manager::ConnectionEvent;
+        let identity = Arc::new(crate::identity::Identity::generate());
+        let mut desktop = client(identity.clone(), 2);
+        let me = identity.public_id();
+        let with_legacy = json!([
+            {"identity": me, "device": desktop.manager.device_id, "voice": false},
+            {"identity": me, "device": null, "voice": false},
+        ]);
+        for _ in 0..3 {
+            assert!(!desktop
+                .manager
+                .record_room_devices("host", "room", Some(&with_legacy)));
+        }
+        let warned = std::iter::from_fn(|| desktop.events.try_recv().ok())
+            .filter(|event| matches!(event, ConnectionEvent::OwnDeviceOutdated { room_id } if room_id == "room"))
+            .count();
+        assert_eq!(warned, 1, "repeated rosters must not repeat the warning");
+
+        let updated =
+            json!([{"identity": me, "device": desktop.manager.device_id, "voice": false}]);
+        assert!(desktop
+            .manager
+            .record_room_devices("host", "room", Some(&updated)));
+        assert!(!desktop
+            .manager
+            .record_room_devices("host", "room", Some(&with_legacy)));
+        assert!(
+            std::iter::from_fn(|| desktop.events.try_recv().ok())
+                .any(|event| matches!(event, ConnectionEvent::OwnDeviceOutdated { .. })),
+            "a recurrence after recovery must warn again"
+        );
     }
 }

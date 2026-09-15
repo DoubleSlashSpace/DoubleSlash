@@ -8264,6 +8264,12 @@ fn dispatch_event(
                     "This node needs an update before it can connect multiple devices using one identity."));
             });
         }
+        ConnectionEvent::OwnDeviceOutdated { .. } => {
+            let _ = qt_thread.queue(|mut bridge| {
+                bridge.as_mut().set_session_banner(QString::from(
+                    "Another device signed in as you is running an older DoubleSlash. Room chat is paused until it is updated."));
+            });
+        }
         ConnectionEvent::ClusterMembersUpdated {
             supernode_id,
             members,
