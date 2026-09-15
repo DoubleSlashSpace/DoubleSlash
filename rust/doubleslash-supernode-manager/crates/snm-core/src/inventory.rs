@@ -91,6 +91,9 @@ pub struct Defaults {
     /// Build front-end: `"cargo"` (default), `"zigbuild"`, or `"cross"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_tool: Option<String>,
+    /// Comma-separated Cargo features for `build-deploy`, e.g. `"device-routing"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_features: Option<String>,
     /// Supernode manifest defaults applied to new instances unless overridden.
     #[serde(default)]
     pub supernode: SupernodeDefaults,
@@ -183,6 +186,7 @@ impl Default for Defaults {
             build_source: None,
             build_target: None,
             build_tool: None,
+            build_features: None,
             supernode: SupernodeDefaults::default(),
         }
     }

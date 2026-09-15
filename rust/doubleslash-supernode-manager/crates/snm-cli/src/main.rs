@@ -154,6 +154,10 @@ enum Command {
         /// Omit only when building natively for the same OS/arch as the remote.
         #[arg(long)]
         target: Option<String>,
+        /// Comma-separated Cargo features, e.g. device-routing.
+        /// Defaults to `defaults.build_features` from the inventory.
+        #[arg(long)]
+        features: Option<String>,
         /// Build front-end: cargo (default), zigbuild, or cross
         #[arg(long, default_value = "cargo")]
         build_tool: String,
@@ -251,6 +255,7 @@ async fn run() -> Result<()> {
             selector,
             source,
             target,
+            features,
             build_tool,
             allow_decluster,
         } => {
@@ -259,6 +264,7 @@ async fn run() -> Result<()> {
                 selector,
                 &source,
                 target.as_deref(),
+                features.as_deref(),
                 &build_tool,
                 ssh_backend,
                 allow_decluster,
@@ -585,27 +591,38 @@ fn confirm_uninstall(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors the CLI flags; collapsing them would hide the --features override from the call site"
+)]
 async fn cmd_build_deploy(
     path: &PathBuf,
     args: TargetArgs,
     source: &std::path::Path,
     target_triple: Option<&str>,
+    features: Option<&str>,
     build_tool_str: &str,
     backend: SshBackend,
     allow_decluster: bool,
 ) -> Result<()> {
     let tool = LocalBuildTool::parse(build_tool_str).map_err(|e| anyhow::anyhow!(e))?;
+    let inv = Inventory::load(path)?;
+    // An explicit --features wins; otherwise use the inventory default so CLI
+    // and TUI deploys build the same binary.
+    let features = features.or(inv.defaults.build_features.as_deref());
 
     println!("building doubleslash-supernode from {} …", source.display());
     if let Some(triple) = target_triple {
-        println!("  target: {triple}");
+        println!("  target:   {triple}");
     }
-    println!("  tool:   {build_tool_str}");
+    if let Some(features) = features {
+        println!("  features: {features}");
+    }
+    println!("  tool:     {build_tool_str}");
 
-    let binary = build_local_binary(source, target_triple, tool)?;
+    let binary = build_local_binary(source, target_triple, features, tool)?;
     println!("built: {}", binary.display());
 
-    let inv = Inventory::load(path)?;
     let cache = ClusterCache::load(&cache_path_for(path)).unwrap_or_default();
     let selector = selector_from(args);
     for resolved in inv.resolve_instances(&selector)? {

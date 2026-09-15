@@ -602,6 +602,10 @@ impl ConnectionManager {
                             .any(|scope| scope.ends_with(&suffix))
                         || self.failover_pending_room.as_deref() == Some(room_id.as_str());
                     if !active || self.resolve_supernode_ws_target(&msg.sender).is_none() {
+                        tracing::debug!(
+                            "[group-key] ignoring SfuMembers for room {room_id} from {} (active={active})",
+                            &msg.sender[..8.min(msg.sender.len())]
+                        );
                         return;
                     }
                 }

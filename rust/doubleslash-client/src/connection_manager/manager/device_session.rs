@@ -90,6 +90,7 @@ impl ConnectionManager {
             .cloned()
             .and_then(|value| serde_json::from_value::<Vec<RoomEndpoint>>(value).ok());
         let Some(roster) = roster.filter(|roster| roster.len() <= 1024) else {
+            tracing::debug!("[own-room-key] {room}: no usable device roster from {supernode}");
             self.room_device_rosters.remove(&scope);
             self.own_room_key_rounds.remove(room);
             return false;
@@ -98,6 +99,9 @@ impl ConnectionManager {
             entry.identity.trim_end_matches('=') == self.identity.public_id().trim_end_matches('=')
                 && entry.device == Some(me)
         }) {
+            tracing::debug!(
+                "[own-room-key] {room}: roster from {supernode} does not list this device"
+            );
             self.room_device_rosters.remove(&scope);
             self.own_room_key_rounds.remove(room);
             return false;
@@ -105,6 +109,11 @@ impl ConnectionManager {
         self.room_device_rosters.insert(scope, roster);
         let devices = self.room_devices(room, &self.identity.public_id());
         if devices.contains(&None) || devices.len() > MAX_LIVE_DEVICE_ROUTES {
+            tracing::debug!(
+                "[own-room-key] {room}: no round (legacy endpoint={}, devices={})",
+                devices.contains(&None),
+                devices.len()
+            );
             self.own_room_key_rounds.remove(room);
             return false;
         }
@@ -124,6 +133,10 @@ impl ConnectionManager {
         }
         let mut challenge = [0; 32];
         rand::rngs::OsRng.fill_bytes(&mut challenge);
+        tracing::debug!(
+            "[own-room-key] {room}: new round over {} device(s)",
+            members.len()
+        );
         self.own_room_key_rounds.insert(
             room.to_owned(),
             OwnKeyRound {
@@ -194,6 +207,10 @@ impl ConnectionManager {
             .collect();
         let payload = json!({"room_id": room, "roster": round.fingerprint,
             "challenge": round.challenge, "request": true});
+        tracing::debug!(
+            "[own-room-key] {room}: requesting key from {} sibling device(s)",
+            targets.len()
+        );
         for device in targets {
             self.send_own_room_key_frame(device, payload.clone()).await;
         }
@@ -239,11 +256,16 @@ impl ConnectionManager {
             return;
         };
         let Some(round) = self.own_room_key_rounds.get(room) else {
+            tracing::debug!("[own-room-key] {room}: sync from a sibling but no round here");
             return;
         };
-        if !round.members.contains(&sender)
-            || message.payload.get("roster").and_then(Value::as_str) != Some(&round.fingerprint)
-        {
+        let in_round = round.members.contains(&sender);
+        let roster_match = message.payload.get("roster").and_then(Value::as_str)
+            == Some(round.fingerprint.as_str());
+        if !in_round || !roster_match {
+            tracing::debug!(
+                "[own-room-key] {room}: dropping sibling sync (in_round={in_round}, roster_match={roster_match})"
+            );
             return;
         }
         let Some(challenge) = message
@@ -264,11 +286,13 @@ impl ConnectionManager {
             let payload = json!({"room_id": room, "roster": round.fingerprint, "challenge": challenge,
                 "request": false, "epoch": epoch, "key": key.map(|key| crate::crypto::b64url_encode(&key))});
             self.send_own_room_key_frame(sender, payload).await;
+            tracing::debug!("[own-room-key] {room}: answered a sibling key request");
             return;
         }
         if challenge != round.challenge
             || message.payload.get("request").and_then(Value::as_bool) != Some(false)
         {
+            tracing::debug!("[own-room-key] {room}: dropping sibling reply with a stale challenge");
             return;
         }
         let Some(epoch) = message
@@ -297,6 +321,9 @@ impl ConnectionManager {
             if has_key && current == epoch && self.group_keys.epoch_key(room, epoch) != Some(key) {
                 if let Some(round) = self.own_room_key_rounds.get_mut(room) {
                     round.conflict = true;
+                    tracing::debug!(
+                        "[own-room-key] {room}: sibling holds a different key at epoch {epoch}"
+                    );
                 }
                 return;
             }
@@ -306,6 +333,11 @@ impl ConnectionManager {
         }
         if let Some(round) = self.own_room_key_rounds.get_mut(room) {
             round.heard.insert(sender);
+            tracing::debug!(
+                "[own-room-key] {room}: heard sibling ({} of {} siblings)",
+                round.heard.len(),
+                round.members.len().saturating_sub(1)
+            );
         }
         // Reconcile after handoff without inventing a new membership snapshot.
         let suffix = format!(":{room}");

@@ -9,6 +9,11 @@ name = "doubleslash_features"
 crate-type = ["rlib"]
 
 [features]
+# Several live devices per identity. On by default so every build a user can
+# end up running (CI nightly, plain local builds, APK, supernodes) routes the
+# same way: a legacy client and a device-routing client on one identity evict
+# each other.
+default = ["device-routing"]
 device-routing = []
 
 [dependencies]

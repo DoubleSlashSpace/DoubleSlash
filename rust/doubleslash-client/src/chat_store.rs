@@ -186,7 +186,64 @@ impl ChatStore {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| default_dir.join(CHAT_DB_FILENAME));
         let key = identity.derive_store_key(CHAT_STORE_LABEL)?;
-        Self::open_with_key(&key, &path)
+        let store = Self::open_with_key(&key, &path)?;
+        if let Some(legacy) = crate::store_migration::legacy_key(identity, CHAT_STORE_LABEL)? {
+            if let Err(e) = store.upgrade_legacy_rows(&legacy) {
+                tracing::warn!("chat store: could not re-encrypt pre-rename rows: {e}");
+            }
+        }
+        Ok(store)
+    }
+
+    /// Re-encrypt rows written under the pre-rename label (see
+    /// [`crate::store_migration`]). Bodies are only written by inserts, which
+    /// take a fresh rowid under the current key, so pre-rename rows always sort
+    /// first: when the oldest row already reads, there is nothing to upgrade.
+    fn upgrade_legacy_rows(&self, legacy: &[u8; 32]) -> Result<usize> {
+        use crate::store_migration::reencrypt;
+
+        let mut conn = self.conn.lock();
+        let oldest: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT body FROM messages ORDER BY rowid LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(oldest) = oldest else {
+            return Ok(0);
+        };
+        if reencrypt(&oldest, &self.key, legacy)?.is_none() {
+            return Ok(0);
+        }
+
+        let rows: Vec<(String, Vec<u8>, Vec<u8>)> = {
+            let mut stmt = conn.prepare("SELECT id, body, sender_handle FROM messages")?;
+            let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        let tx = conn.transaction()?;
+        let mut upgraded = 0usize;
+        {
+            let mut stmt =
+                tx.prepare("UPDATE messages SET body = ?1, sender_handle = ?2 WHERE id = ?3")?;
+            for (id, body, handle) in rows {
+                let new_body = reencrypt(&body, &self.key, legacy)?;
+                let new_handle = reencrypt(&handle, &self.key, legacy)?;
+                if new_body.is_none() && new_handle.is_none() {
+                    continue;
+                }
+                stmt.execute(params![
+                    new_body.unwrap_or(body),
+                    new_handle.unwrap_or(handle),
+                    id
+                ])?;
+                upgraded += 1;
+            }
+        }
+        tx.commit()?;
+        tracing::info!("chat store: re-encrypted {upgraded} pre-rename message(s)");
+        Ok(upgraded)
     }
 
     /// Open with the history subkey, without granting identity signing authority.

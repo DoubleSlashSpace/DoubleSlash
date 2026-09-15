@@ -466,8 +466,14 @@ async fn build_deploy_one(
     // stalling the async runtime.
     let source_clone = source.clone();
     let target_clone = target.clone();
+    let features = inventory.defaults.build_features.clone();
     let binary_result = tokio::task::spawn_blocking(move || {
-        build_local_binary(&source_clone, target_clone.as_deref(), tool)
+        build_local_binary(
+            &source_clone,
+            target_clone.as_deref(),
+            features.as_deref(),
+            tool,
+        )
     })
     .await;
 

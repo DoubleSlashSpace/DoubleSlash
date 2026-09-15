@@ -3561,14 +3561,10 @@ impl ffi::AppBridge {
     }
 
     fn load_room_chat_history(mut self: Pin<&mut Self>, supernode_id: &QString, room_id: &QString) {
-        let Some(sn) = self
-            .rust()
-            .resolve_supernode_node_id_str(&supernode_id.to_string())
-        else {
-            return;
-        };
+        let requested = supernode_id.to_string();
         let rid = room_id.to_string();
-        let key = room_chat_history_key(&sn, &rid);
+        // Stored history is keyed by room alone, so it needs no host lookup.
+        // Only the in-memory fallback below does.
         if let Some(ref cs) = self.rust().chat_store {
             let store_key = room_chat_store_peer_id(&rid);
             let json_msgs: Vec<String> = {
@@ -3576,7 +3572,7 @@ impl ffi::AppBridge {
                 cs.get_history(&store_key, 0)
                     .map(|rows| {
                         rows.iter()
-                            .map(|m| room_chat_message_to_json(r, m).to_string())
+                            .map(|m| room_chat_message_to_json(r, m, &requested).to_string())
                             .collect()
                     })
                     .unwrap_or_default()
@@ -3587,6 +3583,10 @@ impl ffi::AppBridge {
             }
             return;
         }
+        let Some(sn) = self.rust().resolve_supernode_node_id_str(&requested) else {
+            return;
+        };
+        let key = room_chat_history_key(&sn, &rid);
         let msgs: Vec<String> = self
             .rust()
             .room_chat_history
@@ -5937,15 +5937,17 @@ fn chat_message_to_json(msg: &crate::chat_store::ChatMessage) -> serde_json::Val
     })
 }
 
+/// `supernode_id` is the host the panel asked for, not a room-store lookup:
+/// the store holds a copy of a cluster room for each member node, and
+/// RoomPanel drops rows whose host differs from its own, so a lookup that
+/// found a sibling's copy left the room's history blank.
 fn room_chat_message_to_json(
     bridge: &AppBridgeRust,
     msg: &crate::chat_store::ChatMessage,
+    supernode_id: &str,
 ) -> serde_json::Value {
     let sender = room_chat_display_sender(bridge, &msg.sender_handle, &msg.sender);
-    // The store key carries the room id alone; the UI still filters on the
-    // hosting node, so look that up live rather than reading it off the key.
     let room_id = parse_room_chat_store_key(&msg.peer_id);
-    let supernode_id = room_host_for(bridge, &room_id);
     serde_json::json!({
         "msg_id": msg.id,
         "sender": sender,
@@ -5977,23 +5979,6 @@ fn parse_room_chat_store_key(store_key: &str) -> String {
         Some((_legacy_host, room_id)) => room_id.to_owned(),
         None => rest.to_owned(),
     }
-}
-
-/// Which supernode currently hosts `room_id`, for UI filtering.
-///
-/// The conversation key no longer encodes a host — a room's identity is its
-/// id — so the live answer comes from the room store instead.
-fn room_host_for(bridge: &AppBridgeRust, room_id: &str) -> String {
-    let Some(rs) = bridge.room_store.as_ref() else {
-        return String::new();
-    };
-    let store = rs.read();
-    store
-        .list()
-        .into_iter()
-        .find(|entry| entry.room_id == room_id)
-        .map(|entry| entry.supernode_id.clone())
-        .unwrap_or_default()
 }
 
 fn attachment_body_label(kind: &crate::chat_store::MessageKind, name: &str) -> String {

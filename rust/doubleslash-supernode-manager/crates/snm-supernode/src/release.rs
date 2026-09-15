@@ -65,10 +65,12 @@ impl LocalBuildTool {
 /// * `target_triple` — Rust target triple, e.g. `"x86_64-unknown-linux-musl"`.
 ///   Pass `None` to build for the host platform (only useful when the host and
 ///   remote share the same OS/arch).
+/// * `features` — comma-separated Cargo features, e.g. `"device-routing"`.
 /// * `tool` — which build front-end to invoke.
 pub fn build_local_binary(
     source_dir: &std::path::Path,
     target_triple: Option<&str>,
+    features: Option<&str>,
     tool: LocalBuildTool,
 ) -> Result<PathBuf> {
     if !source_dir.join("Cargo.toml").exists() {
@@ -78,7 +80,7 @@ pub fn build_local_binary(
         );
     }
 
-    // Assemble: `cargo [zigbuild] build --release [--target <triple>]`
+    // Assemble: `cargo [zigbuild] build --release [--target <triple>] [--features <list>]`
     let mut cmd = std::process::Command::new(tool.as_str());
     cmd.current_dir(source_dir);
     // `cargo zigbuild` is itself the subcommand (replaces `build`).
@@ -91,6 +93,9 @@ pub fn build_local_binary(
     cmd.arg("--release");
     if let Some(triple) = target_triple {
         cmd.arg("--target").arg(triple);
+    }
+    if let Some(features) = features.map(str::trim).filter(|f| !f.is_empty()) {
+        cmd.arg("--features").arg(features);
     }
 
     // On Windows, cargo-zigbuild needs zig.exe on PATH.  It is often installed

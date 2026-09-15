@@ -247,26 +247,20 @@ App-private storage is not writable by `adb push`, so the script stages through
 `/data/local/tmp` and copies in with `run-as` — which only works against a
 **debug** build, because release builds are not debuggable.
 
-### This is a move, not a device link
+### Running one identity on the phone and the desktop
 
-**Do not run two devices on one identity at the same time.** Nothing enforces
-it, and the failure is silent. Four places key on identity alone:
+Builds include `device-routing` by default, so one identity can stay live on
+the phone and the desktop at the same time, as long as **every** client and
+supernode involved is such a build. See "Simultaneous-identity preview testing"
+in `DEVICES_AND_BACKUPS.md`.
 
-| Where | Effect |
-|---|---|
-| `relay.rs` `peers.insert(identity_pub, ...)` | the second connection evicts the first from the relay map |
-| `signaling.rs` `register_quic_sender` | same, last writer wins |
-| `main.rs` `on_endpoint_update` | one mailbox entry per identity; devices overwrite each other |
-| Room group keys | sealed per *member identity* to a single signaling target, so the losing device never receives the epoch key and — correctly — fails closed, showing nothing in rooms |
+A single older build without it breaks this silently. An earlier nightly
+running next to a current phone build makes the two devices keep dropping each
+other's connections, and room keys split between them, so room chat reaches
+some members and not others.
 
-There is also no history sync: whichever device is connected receives a
-message, and that is the only copy of it.
-
-If you want both devices live at once, give the phone **its own identity** and
-trust it as a peer. That is the topology the architecture supports today, and
-it lets the two devices message each other. True multi-device (one identity,
-many live endpoints) needs per-device subkeys, a device registry, and
-per-device group-key sealing — see `backlog.md`.
+This is still a preview. There is no history sync: a direct message sent from
+one device does not appear on the other.
 
 ### The passphrase does not travel
 

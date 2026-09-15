@@ -134,15 +134,16 @@ and identity-scoped endpoint routing tables. Signaling signatures bind both fiel
 legacy messages retain their existing canonical encoding. Routing tests cover
 independent transport fallback for each endpoint, exact-device targeting,
 padding/hex identity aliases, route limits, and stale reconnect cleanup.
-Default builds retain legacy routing. Explicit `device-routing` preview builds
-enable root-authorized endpoints and advertise `core.devices.v1`.
+`device-routing` is on by default, as the `doubleslash-features` default feature
+(since 2026-09-15). Builds enable root-authorized endpoints and advertise
+`core.devices.v1`. A build without it and a build with it do not interoperate on
+one identity: the two devices keep dropping each other's connections.
 
 The signaling connection lifecycle now supports separate sockets per device:
 identity-wide delivery reaches both, a device target selects only that endpoint,
 and replacing or closing one device preserves its sibling and identity presence.
 Two real localhost WebSocket tests exercise these transitions with one identity.
-The production default remains off; preview builds enable device mode. WebSocket
-connections negotiate `doubleslash.devices.v1` before registering, so an old node
+WebSocket connections negotiate `doubleslash.devices.v1` before registering, so an old node
 cannot accidentally replace another device's session. Registration requires the identity's
 signature, so this is not yet delegated companion authentication.
 
@@ -270,11 +271,12 @@ desktop/phone acceptance.
 
 ### Simultaneous-identity preview testing
 
-Build matching clients and nodes with `device-routing`: desktop packaging accepts
-`DOUBLESLASH_DEVICE_ROUTING=1`, Android accepts
-`./gradlew assembleDebug -Pdoubleslash.deviceRouting=true`, and the supernode uses
-`cargo build --release --features device-routing`. Both devices currently need
-the full identity imported through the encrypted backup workflow.
+Every client and node must include `device-routing`. It is the
+`doubleslash-features` default, so plain builds do; the older
+`DOUBLESLASH_DEVICE_ROUTING=1`, `-Pdoubleslash.deviceRouting=true` and
+`--features device-routing` switches are now redundant. An installed app that
+predates the default, such as an earlier nightly, still lacks it. Both devices
+currently need the full identity imported through the encrypted backup workflow.
 
 Keep the normal desktop profile and phone unlocked together. Verify both remain
 connected, room chat appears on both with own messages marked as sent, an incoming

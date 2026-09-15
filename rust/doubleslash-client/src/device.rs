@@ -23,7 +23,7 @@ use crate::identity::Identity;
 
 const REGISTRY_DOMAIN: &[u8] = b"doubleslash/device-registry/v1\0";
 const PROOF_DOMAIN: &[u8] = b"doubleslash/device-proof/v1\0";
-const KEY_LABEL: &str = "doubleslash-store/device-key/v1";
+pub(crate) const KEY_LABEL: &str = "doubleslash-store/device-key/v1";
 const KEY_FILE: &str = "device-key.dat";
 const MAX_REGISTRY_BYTES: usize = 64 * 1024;
 const MAX_DEVICES: usize = 64;
@@ -286,6 +286,7 @@ impl DeviceKey {
     /// corrupt existing material fails closed instead of silently replacing it.
     pub fn load_or_create(identity: &Identity, directory: &Path) -> Result<Self> {
         let path = directory.join(KEY_FILE);
+        crate::store_migration::upgrade_file(identity, &path, KEY_LABEL);
         let storage_key = Zeroizing::new(identity.derive_store_key(KEY_LABEL)?);
         match std::fs::File::open(&path) {
             Ok(file) => return Self::read(file, &storage_key, identity),

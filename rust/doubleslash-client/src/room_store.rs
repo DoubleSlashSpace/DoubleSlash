@@ -156,6 +156,7 @@ impl RoomStore {
         let path = file_path
             .map(Path::to_path_buf)
             .unwrap_or_else(|| default_dir.join(ROOM_STORE_FILE));
+        crate::store_migration::upgrade_file(identity, &path, ROOM_STORE_LABEL);
         let key = identity.derive_store_key(ROOM_STORE_LABEL)?;
         Self::open_with_key(&key, &path)
     }

@@ -809,10 +809,20 @@ impl ConnectionManager {
         // keys or race competing epochs once they share a view.
         let mut present: Vec<String> = union_new.iter().cloned().collect();
         present.push(me.clone());
-        if !is_elected_keyer(&present, &me)
-            || !self.elected_room_device(room_id, &me, self.device_id)
-            || !self.own_room_key_ready(room_id)
-        {
+        let elected = is_elected_keyer(&present, &me);
+        let elected_device = self.elected_room_device(room_id, &me, self.device_id);
+        let own_ready = self.own_room_key_ready(room_id);
+        if !elected || !elected_device || !own_ready {
+            if elected {
+                // Our identity keys this room, but the own-device handoff gates
+                // which device does. Every failure in that handoff is otherwise
+                // silent, so say which condition blocked.
+                tracing::debug!(
+                    "[group-key] room {room_id}: identity elected but not keying \
+                     (elected_device={elected_device}, own_key_ready={own_ready}, own_devices={})",
+                    self.room_devices(room_id, &me).len()
+                );
+            }
             // Not the keyer: drop any pending seals we queued while we briefly
             // thought we were (solo bootstrap race). Keep installed key material
             // until a legitimate keyer's SfuGroupKey overwrites it.
