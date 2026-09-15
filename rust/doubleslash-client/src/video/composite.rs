@@ -376,7 +376,7 @@ impl OverlayTap {
         let stop_t = Arc::clone(&stop);
 
         let handle = std::thread::Builder::new()
-            .name("conquerd-video-overlay".into())
+            .name("doubleslash-video-overlay".into())
             .spawn(move || {
                 // What to *ask* the source for differs by kind, and getting it
                 // wrong is invisible: a failed overlay open only logs, so the

@@ -29,7 +29,7 @@ pub type PeerId = String;
 /// Today this is intentionally minimal — it carries only the identity
 /// of the caller and the params they sent. Phase 3 will extend this
 /// with a `Channel` handle (datagram tag or stream id) once
-/// `conquerd-quic` exposes the multiplexer API.
+/// `doubleslash-quic` exposes the multiplexer API.
 #[derive(Debug, Clone)]
 pub struct InvocationContext {
     /// Peer that invoked the capability.

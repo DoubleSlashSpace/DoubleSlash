@@ -653,7 +653,7 @@ impl VideoSender {
         let preview_id = preview_peer_id.filter(|s| !s.is_empty());
 
         let handle = std::thread::Builder::new()
-            .name("conquerd-video-capture".into())
+            .name("doubleslash-video-capture".into())
             .spawn(move || {
                 let kind = layout.kind();
                 let mut camera = match layout.open(quality) {

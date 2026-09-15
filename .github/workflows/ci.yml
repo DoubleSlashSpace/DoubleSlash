@@ -363,7 +363,7 @@ jobs:
         working-directory: rust
 
       - name: Package supernode (linux-aarch64)
-        run: CONQUERD_RELEASE=1 bash scripts/build_supernode.sh
+        run: DOUBLESLASH_RELEASE=1 bash scripts/build_supernode.sh
 
   test-supernode-linux-x86_64:
     name: Supernode build (Linux x86_64)
@@ -398,7 +398,7 @@ jobs:
         working-directory: rust
 
       - name: Package supernode (linux-x86_64)
-        run: CONQUERD_RELEASE=1 bash scripts/build_supernode.sh
+        run: DOUBLESLASH_RELEASE=1 bash scripts/build_supernode.sh
 
   test-supernode-windows:
     name: Supernode build (Windows)
@@ -437,7 +437,7 @@ jobs:
       - name: Package supernode (win64)
         shell: pwsh
         env:
-          CONQUERD_RELEASE: "1"
+          DOUBLESLASH_RELEASE: "1"
         run: pwsh scripts/build_supernode.ps1
 
 

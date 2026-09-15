@@ -102,30 +102,36 @@ extern "C" {
 extern "C" {
     // ── Encoder shims ──
 
-    pub fn conquerd_enc_set_bitrate(enc: *mut OpusEncoder, value: i32) -> c_int;
-    pub fn conquerd_enc_set_vbr(enc: *mut OpusEncoder, value: i32) -> c_int;
-    pub fn conquerd_enc_set_inband_fec(enc: *mut OpusEncoder, value: i32) -> c_int;
-    pub fn conquerd_enc_set_packet_loss_perc(enc: *mut OpusEncoder, value: i32) -> c_int;
-    pub fn conquerd_enc_set_dtx(enc: *mut OpusEncoder, value: i32) -> c_int;
-    pub fn conquerd_enc_set_complexity(enc: *mut OpusEncoder, value: i32) -> c_int;
+    pub fn doubleslash_enc_set_bitrate(enc: *mut OpusEncoder, value: i32) -> c_int;
+    pub fn doubleslash_enc_set_vbr(enc: *mut OpusEncoder, value: i32) -> c_int;
+    pub fn doubleslash_enc_set_inband_fec(enc: *mut OpusEncoder, value: i32) -> c_int;
+    pub fn doubleslash_enc_set_packet_loss_perc(enc: *mut OpusEncoder, value: i32) -> c_int;
+    pub fn doubleslash_enc_set_dtx(enc: *mut OpusEncoder, value: i32) -> c_int;
+    pub fn doubleslash_enc_set_complexity(enc: *mut OpusEncoder, value: i32) -> c_int;
     /// Enable DRED with the given depth in 10 ms frames (0 = disable).
-    pub fn conquerd_enc_set_dred_duration(enc: *mut OpusEncoder, frames_10ms: i32) -> c_int;
+    pub fn doubleslash_enc_set_dred_duration(enc: *mut OpusEncoder, frames_10ms: i32) -> c_int;
     /// Load external DNN weights blob.  Returns `OPUS_UNIMPLEMENTED` when
     /// libopus was compiled with the weights already built in as C arrays
     /// (which is the normal doubleslash-opus build path).  In that case the
     /// call is a no-op and the compiled-in weights remain in effect.
     /// `data` must remain valid for the lifetime of the encoder when used.
-    pub fn conquerd_enc_set_dnn_blob(enc: *mut OpusEncoder, data: *const c_void, len: i32)
-        -> c_int;
-    pub fn conquerd_enc_reset_state(enc: *mut OpusEncoder) -> c_int;
+    pub fn doubleslash_enc_set_dnn_blob(
+        enc: *mut OpusEncoder,
+        data: *const c_void,
+        len: i32,
+    ) -> c_int;
+    pub fn doubleslash_enc_reset_state(enc: *mut OpusEncoder) -> c_int;
 
     // ── Decoder shims ──
 
     /// Apply Q8 dB gain to decoded output (0 = no adjustment).
-    pub fn conquerd_dec_set_gain(dec: *mut OpusDecoder, value: i32) -> c_int;
-    pub fn conquerd_dec_set_dnn_blob(dec: *mut OpusDecoder, data: *const c_void, len: i32)
-        -> c_int;
+    pub fn doubleslash_dec_set_gain(dec: *mut OpusDecoder, value: i32) -> c_int;
+    pub fn doubleslash_dec_set_dnn_blob(
+        dec: *mut OpusDecoder,
+        data: *const c_void,
+        len: i32,
+    ) -> c_int;
     /// Enable (1) or disable (0) OSCE blind bandwidth extension.
-    pub fn conquerd_dec_set_osce_bwe(dec: *mut OpusDecoder, value: i32) -> c_int;
-    pub fn conquerd_dec_reset_state(dec: *mut OpusDecoder) -> c_int;
+    pub fn doubleslash_dec_set_osce_bwe(dec: *mut OpusDecoder, value: i32) -> c_int;
+    pub fn doubleslash_dec_reset_state(dec: *mut OpusDecoder) -> c_int;
 }

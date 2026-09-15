@@ -6,9 +6,9 @@
     Three actors, one box:
 
       * the acdc/ac1 supernode cluster, reached through the supernode-manager
-        wrapper (rust/conquerd-supernode-manager/launch.ps1);
+        wrapper (rust/doubleslash-supernode-manager/launch.ps1);
       * a USB-attached Android phone, reached through adb;
-      * the headless desktop client, driven by the CONQUERD_* env hooks.
+      * the headless desktop client, driven by the DOUBLESLASH_* env hooks.
 
     These are integration tests against live infrastructure, not unit tests.
     They assert on *observable* state - journald on the nodes, logcat and
@@ -121,13 +121,13 @@ function Get-RepoRoot {
 }
 
 function Get-ManagerDir {
-    return (Join-Path (Get-RepoRoot) 'rust\conquerd-supernode-manager')
+    return (Join-Path (Get-RepoRoot) 'rust\doubleslash-supernode-manager')
 }
 
 <#
     The desktop profile the GUI and the headless build share.
 
-    run_client.bat points CONQUERD_HOME at .clientA, so the client log the
+    run_client.bat points DOUBLESLASH_HOME at .clientA, so the client log the
     suites read is the same one the real app writes - which is the point: a
     test that reads a different profile than the app uses proves nothing.
 #>
@@ -136,7 +136,7 @@ function Get-ClientProfileDir {
 }
 
 function Get-ClientLogPath {
-    return (Join-Path (Get-ClientProfileDir) 'logs\conquerd-client.log')
+    return (Join-Path (Get-ClientProfileDir) 'logs\doubleslash-client.log')
 }
 
 function Get-AdbPath {
@@ -199,7 +199,7 @@ function Get-NodeLog {
         [string] $Since = '20 min ago',
         [string] $Grep = ''
     )
-    $cmd = "journalctl -u conquerd-supernode@$Instance --since '$Since' --no-pager"
+    $cmd = "journalctl -u doubleslash-supernode@$Instance --since '$Since' --no-pager"
     if ($Grep -ne '') { $cmd += " | grep -E '$Grep'" }
     # Cap the volume: a chatty node can emit tens of thousands of relay lines,
     # and every assertion here is satisfied by the tail.
@@ -220,7 +220,7 @@ function Get-ClusterStatus {
 
 # ── Phone (adb) ────────────────────────────────────────────────────────────
 
-$script:PhonePackage = 'com.conquerd.client'
+$script:PhonePackage = 'com.doubleslash.client'
 
 function Get-PhonePackage { return $script:PhonePackage }
 
@@ -295,8 +295,8 @@ function Get-PhoneAudioMode {
 
 function Get-HeadlessBinary {
     $root = Get-RepoRoot
-    $release = Join-Path $root 'rust\target-headless\release\conquerd-client.exe'
-    $debug = Join-Path $root 'rust\target-headless\debug\conquerd-client.exe'
+    $release = Join-Path $root 'rust\target-headless\release\doubleslash-client.exe'
+    $debug = Join-Path $root 'rust\target-headless\debug\doubleslash-client.exe'
     if (Test-Path $release) { return $release }
     if (Test-Path $debug) { return $debug }
     return $null
@@ -310,14 +310,14 @@ function Get-HeadlessBinary {
     check this and skip rather than producing a confusing failure.
 #>
 function Test-GuiClientRunning {
-    $procs = Get-Process -Name 'conquerd-client', 'DoubleSlash' -ErrorAction SilentlyContinue
+    $procs = Get-Process -Name 'doubleslash-client', 'DoubleSlash' -ErrorAction SilentlyContinue
     return ($null -ne $procs)
 }
 
 <#
     Run the headless client with scripted env hooks until it exits.
 
-    Returns the captured stdout/stderr. `CONQUERD_SIMULATE_EXIT=1` is what
+    Returns the captured stdout/stderr. `DOUBLESLASH_SIMULATE_EXIT=1` is what
     makes this terminate on its own; without it the client is a daemon and the
     caller would hang.
 #>
@@ -333,12 +333,12 @@ function Invoke-HeadlessClient {
     $saved = @{}
     $profileDir = Get-ClientProfileDir
     $defaults = @{
-        CONQUERD_HOME    = $profileDir
-        CONQUERD_KEY_DIR = $profileDir
-        RUST_LOG         = 'conquerd_client=info,warn'
+        DOUBLESLASH_HOME    = $profileDir
+        DOUBLESLASH_KEY_DIR = $profileDir
+        RUST_LOG         = 'doubleslash_client=info,warn'
     }
     $passFile = Join-Path $profileDir 'passphrase.local'
-    if (Test-Path $passFile) { $defaults['CONQUERD_PASSPHRASE_FILE'] = $passFile }
+    if (Test-Path $passFile) { $defaults['DOUBLESLASH_PASSPHRASE_FILE'] = $passFile }
 
     $all = $defaults.Clone()
     foreach ($k in $EnvVars.Keys) { $all[$k] = $EnvVars[$k] }

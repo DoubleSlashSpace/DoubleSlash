@@ -292,7 +292,7 @@ All room-content types (`SfuChat`, `SfuAudio`, `SfuFile*`, and room video fragme
 - **CXX-Qt qproperty alignment** (see Architecture Notes above): missing Rust-side fields for `#[qproperty]` entries are silent in headless mode but hard-fail when the Qt meta-object system is active.
 - **Windows signing** (optional for local builds): `signtool.exe` on `PATH`; `build_win64.ps1` skips gracefully if absent or no cert env vars are set.
 - **Supernode PE metadata**: `rust/doubleslash-supernode/build.rs` derives Windows version info from `CARGO_PKG_VERSION`; keep its `Cargo.toml` in sync if distributing a signed supernode binary.
-- See README "Developer Guide" and "Code Signing Policy" for human-oriented build, portable packaging, and SignPath bootstrap details. Code signing team roles (`conquerd-authors`, `reviewers`, `approvers`) are documented in the README.
+- See README "Developer Guide" and "Code Signing Policy" for human-oriented build, portable packaging, and SignPath bootstrap details. Code signing team roles (`doubleslash-authors`, `reviewers`, `approvers`) are documented in the README.
 
 ## Using the Modular Framework (Agent Contract)
 
@@ -512,7 +512,7 @@ Update `agents.md` (this section) in the same change as any signing-related work
 
 **Initial / per-release manifest steps (approvers):**
 - `cargo run -p doubleslash-installer --bin sign-release-manifest -- --generate-unsigned`
-- Fill the three platform entries with the real `build_hash` (from CI artifacts or local `build_*.ps1` .sha256) and `build_id` (the exact string injected via `CONQUERD_BUILD_ID` or derived at tag build time; this is what peers will see in attestations).
+- Fill the three platform entries with the real `build_hash` (from CI artifacts or local `build_*.ps1` .sha256) and `build_id` (the exact string injected via `DOUBLESLASH_BUILD_ID` or derived at tag build time; this is what peers will see in attestations).
 - Sign with the private key → produces `releases_manifest.json` (overwrite).
 - Commit the signed manifest (public) as part of the release prep / tag.
 - The release workflow (publish-release job) now includes it in the GitHub Release assets.

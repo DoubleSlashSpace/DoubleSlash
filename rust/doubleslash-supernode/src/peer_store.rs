@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn test_peer_store_basic() {
-        let dir = std::env::temp_dir().join("conquerd_test_store");
+        let dir = std::env::temp_dir().join("doubleslash_test_store");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("peers.json");
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn is_trusted_returns_false_for_unknown_peer() {
-        let dir = std::env::temp_dir().join("conquerd_test_unknown");
+        let dir = std::env::temp_dir().join("doubleslash_test_unknown");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let store = PeerStore::new(&dir.join("peers.json"));
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn is_trusted_returns_false_for_blocked_peer() {
-        let dir = std::env::temp_dir().join("conquerd_test_blocked");
+        let dir = std::env::temp_dir().join("doubleslash_test_blocked");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut store = make_store_with_peer(&dir.join("peers.json"), "pub-blocked");
@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn revoke_peer_marks_as_revoked_and_untrusted() {
-        let dir = std::env::temp_dir().join("conquerd_test_revoke");
+        let dir = std::env::temp_dir().join("doubleslash_test_revoke");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut store = make_store_with_peer(&dir.join("peers.json"), "pub-r");
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn revoke_nonexistent_peer_is_noop() {
-        let dir = std::env::temp_dir().join("conquerd_test_revoke_noop");
+        let dir = std::env::temp_dir().join("doubleslash_test_revoke_noop");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut store = PeerStore::new(&dir.join("peers.json"));
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn remove_peer_deletes_entry() {
-        let dir = std::env::temp_dir().join("conquerd_test_remove");
+        let dir = std::env::temp_dir().join("doubleslash_test_remove");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut store = make_store_with_peer(&dir.join("peers.json"), "pub-del");
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn trusted_peer_ids_excludes_revoked_and_blocked() {
-        let dir = std::env::temp_dir().join("conquerd_test_ids");
+        let dir = std::env::temp_dir().join("doubleslash_test_ids");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("peers.json");
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn touch_peer_updates_last_seen() {
-        let dir = std::env::temp_dir().join("conquerd_test_touch");
+        let dir = std::env::temp_dir().join("doubleslash_test_touch");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut store = make_store_with_peer(&dir.join("peers.json"), "pub-t");
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn touch_nonexistent_peer_is_noop() {
-        let dir = std::env::temp_dir().join("conquerd_test_touch_noop");
+        let dir = std::env::temp_dir().join("doubleslash_test_touch_noop");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut store = PeerStore::new(&dir.join("peers.json"));
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn all_peers_returns_all_including_revoked() {
-        let dir = std::env::temp_dir().join("conquerd_test_all");
+        let dir = std::env::temp_dir().join("doubleslash_test_all");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut store = make_store_with_peer(&dir.join("peers.json"), "pub-a");
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn save_creates_parent_dirs_and_persists() {
-        let dir = std::env::temp_dir().join("conquerd_test_save_deep");
+        let dir = std::env::temp_dir().join("doubleslash_test_save_deep");
         let _ = std::fs::remove_dir_all(&dir);
         let nested_path = dir.join("a").join("b").join("peers.json");
         let mut store = PeerStore::new(&nested_path);
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn pad_variants_resolve_to_same_trusted_peer() {
-        let dir = std::env::temp_dir().join("conquerd_test_pad_peers");
+        let dir = std::env::temp_dir().join("doubleslash_test_pad_peers");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // 43-char unpadded URL-safe base64 of a 32-byte key.

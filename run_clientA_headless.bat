@@ -13,14 +13,14 @@ setlocal EnableExtensions EnableDelayedExpansion
 :: ---------------------------------------------------------------------------
 
 set "ROOT=%~dp0"
-set "CONQUERD_HOME=%ROOT%.clientA"
-set "CONQUERD_KEY_DIR=%CONQUERD_HOME%"
+set "DOUBLESLASH_HOME=%ROOT%.clientA"
+set "DOUBLESLASH_KEY_DIR=%DOUBLESLASH_HOME%"
 set "LEGACY_HOME=%ROOT%.clientA_home"
-set "LEGACY_PROFILE_LINK=%LEGACY_HOME%\.conquerd"
-set "SETTINGS=%CONQUERD_HOME%\settings.json"
-set "LOG_DIR=%CONQUERD_HOME%\logs"
+set "LEGACY_PROFILE_LINK=%LEGACY_HOME%\.doubleslash"
+set "SETTINGS=%DOUBLESLASH_HOME%\settings.json"
+set "LOG_DIR=%DOUBLESLASH_HOME%\logs"
 set "LOG_FILE=%LOG_DIR%\doubleslash-client.log"
-set "PASS_FILE=%CONQUERD_HOME%\passphrase.local"
+set "PASS_FILE=%DOUBLESLASH_HOME%\passphrase.local"
 
 set "HL_DEBUG=%ROOT%rust\target-headless\debug\doubleslash-client.exe"
 set "HL_RELEASE=%ROOT%rust\target-headless\release\doubleslash-client.exe"
@@ -42,11 +42,11 @@ if /I "%~1"=="release" (
 
 if not defined RUST_LOG set "RUST_LOG=doubleslash_client=info,warn"
 
-if not exist "%CONQUERD_HOME%\NUL" mkdir "%CONQUERD_HOME%"
+if not exist "%DOUBLESLASH_HOME%\NUL" mkdir "%DOUBLESLASH_HOME%"
 if not exist "%LOG_DIR%\NUL" mkdir "%LOG_DIR%"
 if not exist "%LEGACY_HOME%\NUL" mkdir "%LEGACY_HOME%"
 if not exist "%LEGACY_PROFILE_LINK%\NUL" (
-    mklink /J "%LEGACY_PROFILE_LINK%" "%CONQUERD_HOME%" >nul 2>nul
+    mklink /J "%LEGACY_PROFILE_LINK%" "%DOUBLESLASH_HOME%" >nul 2>nul
 )
 
 tasklist /FI "IMAGENAME eq doubleslash-client.exe" 2>nul | find /I "doubleslash-client.exe" >nul
@@ -66,8 +66,8 @@ if not errorlevel 1 (
     echo.
 )
 
-if not defined CONQUERD_PASSPHRASE (
-    if exist "%PASS_FILE%" set "CONQUERD_PASSPHRASE_FILE=%PASS_FILE%"
+if not defined DOUBLESLASH_PASSPHRASE (
+    if exist "%PASS_FILE%" set "DOUBLESLASH_PASSPHRASE_FILE=%PASS_FILE%"
 )
 
 if not exist "%SETTINGS%" (
@@ -99,13 +99,13 @@ if not defined BINARY (
 
 echo.
 echo === ClientA headless bot ^(Bobert^) ===
-echo Profile:  %CONQUERD_HOME%
+echo Profile:  %DOUBLESLASH_HOME%
 echo Binary:   %BINARY%  [%BINARY_KIND%]
 echo Log:      %LOG_FILE%
-if defined CONQUERD_PASSPHRASE (
-    echo Unlock:   CONQUERD_PASSPHRASE
-) else if defined CONQUERD_PASSPHRASE_FILE (
-    echo Unlock:   %CONQUERD_PASSPHRASE_FILE%
+if defined DOUBLESLASH_PASSPHRASE (
+    echo Unlock:   DOUBLESLASH_PASSPHRASE
+) else if defined DOUBLESLASH_PASSPHRASE_FILE (
+    echo Unlock:   %DOUBLESLASH_PASSPHRASE_FILE%
 ) else (
     echo Unlock:   passphrase prompt / OS keyring
 )

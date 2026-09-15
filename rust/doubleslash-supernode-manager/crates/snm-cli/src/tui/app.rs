@@ -1599,7 +1599,7 @@ mod tests {
                 label: "edge-1/a".into(),
                 active: true,
                 systemd_state: "active".into(),
-                binary_path: "/opt/conquerd/bin/current".into(),
+                binary_path: "/opt/doubleslash/bin/current".into(),
                 pinned_version: "local".into(),
                 binary_sha256: None,
                 binary_modified: None,
@@ -1615,7 +1615,7 @@ mod tests {
                 label: "edge-1/a".into(),
                 active: true,
                 systemd_state: "active".into(),
-                binary_path: "/opt/conquerd/bin/current".into(),
+                binary_path: "/opt/doubleslash/bin/current".into(),
                 pinned_version: "local".into(),
                 binary_sha256: None,
                 binary_modified: None,
@@ -1721,7 +1721,7 @@ mod tests {
                 original_instance_id: "a".into(),
             },
             host_name: "edge-1".into(),
-            ssh: "conquerd@203.0.113.99".into(),
+            ssh: "doubleslash@203.0.113.99".into(),
             instance_id: "a".into(),
             public_host: "edge1-new.example.net".into(),
             relay_port: "3479".into(),
@@ -1732,7 +1732,7 @@ mod tests {
         };
 
         app.commit_node_form().unwrap();
-        assert_eq!(app.rows[0].ssh, "conquerd@203.0.113.99");
+        assert_eq!(app.rows[0].ssh, "doubleslash@203.0.113.99");
         assert_eq!(app.rows[0].public_host, "edge1-new.example.net");
         assert_eq!(app.rows[0].relay_port, 3479);
         let _ = std::fs::remove_file(path);

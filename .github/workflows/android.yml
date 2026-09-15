@@ -115,14 +115,14 @@ jobs:
         if: env.KEYSTORE_B64 != ''
         run: |
           set -euo pipefail
-          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/conquerd.keystore"
-          echo "CONQUERD_KEYSTORE=$RUNNER_TEMP/conquerd.keystore" >> "$GITHUB_ENV"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/doubleslash.keystore"
+          echo "DOUBLESLASH_KEYSTORE=$RUNNER_TEMP/doubleslash.keystore" >> "$GITHUB_ENV"
           echo "Signing with the keystore from ANDROID_KEYSTORE_B64."
 
       - name: Warn that the APK will not be installable over an existing app
         if: env.KEYSTORE_B64 == ''
         run: |
-          echo "::warning title=Unsigned by the shared key::ANDROID_KEYSTORE_B64 is not set, so this APK is signed with a throwaway keystore. Android will refuse to install it over an existing ConquerD, and uninstalling first destroys the on-device identity key and message store."
+          echo "::warning title=Unsigned by the shared key::ANDROID_KEYSTORE_B64 is not set, so this APK is signed with a throwaway keystore. Android will refuse to install it over an existing DoubleSlash, and uninstalling first destroys the on-device identity key and message store."
 
       - name: Derive the build stamp
         run: echo "BUILD_STAMP=${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
@@ -132,7 +132,7 @@ jobs:
         env:
           # Stamped into versionName only. See build.gradle.kts for why
           # versionCode deliberately stays put.
-          CONQUERD_BUILD_ID: ${{ env.BUILD_STAMP }}
+          DOUBLESLASH_BUILD_ID: ${{ env.BUILD_STAMP }}
         run: ./gradlew assembleDebug --console=plain --no-daemon
 
       - name: Stage the APK
@@ -140,7 +140,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          NAME="ConquerD-android-arm64-${BUILD_STAMP}.apk"
+          NAME="DoubleSlash-android-arm64-${BUILD_STAMP}.apk"
           cp android/app/build/outputs/apk/debug/app-debug.apk "dist/$NAME"
           echo "apk_name=$NAME" >> "$GITHUB_OUTPUT"
           ls -l dist

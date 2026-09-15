@@ -11,7 +11,7 @@ The supernode provides optional transport assistance (QUIC relay, SFU rooms) and
 cd rust
 cargo build -p doubleslash-supernode --release
 
-# Run with defaults (data in $HOME/.doubleslash, or an existing $HOME/.conquerd)
+# Run with defaults (data in $HOME/.doubleslash)
 ./target/release/doubleslash-supernode
 ```
 
@@ -51,14 +51,14 @@ Expand-Archive doubleslash-supernode-1.0.0-win64.zip -DestinationPath .
 On Linux or macOS, `scripts/build_supernode.sh` detects the host platform and emits a `.tar.gz` under `dist/`:
 
 ```bash
-CONQUERD_RELEASE=1 ./scripts/build_supernode.sh
+DOUBLESLASH_RELEASE=1 ./scripts/build_supernode.sh
 # e.g. dist/doubleslash-supernode-1.0.0-linux-x86_64.tar.gz
 ```
 
 On Windows, use the companion script (`.zip` output):
 
 ```powershell
-$env:CONQUERD_RELEASE = '1'
+$env:DOUBLESLASH_RELEASE = '1'
 .\scripts\build_supernode.ps1
 # e.g. dist\doubleslash-supernode-1.0.0-win64.zip
 ```
@@ -71,7 +71,7 @@ Hosted feature declarations are read from `<data_dir>/supernode.toml` (see below
 
 ## Configuration (supernode.toml)
 
-Create `<data_dir>/supernode.toml`. The default data dir is `$DOUBLESLASH_HOME` / `$CONQUERD_HOME` when set, otherwise `$HOME/.doubleslash` (falling back to an existing `$HOME/.conquerd`).
+Create `<data_dir>/supernode.toml`. The default data dir is `$DOUBLESLASH_HOME` when set, otherwise `$HOME/.doubleslash`.
 
 Example:
 
@@ -202,9 +202,9 @@ Description=DoubleSlash Supernode
 After=network.target
 
 [Service]
-Environment=CONQUERD_HOME=/var/lib/conquerd
+Environment=DOUBLESLASH_HOME=/var/lib/doubleslash
 ExecStart=/usr/local/bin/doubleslash-supernode
-User=conquerd
+User=doubleslash
 Restart=on-failure
 LimitNOFILE=65536
 

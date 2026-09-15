@@ -309,7 +309,7 @@ fn random_key() -> [u8; GROUP_KEY_LEN] {
 }
 
 /// HKDF domain-separation label for the deterministic per-room key.
-const ROOM_KEY_INFO: &[u8] = b"conquerd-room-key/v1";
+const ROOM_KEY_INFO: &[u8] = b"doubleslash-room-key/v1";
 
 /// Deterministic 32-byte key shared by every member of `conv_id` (the room id).
 /// Derived so all peers agree without any distribution step.

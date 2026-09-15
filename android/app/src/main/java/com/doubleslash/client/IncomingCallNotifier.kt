@@ -36,7 +36,7 @@ object IncomingCallNotifier : DefaultLifecycleObserver {
     const val EXTRA_PEER_ID = "peer_id"
     const val EXTRA_PEER_LABEL = "peer_label"
 
-    private const val CHANNEL_ID = "conquerd_incoming_calls"
+    private const val CHANNEL_ID = "doubleslash_incoming_calls"
     private const val NOTIFICATION_ID = 2
 
     data class Ringing(val peerId: String, val peerLabel: String)

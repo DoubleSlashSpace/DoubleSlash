@@ -540,7 +540,7 @@ pub fn scaffold_inventory() -> Inventory {
         defaults: Defaults::default(),
         host: vec![Host {
             name: "edge-1".into(),
-            ssh: "conquerd@203.0.113.10".into(),
+            ssh: "doubleslash@203.0.113.10".into(),
             arch: None,
             instances: vec![Instance {
                 id: "a".into(),
@@ -580,7 +580,7 @@ version = "1.0.0"
 
 [[host]]
 name = "edge-fra-1"
-ssh = "conquerd@203.0.113.10"
+ssh = "doubleslash@203.0.113.10"
 
   [[host.instance]]
   id = "a"
@@ -713,7 +713,7 @@ ssh = "root@1.2.3.4"
             "edge-1",
             "a",
             "edge-1",
-            "conquerd@203.0.113.99",
+            "doubleslash@203.0.113.99",
             Instance {
                 id: "a".into(),
                 public_host: "edge1-new.example.net".into(),
@@ -729,7 +729,7 @@ ssh = "root@1.2.3.4"
             },
         )
         .unwrap();
-        assert_eq!(inv.host[0].ssh, "conquerd@203.0.113.99");
+        assert_eq!(inv.host[0].ssh, "doubleslash@203.0.113.99");
         assert_eq!(
             inv.host[0].instances[0].public_host,
             "edge1-new.example.net"

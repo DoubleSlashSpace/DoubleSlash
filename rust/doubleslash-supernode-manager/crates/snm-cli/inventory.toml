@@ -16,7 +16,7 @@ allow_private_rooms = true
 
 [[host]]
 name = "edge-1"
-ssh = "conquerd@203.0.113.10"
+ssh = "doubleslash@203.0.113.10"
 
 [[host.instance]]
 id = "a"

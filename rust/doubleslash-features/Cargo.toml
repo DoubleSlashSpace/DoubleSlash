@@ -2,7 +2,7 @@
 name = "doubleslash-features"
 version = "1.0.0"
 edition = "2021"
-description = "Capability registry and feature module spine for the Conquerd peer-connectivity framework."
+description = "Capability registry and feature module spine for the Doubleslash peer-connectivity framework."
 
 [lib]
 name = "doubleslash_features"

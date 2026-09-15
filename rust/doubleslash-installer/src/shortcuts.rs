@@ -48,7 +48,7 @@ pub fn create_shortcuts_for_launcher(installer_exe: &Path) -> Result<()> {
              Categories=Network;Chat;\n",
             installer_exe.display()
         );
-        std::fs::write(apps_dir.join("conquerd.desktop"), desktop_entry)?;
+        std::fs::write(apps_dir.join("doubleslash.desktop"), desktop_entry)?;
     }
     Ok(())
 }
@@ -110,7 +110,7 @@ pub fn remove_shortcuts() -> Result<()> {
 #[cfg(not(windows))]
 pub fn remove_shortcuts() -> Result<()> {
     if let Some(data_home) = dirs::data_dir() {
-        let desktop_entry = data_home.join("applications/conquerd.desktop");
+        let desktop_entry = data_home.join("applications/doubleslash.desktop");
         if desktop_entry.exists() {
             std::fs::remove_file(&desktop_entry)?;
         }

@@ -176,7 +176,7 @@ impl ClusterMembership {
             .collect();
         ids.sort_unstable();
         let mut out = Vec::new();
-        out.extend_from_slice(b"conquerd-cluster-v1|");
+        out.extend_from_slice(b"doubleslash-cluster-v1|");
         out.extend_from_slice(self.config.cluster_id.as_bytes());
         for id in ids {
             out.push(b'|');

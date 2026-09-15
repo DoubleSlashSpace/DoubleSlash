@@ -112,7 +112,7 @@ if [[ ! -d "$OPUS_SRC" ]]; then
     exit 1
 fi
 
-TMP_TAR="$(mktemp --suffix=.tar.gz 2>/dev/null || mktemp /tmp/conquerd_opus.XXXXXX)"
+TMP_TAR="$(mktemp --suffix=.tar.gz 2>/dev/null || mktemp /tmp/doubleslash_opus.XXXXXX)"
 
 cleanup() { rm -f "$TMP_TAR"; }
 trap cleanup EXIT

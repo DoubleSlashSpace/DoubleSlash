@@ -67,7 +67,7 @@
 
 **Mitigations:**  
 - Application messages are sent only after the signed invite/session handshake; no custom app-layer early-data path is used for trust establishment.
-- ALPN `conquerd/1`; self-signed Ed25519 QUIC certificates carry the identity in the CN, with peer-id checks performed after certificate extraction.
+- ALPN `doubleslash/1`; self-signed Ed25519 QUIC certificates carry the identity in the CN, with peer-id checks performed after certificate extraction.
 - Per-feature quotas applied at datagram/stream layer before delivery.
 
 **Residual:** QUIC fingerprinting (standard for any QUIC app).

@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn test_identity_persistence() {
-        let dir = std::env::temp_dir().join("conquerd_test_identity");
+        let dir = std::env::temp_dir().join("doubleslash_test_identity");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 

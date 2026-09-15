@@ -70,7 +70,7 @@ Two things follow for any client:
 
 Three SQLite stores, all opened with the identity and all client-owned:
 `peer_store.rs`, `chat_store.rs`, `room_store.rs`. They resolve their paths
-through `Identity::default_key_dir()`, which reads `DOUBLESLASH_HOME` / `CONQUERD_HOME` — Android
+through `Identity::default_key_dir()`, which reads `DOUBLESLASH_HOME` — Android
 must set that before opening anything, since it has no meaningful `HOME`.
 
 ### Transport
@@ -442,7 +442,7 @@ Android yet) or is purely local (theme, camera choice).
 
 1. **ID encoding.** Padded `public_id` versus hex `peer_id` versus un-padded
    ephemeral keys. Decode leniently, emit exactly.
-2. **`DOUBLESLASH_HOME` / `CONQUERD_HOME` before any store.** The stores resolve their own paths;
+2. **`DOUBLESLASH_HOME` before any store.** The stores resolve their own paths;
    set it first or they land somewhere unwritable.
 3. **Cluster fan-out duplicates rooms.** The same room arrives from every
    member of a cluster. Fold on the delivering node before showing a list.

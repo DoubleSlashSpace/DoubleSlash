@@ -239,7 +239,7 @@ class PortalBridge(
          *
          * `shouldInterceptRequest` only sees document and subresource loads.
          * Chromium rejects `fetch()` and XHR on an unregistered scheme before
-         * the interceptor runs — "URL scheme conquerd is not supported" — so
+         * the interceptor runs — "URL scheme doubleslash is not supported" — so
          * script-initiated requests have to come back through here instead.
          * Qt WebEngine avoids this by registering the scheme properly, which
          * WebView has no equivalent of.

@@ -5,7 +5,7 @@
 //
 //   doubleslash_register_scheme()
 //     Must be called BEFORE QGuiApplication::new().
-//     Registers "d" and "conquerd" as secure schemes so QtWebEngine treats
+//     Registers "d" and "doubleslash" as secure schemes so QtWebEngine treats
 //     them like https:// (allows CORS, service workers, secure context APIs).
 //
 //   doubleslash_install_scheme_handler()

@@ -216,13 +216,13 @@ fn main() {
 
 #[cfg(not(feature = "qt-ui"))]
 async fn headless_main() {
-    // Resolve key directory (DOUBLESLASH_KEY_DIR / CONQUERD_KEY_DIR / HOME).
+    // Resolve key directory (DOUBLESLASH_KEY_DIR / DOUBLESLASH_HOME / HOME).
     let key_dir = Identity::default_key_dir();
 
     // Ollama-only smoke (no identity / supernode). Prefer:
     //   scripts\test_ollama_auto_reply.ps1 -Profile .clientA
-    // Env: CONQUERD_OLLAMA_ONLY=1 CONQUERD_SIMULATE_INBOUND_CHAT="…"
-    if std::env::var("CONQUERD_OLLAMA_ONLY").ok().as_deref() == Some("1") {
+    // Env: DOUBLESLASH_OLLAMA_ONLY=1 DOUBLESLASH_SIMULATE_INBOUND_CHAT="…"
+    if std::env::var("DOUBLESLASH_OLLAMA_ONLY").ok().as_deref() == Some("1") {
         ollama_only_auto_reply_test().await;
         return;
     }
@@ -230,7 +230,7 @@ async fn headless_main() {
     // ------------------------------------------------------------------
     // Identity unlock
     // ------------------------------------------------------------------
-    // In headless mode, read passphrase from CONQUERD_PASSPHRASE env var.
+    // In headless mode, read passphrase from DOUBLESLASH_PASSPHRASE env var.
     // When the Qt UI is wired in, this will be replaced by an unlock dialog.
     let identity = match unlock_identity(&key_dir) {
         Ok(id) => Arc::new(id),
@@ -313,11 +313,11 @@ async fn headless_main() {
         ConnectionManager::split(Arc::clone(&identity), Arc::clone(&peer_store));
     tokio::spawn(cm_fut);
 
-    // Scripted/CI hook (mirrors CONQUERD_PASSPHRASE): accept an invite URL on
+    // Scripted/CI hook (mirrors DOUBLESLASH_PASSPHRASE): accept an invite URL on
     // startup so a headless client can join a supernode without a UI.
-    if let Ok(invite_url) = std::env::var("CONQUERD_ACCEPT_INVITE") {
+    if let Ok(invite_url) = std::env::var("DOUBLESLASH_ACCEPT_INVITE") {
         if !invite_url.is_empty() {
-            info!("Accepting invite from CONQUERD_ACCEPT_INVITE");
+            info!("Accepting invite from DOUBLESLASH_ACCEPT_INVITE");
             let _ = cmd_tx.try_send(ConnectionCommand::AcceptInvite { invite_url });
         }
     }
@@ -393,10 +393,10 @@ fn unlock_identity(key_dir: &std::path::Path) -> error::Result<Identity> {
     // Try v2 encrypted identity
     let dat = key_dir.join(identity::IDENTITY_FILENAME);
     if dat.exists() {
-        // CONQUERD_PASSPHRASE and/or CONQUERD_PASSPHRASE_FILE env vars take
+        // DOUBLESLASH_PASSPHRASE and/or DOUBLESLASH_PASSPHRASE_FILE env vars take
         // precedence (CI / scripted use).  Either or both may be set.
-        let env_pass = std::env::var("CONQUERD_PASSPHRASE").unwrap_or_default();
-        let env_file = std::env::var("CONQUERD_PASSPHRASE_FILE").unwrap_or_default();
+        let env_pass = std::env::var("DOUBLESLASH_PASSPHRASE").unwrap_or_default();
+        let env_file = std::env::var("DOUBLESLASH_PASSPHRASE_FILE").unwrap_or_default();
         if !env_pass.is_empty() || !env_file.is_empty() {
             let material = crypto::build_passphrase_material(&env_pass, &env_file)?;
             return Identity::load_with_passphrase(&material, key_dir);
@@ -411,7 +411,7 @@ fn unlock_identity(key_dir: &std::path::Path) -> error::Result<Identity> {
             return Identity::load_with_passphrase(typed.as_bytes(), key_dir);
         }
         return Err(error::ClientError::Identity(
-            "Passphrase required. Set CONQUERD_PASSPHRASE / CONQUERD_PASSPHRASE_FILE or enter it when prompted.".into(),
+            "Passphrase required. Set DOUBLESLASH_PASSPHRASE / DOUBLESLASH_PASSPHRASE_FILE or enter it when prompted.".into(),
         ));
     }
 
@@ -469,13 +469,13 @@ fn stdin_prompt(prompt: &str) -> String {
 
 /// Settings-driven Ollama auto-reply smoke test (no identity unlock).
 ///
-/// Reads `$CONQUERD_HOME/settings.json` (or defaults), requires
+/// Reads `$DOUBLESLASH_HOME/settings.json` (or defaults), requires
 /// `ollama_enabled` + `ollama_auto_respond_direct`, runs one Query using the
 /// configured model (e.g. gemma3:latest), prints the reply, exits 0/1/2.
 #[cfg(not(feature = "qt-ui"))]
 async fn ollama_only_auto_reply_test() {
     let settings = ollama_module::read_assistant_settings();
-    let prompt = std::env::var("CONQUERD_SIMULATE_INBOUND_CHAT")
+    let prompt = std::env::var("DOUBLESLASH_SIMULATE_INBOUND_CHAT")
         .unwrap_or_else(|_| "Reply with exactly the single word: pong".to_owned());
     info!(
         "[ollama-only] settings path={:?} enabled={} model={} auto_direct={} base={}",
@@ -594,7 +594,7 @@ async fn run_headless(
 
     info!("Running in headless mode. Press Ctrl+C to exit.");
     info!(
-        "Identity {} ({}) - same profile as GUI when CONQUERD_HOME matches",
+        "Identity {} ({}) - same profile as GUI when DOUBLESLASH_HOME matches",
         identity.public_id(),
         identity.peer_id()
     );
@@ -608,10 +608,10 @@ async fn run_headless(
     platform::register_uri_scheme();
 
     // Optional auto-reply smoke test without a second peer:
-    //   CONQUERD_SIMULATE_INBOUND_CHAT="hello, reply with pong only"
+    //   DOUBLESLASH_SIMULATE_INBOUND_CHAT="hello, reply with pong only"
     // Uses ClientA settings (model/system prompt/auto flags). Exits after reply
-    // when CONQUERD_SIMULATE_EXIT=1 (default).
-    if let Ok(sim) = std::env::var("CONQUERD_SIMULATE_INBOUND_CHAT") {
+    // when DOUBLESLASH_SIMULATE_EXIT=1 (default).
+    if let Ok(sim) = std::env::var("DOUBLESLASH_SIMULATE_INBOUND_CHAT") {
         if !sim.is_empty() {
             let otx = ollama_cmd_tx.clone();
             tokio::spawn(async move {
@@ -626,7 +626,8 @@ async fn run_headless(
                         "[ollama-sim] ollama_enabled={} auto_respond_direct={} — enable both in settings.json",
                         settings.enabled, settings.auto_respond_direct
                     );
-                    if std::env::var("CONQUERD_SIMULATE_EXIT").unwrap_or_else(|_| "1".into()) == "1"
+                    if std::env::var("DOUBLESLASH_SIMULATE_EXIT").unwrap_or_else(|_| "1".into())
+                        == "1"
                     {
                         std::process::exit(2);
                     }
@@ -662,8 +663,8 @@ async fn run_headless(
     let mut rematerialized_hosts: HashSet<String> = HashSet::new();
     // Cluster rosters: member_id → sibling public_ids (for multi-home rematerialize).
     let mut cluster_siblings: HashMap<String, Vec<String>> = HashMap::new();
-    let sim_exit_on_done = std::env::var("CONQUERD_SIMULATE_INBOUND_CHAT").is_ok()
-        && std::env::var("CONQUERD_SIMULATE_EXIT").unwrap_or_else(|_| "1".into()) == "1";
+    let sim_exit_on_done = std::env::var("DOUBLESLASH_SIMULATE_INBOUND_CHAT").is_ok()
+        && std::env::var("DOUBLESLASH_SIMULATE_EXIT").unwrap_or_else(|_| "1".into()) == "1";
     let local_handle = read_local_handle_setting();
 
     loop {

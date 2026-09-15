@@ -96,7 +96,7 @@ fn main() {
     // Same build ID embedding as the client for P2P attestation of reproducible builds.
     // See client build.rs for the full explanation of the reproducible build intent.
     {
-        let build_id = std::env::var("CONQUERD_BUILD_ID").unwrap_or_else(|_| {
+        let build_id = std::env::var("DOUBLESLASH_BUILD_ID").unwrap_or_else(|_| {
             let tag = std::process::Command::new("git")
                 .args(["describe", "--tags", "--exact-match", "HEAD"])
                 .output()
@@ -133,19 +133,19 @@ fn main() {
                 base
             }
         });
-        println!("cargo:rustc-env=CONQUERD_BUILD_ID={build_id}");
+        println!("cargo:rustc-env=DOUBLESLASH_BUILD_ID={build_id}");
         println!(
-            "cargo:rustc-env=CONQUERD_VERSION={}",
+            "cargo:rustc-env=DOUBLESLASH_VERSION={}",
             env!("CARGO_PKG_VERSION")
         );
 
-        if let Ok(proof) = std::env::var("CONQUERD_RELEASE_PROOF") {
+        if let Ok(proof) = std::env::var("DOUBLESLASH_RELEASE_PROOF") {
             if !proof.trim().is_empty() {
-                println!("cargo:rustc-env=CONQUERD_RELEASE_PROOF={}", proof.trim());
+                println!("cargo:rustc-env=DOUBLESLASH_RELEASE_PROOF={}", proof.trim());
             }
         }
 
         let source_hash = compute_source_hash();
-        println!("cargo:rustc-env=CONQUERD_SOURCE_HASH={source_hash}");
+        println!("cargo:rustc-env=DOUBLESLASH_SOURCE_HASH={source_hash}");
     }
 }

@@ -31,7 +31,6 @@
 # Usage:
 #   ./build_linux.sh             # debug build
 #   DOUBLESLASH_RELEASE=1 ./build_linux.sh  # release build (optimised)
-#   CONQUERD_RELEASE=1 is still accepted as an alias.
 # ============================================================================
 
 set -euo pipefail
@@ -69,7 +68,7 @@ echo "==> Building DoubleSlash v${VERSION} for Linux"
 
 PROFILE="debug"
 CARGO_FLAGS=""
-if [ "${DOUBLESLASH_RELEASE:-${CONQUERD_RELEASE:-0}}" = "1" ]; then
+if [ "${DOUBLESLASH_RELEASE:-0}" = "1" ]; then
     PROFILE="release"
     CARGO_FLAGS="--release"
 fi
@@ -114,15 +113,12 @@ ln -sf usr/share/applications/doubleslash.desktop "$APPDIR/doubleslash.desktop"
 ICON_SRC=""
 if [ -f "$ROOT/assets/doubleslash_256.png" ]; then
     ICON_SRC="$ROOT/assets/doubleslash_256.png"
-elif [ -f "$ROOT/assets/conquerd_256.png" ]; then
-    ICON_SRC="$ROOT/assets/conquerd_256.png"
 fi
 if [ -n "$ICON_SRC" ]; then
     cp "$ICON_SRC" "$APPDIR/doubleslash.png"
     cp "$ICON_SRC" "$APPDIR/usr/share/icons/hicolor/256x256/apps/doubleslash.png"
-elif [ -f "$ROOT/assets/doubleslash.ico" ] || [ -f "$ROOT/assets/conquerd.ico" ]; then
+elif [ -f "$ROOT/assets/doubleslash.ico" ]; then
     ICO_SRC="$ROOT/assets/doubleslash.ico"
-    [ -f "$ICO_SRC" ] || ICO_SRC="$ROOT/assets/conquerd.ico"
     if command -v convert &>/dev/null; then
         convert "$ICO_SRC[0]" "$APPDIR/doubleslash.png"
         cp "$APPDIR/doubleslash.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/doubleslash.png"

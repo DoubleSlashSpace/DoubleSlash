@@ -35,7 +35,7 @@ Derived from `rust/doubleslash-supernode` in the DoubleSlash repo (`config.rs`, 
 
 ### Data directory (per instance, isolated)
 
-Resolved from `DOUBLESLASH_HOME` (manager sets this per instance). Default layout: `{data_root}/{instance_id}` e.g. `/var/lib/doubleslash/a`. The acdc/ac1 dev fleet pins the pre-rename paths (`/opt/conquerd`, `/var/lib/conquerd`, user `conquerd`) in its inventory.
+Resolved from `DOUBLESLASH_HOME` (manager sets this per instance). Default layout: `{data_root}/{instance_id}` e.g. `/var/lib/doubleslash/a`. The acdc/ac1 dev fleet pins the pre-rename paths (`/opt/doubleslash`, `/var/lib/doubleslash`, user `doubleslash`) in its inventory.
 
 | File / dir | Purpose | Manager concern |
 |---|---|---|
@@ -56,7 +56,7 @@ There is deliberately no `sfu_rooms.json`: room definitions are encrypted, clien
 - **Legacy env vars** (still written in systemd drop-ins): `supernode_host`, `supernode_port`, `supernode_signaling_port`. Manifest fields (`listen_addr`, `ws_listen_addr`) are authoritative in `supernode.toml`. The in-app portal uses QUIC (`web.host.app.v1`) — no public HTTP port.
 - **Current runtime limitation:** the manager also serializes `identity_file` and `access_mode`, but `doubleslash-supernode::manifest::apply_to_config` does not currently apply either field. The runtime always loads `<data_dir>/identity.json`, and access control comes from `supernode_access_mode` plus its related environment variables. The generated systemd drop-in does not set those access variables, so manager inventory values other than the default open mode are descriptive only until that implementation gap is closed. Do not rely on them to enforce a gate.
 - **Clustering:** an optional `[cluster]` section (with `[[cluster.member]]` rows) links several supernodes into one logical node. Additive to `schema_version = 1` — the manager renders and pushes the shared roster to every member. Full contract, provisioning flow, and firewalling in §8.
-- `CONQUERD_BUILD_ID` is compiled into the binary; status probes it via `strings` when present.
+- `DOUBLESLASH_BUILD_ID` is compiled into the binary; status probes it via `strings` when present.
 
 ### Ports per instance
 
@@ -326,7 +326,7 @@ The `cluster_addr` UDP port must be reachable **between cluster members only**, 
 | Inventory pin | `defaults.version` (`nightly`, `1.0.0`, …) |
 | SHA-256 short | First 12 hex chars of running binary behind `bin/current` |
 | Date suffix | Binary mtime `·MM-DD` |
-| Build id | Optional `CONQUERD_BUILD_ID` / git sha from `strings` |
+| Build id | Optional `DOUBLESLASH_BUILD_ID` / git sha from `strings` |
 
 **Display format:** `nightly@878696fcec9e·06-14` (CLI `version_detail()` also prints `build=…`, `mtime=…`, `bin=…`).
 
@@ -427,9 +427,9 @@ The manager is the primary integration-testing tool for the DoubleSlash supernod
 .\launch.ps1 cluster-sync
 
 # 3. Verify — each node should show 8 cluster-related lines
-.\launch.ps1 exec --host acdc --instance a "grep -c cluster /var/lib/conquerd/a/supernode.toml"
-.\launch.ps1 exec --host acdc --instance b "grep -c cluster /var/lib/conquerd/b/supernode.toml"
-.\launch.ps1 exec --host acdc --instance c "grep -c cluster /var/lib/conquerd/c/supernode.toml"
+.\launch.ps1 exec --host acdc --instance a "grep -c cluster /var/lib/doubleslash/a/supernode.toml"
+.\launch.ps1 exec --host acdc --instance b "grep -c cluster /var/lib/doubleslash/b/supernode.toml"
+.\launch.ps1 exec --host acdc --instance c "grep -c cluster /var/lib/doubleslash/c/supernode.toml"
 ```
 
 ### Direct remote debugging via `exec`
@@ -438,13 +438,13 @@ The manager is the primary integration-testing tool for the DoubleSlash supernod
 
 ```powershell
 # Read the live manifest
-.\launch.ps1 exec --host acdc --instance a "cat /var/lib/conquerd/a/supernode.toml"
+.\launch.ps1 exec --host acdc --instance a "cat /var/lib/doubleslash/a/supernode.toml"
 
 # Check the web portal template is seeded
-.\launch.ps1 exec --host acdc --instance a "head -5 /var/lib/conquerd/a/web/index.html"
+.\launch.ps1 exec --host acdc --instance a "head -5 /var/lib/doubleslash/a/web/index.html"
 
 # Confirm identity
-.\launch.ps1 exec --host acdc --instance a "cat /var/lib/conquerd/a/identity.json | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d[\"public_key\"][:20])'"
+.\launch.ps1 exec --host acdc --instance a "cat /var/lib/doubleslash/a/identity.json | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d[\"public_key\"][:20])'"
 
 # Tail recent logs
 .\launch.ps1 logs --host acdc --instance a -n 100
@@ -462,7 +462,7 @@ The manager is the primary integration-testing tool for the DoubleSlash supernod
 .\launch.ps1 build-deploy --host acdc --all --source ..\doubleslash-supernode
 
 # Spot-check cluster config survived
-.\launch.ps1 exec --host acdc --instance a "grep cluster_id /var/lib/conquerd/a/supernode.toml"
+.\launch.ps1 exec --host acdc --instance a "grep cluster_id /var/lib/doubleslash/a/supernode.toml"
 ```
 
 If a manifest somehow loses the cluster section (e.g. manual edit), just re-run `cluster-sync` to restore it.

@@ -133,7 +133,7 @@ class IdentityVault(context: Context) {
     private companion object {
         const val TAG = "IdentityVault"
         const val PROVIDER = "AndroidKeyStore"
-        const val KEY_ALIAS = "conquerd.identity.kek"
+        const val KEY_ALIAS = "doubleslash.identity.kek"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val GCM_TAG_BITS = 128
         const val PREFS_NAME = "identity_vault"

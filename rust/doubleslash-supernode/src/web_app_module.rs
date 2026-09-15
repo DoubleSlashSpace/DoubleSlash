@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn resolve_under_root_rejects_escape() {
         let tmp = std::env::temp_dir().join(format!(
-            "conquerd-web-app-test-{}",
+            "doubleslash-web-app-test-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn resolve_under_root_rewrites_empty_to_index() {
         let tmp = std::env::temp_dir().join(format!(
-            "conquerd-web-app-index-test-{}",
+            "doubleslash-web-app-index-test-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -600,8 +600,8 @@ mod tests {
     fn make_module() -> WebAppHostModule {
         WebAppHostModule {
             state: Weak::new(),
-            web_root: PathBuf::from("/tmp/conquerd/web"),
-            games_root: PathBuf::from("/tmp/conquerd/games"),
+            web_root: PathBuf::from("/tmp/doubleslash/web"),
+            games_root: PathBuf::from("/tmp/doubleslash/games"),
         }
     }
 }

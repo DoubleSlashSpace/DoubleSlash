@@ -21,7 +21,7 @@ use crate::error::Result;
 use crate::identity::Identity;
 
 pub const PEER_STORE_FILE: &str = "peers.dat";
-pub const PEER_STORE_LABEL: &str = "conquerd-store/peers/v1";
+pub const PEER_STORE_LABEL: &str = "doubleslash-store/peers/v1";
 
 // ---------------------------------------------------------------------------
 // PeerRecord

@@ -54,10 +54,10 @@ Write-Host "Binary:  $Bin"
 Write-Host "Prompt:  $Prompt"
 Write-Host ""
 
-$env:CONQUERD_HOME = $HomeDir
-$env:CONQUERD_KEY_DIR = $HomeDir
-$env:CONQUERD_OLLAMA_ONLY = "1"
-$env:CONQUERD_SIMULATE_INBOUND_CHAT = $Prompt
+$env:DOUBLESLASH_HOME = $HomeDir
+$env:DOUBLESLASH_KEY_DIR = $HomeDir
+$env:DOUBLESLASH_OLLAMA_ONLY = "1"
+$env:DOUBLESLASH_SIMULATE_INBOUND_CHAT = $Prompt
 $env:RUST_LOG = "doubleslash_client=info,warn"
 
 & $Bin

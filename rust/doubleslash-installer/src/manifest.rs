@@ -45,7 +45,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn tmp_path(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("conquerd_manifest_test_{name}"))
+        std::env::temp_dir().join(format!("doubleslash_manifest_test_{name}"))
     }
 
     #[test]
@@ -64,7 +64,7 @@ mod tests {
         let _ = fs::remove_file(&manifest_path);
 
         let mut files = HashMap::new();
-        files.insert("bin/conquerd".to_string(), "abc123".to_string());
+        files.insert("bin/doubleslash".to_string(), "abc123".to_string());
         files.insert("lib/audio.so".to_string(), "def456".to_string());
 
         write_manifest(&dir, &files, &manifest_path).expect("write should succeed");
@@ -74,7 +74,7 @@ mod tests {
             .expect("manifest should be Some");
 
         assert_eq!(
-            loaded.files.get("bin/conquerd").map(String::as_str),
+            loaded.files.get("bin/doubleslash").map(String::as_str),
             Some("abc123")
         );
         assert_eq!(

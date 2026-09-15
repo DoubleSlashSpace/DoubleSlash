@@ -18,7 +18,6 @@
 # Usage:
 #   ./build_macos.sh                    # debug build
 #   DOUBLESLASH_RELEASE=1 ./build_macos.sh # release build (optimised)
-#   CONQUERD_RELEASE=1 is still accepted as an alias.
 # ============================================================================
 
 set -euo pipefail
@@ -55,7 +54,7 @@ echo "==> Building DoubleSlash v${VERSION} for macOS"
 
 PROFILE="debug"
 CARGO_FLAGS=""
-if [ "${DOUBLESLASH_RELEASE:-${CONQUERD_RELEASE:-0}}" = "1" ]; then
+if [ "${DOUBLESLASH_RELEASE:-0}" = "1" ]; then
     PROFILE="release"
     CARGO_FLAGS="--release"
 fi
@@ -127,8 +126,6 @@ fi
 # Icon
 if [ -f "$ROOT/assets/doubleslash.icns" ]; then
     cp "$ROOT/assets/doubleslash.icns" "$RESOURCES/doubleslash.icns"
-elif [ -f "$ROOT/assets/conquerd.icns" ]; then
-    cp "$ROOT/assets/conquerd.icns" "$RESOURCES/doubleslash.icns"
 fi
 
 # Qt deployment (bundles Qt frameworks + QML runtime)
@@ -139,16 +136,15 @@ macdeployqt "$APP_BUNDLE" \
     -no-strip
 
 # ── Code signing (optional) ────────────────────────────────────────────────────
-SIGN_ID="${DOUBLESLASH_SIGN_ID:-${CONQUERD_SIGN_ID:-}}"
+SIGN_ID="${DOUBLESLASH_SIGN_ID:-}"
 if [ -n "$SIGN_ID" ]; then
     echo "==> Code signing with identity: $SIGN_ID"
     ENTITLEMENTS="$ROOT/packaging/doubleslash.entitlements"
-    [ -f "$ENTITLEMENTS" ] || ENTITLEMENTS="$ROOT/packaging/conquerd.entitlements"
     codesign --deep --force --sign "$SIGN_ID" \
              --entitlements "$ENTITLEMENTS" \
              "$APP_BUNDLE"
 else
-    echo "==> Skipping code signing (DOUBLESLASH_SIGN_ID / CONQUERD_SIGN_ID not set)"
+    echo "==> Skipping code signing (DOUBLESLASH_SIGN_ID not set)"
 fi
 
 # ── Create DMG ────────────────────────────────────────────────────────────────
@@ -199,16 +195,16 @@ if [ ! -f "$DMG" ]; then
 fi
 
 # ── Notarization (optional) ────────────────────────────────────────────────────
-if [ -n "${CONQUERD_APPLE_ID:-}" ] && [ -n "${CONQUERD_APPLE_TEAM_ID:-}" ]; then
+if [ -n "${DOUBLESLASH_APPLE_ID:-}" ] && [ -n "${DOUBLESLASH_APPLE_TEAM_ID:-}" ]; then
     echo "==> Submitting for notarization..."
     xcrun notarytool submit "$DMG" \
-        --apple-id "$CONQUERD_APPLE_ID" \
-        --team-id  "$CONQUERD_APPLE_TEAM_ID" \
-        --password "$CONQUERD_APPLE_APP_PASSWORD" \
+        --apple-id "$DOUBLESLASH_APPLE_ID" \
+        --team-id  "$DOUBLESLASH_APPLE_TEAM_ID" \
+        --password "$DOUBLESLASH_APPLE_APP_PASSWORD" \
         --wait
     xcrun stapler staple "$DMG"
 else
-    echo "==> Skipping notarization (CONQUERD_APPLE_ID not set)"
+    echo "==> Skipping notarization (DOUBLESLASH_APPLE_ID not set)"
 fi
 
 # ── Checksum ───────────────────────────────────────────────────────────────────

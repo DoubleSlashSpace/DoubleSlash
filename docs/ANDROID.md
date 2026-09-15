@@ -90,7 +90,7 @@ sdk.dir=C:/Users/you/AppData/Local/Android/Sdk
 ```powershell
 cd android
 ./gradlew assembleDebug          # or assembleRelease
-./gradlew bundleRelease          # Play Store artifact (.aab); needs CONQUERD_KEYSTORE
+./gradlew bundleRelease          # Play Store artifact (.aab); needs DOUBLESLASH_KEYSTORE
 ```
 
 Gradle runs `cargo ndk` itself — `cargoBuildDebug` / `cargoBuildRelease` are

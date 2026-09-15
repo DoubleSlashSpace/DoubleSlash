@@ -12,7 +12,7 @@
 #   supernode_web_port    — HTTPS port for the node homepage/portal (unset = disabled)
 #   supernode_web_title   — human-readable name shown on the homepage (default "Relay Node")
 #   supernode_access_mode — portal access mode: open|tos|ad|code (default "open")
-#   supernode_access_code — access code for 'code' mode (default "conquerd")
+#   supernode_access_code — access code for 'code' mode (default "doubleslash")
 #   supernode_ad_duration — countdown seconds for 'ad' mode (default 30)
 #   supernode_tos_text    — custom TOS text for 'tos' mode (or edit portal/tos.html)
 #   supernode_ad_content  — HTML content for the ad/timer waiting area
@@ -20,12 +20,7 @@
 # Voice is never used — supernodes are headless relays.
 # The invite link will be printed to the console. Share it with peers.
 
-if [ -d "$HOME/.conquerd" ] && [ ! -d "$HOME/.doubleslash" ]; then
-  export DOUBLESLASH_HOME="${DOUBLESLASH_HOME:-$HOME/.conquerd}"
-else
-  export DOUBLESLASH_HOME="${DOUBLESLASH_HOME:-$HOME/.doubleslash}"
-fi
-export CONQUERD_HOME="${CONQUERD_HOME:-$DOUBLESLASH_HOME}"
+export DOUBLESLASH_HOME="${DOUBLESLASH_HOME:-$HOME/.doubleslash}"
 export supernode=1
 export supernode_invite_ttl=-1
 export supernode_port=3478

@@ -252,7 +252,7 @@
 
     let myPeerId = "";
     let supernodeId = "";
-    let conquerdFetch = null;
+    let doubleslashFetch = null;
 
     function accessPortalUrl() {
       return "doubleslash://" + supernodeId + "/access.html";
@@ -268,7 +268,7 @@
         const ctx = await bridge.ready;
         myPeerId    = ctx.myPeerId   || "";
         supernodeId = ctx.supernodeId || window.location.hostname;
-        conquerdFetch = ctx.fetch.bind(ctx);
+        doubleslashFetch = ctx.fetch.bind(ctx);
 
         el("node-id-display").textContent = `supernode: ${supernodeId}`;
         el("stat-my-id").textContent = myPeerId || "—";
@@ -300,7 +300,7 @@
 
     async function fetchAccessStatus() {
       try {
-        const r = await conquerdFetch("/api/access/status");
+        const r = await doubleslashFetch("/api/access/status");
         return await r.json();
       } catch (e) {
         console.warn("[portal] access status unavailable:", e);
@@ -318,8 +318,8 @@
     async function refresh() {
       try {
         const [statsRaw, cfgRaw] = await Promise.allSettled([
-          conquerdFetch("/api/stats"),
-          conquerdFetch("/api/config"),
+          doubleslashFetch("/api/stats"),
+          doubleslashFetch("/api/config"),
         ]);
 
         if (statsRaw.status === "fulfilled") {

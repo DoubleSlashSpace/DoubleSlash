@@ -1123,7 +1123,7 @@ pub enum CallEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Per-peer audio session (stub — full impl requires conquerd-audio)
+// Per-peer audio session (stub — full impl requires doubleslash-audio)
 // ---------------------------------------------------------------------------
 
 struct PeerAudioSession {

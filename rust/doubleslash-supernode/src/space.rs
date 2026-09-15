@@ -22,11 +22,11 @@ use serde_json::{json, Value};
 use crate::crypto::{b64url_decode, ed25519_verify, sha256, sha256_hex};
 
 /// Domain-separation label for leaf hashing.
-pub const SPACE_LEAF_LABEL: &str = "conquerd-space-leaf-v1";
+pub const SPACE_LEAF_LABEL: &str = "doubleslash-space-leaf-v1";
 /// Domain-separation label for the signed root.
-pub const SPACE_ROOT_LABEL: &str = "conquerd-space-root-v1";
+pub const SPACE_ROOT_LABEL: &str = "doubleslash-space-root-v1";
 /// Domain-separation label for an owner-signed admission grant.
-pub const SPACE_GRANT_LABEL: &str = "conquerd-space-grant-v1";
+pub const SPACE_GRANT_LABEL: &str = "doubleslash-space-grant-v1";
 /// Defensive verifier bound on inclusion-proof depth (≈ 4 billion nodes).
 pub const MAX_PROOF_DEPTH: usize = 32;
 /// Schema version carried by wire structs.
@@ -477,7 +477,7 @@ mod tests {
         let nodes = kat_nodes();
         assert_eq!(
             hex::encode(nodes[0].leaf_hash()),
-            "fda231a1e7510baeb453f78438324bb5943834643f01fca2b6fe5b9cf1c8fcc6",
+            "b46ba87a5f6df340bde3c326a0a41c7626e82c375bf620a6f100a5de271e88d8",
             "canonical leaf hash drifted from the client"
         );
         let space = Space {
@@ -488,7 +488,7 @@ mod tests {
         };
         assert_eq!(
             space.root_hash(),
-            "4f083fc161505e259b9b1397bc1b181368cff87ea411366c4dd43ee73f4a452d",
+            "a8b97d3897d257a29e8f4b8e01ad0d9ff301c9fbfa6fe13354c178678c046298",
             "canonical root hash drifted from the client"
         );
     }

@@ -176,9 +176,9 @@ fn main() {
     // Embed a build identifier for P2P build attestation / reproducible build verification.
     // The intent: if you and another peer built from the *exact same source commit*
     // (clean `git checkout <tag-or-sha> && cargo build`), your reported build_id should match.
-    // Official CI releases can (and should) set CONQUERD_BUILD_ID to a clear value.
+    // Official CI releases can (and should) set DOUBLESLASH_BUILD_ID to a clear value.
     {
-        let build_id = std::env::var("CONQUERD_BUILD_ID").unwrap_or_else(|_| {
+        let build_id = std::env::var("DOUBLESLASH_BUILD_ID").unwrap_or_else(|_| {
             // Prefer an exact tag if we're on one (common for release checkouts).
             let tag = std::process::Command::new("git")
                 .args(["describe", "--tags", "--exact-match", "HEAD"])
@@ -219,27 +219,27 @@ fn main() {
                 base
             }
         });
-        println!("cargo:rustc-env=CONQUERD_BUILD_ID={build_id}");
+        println!("cargo:rustc-env=DOUBLESLASH_BUILD_ID={build_id}");
         println!(
-            "cargo:rustc-env=CONQUERD_VERSION={}",
+            "cargo:rustc-env=DOUBLESLASH_VERSION={}",
             env!("CARGO_PKG_VERSION")
         );
 
         // Optional: a base64 signature from the release private key over the
         // build claim. Only present for official CI releases. Used to prove
         // the binary is not a local rebuild spoofing the build_id.
-        if let Ok(proof) = std::env::var("CONQUERD_RELEASE_PROOF") {
+        if let Ok(proof) = std::env::var("DOUBLESLASH_RELEASE_PROOF") {
             if !proof.trim().is_empty() {
-                println!("cargo:rustc-env=CONQUERD_RELEASE_PROOF={}", proof.trim());
+                println!("cargo:rustc-env=DOUBLESLASH_RELEASE_PROOF={}", proof.trim());
             }
         }
 
         // Compute a content hash of the actual source files.
         // This makes the attested value depend on the *contents* of the sources,
-        // not just the git commit. Even if an attacker sets CONQUERD_BUILD_ID
+        // not just the git commit. Even if an attacker sets DOUBLESLASH_BUILD_ID
         // via env var after modifying sources, the source_hash will differ.
         let source_hash = compute_source_hash();
-        println!("cargo:rustc-env=CONQUERD_SOURCE_HASH={source_hash}");
+        println!("cargo:rustc-env=DOUBLESLASH_SOURCE_HASH={source_hash}");
     }
 
     #[cfg(feature = "qt-ui")]

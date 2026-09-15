@@ -503,7 +503,7 @@ exchanged, no message sent, no supernode reached from the device.
 
 13. **Release APK hardening.** R8 rules for the JNI surface and kotlinx.serialization are written
     (`app/proguard-rules.pro`) but a minified release build has never been run, so they are
-    untested. `bundleRelease` signs from `CONQUERD_KEYSTORE` when that env is set; a Play
+    untested. `bundleRelease` signs from `DOUBLESLASH_KEYSTORE` when that env is set; a Play
     upload key has not been used yet.
 
 ### Google Play listing — remaining (2026-09-10)
@@ -517,7 +517,7 @@ intent). What is left is almost all Play Console, not more Kotlin.
 **Blocks a public listing (Console, not code):**
 
 1. **Signed AAB + Play App Signing.** `bundleRelease` with a real upload keystore in
-   `CONQUERD_KEYSTORE`. Package id `com.doubleslash.client` is frozen at first upload.
+   `DOUBLESLASH_KEYSTORE`. Package id `com.doubleslash.client` is frozen at first upload.
 2. **`specialUse` declaration + a short video** of the persistent “connected” notification
    and Disconnect. Play will not accept `dataSync` for a standing P2P session.
 3. **Full-screen intent declaration** for lock-screen incoming calls

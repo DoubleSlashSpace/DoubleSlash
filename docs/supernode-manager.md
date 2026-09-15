@@ -35,7 +35,7 @@ Derived from `rust/doubleslash-supernode` in the DoubleSlash repo (`config.rs`, 
 
 ### Data directory (per instance, isolated)
 
-Resolved from `DOUBLESLASH_HOME` (manager sets this per instance). Default layout: `{data_root}/{instance_id}` e.g. `/var/lib/doubleslash/a`. The acdc/ac1 dev fleet pins the pre-rename paths (`/opt/conquerd`, `/var/lib/conquerd`, user `conquerd`) in its inventory.
+Resolved from `DOUBLESLASH_HOME` (manager sets this per instance). Default layout: `{data_root}/{instance_id}` e.g. `/var/lib/doubleslash/a`.
 
 | File / dir | Purpose | Manager concern |
 |---|---|---|
@@ -54,7 +54,7 @@ Resolved from `DOUBLESLASH_HOME` (manager sets this per instance). Default layou
 - **SFU room policy:** `[defaults.supernode]` / per-instance overrides for `allow_public_rooms` / `allow_private_rooms` are emitted as **inline** `params = { … }` on the `room.audio.sfu` feature row (not a separate `[feature.params]` table).
 - **Legacy env vars** (still written in systemd drop-ins): `supernode_host`, `supernode_port`, `supernode_signaling_port`. Manifest fields (`listen_addr`, `ws_listen_addr`) are authoritative. Portal is QUIC-only (`web.host.app.v1`) — no public HTTP/web port.
 - **Clustering:** an optional `[cluster]` section (with `[[cluster.member]]` rows) links several supernodes into one logical node. Additive to `schema_version = 1` — the manager renders and pushes the shared roster to every member. Full contract, provisioning flow, and firewalling in §8.
-- `CONQUERD_BUILD_ID` is compiled into the binary; status probes it via `strings` when present.
+- `DOUBLESLASH_BUILD_ID` is compiled into the binary; status probes it via `strings` when present.
 
 ### Ports per instance
 
@@ -314,7 +314,7 @@ The `cluster_addr` UDP port must be reachable **between cluster members only**, 
 | Inventory pin | `defaults.version` (`nightly`, `1.0.0`, …) |
 | SHA-256 short | First 12 hex chars of running binary behind `bin/current` |
 | Date suffix | Binary mtime `·MM-DD` |
-| Build id | Optional `CONQUERD_BUILD_ID` / git sha from `strings` |
+| Build id | Optional `DOUBLESLASH_BUILD_ID` / git sha from `strings` |
 
 **Display format:** `nightly@878696fcec9e·06-14` (CLI `version_detail()` also prints `build=…`, `mtime=…`, `bin=…`).
 

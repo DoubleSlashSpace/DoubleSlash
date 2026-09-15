@@ -1,12 +1,12 @@
 # ============================================================================
-# release.yml — Build, sign, and publish ConquerD for all platforms
+# release.yml — Build, sign, and publish DoubleSlash for all platforms
 # ============================================================================
 # Triggers:
 #   - Tags (v*) → full signed release (draft)
 #   - Push to develop or daily schedule → nightly/dev build (prerelease "nightly" tag, unsigned manifest)
 #   - workflow_dispatch for manual runs
 #
-# Builds ConquerD for Windows, macOS, and Linux, applies code signing (when configured),
+# Builds DoubleSlash for Windows, macOS, and Linux, applies code signing (when configured),
 # then creates GitHub Releases with the 7z/dmg/AppImage + standalone installer + manifest.
 #
 # Code Signing Setup:
@@ -19,7 +19,7 @@
 #     4. Set these repository variables:
 #        - SIGNPATH_ORGANIZATION_ID: Your org ID from SignPath
 #        - SIGNPATH_SIGNING_POLICY_SLUG: e.g. "release-signing"
-#        - SIGNPATH_PROJECT_SLUG: e.g. "conquerd"
+#        - SIGNPATH_PROJECT_SLUG: e.g. "doubleslash"
 #
 #   macOS (Apple Developer Program — $99/yr, no free option):
 #     1. Enroll at https://developer.apple.com/programs/
@@ -59,7 +59,7 @@
 # Development Nightlies:
 #   - Triggered by push to `develop` or daily cron schedule.
 #   - Produces "nightly" prerelease on GitHub (tag `nightly`, updated in place).
-#   - Binaries use CONQUERD_BUILD_ID = nightly-<sha>-<run>
+#   - Binaries use DOUBLESLASH_BUILD_ID = nightly-<sha>-<run>
 #   - Manifest is generated unsigned (for dev use; the updater will still work with sha256 fallback).
 #   - No environment protection / signing key required.
 #
@@ -196,14 +196,14 @@ jobs:
           PEM: ${{ env.RELEASE_SIGNER_PRIVATE_PEM }}
         run: |
           Set-Content -Path "$env:RUNNER_TEMP\release-signer-private.pem" -Value $env:PEM
-          "CONQUERD_RELEASE_SIGN_KEY=$env:RUNNER_TEMP\release-signer-private.pem" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "DOUBLESLASH_RELEASE_SIGN_KEY=$env:RUNNER_TEMP\release-signer-private.pem" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Build (build_win64.ps1)
         shell: pwsh
         env:
           # Tagged: release-X.Y.Z-<12-char sha> (matches local tag checkout in build.rs)
           # Nightly: nightly-<12-char sha>-<run>
-          CONQUERD_BUILD_ID: ${{ steps.meta.outputs.build_id }}
+          DOUBLESLASH_BUILD_ID: ${{ steps.meta.outputs.build_id }}
         run: .\build_win64.ps1
 
       - name: Copy installer for separate upload
@@ -326,7 +326,7 @@ jobs:
             rust/target
           # github.repository is in the key because cxx-qt-build 0.8.1 writes
           # absolute Unix include symlinks under rust/target. Restoring a cache
-          # from a previous workspace path (repo rename ConquerD → DoubleSlash)
+          # from a previous workspace path (repo rename DoubleSlash → DoubleSlash)
           # leaves those links dangling and panics:
           # "Could not create symlink for include_prefix cxx-qt".
           key: macos-cargo-${{ github.repository }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/doubleslash-client/Cargo.lock') }}
@@ -406,9 +406,9 @@ jobs:
 
       - name: Build (build_macos.sh)
         env:
-          CONQUERD_RELEASE: "1"
-          CONQUERD_SIGN_ID: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          CONQUERD_BUILD_ID: ${{ steps.meta.outputs.build_id }}
+          DOUBLESLASH_RELEASE: "1"
+          DOUBLESLASH_SIGN_ID: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          DOUBLESLASH_BUILD_ID: ${{ steps.meta.outputs.build_id }}
         run: bash build_macos.sh
 
       - name: Notarize DMG
@@ -461,7 +461,7 @@ jobs:
             rust/target
           # github.repository is in the key because cxx-qt-build 0.8.1 writes
           # absolute Unix include symlinks under rust/target. Restoring a cache
-          # from a previous workspace path (repo rename ConquerD → DoubleSlash)
+          # from a previous workspace path (repo rename DoubleSlash → DoubleSlash)
           # leaves those links dangling and panics:
           # "Could not create symlink for include_prefix cxx-qt".
           key: linux-cargo-${{ github.repository }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/doubleslash-client/Cargo.lock') }}
@@ -539,8 +539,8 @@ jobs:
 
       - name: Build (build_linux.sh)
         env:
-          CONQUERD_RELEASE: "1"
-          CONQUERD_BUILD_ID: ${{ steps.meta.outputs.build_id }}
+          DOUBLESLASH_RELEASE: "1"
+          DOUBLESLASH_BUILD_ID: ${{ steps.meta.outputs.build_id }}
         run: bash build_linux.sh
 
       - name: Verify artifacts
@@ -592,8 +592,8 @@ jobs:
 
       - name: Build and package supernode (linux-aarch64)
         env:
-          CONQUERD_RELEASE: "1"
-          CONQUERD_BUILD_ID: ${{ steps.meta.outputs.build_id }}
+          DOUBLESLASH_RELEASE: "1"
+          DOUBLESLASH_BUILD_ID: ${{ steps.meta.outputs.build_id }}
         run: bash scripts/build_supernode.sh
 
       - name: Verify artifacts
@@ -645,8 +645,8 @@ jobs:
 
       - name: Build and package supernode (linux-x86_64)
         env:
-          CONQUERD_RELEASE: "1"
-          CONQUERD_BUILD_ID: ${{ steps.meta.outputs.build_id }}
+          DOUBLESLASH_RELEASE: "1"
+          DOUBLESLASH_BUILD_ID: ${{ steps.meta.outputs.build_id }}
         run: bash scripts/build_supernode.sh
 
       - name: Verify artifacts
@@ -700,8 +700,8 @@ jobs:
       - name: Build and package supernode (win64)
         shell: pwsh
         env:
-          CONQUERD_RELEASE: "1"
-          CONQUERD_BUILD_ID: ${{ steps.meta.outputs.build_id }}
+          DOUBLESLASH_RELEASE: "1"
+          DOUBLESLASH_BUILD_ID: ${{ steps.meta.outputs.build_id }}
         run: pwsh scripts/build_supernode.ps1
 
       - name: Verify artifacts
@@ -843,7 +843,7 @@ jobs:
             --arg lin_h "$LIN_HASH" \
             --arg pubkey "d31f43fcfba1fae04313d384d7fba026bd52796550c57def6cf47b069c18043f" \
             '{
-              "comment": "Signed by ConquerD release workflow (Ed25519 project key). Build IDs and archive hashes taken from CI artifacts.",
+              "comment": "Signed by DoubleSlash release workflow (Ed25519 project key). Build IDs and archive hashes taken from CI artifacts.",
               "releases": [
                 {"version": $version, "platform": "win64", "build_hash": $win_h, "build_id": $build_id, "published_at": 0.0},
                 {"version": $version, "platform": "macos-arm64", "build_hash": $mac_h, "build_id": $build_id, "published_at": 0.0},

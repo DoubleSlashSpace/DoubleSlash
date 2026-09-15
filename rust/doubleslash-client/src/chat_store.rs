@@ -15,7 +15,7 @@ use crate::error::{ClientError, Result};
 use crate::identity::Identity;
 
 pub const CHAT_DB_FILENAME: &str = "chat_history.db";
-pub const CHAT_STORE_LABEL: &str = "conquerd-store/chat/v1";
+pub const CHAT_STORE_LABEL: &str = "doubleslash-store/chat/v1";
 pub const PAGE_SIZE: usize = 50;
 
 // ---------------------------------------------------------------------------

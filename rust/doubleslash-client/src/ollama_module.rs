@@ -59,7 +59,7 @@ impl OllamaAssistantSettings {
     }
 }
 
-/// Read Ollama assistant fields from `$CONQUERD_HOME/settings.json`.
+/// Read Ollama assistant fields from `$DOUBLESLASH_HOME/settings.json`.
 pub fn read_assistant_settings() -> OllamaAssistantSettings {
     let path = crate::identity::Identity::default_key_dir().join("settings.json");
     let Ok(txt) = std::fs::read_to_string(&path) else {

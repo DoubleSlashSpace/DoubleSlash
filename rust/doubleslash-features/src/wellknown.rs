@@ -22,7 +22,7 @@ pub const NS_VENDOR: &str = "x";
 
 /// `transport.quic.audio.v1` — direct-peer audio datagram framing
 /// (`[u16 BE seq][opus...]`) currently implemented in
-/// `conquerd-quic::wire::encode_audio_datagram`.
+/// `doubleslash-quic::wire::encode_audio_datagram`.
 pub fn transport_quic_audio_v1() -> CapabilityDescriptor {
     CapabilityDescriptor::new("transport.quic.audio.v1", "1.0", ChannelKind::Datagram)
         .with_params(json!({
@@ -35,7 +35,7 @@ pub fn transport_quic_audio_v1() -> CapabilityDescriptor {
 
 /// `transport.quic.relay.v1` — supernode broadcast/forward datagram
 /// framing (`[peer_index][opus...]`, `0xFF` = broadcast) implemented in
-/// `conquerd-quic::wire::{encode_relay_broadcast,decode_relay_datagram}`.
+/// `doubleslash-quic::wire::{encode_relay_broadcast,decode_relay_datagram}`.
 pub fn transport_quic_relay_v1() -> CapabilityDescriptor {
     CapabilityDescriptor::new("transport.quic.relay.v1", "1.0", ChannelKind::Datagram)
         .with_params(json!({
@@ -46,7 +46,7 @@ pub fn transport_quic_relay_v1() -> CapabilityDescriptor {
 }
 
 /// `transport.quic.stream.v1` — generic length-prefixed stream framing
-/// (`[u32 BE len][data]`) implemented in `conquerd-quic::wire::StreamBuffer`.
+/// (`[u32 BE len][data]`) implemented in `doubleslash-quic::wire::StreamBuffer`.
 pub fn transport_quic_stream_v1() -> CapabilityDescriptor {
     CapabilityDescriptor::new("transport.quic.stream.v1", "1.0", ChannelKind::Stream)
         .with_params(json!({

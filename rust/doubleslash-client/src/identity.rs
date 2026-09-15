@@ -116,7 +116,7 @@ impl Identity {
 
     /// Derive a 32-byte at-rest storage subkey via HKDF-SHA256.
     ///
-    /// `info` is a domain-separation label (use `"conquerd-store/<name>/v<n>"`).
+    /// `info` is a domain-separation label (use `"doubleslash-store/<name>/v<n>"`).
     pub fn derive_store_key(&self, info: &str) -> Result<[u8; 32]> {
         let seed = Zeroizing::new(self.signing.to_bytes());
         hkdf_derive_key(seed.as_ref(), info.as_bytes())
@@ -510,8 +510,8 @@ mod tests {
     #[test]
     fn derive_store_key_domain_separation() {
         let id = Identity::generate();
-        let k1 = id.derive_store_key("conquerd-store/peers/v1").unwrap();
-        let k2 = id.derive_store_key("conquerd-store/chat/v1").unwrap();
+        let k1 = id.derive_store_key("doubleslash-store/peers/v1").unwrap();
+        let k2 = id.derive_store_key("doubleslash-store/chat/v1").unwrap();
         assert_ne!(k1, k2);
     }
 }

@@ -11,12 +11,12 @@ setlocal EnableExtensions
 :: ---------------------------------------------------------------------------
 
 set "ROOT=%~dp0"
-set "CONQUERD_HOME=%ROOT%.clientOllama"
-set "CONQUERD_KEY_DIR=%CONQUERD_HOME%"
+set "DOUBLESLASH_HOME=%ROOT%.clientOllama"
+set "DOUBLESLASH_KEY_DIR=%DOUBLESLASH_HOME%"
 set "LEGACY_HOME=%ROOT%.clientOllama_home"
-set "LEGACY_PROFILE_LINK=%LEGACY_HOME%\.conquerd"
-set "SETTINGS=%CONQUERD_HOME%\settings.json"
-set "LOG_DIR=%CONQUERD_HOME%\logs"
+set "LEGACY_PROFILE_LINK=%LEGACY_HOME%\.doubleslash"
+set "SETTINGS=%DOUBLESLASH_HOME%\settings.json"
+set "LOG_DIR=%DOUBLESLASH_HOME%\logs"
 set "LOG_FILE=%LOG_DIR%\doubleslash-client.log"
 
 :: Prefer a freshly built binary (release, then debug), then the packaged dist client.
@@ -70,11 +70,11 @@ if "%USE_DEBUG%"=="1" (
     )
 )
 
-if not exist "%CONQUERD_HOME%\NUL" mkdir "%CONQUERD_HOME%"
+if not exist "%DOUBLESLASH_HOME%\NUL" mkdir "%DOUBLESLASH_HOME%"
 if not exist "%LOG_DIR%\NUL" mkdir "%LOG_DIR%"
 if not exist "%LEGACY_HOME%\NUL" mkdir "%LEGACY_HOME%"
 if not exist "%LEGACY_PROFILE_LINK%\NUL" (
-    mklink /J "%LEGACY_PROFILE_LINK%" "%CONQUERD_HOME%" >nul
+    mklink /J "%LEGACY_PROFILE_LINK%" "%DOUBLESLASH_HOME%" >nul
 )
 
 :: Seed a settings file on first run so Ollama is enabled without hunting
@@ -128,7 +128,7 @@ if not exist "%SETTINGS%" (
 
 echo.
 echo === DoubleSlash Ollama test client ===
-echo Profile:  %CONQUERD_HOME%
+echo Profile:  %DOUBLESLASH_HOME%
 echo Binary:   %BINARY%
 echo Kind:     %BINARY_KIND%
 echo Settings: %SETTINGS%

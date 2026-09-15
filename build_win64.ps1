@@ -18,12 +18,12 @@
 
     Environment variables (all optional):
       QT_DIR                  — override Qt MSVC root, e.g. C:\Qt\6.8.3\msvc2022_64
-      CONQUERD_DEBUG          — set to "1" to do a debug build instead of release
-      CONQUERD_SIGN_THUMBPRINT  — SHA-1 cert thumbprint in Windows store
-      CONQUERD_SIGN_PFX         — path to .pfx file
-      CONQUERD_SIGN_PASSWORD    — password for .pfx
-      CONQUERD_SIGN_TIMESTAMP   — RFC 3161 URL (default: DigiCert)
-      CONQUERD_SIGN_AUTO        — set to sign with best-available cert
+      DOUBLESLASH_DEBUG          — set to "1" to do a debug build instead of release
+      DOUBLESLASH_SIGN_THUMBPRINT  — SHA-1 cert thumbprint in Windows store
+      DOUBLESLASH_SIGN_PFX         — path to .pfx file
+      DOUBLESLASH_SIGN_PASSWORD    — password for .pfx
+      DOUBLESLASH_SIGN_TIMESTAMP   — RFC 3161 URL (default: DigiCert)
+      DOUBLESLASH_SIGN_AUTO        — set to sign with best-available cert
 
 .USAGE
     .\build_win64.ps1
@@ -41,19 +41,19 @@ $QML_DIR   = Join-Path $CLIENT_DIR "qml"
 $DIST      = Join-Path $ROOT "dist"
 $BUNDLE    = Join-Path $DIST "DoubleSlash"
 
-$PROFILE_NAME = if ($env:CONQUERD_DEBUG -eq "1") { "debug" } else { "release" }
+$PROFILE_NAME = if ($env:DOUBLESLASH_DEBUG -eq "1") { "debug" } else { "release" }
 [string[]]$CARGO_ARGS = if ($PROFILE_NAME -eq "release") { @("--release") } else { @() }
 
-# Debug console toggle: set CONQUERD_DEBUG_CONSOLE=1 to keep the terminal window
+# Debug console toggle: set DOUBLESLASH_DEBUG_CONSOLE=1 to keep the terminal window
 # attached (enables the `console` Cargo feature which removes windows_subsystem = "windows").
 $_features = "qt-ui"
 if ($env:DOUBLESLASH_DEVICE_ROUTING -eq "1") {
     $_features += ",device-routing"
     Write-Host "    [preview] Simultaneous identity routing enabled"
 }
-if ($env:CONQUERD_DEBUG_CONSOLE -eq "1") {
+if ($env:DOUBLESLASH_DEBUG_CONSOLE -eq "1") {
     $_features += ",console"
-    Write-Host "    [debug] Console window enabled (CONQUERD_DEBUG_CONSOLE=1)"
+    Write-Host "    [debug] Console window enabled (DOUBLESLASH_DEBUG_CONSOLE=1)"
 }
 # ── Version ──────────────────────────────────────────────────────────────────
 $_cargoToml = Join-Path $RUST_DIR "doubleslash-client\Cargo.toml"
@@ -117,17 +117,17 @@ function Resolve-VcInstallDir {
 
 # Include the Qt WebEngine (Chromium) scheme handler for the in-app node portal
 # (doubleslash:// custom scheme). Auto-detected from the Qt install. Override with
-# CONQUERD_NO_WEBENGINE=1 to force-disable (e.g. Qt WebEngine not installed).
+# DOUBLESLASH_NO_WEBENGINE=1 to force-disable (e.g. Qt WebEngine not installed).
 $_weProbe = Join-Path $QT_ROOT "include\QtWebEngineCore\QWebEngineProfile.h"
-if ($env:CONQUERD_NO_WEBENGINE -ne "1" -and (Test-Path $_weProbe)) {
+if ($env:DOUBLESLASH_NO_WEBENGINE -ne "1" -and (Test-Path $_weProbe)) {
     $_features += ",webengine"
     Write-Host "    [web] Qt WebEngine portal enabled"
-} elseif ($env:CONQUERD_NO_WEBENGINE -eq "1") {
-    Write-Host "    [web] Qt WebEngine portal disabled (CONQUERD_NO_WEBENGINE=1)"
+} elseif ($env:DOUBLESLASH_NO_WEBENGINE -eq "1") {
+    Write-Host "    [web] Qt WebEngine portal disabled (DOUBLESLASH_NO_WEBENGINE=1)"
 } else {
     Write-Host "    [web] Qt WebEngine NOT found — portal disabled" -ForegroundColor Yellow
     Write-Host "         Install via Qt Maintenance Tool: Qt 6.x > Additional Libraries > Qt WebEngine" -ForegroundColor Yellow
-    if ($env:CONQUERD_BUILD_ID) {
+    if ($env:DOUBLESLASH_BUILD_ID) {
         Write-Error @"
 CI/release builds require Qt WebEngine for the in-app supernode portal.
 Install the module, e.g.:
@@ -155,18 +155,18 @@ function Get-ClientSourceHash {
     $outFile = Get-ChildItem -Path $outGlob -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $outFile) { return $null }
     foreach ($line in Get-Content $outFile.FullName) {
-        if ($line -match 'cargo:rustc-env=CONQUERD_SOURCE_HASH=(.+)') {
+        if ($line -match 'cargo:rustc-env=DOUBLESLASH_SOURCE_HASH=(.+)') {
             return $Matches[1]
         }
     }
     return $null
 }
 
-# Optional second pass: bake CONQUERD_RELEASE_PROOF for official CI/local release builds.
-if ($env:CONQUERD_RELEASE_SIGN_KEY -and (Test-Path $env:CONQUERD_RELEASE_SIGN_KEY)) {
+# Optional second pass: bake DOUBLESLASH_RELEASE_PROOF for official CI/local release builds.
+if ($env:DOUBLESLASH_RELEASE_SIGN_KEY -and (Test-Path $env:DOUBLESLASH_RELEASE_SIGN_KEY)) {
     $sourceHash = Get-ClientSourceHash
-    $buildId = if ($env:CONQUERD_BUILD_ID) {
-        $env:CONQUERD_BUILD_ID
+    $buildId = if ($env:DOUBLESLASH_BUILD_ID) {
+        $env:DOUBLESLASH_BUILD_ID
     } else {
         $tag = (& git -C $ROOT describe --tags --exact-match HEAD 2>$null)
         $sha = (& git -C $ROOT rev-parse --short=12 HEAD 2>$null)
@@ -177,7 +177,7 @@ if ($env:CONQUERD_RELEASE_SIGN_KEY -and (Test-Path $env:CONQUERD_RELEASE_SIGN_KE
         "run", "-p", "doubleslash-installer", "--manifest-path", (Join-Path $RUST_DIR "Cargo.toml"),
         "--bin", "sign-release-manifest", "--",
         "--sign-build-claim",
-        "--private-key", $env:CONQUERD_RELEASE_SIGN_KEY,
+        "--private-key", $env:DOUBLESLASH_RELEASE_SIGN_KEY,
         "--build-id", $buildId,
         "--claim-version", $VERSION
     )
@@ -191,8 +191,8 @@ if ($env:CONQUERD_RELEASE_SIGN_KEY -and (Test-Path $env:CONQUERD_RELEASE_SIGN_KE
     if ($_claimExit -ne 0 -or -not $proof) {
         Write-Error "Failed to sign release build claim (exit $_claimExit)"
     }
-    $env:CONQUERD_RELEASE_PROOF = $proof.Trim()
-    Write-Host "    Rebuilding doubleslash-client with CONQUERD_RELEASE_PROOF..."
+    $env:DOUBLESLASH_RELEASE_PROOF = $proof.Trim()
+    Write-Host "    Rebuilding doubleslash-client with DOUBLESLASH_RELEASE_PROOF..."
     Push-Location $CLIENT_DIR
     $_prevPref4 = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     & cargo build @CARGO_ARGS --features $_features
@@ -294,18 +294,18 @@ if ($_features -like "*webengine*") {
 
 # ── Code-sign binaries (optional) ─────────────────────────────────────────────
 #
-#   CONQUERD_SIGN_THUMBPRINT  -- SHA-1 thumbprint of a cert in the Windows Store
-#   CONQUERD_SIGN_PFX         -- path to a .pfx file (OV cert, local builds)
-#   CONQUERD_SIGN_PASSWORD    -- password for the .pfx file
-#   CONQUERD_SIGN_TIMESTAMP   -- RFC 3161 URL (default: DigiCert)
+#   DOUBLESLASH_SIGN_THUMBPRINT  -- SHA-1 thumbprint of a cert in the Windows Store
+#   DOUBLESLASH_SIGN_PFX         -- path to a .pfx file (OV cert, local builds)
+#   DOUBLESLASH_SIGN_PASSWORD    -- password for the .pfx file
+#   DOUBLESLASH_SIGN_TIMESTAMP   -- RFC 3161 URL (default: DigiCert)
 #
 # If none are set the signing step is skipped (development builds).
 
 $_signtool     = Get-Command "signtool" -ErrorAction SilentlyContinue
-$_signThumb    = $env:CONQUERD_SIGN_THUMBPRINT
-$_signPfx      = $env:CONQUERD_SIGN_PFX
-$_signPassword = $env:CONQUERD_SIGN_PASSWORD
-$_timestampUrl = if ($env:CONQUERD_SIGN_TIMESTAMP) { $env:CONQUERD_SIGN_TIMESTAMP } `
+$_signThumb    = $env:DOUBLESLASH_SIGN_THUMBPRINT
+$_signPfx      = $env:DOUBLESLASH_SIGN_PFX
+$_signPassword = $env:DOUBLESLASH_SIGN_PASSWORD
+$_timestampUrl = if ($env:DOUBLESLASH_SIGN_TIMESTAMP) { $env:DOUBLESLASH_SIGN_TIMESTAMP } `
                  else { "http://timestamp.digicert.com" }
 
 function Invoke-SignBinary ([string]$Path) {
@@ -323,7 +323,7 @@ function Invoke-SignBinary ([string]$Path) {
     if ($LASTEXITCODE -ne 0) { Write-Error "signtool failed for $Path" }
 }
 
-$_doSign = $_signtool -and ($_signThumb -or $_signPfx -or $env:CONQUERD_SIGN_AUTO)
+$_doSign = $_signtool -and ($_signThumb -or $_signPfx -or $env:DOUBLESLASH_SIGN_AUTO)
 if ($_doSign) {
     Write-Host "`n==> Code-signing binaries..."
     foreach ($bin in @($BUNDLE_EXE, $BUNDLE_INSTALLER)) {
@@ -334,7 +334,7 @@ if ($_doSign) {
 } elseif (-not $_signtool) {
     Write-Host "`n    [sign] signtool.exe not found -- install Windows SDK to enable code signing"
 } else {
-    Write-Host "`n    [sign] Skipped -- set CONQUERD_SIGN_THUMBPRINT or CONQUERD_SIGN_PFX to sign"
+    Write-Host "`n    [sign] Skipped -- set DOUBLESLASH_SIGN_THUMBPRINT or DOUBLESLASH_SIGN_PFX to sign"
 }
 
 # ── Copy installer to dist\ root (run-alongside-archive entry point) ──────────

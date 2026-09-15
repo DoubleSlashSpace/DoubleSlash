@@ -18,8 +18,7 @@
     debug builds are debuggable. Release builds are not, and this will refuse.
 
 .PARAMETER ProfileDir
-    Desktop profile to copy from. Defaults to ~/.doubleslash, or ~/.conquerd
-    if that profile still exists.
+    Desktop profile to copy from. Defaults to ~/.doubleslash.
 
 .PARAMETER IdentityOnly
     Copy only identity.dat, leaving the phone with empty peer/room/chat stores.
@@ -37,7 +36,7 @@
 param(
     [string]$ProfileDir = $(
         $ds = Join-Path $env:USERPROFILE ".doubleslash"
-        $legacy = Join-Path $env:USERPROFILE ".conquerd"
+        $legacy = Join-Path $env:USERPROFILE ".doubleslash"
         if (Test-Path $ds) { $ds } elseif (Test-Path $legacy) { $legacy } else { $ds }
     ),
     [switch]$IdentityOnly,
@@ -149,7 +148,7 @@ Write-Host ""
 # SQLite keeps recent writes in the -wal sidecar, so copying chat_history.db
 # alone from a running client silently loses them. Checkpoint by closing the
 # desktop client, or accept the loss.
-$desktop = @(Get-Process -Name "DoubleSlash", "ConquerD", "doubleslash-client" -ErrorAction SilentlyContinue)
+$desktop = @(Get-Process -Name "DoubleSlash", "DoubleSlash", "doubleslash-client" -ErrorAction SilentlyContinue)
 if ($desktop.Count -gt 0) {
     throw @"
 The desktop client is still running (PID $($desktop[0].Id)).

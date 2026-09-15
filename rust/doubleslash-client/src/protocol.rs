@@ -385,7 +385,7 @@ impl SignalingMessage {
             ));
         }
         // Build a map without the signature field so the canonical form
-        // matches what conquerd_crypto::signaling_canonical_bytes produces.
+        // matches what doubleslash_crypto::signaling_canonical_bytes produces.
         let mut map: BTreeMap<&str, Value> = BTreeMap::new();
         map.insert(
             "type",

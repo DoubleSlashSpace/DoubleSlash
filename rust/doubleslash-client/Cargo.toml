@@ -24,7 +24,7 @@ quinn = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rcgen = "0.13"
 
-# Crypto (mirrors what conquerd-crypto uses internally)
+# Crypto (mirrors what doubleslash-crypto uses internally)
 ed25519-dalek = { version = "2", features = ["rand_core", "pem", "serde"] }
 x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
 hkdf = "0.12"

@@ -11,8 +11,8 @@
 
         powershell -ExecutionPolicy Bypass -File scripts\build_supernode.ps1
 
-        $env:CONQUERD_RELEASE = '1'
-        $env:CONQUERD_BUILD_ID = 'release-1.0.0-abc123'
+        $env:DOUBLESLASH_RELEASE = '1'
+        $env:DOUBLESLASH_BUILD_ID = 'release-1.0.0-abc123'
         powershell -ExecutionPolicy Bypass -File scripts\build_supernode.ps1
 #>
 
@@ -30,7 +30,7 @@ $Platform = 'win64'
 
 $Profile = 'debug'
 $CargoArgs = @('build', '-p', 'doubleslash-supernode')
-if ($env:CONQUERD_RELEASE -eq '1' -or $env:CONQUERD_DEBUG -ne '1') {
+if ($env:DOUBLESLASH_RELEASE -eq '1' -or $env:DOUBLESLASH_DEBUG -ne '1') {
     $Profile = 'release'
     $CargoArgs += '--release'
 }

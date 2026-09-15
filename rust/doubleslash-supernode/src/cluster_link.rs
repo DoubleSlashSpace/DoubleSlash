@@ -141,7 +141,7 @@ impl ClusterMsg {
         // serde_json with sorted struct field order is deterministic for these
         // shapes; prefix with sender to bind the signature to the claimed id.
         let mut out = Vec::new();
-        out.extend_from_slice(b"conquerd-cluster-msg-v1|");
+        out.extend_from_slice(b"doubleslash-cluster-msg-v1|");
         out.extend_from_slice(sender.as_bytes());
         out.push(b'|');
         out.extend_from_slice(serde_json::to_vec(kind).unwrap_or_default().as_slice());
@@ -649,8 +649,8 @@ impl ClusterLink {
         let version_info = ClusterMsg::signed(
             ClusterMsgKind::VersionInfo {
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                build_id: env!("CONQUERD_BUILD_ID").to_string(),
-                source_hash: env!("CONQUERD_SOURCE_HASH").to_string(),
+                build_id: env!("DOUBLESLASH_BUILD_ID").to_string(),
+                source_hash: env!("DOUBLESLASH_SOURCE_HASH").to_string(),
             },
             &self.identity,
         );

@@ -12,7 +12,7 @@ REM   supernode_auto_restart — auto-restart after update applied (1=on, 0=off,
 REM   supernode_web_port    — HTTPS port for the node homepage/portal (unset = disabled)
 REM   supernode_web_title   — human-readable name shown on the homepage (default "Relay Node")
 REM   supernode_access_mode — portal access mode: open|tos|ad|code (default "open")
-REM   supernode_access_code — access code for 'code' mode (default "conquerd")
+REM   supernode_access_code — access code for 'code' mode (default "doubleslash")
 REM   supernode_ad_duration — countdown seconds for 'ad' mode (default 30)
 REM   supernode_tos_text    — custom TOS text for 'tos' mode (or edit portal/tos.html)
 REM   supernode_ad_content  — HTML content for the ad/timer waiting area
@@ -20,7 +20,7 @@ REM
 REM Voice is never used — supernodes are headless relays.
 REM The invite link will be printed to the console. Share it with peers.
 
-set CONQUERD_HOME=%USERPROFILE%\.conquerd
+set DOUBLESLASH_HOME=%USERPROFILE%\.doubleslash
 set supernode=1
 set supernode_invite_ttl=-1
 set supernode_port=3478

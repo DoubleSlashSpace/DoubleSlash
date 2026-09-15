@@ -4,7 +4,7 @@
 //! client connects to a supernode, saved rooms are sent via `SFU_ROOM_CREATE`
 //! to be recreated on the fly.
 //!
-//! File: `~/.conquerd/my_rooms.dat` — AES-256-GCM envelope keyed by HKDF
+//! File: `~/.doubleslash/my_rooms.dat` — AES-256-GCM envelope keyed by HKDF
 //! subkey of the user's Identity.
 //!
 //! ## Schema versioning
@@ -23,7 +23,7 @@ use crate::error::Result;
 use crate::identity::Identity;
 
 pub const ROOM_STORE_FILE: &str = "my_rooms.dat";
-pub const ROOM_STORE_LABEL: &str = "conquerd-store/rooms/v1";
+pub const ROOM_STORE_LABEL: &str = "doubleslash-store/rooms/v1";
 
 // ---------------------------------------------------------------------------
 // RoomEntry

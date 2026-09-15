@@ -684,7 +684,8 @@ fn run_repair_silent(base_dir: &std::path::Path) -> anyhow::Result<()> {
     })?;
 
     log!("Extracting {} for repair\u{2026}", archive.display());
-    let staging_dir = std::env::temp_dir().join(format!("conquerd_repair_{}", std::process::id()));
+    let staging_dir =
+        std::env::temp_dir().join(format!("doubleslash_repair_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging_dir);
     std::fs::create_dir_all(&staging_dir)?;
 
@@ -763,8 +764,8 @@ mod tests {
         for name in [
             "backup.7z",
             "7z2301-x64.7z",
-            "ConquerD-backup.7z",
-            "ConquerD-1.0.0.7z",
+            "DoubleSlash-backup.7z",
+            "DoubleSlash-1.0.0.7z",
             "doubleslash-supernode-1.0.0-win64.zip",
         ] {
             assert!(

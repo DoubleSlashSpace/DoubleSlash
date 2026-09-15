@@ -58,7 +58,7 @@ const MAX_SENDER_LEN: usize = 64;
 /// never be replayed as a signature over anything else this identity signs —
 /// including a *video* frame, which is the neighbouring format most likely to
 /// be confused with it.
-const CONTENT_AUDIO_SIG_DOMAIN: &[u8] = b"conquerd.content.audio.frame.v1";
+const CONTENT_AUDIO_SIG_DOMAIN: &[u8] = b"doubleslash.content.audio.frame.v1";
 
 /// One parsed content-audio frame.
 #[derive(Debug, Clone, PartialEq, Eq)]

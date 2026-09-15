@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $clientRoot = Join-Path $PSScriptRoot "../rust/doubleslash-client"
-$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("conquerd-qml-" + [guid]::NewGuid())
+$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("doubleslash-qml-" + [guid]::NewGuid())
 $moduleRoot = Join-Path $temporaryRoot "DoubleSlash/Client"
 try {
     New-Item -ItemType Directory -Path $moduleRoot -Force | Out-Null

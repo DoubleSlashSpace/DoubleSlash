@@ -108,7 +108,7 @@ if ($replay -gt 0) {
 #
 # The one end-to-end path the headless hooks genuinely support: pull a real
 # reusable invite from the cluster, hand it to a fresh client via
-# CONQUERD_ACCEPT_INVITE, and confirm it processed it. Accepting an invite for
+# DOUBLESLASH_ACCEPT_INVITE, and confirm it processed it. Accepting an invite for
 # a supernode already trusted is idempotent, so this is safe to re-run.
 
 if (-not $IncludeDesktopScenario) {
@@ -138,8 +138,8 @@ if ($inviteUrl -eq '') {
 }
 
 $out = Invoke-HeadlessClient -EnvVars @{
-    CONQUERD_ACCEPT_INVITE = $inviteUrl
-    CONQUERD_SIMULATE_EXIT = '1'
+    DOUBLESLASH_ACCEPT_INVITE = $inviteUrl
+    DOUBLESLASH_SIMULATE_EXIT = '1'
     RUST_LOG               = 'doubleslash_client=info,warn'
 } -TimeoutSec 90
 
@@ -148,7 +148,7 @@ if ($null -eq $out) {
 } elseif (@($out | Select-String -Pattern 'DEVTEST-TIMEOUT').Count -gt 0) {
     Add-Result $Suite 'headless accepts a cluster invite' 'Fail' 'client did not exit within 90s'
 } else {
-    $accepted = @($out | Select-String -Pattern 'Accepting invite from CONQUERD_ACCEPT_INVITE').Count -gt 0
+    $accepted = @($out | Select-String -Pattern 'Accepting invite from DOUBLESLASH_ACCEPT_INVITE').Count -gt 0
     Assert-True $Suite 'headless accepts a cluster invite' $accepted `
         'client started but never reported accepting the invite'
 }

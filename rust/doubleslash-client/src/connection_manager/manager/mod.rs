@@ -2473,7 +2473,7 @@ impl ConnectionManager {
         msg.target = Some(peer_id.to_owned());
         msg.payload.insert(
             "build_id".to_owned(),
-            Value::String(env!("CONQUERD_BUILD_ID").to_owned()),
+            Value::String(env!("DOUBLESLASH_BUILD_ID").to_owned()),
         );
         msg.payload.insert(
             "version".to_owned(),
@@ -2481,9 +2481,9 @@ impl ConnectionManager {
         );
         msg.payload.insert(
             "source_hash".to_owned(),
-            Value::String(env!("CONQUERD_SOURCE_HASH").to_owned()),
+            Value::String(env!("DOUBLESLASH_SOURCE_HASH").to_owned()),
         );
-        if let Some(proof) = option_env!("CONQUERD_RELEASE_PROOF") {
+        if let Some(proof) = option_env!("DOUBLESLASH_RELEASE_PROOF") {
             if !proof.is_empty() {
                 msg.payload
                     .insert("release_sig".to_owned(), Value::String(proof.to_owned()));

@@ -1656,7 +1656,7 @@ impl SupernodeState {
                 let (version, source_hash) = if is_self {
                     (
                         Some(APP_VERSION.to_string()),
-                        Some(env!("CONQUERD_SOURCE_HASH").to_string()),
+                        Some(env!("DOUBLESLASH_SOURCE_HASH").to_string()),
                     )
                 } else {
                     peer_versions.get(norm_id).cloned().unwrap_or((None, None))
@@ -2308,8 +2308,8 @@ impl SignalingHandler for SupernodeHandler {
             identity_pub,
             MessageType::BuildAttestation,
             json!({
-                "build_id": env!("CONQUERD_BUILD_ID"),
-                "source_hash": env!("CONQUERD_SOURCE_HASH"),
+                "build_id": env!("DOUBLESLASH_BUILD_ID"),
+                "source_hash": env!("DOUBLESLASH_SOURCE_HASH"),
                 "version": APP_VERSION,
             }),
         );
@@ -2461,8 +2461,8 @@ impl SupernodeHandler {
                     &joiner_pub,
                     MessageType::BuildAttestation,
                     json!({
-                        "build_id": env!("CONQUERD_BUILD_ID"),
-                        "source_hash": env!("CONQUERD_SOURCE_HASH"),
+                        "build_id": env!("DOUBLESLASH_BUILD_ID"),
+                        "source_hash": env!("DOUBLESLASH_SOURCE_HASH"),
                         "version": APP_VERSION,
                     }),
                 );
@@ -4787,7 +4787,7 @@ mod build_feature_registry_tests {
     fn tempdir() -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
         p.push(format!(
-            "conquerd-build-registry-{}",
+            "doubleslash-build-registry-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

@@ -286,7 +286,7 @@ extern "C" void doubleslash_enable_windows_snap(void *qwindow_ptr)
 #endif
 }
 
-extern "C" void conquerd_disable_windows_snap(void *qwindow_ptr)
+extern "C" void doubleslash_disable_windows_snap(void *qwindow_ptr)
 {
 #if defined(Q_OS_WIN)
     auto *window = static_cast<QWindow *>(qwindow_ptr);

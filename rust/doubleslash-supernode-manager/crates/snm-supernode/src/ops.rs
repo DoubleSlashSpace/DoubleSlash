@@ -671,7 +671,7 @@ pub struct InstanceStatus {
     pub binary_sha256: Option<String>,
     /// Last modification timestamp of the running binary (from remote `stat`).
     pub binary_modified: Option<String>,
-    /// Embedded `CONQUERD_BUILD_ID` when present in the binary.
+    /// Embedded `DOUBLESLASH_BUILD_ID` when present in the binary.
     pub build_id: Option<String>,
 }
 
@@ -847,11 +847,11 @@ mod tests {
 
     #[test]
     fn cluster_probe_anchors_to_the_section_header() {
-        let cmd = cluster_probe_command("/var/lib/conquerd/a1/supernode.toml");
+        let cmd = cluster_probe_command("/var/lib/doubleslash/a1/supernode.toml");
         // Anchored so [[cluster.member]] lines cannot satisfy it on their own.
         assert!(cmd.contains(r"grep -q '^\[cluster\]'"));
         // A missing file reports "no" instead of failing the command.
-        assert!(cmd.contains("[ -f /var/lib/conquerd/a1/supernode.toml ]"));
+        assert!(cmd.contains("[ -f /var/lib/doubleslash/a1/supernode.toml ]"));
         assert!(cmd.contains("echo yes"));
         assert!(cmd.contains("echo no"));
     }

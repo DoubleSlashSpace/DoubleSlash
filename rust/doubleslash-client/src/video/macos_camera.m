@@ -11,7 +11,7 @@
  *
  * This file therefore owns the delegate and the push-to-pull adaptation, and
  * exposes what the rest of the pipeline actually wants: "block until the next
- * frame, give me I420". Same reasoning as `conquerd-vpx/src/shim.c` — the FFI
+ * frame, give me I420". Same reasoning as `doubleslash-vpx/src/shim.c` — the FFI
  * boundary sits where it makes the Rust side trivial.
  *
  * All state lives on one Objective-C object rather than in a malloc'd C struct.
@@ -335,7 +335,7 @@ void *cq_mac_cam_open(const char *device_id, int width, int height) {
     /* Drop late frames rather than queueing them: see the threading note. */
     cam.output.alwaysDiscardsLateVideoFrames = YES;
 
-    cam.queue = dispatch_queue_create("com.conquerd.camera", DISPATCH_QUEUE_SERIAL);
+    cam.queue = dispatch_queue_create("com.doubleslash.camera", DISPATCH_QUEUE_SERIAL);
     [cam.output setSampleBufferDelegate:cam queue:cam.queue];
 
     if (![cam.session canAddOutput:cam.output]) return NULL;

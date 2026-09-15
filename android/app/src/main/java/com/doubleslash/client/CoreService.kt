@@ -253,7 +253,7 @@ class CoreService : Service() {
     }
 
     companion object {
-        private const val CHANNEL_ID = "conquerd_core"
+        private const val CHANNEL_ID = "doubleslash_core"
         private const val NOTIFICATION_ID = 1
         private const val ACTION_SET_MEDIA = "com.doubleslash.client.SET_MEDIA"
         private const val ACTION_DISCONNECT = "com.doubleslash.client.DISCONNECT"

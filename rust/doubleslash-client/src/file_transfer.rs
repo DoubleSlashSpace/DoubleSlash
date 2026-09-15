@@ -1,7 +1,7 @@
 //! File-transfer manager.
 //!
 //! Chunk encoding uses standard base64. Compression + delta are handled by
-//! pure-Rust helpers implementing the conquerd transfer protocol.
+//! pure-Rust helpers implementing the doubleslash transfer protocol.
 //!
 //! Wire compatibility
 //! ------------------
@@ -1834,7 +1834,7 @@ pub fn download_dir() -> PathBuf {
 /// runnable in restricted CI sandboxes that cannot write to the user profile.
 #[cfg(test)]
 pub fn download_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("conquerd-test-downloads-{}", std::process::id()))
+    std::env::temp_dir().join(format!("doubleslash-test-downloads-{}", std::process::id()))
 }
 
 /// Basename of `rel_path`, or a safe fallback.
@@ -1954,7 +1954,7 @@ pub fn unique_dest_path(dir: &Path, file_name: &str) -> PathBuf {
     dir.join(file_name)
 }
 
-// ── Crypto helpers (wire-compatible with conquerd-crypto::transfer) ───────────
+// ── Crypto helpers (wire-compatible with doubleslash-crypto::transfer) ───────────
 
 fn sha256_hex(data: &[u8]) -> String {
     let digest = Sha256::digest(data);

@@ -1,4 +1,4 @@
-# Supply chain security checks for ConquerD
+# Supply chain security checks for DoubleSlash
 # Runs on schedule (weekly) and can be triggered manually.
 # Includes:
 # - cargo-deny (advisories, licenses, bans, sources)

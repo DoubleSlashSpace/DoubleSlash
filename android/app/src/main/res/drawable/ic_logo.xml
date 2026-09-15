@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   The DoubleSlash "D://" mark, traced from the desktop client's
-  rust/conquerd-client/qml/icons/logo.svg so both clients draw the identical
+  rust/doubleslash-client/qml/icons/logo.svg so both clients draw the identical
   geometry. Keep the 122x56 viewport: the launcher and notification variants
   scale these same coordinates.
 -->

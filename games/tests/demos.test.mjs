@@ -594,7 +594,7 @@ test("SDK polls never overlap and discards a poll completed after disconnect", a
     resolvePoll,
     delivered = 0;
   globalThis.window = {
-    conquerd: {
+    doubleslash: {
       ready: Promise.resolve({
         myPeerId: "fixture",
         openChannel: async () => ({ ok: true }),

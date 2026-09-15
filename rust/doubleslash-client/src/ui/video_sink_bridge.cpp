@@ -164,7 +164,7 @@ void DoubleSlashVideoRegistry::clearAll() {
 // Implemented in window_chrome.cpp; declared here rather than in a shared
 // header because these two shims are otherwise independent.
 extern "C" void doubleslash_enable_windows_snap(void *qwindow_ptr);
-extern "C" void conquerd_disable_windows_snap(void *qwindow_ptr);
+extern "C" void doubleslash_disable_windows_snap(void *qwindow_ptr);
 
 DoubleSlashWindowChrome *DoubleSlashWindowChrome::instance() {
   static DoubleSlashWindowChrome chrome;
@@ -184,7 +184,7 @@ void DoubleSlashWindowChrome::enable(QObject *window) {
 void DoubleSlashWindowChrome::disable(QObject *window) {
 #if defined(Q_OS_WIN)
   if (auto *w = qobject_cast<QWindow *>(window)) {
-    conquerd_disable_windows_snap(w);
+    doubleslash_disable_windows_snap(w);
   }
 #else
   Q_UNUSED(window);

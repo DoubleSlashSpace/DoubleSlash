@@ -11,7 +11,7 @@
 //!   `transport.*`, `room.*`, `web.*`, `game.*`, and `x.<vendor>.*` prefixes.
 //!
 //! The crate is intentionally transport-agnostic: it does not depend on
-//! `quinn` or any I/O. Higher-level crates (`conquerd-quic`,
+//! `quinn` or any I/O. Higher-level crates (`doubleslash-quic`,
 //! `doubleslash-supernode`, the desktop client) consume it to wire feature
 //! negotiation onto their own message pipelines.
 //!

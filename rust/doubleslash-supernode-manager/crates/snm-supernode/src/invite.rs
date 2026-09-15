@@ -199,7 +199,7 @@ mod tests {
 }"#;
 
     #[test]
-    fn builds_conquerd_url_from_reusable_invite_json() {
+    fn builds_doubleslash_url_from_reusable_invite_json() {
         let url = parse_reusable_invite(SAMPLE_REUSABLE).unwrap();
         assert!(url.starts_with("https://doubleslash.space/i#"));
         assert!(url.contains("eyJ"));

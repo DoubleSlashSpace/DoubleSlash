@@ -240,7 +240,7 @@ impl VideoReceiver {
         let stop_t = Arc::clone(&stop);
 
         let handle = std::thread::Builder::new()
-            .name("conquerd-video-decode".into())
+            .name("doubleslash-video-decode".into())
             .spawn(move || {
                 let mut decoders: HashMap<String, PeerDecoder> = HashMap::new();
                 let mut health: HashMap<String, DecodeHealth> = HashMap::new();

@@ -701,7 +701,7 @@ mod tests {
     fn tempdir() -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
         p.push(format!(
-            "conquerd-manifest-test-{}",
+            "doubleslash-manifest-test-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

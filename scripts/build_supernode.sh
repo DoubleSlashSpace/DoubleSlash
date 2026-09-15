@@ -15,7 +15,7 @@
 #
 # Usage:
 #   ./scripts/build_supernode.sh
-#   CONQUERD_RELEASE=1 CONQUERD_BUILD_ID=release-1.0.0-abc123 ./scripts/build_supernode.sh
+#   DOUBLESLASH_RELEASE=1 DOUBLESLASH_BUILD_ID=release-1.0.0-abc123 ./scripts/build_supernode.sh
 # ============================================================================
 
 set -euo pipefail
@@ -44,7 +44,7 @@ esac
 
 PROFILE="debug"
 CARGO_FLAGS=""
-if [ "${CONQUERD_RELEASE:-0}" = "1" ] || [ "${CONQUERD_DEBUG:-0}" != "1" ]; then
+if [ "${DOUBLESLASH_RELEASE:-0}" = "1" ] || [ "${DOUBLESLASH_DEBUG:-0}" != "1" ]; then
     PROFILE="release"
     CARGO_FLAGS="--release"
 fi

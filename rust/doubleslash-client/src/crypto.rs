@@ -17,7 +17,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use crate::error::{ClientError, Result};
 
 // ---------------------------------------------------------------------------
-// Constants — must match conquerd-crypto/src/store.rs
+// Constants — must match doubleslash-crypto/src/store.rs
 // ---------------------------------------------------------------------------
 
 const ENVELOPE_VERSION: u8 = 0x01;
@@ -35,7 +35,7 @@ const KEY_LEN: usize = 32;
 /// ```text
 /// [0x01][12-byte nonce][ciphertext || 16-byte GCM tag]
 /// ```
-/// This is wire-compatible with `conquerd_crypto.EncryptedStore.encrypt_blob`.
+/// This is wire-compatible with `doubleslash_crypto.EncryptedStore.encrypt_blob`.
 pub fn encrypt_blob(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
     if key.len() != KEY_LEN {
         return Err(ClientError::Crypto(format!(
@@ -135,7 +135,7 @@ pub fn aesgcm_decrypt(key: &[u8], nonce: &[u8], ciphertext: &[u8], aad: &[u8]) -
 /// `ikm` is the input key material (e.g. Ed25519 seed).
 /// `info` is a domain-separation label.
 ///
-/// Matches `Identity.derive_store_key` in conquerd-crypto/src/identity.rs.
+/// Matches `Identity.derive_store_key` in doubleslash-crypto/src/identity.rs.
 pub fn hkdf_derive_key(ikm: &[u8], info: &[u8]) -> Result<[u8; 32]> {
     let hk = Hkdf::<Sha256>::new(None, ikm);
     let mut okm = [0u8; 32];
@@ -233,7 +233,7 @@ pub fn derive_invite_session_key(
 // ---------------------------------------------------------------------------
 
 /// Domain-separation label for the supernode-relay pairwise key.
-const PAIRWISE_RELAY_KEY_INFO: &[u8] = b"conquerd-pairwise-relay-v1";
+const PAIRWISE_RELAY_KEY_INFO: &[u8] = b"doubleslash-pairwise-relay-v1";
 
 /// Derive a deterministic 32-byte symmetric key shared by exactly two peers,
 /// from their long-term Ed25519 identity keys via X25519 (the standard
@@ -320,14 +320,14 @@ pub fn b64url_decode(s: &str) -> Result<Vec<u8>> {
 
 /// Derive the hex peer_id from a 32-byte Ed25519 public key.
 ///
-/// Matches `Identity.peer_id` in conquerd-crypto: SHA-256 of the public key, hex-encoded.
+/// Matches `Identity.peer_id` in doubleslash-crypto: SHA-256 of the public key, hex-encoded.
 pub fn derive_peer_id(public_key_bytes: &[u8]) -> String {
     hex::encode(sha256(public_key_bytes))
 }
 
 /// Derive the base64url public_id from a 32-byte Ed25519 public key.
 ///
-/// Matches `Identity.public_id` in conquerd-crypto: URL_SAFE (with padding) base64 of public key.
+/// Matches `Identity.public_id` in doubleslash-crypto: URL_SAFE (with padding) base64 of public key.
 pub fn derive_public_id(public_key_bytes: &[u8]) -> String {
     URL_SAFE.encode(public_key_bytes)
 }
@@ -532,16 +532,16 @@ mod tests {
     #[test]
     fn hkdf_deterministic() {
         let seed = [0xABu8; 32];
-        let k1 = hkdf_derive_key(&seed, b"conquerd-store/peers/v1").unwrap();
-        let k2 = hkdf_derive_key(&seed, b"conquerd-store/peers/v1").unwrap();
+        let k1 = hkdf_derive_key(&seed, b"doubleslash-store/peers/v1").unwrap();
+        let k2 = hkdf_derive_key(&seed, b"doubleslash-store/peers/v1").unwrap();
         assert_eq!(k1, k2);
     }
 
     #[test]
     fn hkdf_domain_separation() {
         let seed = [0xABu8; 32];
-        let k1 = hkdf_derive_key(&seed, b"conquerd-store/peers/v1").unwrap();
-        let k2 = hkdf_derive_key(&seed, b"conquerd-store/chat/v1").unwrap();
+        let k1 = hkdf_derive_key(&seed, b"doubleslash-store/peers/v1").unwrap();
+        let k2 = hkdf_derive_key(&seed, b"doubleslash-store/chat/v1").unwrap();
         assert_ne!(k1, k2);
     }
 

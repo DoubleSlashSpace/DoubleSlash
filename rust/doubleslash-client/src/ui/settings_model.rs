@@ -2,8 +2,8 @@
 //!
 //! Compiled only when the `qt-ui` Cargo feature is enabled.
 //!
-//! Settings are persisted to `~/.conquerd/settings.json` (or
-//! `$CONQUERD_HOME/settings.json` when the env var is set).
+//! Settings are persisted to `~/.doubleslash/settings.json` (or
+//! `$DOUBLESLASH_HOME/settings.json` when the env var is set).
 
 use std::path::PathBuf;
 use std::pin::Pin;

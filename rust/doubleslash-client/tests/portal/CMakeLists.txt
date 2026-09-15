@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(conquerd_portal_tests LANGUAGES CXX)
+project(doubleslash_portal_tests LANGUAGES CXX)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_CXX_STANDARD 17)
 find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest WebEngineQuick)

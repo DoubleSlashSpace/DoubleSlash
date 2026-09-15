@@ -47,7 +47,7 @@ impl OpusDecoder {
 
     /// Reset the decoder state.  Use when switching to a new incoming stream.
     pub fn reset_state(&mut self) -> Result<(), OpusError> {
-        let r = unsafe { ffi::conquerd_dec_reset_state(self.ptr) };
+        let r = unsafe { ffi::doubleslash_dec_reset_state(self.ptr) };
         if r == ffi::OPUS_OK {
             Ok(())
         } else {

@@ -6,8 +6,8 @@
   ========================================================
   The build script substitutes @VERSION@ with the current APP_VERSION_STRING.
 
-  CFBundleURLTypes registers doubleslash:// and d:// (legacy conquerd://
-  kept) so clicking an invite link in a browser launches DoubleSlash with
+  CFBundleURLTypes registers doubleslash:// and d:// so clicking an invite
+  link in a browser launches DoubleSlash with
   the URL as argv[1].
 -->
 <plist version="1.0">

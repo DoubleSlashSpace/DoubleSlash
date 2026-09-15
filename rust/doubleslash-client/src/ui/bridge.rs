@@ -1621,7 +1621,7 @@ impl Default for AppBridgeRust {
             session_banner: QString::default(),
             call_state: QString::from("idle"),
             public_id: QString::default(),
-            build_id: QString::from(env!("CONQUERD_BUILD_ID")),
+            build_id: QString::from(env!("DOUBLESLASH_BUILD_ID")),
             invite_url: QString::default(),
             connection_mode: QString::from("offline"),
             call_duration_secs: 0,
@@ -1934,8 +1934,8 @@ impl ffi::AppBridge {
         // ── Identity unlock ───────────────────────────────────────────────
         let key_dir = crate::identity::Identity::default_key_dir();
         let dat = key_dir.join(crate::identity::IDENTITY_FILENAME);
-        let env_pass = std::env::var("CONQUERD_PASSPHRASE").unwrap_or_default();
-        let env_file = std::env::var("CONQUERD_PASSPHRASE_FILE").unwrap_or_default();
+        let env_pass = std::env::var("DOUBLESLASH_PASSPHRASE").unwrap_or_default();
+        let env_file = std::env::var("DOUBLESLASH_PASSPHRASE_FILE").unwrap_or_default();
 
         // Try passphrase/keyfile from env vars first
         if !env_pass.is_empty() || !env_file.is_empty() {
@@ -1947,7 +1947,7 @@ impl ffi::AppBridge {
                             return;
                         }
                         Err(e) => {
-                            error!("Identity unlock with CONQUERD_PASSPHRASE/FILE failed: {e}");
+                            error!("Identity unlock with DOUBLESLASH_PASSPHRASE/FILE failed: {e}");
                             // Fall through to ask user
                         }
                     }
@@ -2311,7 +2311,7 @@ impl ffi::AppBridge {
         let (handle_tx, handle_rx) = std::sync::mpsc::sync_channel::<tokio::runtime::Handle>(1);
 
         let rt_thread = match std::thread::Builder::new()
-            .name("conquerd-tokio".into())
+            .name("doubleslash-tokio".into())
             .spawn(move || {
                 let rt = match tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
@@ -2319,7 +2319,7 @@ impl ffi::AppBridge {
                 {
                     Ok(rt) => rt,
                     Err(e) => {
-                        error!("failed to create conquerd tokio runtime: {e}");
+                        error!("failed to create doubleslash tokio runtime: {e}");
                         return;
                     }
                 };
@@ -2383,7 +2383,7 @@ impl ffi::AppBridge {
             }) {
             Ok(thread) => thread,
             Err(e) => {
-                error!("failed to spawn conquerd-tokio thread: {e}");
+                error!("failed to spawn doubleslash-tokio thread: {e}");
                 return;
             }
         };

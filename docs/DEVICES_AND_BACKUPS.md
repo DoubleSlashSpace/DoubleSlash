@@ -186,7 +186,7 @@ parts of the linking workflow. Do not enable the release gate on the strength of
 room-chat tests alone.
 
 For same-identity hardware acceptance, use
-`Z:\Current Projects\ConquerD\dist\DoubleSlash\DoubleSlash.exe` with the user's
+`Z:\Current Projects\DoubleSlash\dist\DoubleSlash\DoubleSlash.exe` with the user's
 normal profile and the connected phone. Do not substitute the separate `.clientA`
 profile used for the earlier distinct-identity baseline. The executable was
 confirmed running without command-line arguments; shared-identity runtime

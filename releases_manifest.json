@@ -1,5 +1,5 @@
 {
-  "comment": "UNSIGNED skeleton for DoubleSlash 1.0.0. Replace build_hash (full lowercase SHA-256 of the final published archive from the .sha256 asset) and build_id (exact DOUBLESLASH_BUILD_ID / CONQUERD_BUILD_ID baked at build time) for each platform. Example build_id: 'release-1.0.0-18eae80' or CI value. Then sign with your private key using the sign-release-manifest binary (or the .ps1 wrapper). The signed result (containing 'signature') is the file to commit and attach to the release.",
+  "comment": "UNSIGNED skeleton for DoubleSlash 1.0.0. Replace build_hash (full lowercase SHA-256 of the final published archive from the .sha256 asset) and build_id (exact DOUBLESLASH_BUILD_ID baked at build time) for each platform. Example build_id: 'release-1.0.0-18eae80' or CI value. Then sign with your private key using the sign-release-manifest binary (or the .ps1 wrapper). The signed result (containing 'signature') is the file to commit and attach to the release.",
   "releases": [
     {
       "build_hash": "REPLACE_WITH_SHA256_OF_DoubleSlash-1.0.0-win64.7z",

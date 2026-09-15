@@ -518,7 +518,7 @@ mod tests {
     #[test]
     fn trust_store_file_load_missing_returns_empty() {
         let dir = std::env::temp_dir();
-        let path = dir.join("this_file_does_not_exist_conquerd_test.txt");
+        let path = dir.join("this_file_does_not_exist_doubleslash_test.txt");
         let store = TrustedKeyStore::load(&path).unwrap();
         assert!(store.is_empty());
     }
@@ -527,7 +527,7 @@ mod tests {
     fn trust_store_append_to_file_is_idempotent() {
         let mut path = std::env::temp_dir();
         path.push(format!(
-            "conquerd_trust_test_{}.txt",
+            "doubleslash_trust_test_{}.txt",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

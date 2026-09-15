@@ -238,7 +238,7 @@ pub fn set_taskbar_badge(count: u32) {
                 "--type=method_call",
                 "/com/canonical/unity/launcherentry/1",
                 "com.canonical.Unity.LauncherEntry.Update",
-                "string:application://conquerd.desktop",
+                "string:application://doubleslash.desktop",
                 &format!("variant:{{'count': <int64:{}>}}", count as i64),
             ])
             .spawn();
@@ -491,7 +491,7 @@ pub fn start_ptt_polling(
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     match std::thread::Builder::new()
-        .name("conquerd-ptt".into())
+        .name("doubleslash-ptt".into())
         .spawn(move || {
             #[cfg(target_os = "windows")]
             let vk = key_name_to_vk_windows(&key_name);

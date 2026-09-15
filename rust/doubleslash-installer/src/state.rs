@@ -268,10 +268,10 @@ mod tests {
     #[test]
     fn add_version_sets_current() {
         let mut s = InstallState::empty();
-        s.add_version("1.0.0", Path::new("/tmp/conquerd_1.0.0"));
+        s.add_version("1.0.0", Path::new("/tmp/doubleslash_1.0.0"));
         assert_eq!(s.current_version, "1.0.0");
         assert_eq!(s.versions.len(), 1);
-        assert_eq!(s.current_path(), Some(Path::new("/tmp/conquerd_1.0.0")));
+        assert_eq!(s.current_path(), Some(Path::new("/tmp/doubleslash_1.0.0")));
     }
 
     #[test]

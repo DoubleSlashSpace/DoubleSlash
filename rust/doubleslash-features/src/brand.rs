@@ -20,7 +20,7 @@
 //! * [`URI_SCHEME`] (`d://`) is how the in-app portal navigates
 //!   supernode-hosted pages before that rewrite.
 //!
-//! Crate names stay `conquerd-*`. Wire identifiers (QUIC TLS server name,
+//! Crate names stay `doubleslash-*`. Wire identifiers (QUIC TLS server name,
 //! ALPN, HKDF info) live next to the crypto, not here.
 
 use std::borrow::Cow;

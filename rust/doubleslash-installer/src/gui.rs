@@ -1460,7 +1460,8 @@ fn run_repair(app_state: &Arc<Mutex<AppState>>, ctx: &egui::Context) -> anyhow::
     }
     ctx.request_repaint();
 
-    let staging_dir = std::env::temp_dir().join(format!("conquerd_repair_{}", std::process::id()));
+    let staging_dir =
+        std::env::temp_dir().join(format!("doubleslash_repair_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging_dir); // clean any prior run
     std::fs::create_dir_all(&staging_dir)?;
 

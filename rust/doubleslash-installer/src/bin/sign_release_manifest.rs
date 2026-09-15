@@ -68,7 +68,7 @@ struct Args {
 
     /// Sign a P2P build-attestation claim (`build_id=...,version=...` with
     /// optional `,source_hash=...`) and print the base64 signature to stdout.
-    /// Used by CI to bake CONQUERD_RELEASE_PROOF into official binaries.
+    /// Used by CI to bake DOUBLESLASH_RELEASE_PROOF into official binaries.
     #[arg(long)]
     sign_build_claim: bool,
     #[arg(long)]
@@ -382,7 +382,7 @@ fn generate_unsigned_skeleton(pubkey_hex: &str) -> String {
     // published_at 0 in the template; signer will populate a real signed_at.
     let skeleton = format!(
         r#"{{
-  "comment": "UNSIGNED skeleton for DoubleSlash {version}. Replace build_hash (full lowercase SHA-256 of the final published archive from the .sha256 asset) and build_id (exact DOUBLESLASH_BUILD_ID / CONQUERD_BUILD_ID baked at build time) for each platform. Example build_id: 'release-1.0.0-18eae80' or CI value. Then sign with your private key using the sign-release-manifest binary (or the .ps1 wrapper). The signed result (containing 'signature') is the file to commit and attach to the release.",
+  "comment": "UNSIGNED skeleton for DoubleSlash {version}. Replace build_hash (full lowercase SHA-256 of the final published archive from the .sha256 asset) and build_id (exact DOUBLESLASH_BUILD_ID baked at build time) for each platform. Example build_id: 'release-1.0.0-18eae80' or CI value. Then sign with your private key using the sign-release-manifest binary (or the .ps1 wrapper). The signed result (containing 'signature') is the file to commit and attach to the release.",
   "releases": [
     {{
       "version": "{version}",

@@ -167,8 +167,8 @@ mod tests {
     #[test]
     fn passes_through_simple_paths() {
         assert_eq!(
-            shell_escape("/opt/conquerd/bin/current"),
-            "/opt/conquerd/bin/current"
+            shell_escape("/opt/doubleslash/bin/current"),
+            "/opt/doubleslash/bin/current"
         );
     }
 

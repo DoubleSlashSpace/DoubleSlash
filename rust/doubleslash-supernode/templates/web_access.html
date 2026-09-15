@@ -145,7 +145,7 @@
       "You were admitted via a room invite, not a direct supernode invite. " +
       "Accepting grants relay and portal access for this session on this node.";
 
-    let conquerdFetch = null;
+    let doubleslashFetch = null;
     let supernodeId = "";
 
     function portalHomeUrl() {
@@ -162,7 +162,7 @@
         }
         const ctx = await bridge.ready;
         supernodeId = ctx.supernodeId || window.location.hostname;
-        conquerdFetch = ctx.fetch.bind(ctx);
+        doubleslashFetch = ctx.fetch.bind(ctx);
         el("node-id-display").textContent = "supernode: " + supernodeId;
         el("connecting").style.display = "none";
 
@@ -180,7 +180,7 @@
 
     async function fetchAccessStatus() {
       try {
-        const r = await conquerdFetch("/api/access/status");
+        const r = await doubleslashFetch("/api/access/status");
         return await r.json();
       } catch (e) {
         console.warn("[access] status unavailable:", e);
@@ -234,7 +234,7 @@
         note.className = "gate-note";
         note.textContent = "Submitting…";
         try {
-          const r = await conquerdFetch("/api/access/accept");
+          const r = await doubleslashFetch("/api/access/accept");
           const body = await r.json().catch(() => ({}));
           if (r.status === 200 && body.granted) {
             note.className = "gate-note ok";

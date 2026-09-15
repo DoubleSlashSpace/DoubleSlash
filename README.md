@@ -169,7 +169,7 @@ On first launch, an onboarding wizard walks you through choosing a display name,
 | Linux    | AppImage | `.desktop` file + `xdg-mime` |
 
 ### Windows
-Run `doubleslash-installer.exe` or extract the portable `conquerd/` folder. The installer registers the `doubleslash://` and `d://` URI schemes (how an invite page opens the app), creates Start Menu shortcuts, and supports silent upgrades (`--silent`) and uninstallation (`--uninstall`).
+Run `doubleslash-installer.exe` or extract the portable `doubleslash/` folder. The installer registers the `doubleslash://` and `d://` URI schemes (how an invite page opens the app), creates Start Menu shortcuts, and supports silent upgrades (`--silent`) and uninstallation (`--uninstall`).
 
 ### macOS
 Open the `.dmg` and drag DoubleSlash to Applications. Grant microphone access when prompted.
@@ -586,16 +586,16 @@ Or package a redistributable archive locally:
 
 ```bash
 # Linux / macOS
-CONQUERD_RELEASE=1 ./scripts/build_supernode.sh
+DOUBLESLASH_RELEASE=1 ./scripts/build_supernode.sh
 
 # Windows
-$env:CONQUERD_RELEASE = '1'
+$env:DOUBLESLASH_RELEASE = '1'
 .\scripts\build_supernode.ps1
 ```
 
 #### Windows
 ```bat
-set CONQUERD_HOME=%USERPROFILE%\.conquerd
+set DOUBLESLASH_HOME=%USERPROFILE%\.doubleslash
 set supernode_invite_ttl=-1
 set supernode_port=3478
 set supernode_signaling_port=34935
@@ -609,7 +609,7 @@ start_supernode.bat
 
 #### Linux / macOS
 ```bash
-export CONQUERD_HOME="$HOME/.conquerd"
+export DOUBLESLASH_HOME="$HOME/.doubleslash"
 export supernode_invite_ttl=-1
 export supernode_port=3478
 export supernode_signaling_port=34935
@@ -627,7 +627,7 @@ On startup, the supernode will:
 3. Begin accepting QUIC relay connections on port `3478` (UDP).
 4. Begin accepting WebSocket signaling connections on port `34935` (TCP).
 
-The invite link is also persisted in `~/.conquerd/reusable_invite.json` and survives restarts.
+The invite link is also persisted in `~/.doubleslash/reusable_invite.json` and survives restarts.
 
 ### Supernode Configuration
 
@@ -641,7 +641,7 @@ Runtime access and portal-presentation settings are read from environment variab
 | `supernode_signaling_port` | `34935` | TCP port for WebSocket signaling. **Always set a fixed value** — changing it breaks firewall rules and stored peer endpoints |
 | `supernode_invite_ttl` | `-1` | Invite expiry in minutes. `-1` = never expires |
 | `supernode_host` | *(unset)* | Public DNS name or IP used in invite URLs and relay tickets for remote clients |
-| `DOUBLESLASH_HOME` / `CONQUERD_HOME` | `~/.doubleslash` (falls back to existing `~/.conquerd`) | Data directory for identity, settings, files |
+| `DOUBLESLASH_HOME` | `~/.doubleslash` | Data directory for identity, settings, files |
 
 #### Feature / process toggles
 
@@ -661,7 +661,7 @@ The in-app portal is served over QUIC (`web.host.app.v1`) — there is **no** pu
 |----------|---------|-------------|
 | `supernode_web_title` | `Relay Node` | Human-readable name shown on the in-app portal |
 | `supernode_access_mode` | `open` | Access mode: `open`, `tos`, `ad`, `code` |
-| `supernode_access_code` | `conquerd` | Access code (only used when mode is `code`) |
+| `supernode_access_code` | `doubleslash` | Access code (only used when mode is `code`) |
 | `supernode_ad_duration` | `30` | Countdown seconds (only used when mode is `ad`) |
 | `supernode_ad_content` | *(empty)* | HTML content for the ad/timer waiting area |
 | `supernode_tos_text` | *(built-in)* | Custom TOS text (or override `portal/tos.html`) |
@@ -691,10 +691,10 @@ sudo ufw allow 34935/tcp
 Create a dedicated user:
 
 ```bash
-sudo useradd -r -s /usr/sbin/nologin -m -d /opt/conquerd conquerd
-sudo -u conquerd git clone <repo-url> /opt/conquerd/app
-sudo mkdir -p /opt/conquerd/.conquerd
-sudo chown conquerd: /opt/conquerd/.conquerd
+sudo useradd -r -s /usr/sbin/nologin -m -d /opt/doubleslash doubleslash
+sudo -u doubleslash git clone <repo-url> /opt/doubleslash/app
+sudo mkdir -p /opt/doubleslash/.doubleslash
+sudo chown doubleslash: /opt/doubleslash/.doubleslash
 ```
 
 #### Option A — Pre-built or Rust binary (recommended)
@@ -711,7 +711,7 @@ Or build from source once:
 
 ```bash
 . "$HOME/.cargo/env"
-cd /opt/conquerd/app/rust/doubleslash-supernode
+cd /opt/doubleslash/app/rust/doubleslash-supernode
 cargo build --release
 sudo cp target/release/doubleslash-supernode /usr/local/bin/
 ```
@@ -726,10 +726,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=conquerd
-Group=conquerd
+User=doubleslash
+Group=doubleslash
 
-Environment=CONQUERD_HOME=/opt/conquerd
+Environment=DOUBLESLASH_HOME=/opt/doubleslash
 Environment=supernode_invite_ttl=-1
 Environment=supernode_port=3478
 Environment=supernode_signaling_port=34935
@@ -747,7 +747,7 @@ RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/conquerd
+ReadWritePaths=/opt/doubleslash
 PrivateTmp=true
 
 [Install]
@@ -771,7 +771,7 @@ sudo journalctl -u doubleslash-supernode | grep 'Invite URL'
 
 The supernode portal supports **two-tier template loading**:
 
-1. **User overrides:** `$CONQUERD_HOME/.conquerd/portal/` (checked first)
+1. **User overrides:** `$DOUBLESLASH_HOME/.doubleslash/portal/` (checked first)
 2. **Built-in defaults:** embedded HTML in the Rust binary
 
 To customise any page, create a complete HTML file with the same name in your portal override directory. Use `{{variable}}` placeholders for dynamic content.
@@ -864,7 +864,7 @@ Use **Settings → Identity → Devices & Backups** on desktop, or **Settings �
 
 This also supports moving between desktop and phone using the encrypted file. **Run only one device per identity at a time**; simultaneous linked devices and continuous sync remain future protocol work.
 
-All DoubleSlash data is stored under `DOUBLESLASH_HOME` / `CONQUERD_HOME` (default `~/.doubleslash/`, or an existing `~/.conquerd/` profile):
+All DoubleSlash data is stored under `DOUBLESLASH_HOME` (default `~/.doubleslash/`):
 
 | File | Purpose |
 |------|---------|
@@ -876,7 +876,7 @@ All DoubleSlash data is stored under `DOUBLESLASH_HOME` / `CONQUERD_HOME` (defau
 | `my_rooms.dat` | Client-owned SFU room definitions per supernode (encrypted); used to rematerialize rooms on reconnect. Sidebar hide list is stored here too. |
 | `installer.log` | Installer/updater activity (when `doubleslash-installer` runs) |
 
-Received files are saved to your OS **Downloads** folder on completion (not under `DOUBLESLASH_HOME`). The desktop client logs through `tracing` to stderr and to the current-session file `~/.doubleslash/logs/doubleslash-client.log` (truncated on each launch). The **Verbose debug logging** setting changes the runtime/file filter immediately; an explicit `RUST_LOG` overrides it. An optional OS keyring entry (`doubleslash` service, with a pre-rebrand `conquerd` fallback) caches your unlock key locally.
+Received files are saved to your OS **Downloads** folder on completion (not under `DOUBLESLASH_HOME`). The desktop client logs through `tracing` to stderr and to the current-session file `~/.doubleslash/logs/doubleslash-client.log` (truncated on each launch). The **Verbose debug logging** setting changes the runtime/file filter immediately; an explicit `RUST_LOG` overrides it. An optional OS keyring entry (`doubleslash` service) caches your unlock key locally.
 
 Supernodes additionally store:
 
@@ -1033,18 +1033,18 @@ $env:USERPROFILE = "$PWD\.clientB"
 ./build_macos.sh
 
 # Supernode (standalone relay binary — no Qt)
-$env:CONQUERD_RELEASE = '1'
+$env:DOUBLESLASH_RELEASE = '1'
 .\scripts\build_supernode.ps1    # dist\doubleslash-supernode-<version>-win64.zip
 ```
 
 ```bash
 # Supernode on Linux / macOS
-CONQUERD_RELEASE=1 ./scripts/build_supernode.sh   # dist/doubleslash-supernode-<version>-<platform>.tar.gz
+DOUBLESLASH_RELEASE=1 ./scripts/build_supernode.sh   # dist/doubleslash-supernode-<version>-<platform>.tar.gz
 ```
 
 Release CI builds client artifacts plus supernode packages for **linux-x86_64**, **linux-aarch64**, and **win64** (see `.github/workflows/release.yml`).
 
-`build_win64.ps1` runs `cargo build --release --features qt-ui[,webengine]` for `doubleslash-client`, `cargo build --release -p doubleslash-installer`, then invokes `windeployqt6` to gather the Qt runtime DLLs into `dist\DoubleSlash\`. Set `QT_DIR` if Qt is not in one of the auto-detected default locations. Set `CONQUERD_DEBUG=1` for a debug build, or `CONQUERD_DEBUG_CONSOLE=1` to keep a console window attached.
+`build_win64.ps1` runs `cargo build --release --features qt-ui[,webengine]` for `doubleslash-client`, `cargo build --release -p doubleslash-installer`, then invokes `windeployqt6` to gather the Qt runtime DLLs into `dist\DoubleSlash\`. Set `QT_DIR` if Qt is not in one of the auto-detected default locations. Set `DOUBLESLASH_DEBUG=1` for a debug build, or `DOUBLESLASH_DEBUG_CONSOLE=1` to keep a console window attached.
 
 #### Code Signing (Windows, optional)
 
@@ -1060,11 +1060,11 @@ Configure signing via environment variables before running `build_win64.ps1`:
 
 | Variable | Description |
 |---|---|
-| `CONQUERD_SIGN_THUMBPRINT` | SHA-1 thumbprint of a cert in the Windows Certificate Store (recommended for CI / EV tokens) |
-| `CONQUERD_SIGN_PFX` | Path to a `.pfx` file (OV cert, local builds) |
-| `CONQUERD_SIGN_PASSWORD` | Password for the `.pfx` file |
-| `CONQUERD_SIGN_TIMESTAMP` | RFC 3161 timestamp server URL (default: `http://timestamp.digicert.com`) |
-| `CONQUERD_SIGN_AUTO` | Set to sign with the best-available cert in the user store |
+| `DOUBLESLASH_SIGN_THUMBPRINT` | SHA-1 thumbprint of a cert in the Windows Certificate Store (recommended for CI / EV tokens) |
+| `DOUBLESLASH_SIGN_PFX` | Path to a `.pfx` file (OV cert, local builds) |
+| `DOUBLESLASH_SIGN_PASSWORD` | Password for the `.pfx` file |
+| `DOUBLESLASH_SIGN_TIMESTAMP` | RFC 3161 timestamp server URL (default: `http://timestamp.digicert.com`) |
+| `DOUBLESLASH_SIGN_AUTO` | Set to sign with the best-available cert in the user store |
 
 If none of these are set the signing step is silently skipped.
 
@@ -1213,7 +1213,7 @@ A helper binary to produce signed manifests lives in the installer crate:
 cargo run -p doubleslash-installer --bin sign-release-manifest -- --generate-unsigned
 
 # 2. Edit the generated releases_manifest.json: fill real build_hash (from the .sha256
-#    asset or `sha256sum` of the final archive) + build_id (the value of CONQUERD_BUILD_ID
+#    asset or `sha256sum` of the final archive) + build_id (the value of DOUBLESLASH_BUILD_ID
 #    that was baked into the binaries for that release, visible via `--version` or attestation).
 
 # 3. Sign it (approver only, with the offline private seed)

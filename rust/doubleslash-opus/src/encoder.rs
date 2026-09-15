@@ -72,13 +72,13 @@ impl OpusEncoder {
     /// the output buffer allows.  Default is determined by channel count and
     /// sample rate.
     pub fn set_bitrate(&mut self, bps: i32) -> Result<(), OpusError> {
-        let r = unsafe { ffi::conquerd_enc_set_bitrate(self.ptr, bps) };
+        let r = unsafe { ffi::doubleslash_enc_set_bitrate(self.ptr, bps) };
         opus_ok(r)
     }
 
     /// Enable (`true`) or disable (`false`) variable bitrate.  Default: enabled.
     pub fn set_vbr(&mut self, enable: bool) -> Result<(), OpusError> {
-        opus_ok(unsafe { ffi::conquerd_enc_set_vbr(self.ptr, enable as i32) })
+        opus_ok(unsafe { ffi::doubleslash_enc_set_vbr(self.ptr, enable as i32) })
     }
 
     /// Enable in-band forward error correction (FEC) for the SILK layer.
@@ -87,7 +87,7 @@ impl OpusEncoder {
     /// embeds redundant data allowing the decoder to partially reconstruct
     /// lost packets.
     pub fn set_inband_fec(&mut self, enable: bool) -> Result<(), OpusError> {
-        opus_ok(unsafe { ffi::conquerd_enc_set_inband_fec(self.ptr, enable as i32) })
+        opus_ok(unsafe { ffi::doubleslash_enc_set_inband_fec(self.ptr, enable as i32) })
     }
 
     /// Set the expected packet loss percentage (0–100).
@@ -95,7 +95,7 @@ impl OpusEncoder {
     /// Higher values trade quality for loss robustness.  Works in combination
     /// with [`set_inband_fec`](Self::set_inband_fec).
     pub fn set_packet_loss_perc(&mut self, pct: u8) -> Result<(), OpusError> {
-        opus_ok(unsafe { ffi::conquerd_enc_set_packet_loss_perc(self.ptr, pct as i32) })
+        opus_ok(unsafe { ffi::doubleslash_enc_set_packet_loss_perc(self.ptr, pct as i32) })
     }
 
     /// Enable discontinuous transmission (DTX).
@@ -104,7 +104,7 @@ impl OpusEncoder {
     /// silence rather than full-size frames, greatly reducing bandwidth during
     /// quiet periods.
     pub fn set_dtx(&mut self, enable: bool) -> Result<(), OpusError> {
-        opus_ok(unsafe { ffi::conquerd_enc_set_dtx(self.ptr, enable as i32) })
+        opus_ok(unsafe { ffi::doubleslash_enc_set_dtx(self.ptr, enable as i32) })
     }
 
     /// Set the computational complexity (0 = lowest, 10 = highest).
@@ -112,7 +112,7 @@ impl OpusEncoder {
     /// Higher complexity produces better quality at a given bitrate.
     /// Default is 9.
     pub fn set_complexity(&mut self, complexity: i32) -> Result<(), OpusError> {
-        opus_ok(unsafe { ffi::conquerd_enc_set_complexity(self.ptr, complexity) })
+        opus_ok(unsafe { ffi::doubleslash_enc_set_complexity(self.ptr, complexity) })
     }
 
     /// Enable Deep Redundancy Encoding (DRED) with the given maximum depth.
@@ -129,14 +129,14 @@ impl OpusEncoder {
     pub fn set_dred_duration_ms(&mut self, duration_ms: u32) -> Result<(), OpusError> {
         // The CTL unit is 10 ms frames, not milliseconds.
         let frames_10ms = (duration_ms / 10) as i32;
-        opus_ok(unsafe { ffi::conquerd_enc_set_dred_duration(self.ptr, frames_10ms) })
+        opus_ok(unsafe { ffi::doubleslash_enc_set_dred_duration(self.ptr, frames_10ms) })
     }
 
     /// Reset the encoder state (clears codec memory / algorithm state).
     ///
     /// Use when switching to a new audio stream on the same encoder instance.
     pub fn reset_state(&mut self) -> Result<(), OpusError> {
-        opus_ok(unsafe { ffi::conquerd_enc_reset_state(self.ptr) })
+        opus_ok(unsafe { ffi::doubleslash_enc_reset_state(self.ptr) })
     }
 
     // ── Encoding ──────────────────────────────────────────────────────────

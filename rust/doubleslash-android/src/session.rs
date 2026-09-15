@@ -150,7 +150,7 @@ impl Session {
         // runtime would serialise them behind whichever one is blocking.
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("conquerd-core")
+            .thread_name("doubleslash-core")
             .build()?;
 
         let device_id = if doubleslash_features::device::DEVICE_ROUTING_READY {
@@ -420,7 +420,7 @@ fn spawn_call_event_pump(
     sink: EventSink,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
-        .name("conquerd-call-events".to_owned())
+        .name("doubleslash-call-events".to_owned())
         .spawn(move || {
             let mut guard = match sink.attach() {
                 Ok(g) => g,

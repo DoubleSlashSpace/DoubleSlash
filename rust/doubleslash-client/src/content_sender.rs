@@ -83,7 +83,7 @@ impl ContentAudioSender {
         let stop_t = Arc::clone(&stop);
 
         let handle = std::thread::Builder::new()
-            .name("conquerd-content-audio".into())
+            .name("doubleslash-content-audio".into())
             .spawn(move || {
                 let mut encoder = match OpusEncoder::new(SAMPLE_RATE, 1, OpusApp::Audio) {
                     Ok(e) => e,

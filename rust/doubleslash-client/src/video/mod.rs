@@ -48,7 +48,7 @@ pub const DEFAULT_MAX_DATAGRAM: usize = 1200;
 
 /// Domain tag mixed into the per-frame signature so a video frame signature can
 /// never be replayed as a signature over anything else this identity signs.
-const VIDEO_SIG_DOMAIN: &[u8] = b"conquerd.video.frame.v1";
+const VIDEO_SIG_DOMAIN: &[u8] = b"doubleslash.video.frame.v1";
 
 /// Bytes an Ed25519 frame signature is computed over.
 ///
