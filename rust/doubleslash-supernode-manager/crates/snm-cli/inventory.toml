@@ -1,9 +1,9 @@
 [defaults]
 version = "nightly"
 access_mode = "open"
-user = "conquerd"
-install_root = "/opt/conquerd"
-data_root = "/var/lib/conquerd"
+user = "doubleslash"
+install_root = "/opt/doubleslash"
+data_root = "/var/lib/doubleslash"
 release_repo = "DoubleSlashSpace/DoubleSlash"
 privilege = "sudo"
 firewall = "ufw"

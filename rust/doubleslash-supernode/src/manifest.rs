@@ -59,7 +59,7 @@ pub struct SupernodeManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ws_listen_addr: Option<String>,
 
-    /// Relative path to the node identity inside `CONQUERD_HOME`.
+    /// Relative path to the node identity inside `DOUBLESLASH_HOME`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_file: Option<String>,
 

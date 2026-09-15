@@ -35,7 +35,7 @@ Derived from `rust/doubleslash-supernode` in the DoubleSlash repo (`config.rs`, 
 
 ### Data directory (per instance, isolated)
 
-Resolved from `CONQUERD_HOME` (manager sets this per instance). Default layout: `{data_root}/{instance_id}` e.g. `/var/lib/conquerd/a`.
+Resolved from `DOUBLESLASH_HOME` (manager sets this per instance). Default layout: `{data_root}/{instance_id}` e.g. `/var/lib/doubleslash/a`. The acdc/ac1 dev fleet pins the pre-rename paths (`/opt/conquerd`, `/var/lib/conquerd`, user `conquerd`) in its inventory.
 
 | File / dir | Purpose | Manager concern |
 |---|---|---|
@@ -141,9 +141,9 @@ Declarative TOML; edited by hand or via the TUI (add/edit nodes, settings panel)
 [defaults]
 version = "nightly"              # or "1.0.0", "local"
 access_mode = "open"
-user = "conquerd"
-install_root = "/opt/conquerd"
-data_root = "/var/lib/conquerd"
+user = "doubleslash"
+install_root = "/opt/doubleslash"
+data_root = "/var/lib/doubleslash"
 release_repo = "DoubleSlashSpace/DoubleSlash"
 privilege = "root"               # sudo | root | rootless-systemd (last: not implemented)
 firewall = "ufw"                 # ufw | off | report
@@ -227,10 +227,10 @@ Each instance is independent:
 
 | Concern | Layout |
 |---|---|
-| Data dir | `{data_root}/{instance_id}` via `CONQUERD_HOME` in systemd drop-in |
+| Data dir | `{data_root}/{instance_id}` via `DOUBLESLASH_HOME` in systemd drop-in |
 | Binary | Shared `{install_root}/bin/doubleslash-supernode-{version}` + `current` symlink |
 | Unit | `doubleslash-supernode@{id}.service` from template `doubleslash-supernode@.service` |
-| Drop-in | `/etc/systemd/system/doubleslash-supernode@{id}.service.d/override.conf` — `CONQUERD_HOME`, `supernode_host`, legacy port env vars |
+| Drop-in | `/etc/systemd/system/doubleslash-supernode@{id}.service.d/override.conf` — `DOUBLESLASH_HOME`, `supernode_host`, legacy port env vars |
 | Manifest | `{data_root}/{id}/supernode.toml` — listen addrs, access mode, features |
 
 Install flow (`snm-supernode::ops::install_instance`): ensure service user + dirs → upload binary → symlink `current` → push `supernode.toml` → push unit template + drop-in → `daemon-reload` → optional ufw rules → `enable` + `start`.

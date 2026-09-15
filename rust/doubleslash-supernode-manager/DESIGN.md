@@ -14,7 +14,7 @@ experience is the TUI; every operation is also exposed as a CLI subcommand.
 - Manage many supernodes from one operator machine.
 - Support many hosts and multiple isolated instances per host.
 - Require no preinstalled agent on remote hosts.
-- Keep the manager outside ConquerD identity and trust flows.
+- Keep the manager outside DoubleSlash identity and trust flows.
 - Prefer declarative state in `inventory.toml`, with direct CLI/TUI controls.
 - Preserve persistent node state across installs, restarts, and config pushes.
 - Use GitHub nightly release artifacts by default, with sha256 verification.
@@ -69,10 +69,10 @@ operator machine
         | SSH
         v
 remote Linux host
-  /opt/conquerd/bin/doubleslash-supernode-nightly
-  /opt/conquerd/bin/current -> versioned binary
-  /var/lib/conquerd/a/supernode.toml
-  /var/lib/conquerd/a/identity.json
+  /opt/doubleslash/bin/doubleslash-supernode-nightly
+  /opt/doubleslash/bin/current -> versioned binary
+  /var/lib/doubleslash/a/supernode.toml
+  /var/lib/doubleslash/a/identity.json
   /etc/systemd/system/doubleslash-supernode@.service
   /etc/systemd/system/doubleslash-supernode@a.service.d/override.conf
 ```
@@ -89,9 +89,9 @@ Current default shape:
 [defaults]
 version = "nightly"
 access_mode = "open"
-user = "conquerd"
-install_root = "/opt/conquerd"
-data_root = "/var/lib/conquerd"
+user = "doubleslash"
+install_root = "/opt/doubleslash"
+data_root = "/var/lib/doubleslash"
 release_repo = "DoubleSlashSpace/DoubleSlash"
 privilege = "root"
 firewall = "ufw"
@@ -287,7 +287,7 @@ Instance drop-in:
 
 The template is generic. Instance-specific data lives in the drop-in:
 
-- `CONQUERD_HOME`
+- `DOUBLESLASH_HOME`
 - `supernode_host`
 - legacy port env vars
 

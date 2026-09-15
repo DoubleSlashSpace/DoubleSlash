@@ -10,7 +10,7 @@ const UNIT_DROPIN_FILENAME: &str = "override.conf";
 pub fn render_unit_template(layout: &InstanceLayout, _defaults: &Defaults) -> String {
     format!(
         r#"[Unit]
-Description=ConquerD Supernode (%i)
+Description=DoubleSlash Supernode (%i)
 After=network.target
 
 [Service]
