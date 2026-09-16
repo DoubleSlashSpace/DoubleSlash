@@ -503,6 +503,31 @@ Item {
             }
         }
 
+        // Room keys cannot be coordinated while another device signed in as
+        // this identity runs a build without device routing, so chat here is
+        // dead until it updates. The session banner is overwritten by the next
+        // connection event, so the notice stays with the room instead.
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: outdatedDeviceText.implicitHeight + Theme.spacingSm * 2
+            color: Theme.bg2
+            border.color: Theme.warn
+            border.width: 1
+            visible: root.roomId !== ""
+                && JSON.parse(backend.own_device_outdated_rooms_json || "[]").indexOf(root.roomId) >= 0
+
+            Text {
+                id: outdatedDeviceText
+                anchors.fill: parent
+                anchors.margins: Theme.spacingSm
+                text: qsTr("Another device signed in as you is running an older DoubleSlash. Room chat is paused until it is updated.")
+                color: Theme.warn
+                font.pixelSize: Theme.fontSizeCaption
+                wrapMode: Text.WordWrap
+                verticalAlignment: Text.AlignVCenter
+            }
+        }
+
         ListView {
             id: roomChat
             Layout.fillWidth: true

@@ -119,7 +119,7 @@ pub fn config_field_is_toggle(index: usize) -> bool {
 }
 
 pub fn config_field_is_room_policy(index: usize) -> bool {
-    index >= CONFIG_TEXT_FIELDS && index < CONFIG_FEATURE_TOGGLES_START
+    (CONFIG_TEXT_FIELDS..CONFIG_FEATURE_TOGGLES_START).contains(&index)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1577,6 +1577,32 @@ fn parse_firewall(raw: &str) -> Result<FirewallMode> {
     }
 }
 
+pub fn build_rows(inventory: &Inventory) -> Vec<InstanceRow> {
+    let selector = snm_core::Selector::default();
+    inventory
+        .resolve_instances(&selector)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|resolved| {
+            let cluster_id = inventory
+                .clusters_for_instance(&resolved.host.name, &resolved.instance.id)
+                .first()
+                .map(|c| c.id.clone());
+            InstanceRow {
+                host_name: resolved.host.name.clone(),
+                instance_id: resolved.instance.id.clone(),
+                ssh: resolved.host.ssh.clone(),
+                public_host: resolved.instance.public_host.clone(),
+                relay_port: resolved.relay_port,
+                ws_port: resolved.ws_port,
+                status: RowStatus::Unknown,
+                platform: resolved.host.arch.clone(),
+                cluster_id,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -1737,30 +1763,4 @@ mod tests {
         assert_eq!(app.rows[0].relay_port, 3479);
         let _ = std::fs::remove_file(path);
     }
-}
-
-pub fn build_rows(inventory: &Inventory) -> Vec<InstanceRow> {
-    let selector = snm_core::Selector::default();
-    inventory
-        .resolve_instances(&selector)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|resolved| {
-            let cluster_id = inventory
-                .clusters_for_instance(&resolved.host.name, &resolved.instance.id)
-                .first()
-                .map(|c| c.id.clone());
-            InstanceRow {
-                host_name: resolved.host.name.clone(),
-                instance_id: resolved.instance.id.clone(),
-                ssh: resolved.host.ssh.clone(),
-                public_host: resolved.instance.public_host.clone(),
-                relay_port: resolved.relay_port,
-                ws_port: resolved.ws_port,
-                status: RowStatus::Unknown,
-                platform: resolved.host.arch.clone(),
-                cluster_id,
-            }
-        })
-        .collect()
 }

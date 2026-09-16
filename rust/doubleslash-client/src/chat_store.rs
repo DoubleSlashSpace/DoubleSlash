@@ -198,22 +198,30 @@ impl ChatStore {
     /// Re-encrypt rows written under the pre-rename label (see
     /// [`crate::store_migration`]). Bodies are only written by inserts, which
     /// take a fresh rowid under the current key, so pre-rename rows always sort
-    /// first: when the oldest row already reads, there is nothing to upgrade.
+    /// first: the oldest row that opens under either key decides whether there
+    /// is anything to upgrade. Rows that open under neither are skipped, so one
+    /// damaged row cannot hide the pre-rename rows after it.
     fn upgrade_legacy_rows(&self, legacy: &[u8; 32]) -> Result<usize> {
         use crate::store_migration::reencrypt;
 
         let mut conn = self.conn.lock();
-        let oldest: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT body FROM messages ORDER BY rowid LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(oldest) = oldest else {
-            return Ok(0);
+        let has_legacy = {
+            let mut stmt = conn.prepare("SELECT body FROM messages ORDER BY rowid")?;
+            let mut bodies = stmt.query([])?;
+            let mut found = false;
+            while let Some(row) = bodies.next()? {
+                let body: Vec<u8> = row.get(0)?;
+                if decrypt_blob(&self.key, &body).is_ok() {
+                    break;
+                }
+                if decrypt_blob(legacy, &body).is_ok() {
+                    found = true;
+                    break;
+                }
+            }
+            found
         };
-        if reencrypt(&oldest, &self.key, legacy)?.is_none() {
+        if !has_legacy {
             return Ok(0);
         }
 

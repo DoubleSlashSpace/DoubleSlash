@@ -1580,8 +1580,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             "device_routing_unsupported" ->
                 _state.update { it.copy(error = "This node needs an update before it can connect multiple devices using one identity.") }
 
+            // Paired with an "outdated": false event once that device updates or
+            // the room's rosters are dropped; only the warning needs surfacing.
             "own_device_outdated" ->
-                _state.update { it.copy(error = "Another device signed in as you is running an older DoubleSlash. Room chat is paused until it is updated.") }
+                if (event.boolean("outdated", true)) {
+                    _state.update { it.copy(error = "Another device signed in as you is running an older DoubleSlash. Room chat is paused until it is updated.") }
+                }
 
             // Carries the canonical peer id (the core resolves the sender's
             // identity key to it), so it matches the ids the peer list uses.

@@ -401,9 +401,14 @@ ssh = "root@1.2.3.4"
 
     #[test]
     fn resolves_instance_overrides() {
-        let mut defaults = Defaults::default();
-        defaults.access_mode = "open".into();
-        defaults.supernode.listen_bind = "0.0.0.0".into();
+        let defaults = Defaults {
+            access_mode: "open".into(),
+            supernode: SupernodeDefaults {
+                listen_bind: "0.0.0.0".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let instance = Instance {
             id: "a".into(),
             public_host: "edge.example.net".into(),

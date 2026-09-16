@@ -9,7 +9,7 @@ async-trait.workspace = true
 crossterm.workspace = true
 home = "0.5.12"
 log = "0.4.32"
-russh = { version = "0.57", default-features = false, features = ["flate2", "ring"] }
+russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 russh-sftp = "2.3"
 tempfile = "3"
 thiserror.workspace = true

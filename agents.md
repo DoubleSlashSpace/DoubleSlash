@@ -1,567 +1,229 @@
 # Agents.md
 
 ## Overview
-This document defines agent roles for DoubleSlash (D:// protocol; crates are `doubleslash-*`), a privacy-first **modular peer-connectivity framework** with a client-only, invite-only trust model. Voice, chat, files, rooms, and games are *features* negotiated between peers and supernodes — not hard-coded behaviors. See the [Feature Module Reference](#feature-module-reference) below for the full capability catalogue.
 
-Core scope:
-- No first-party backend for identity, discovery, or presence.
-- Invite + handshake bootstraps a signed, end-to-end secure session.
-- Every QUIC primitive (reliable streams, unidirectional streams, datagrams) is exposed as a generic `Channel`.
-- Capability-based feature negotiation: peers and supernodes advertise typed capability sets; consumers pick from what's enabled.
-- Supernodes are optional volunteer peers that provide QUIC relay, SFU rooms, in-app portal hosting (`web.host.app.v1`), and bespoke feature modules.
+This file defines working rules and regression-sensitive invariants for DoubleSlash (`doubleslash-*`, D://). Use the implementation to verify current behavior; these rules constrain changes, but are not evidence that a feature has passed acceptance testing.
 
-Transport stack:
-- **Direct sessions**: QUIC peer-to-peer via `ConnectionManager` + embedded `quinn::Endpoint` (doubleslash-client) — generic streams + datagrams + channel multiplexer.
-- **Relay sessions**: QUIC relay (`QuicRelayClient` → supernode `QUICRelayServer`); same channel multiplexer; WebSocket used for membership/signaling fallback only.
-- **Signaling**: Signed, transcript-bound messages; prefers QUIC signaling stream when a peer session is connected, falls back to WebSocket.
-- **Web/games**: In-app portal pages and games load only inside the native client (`d://` + `web.host.app.v1` over the authenticated QUIC session). Chromium rewrites `d://` to `doubleslash://` internally. `game.relay.v1` rides identity QUIC relay datagrams (fixed `GAME_RELAY_TAG`); there is no external WebTransport / self-signed TLS game path.
-- **Capability exchange**: `CAPABILITY_ANNOUNCE` after handshake; `CAPABILITY_INVOKE` opens feature channels.
+DoubleSlash is a client-owned, invite-only peer-connectivity framework. The desktop Qt/QML client and Android Kotlin/Compose client share a Rust core. Direct sessions use QUIC; selected supernodes provide relay, ephemeral SFU rooms, and in-app portal hosting. WebSocket carries signaling and membership and can also carry fallback room audio. There is no first-party identity, discovery, or presence backend.
+
+User-facing setup belongs in [README.md](README.md), architecture in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and open work in [backlog.md](backlog.md). Before working inside the supernode-manager workspace, read its [agents.md](rust/doubleslash-supernode-manager/agents.md) for the operator contract.
 
 ## Agent Roles
 
-### 1. Project Manager Agent
-Responsibilities:
-- Track roadmap progress and delivery risks.
-- Coordinate priorities across stability, UX, and security.
-- Escalate lockups, race conditions, and call reliability regressions.
+These are review responsibilities, not a requirement to create separate agents. Apply the relevant roles to the task.
 
-Working style:
-- Keep status updates short: done, in progress, risks.
-- Use the [Roadmap & Status](#roadmap--status) section below as the source of truth for roadmap progress and delivery risks; this file's role definitions and guardrails apply throughout.
-
-### 2. Developer Agent (Signaling + Handshake)
-Responsibilities:
-- Maintain direct client-to-client signaling and handshake lifecycle.
-- Enforce signed, transcript-bound messaging for all signaling.
-  - Invite/handshake bootstrap has strong replay protection (expiry + transcript binding).
-  - Post-handshake signaling is Ed25519-signed and enforces a 5-minute timestamp freshness window (`MAX_MESSAGE_AGE_SECS = 300.0` in `connection_manager/manager/mod.rs` on the client; `is_fresh(300.0)` on the supernode WS path) **plus** a per-sender sliding-window replay guard (`doubleslash_features::ReplayGuard`) keyed on the message signature, which rejects re-delivery of an already-seen message *within* the freshness window. Real-time `SfuAudio` and ordered bulk-file payloads (`FileTransferChunk` / `FileTransferComplete` and `SfuFileChunk` / `SfuFileComplete`) are exempt from the dedup guard: audio is ephemeral and file chunks are receiver-idempotent but can legitimately fill the replay window. Both exemptions still require valid signatures and fresh timestamps. `ReplayGuard` negative-path tests cover replays; client `protocol.rs` and `connection_manager::tests` cover stale/future timestamp rejection.
-- Keep endpoint/invite behavior stable and restart-safe.
-
-Working style:
-- Prefer deterministic state transitions and de-duplication.
-- Add or update tests for signaling and invite persistence changes.
-
-### 3. Developer Agent (Transport + Features)
-Responsibilities:
-- Maintain QUIC peer-to-peer transport (`ConnectionManager` + embedded `quinn::Endpoint`) and the generic channel multiplexer (datagrams, uni/bidi streams, priority hints, channel-tag registry in `doubleslash-client`).
-- Maintain QUIC relay client path (`QuicRelayClient`) using the same channel abstraction as direct sessions.
-- Maintain the `doubleslash-features` capability registry, negotiation, quotas, and per-feature auth tiers.
-- Maintain inbound and outbound quota enforcement symmetry: `ConnectionManager` / `QuicRelayClient` datagram-layer quotas and `FeatureRegistry::gate_through_feature` signaling-layer quotas must stay consistent across connect/disconnect cycles. The sole deliberate exception is supernode `SfuFileChunk` / `SfuFileComplete` forwarding, where refusing an in-flight payload would strand the transfer; that path must retain its `FileFrameLimiter`, 256 KiB frame cap, and 8 MiB per-recipient queued-byte ceiling, while file control frames remain quota-gated.
-- Maintain first-party feature modules: `core.chat.v1`, `core.audio.opus`, `core.file.v1`, `room.audio.sfu`, `room.chat.v1`, `room.file.v1`, the video descriptors `core.video.v1` / `room.video.sfu`, and the content-audio descriptors `core.audio.content.v1` / `room.audio.content.sfu`. All media descriptors are *advertisement-only modules* — the same shape as `core.audio.opus`, meaning the module carries the descriptor and its quota while the bytes ride a dedicated low-tag datagram path instead of `dispatch_message`. That is an implementation shape, **not** a statement about product readiness; the remaining video gaps are platform reach, tracked in `backlog.md`.
-- Maintain desktop UX consumers (chat panel, call overlay, session banner) on top of the feature modules.
-- Maintain relay ticket auto-renewal and endpoint mailbox for robust connectivity across restarts.
-- Keep SFU room hosting ephemeral on supernodes (`sfu.rs` idle GC, no disk persistence); client `RoomStore` owns definitions and replays `SfuRoomCreate` on connect.
-- Keep session status banner accurate across direct, relay, and room modes; preserve participant-state consistency.
-
-Working style:
-- Avoid renegotiation churn and thread-contention patterns.
-- Keep DSP and per-tick feature loops within real-time budget.
-- Treat first-party UI as one consumer of the framework — don't shortcut around the capability layer.
-- Validate with focused tests first, then broader runs.
-
-### 4. Security Agent
-Responsibilities:
-- Review identity, invite, handshake, and trust transitions.
-- Validate signature checks, transcript binding, and replay controls.
-- Review QUIC relay authentication (Ed25519 session keys from handshake).
-- Enforce the **supernode opacity model** (see [Supernode Opacity](#supernode-opacity-agent-contract) below): supernodes must not read, log, persist, or branch on application payload content — only routing metadata, membership, signatures, and quota byte counts on opaque wire bytes.
-- Enforce the **elected-keyer install gate** on `SfuGroupKey` (`accept_group_key_from` in `connection_manager/manager/room_session.rs`) — a received group key is only installed if the sender is the current elected keyer at a plausible epoch, closing the earlier "any room peer can push a bogus key" DoS caveat. Room chat/file/audio must fail closed (drop the frame) rather than fall back to cleartext or the deterministic per-room key once real key material is expected.
-- Keep the **mutual-trust receiver gate** (`is_trusted_sender` check before honoring inbound signaling) covering every chat/call/file-class message type — not just chat/typing/call-request — so an untrusted peer sharing a supernode relay can't inject `CallAccept`/`CallEnd`/`FileTransfer*` traffic.
-- **Direct media signatures bind two `public_id`s, never the `peers` map key.** `send_video_datagram` / `send_content_audio_datagram` sign against `direct_conv_id(sender, recipient)`, and the *receiver* can only rebuild that from its own `public_id` plus the sender's, which rides the fragment header. The `peers` map, however, is keyed by the **hex `peer_id`** (see `relabel_quic_peer_session`), so signing against the map key yields a different `conv_id` on each side and every frame is discarded as `frame signature rejected` — with the transport working perfectly, which is precisely how it presents: video arrives at the far end and is thrown away. Both send paths now resolve through `recipient_public_id`, which maps the hex key to `identity_pub` via the peer store and passes anything else through unchanged. Any new direct media path must do the same.
-- Keep Ed25519 `public_id` **padding normalized in the group-key keyer election** (`is_elected_keyer` in `connection_manager/manager/room_session.rs`). Election picks the lexicographically smallest member id, but membership is a *union of snapshots from several sources* and the relay path carries `public_id` un-padded while SFU/signaling carry it padded — so one identity can appear as both `A...sg` and `A...sg=`. Compared raw, the un-padded copy sorts **before** the padded one (a prefix is smaller), so the rightful keyer's own id looks like "someone earlier than me" and receivers reject its `SfuGroupKey` as "not elected". The result is a split-brain election: each side keeps its own epoch, every inbound frame fails to open, and room audio is silent with no error beyond `failed to open E2E frame`. Normalizing is safe because a `public_id` is always 43 base64url chars (44 padded), so no two *distinct* identities are prefixes of one another. Covered by `elected_keyer_ignores_base64_padding` and `elected_keyer_agrees_across_padding_spellings`.
-- Keep Ed25519 `public_id` **padding normalized** on the SFU room ACL (`normalize_peer_id` in `sfu.rs`): relay-sourced ids arrive un-padded (`URL_SAFE_NO_PAD`) while SFU/WS-sourced ids are padded (`URL_SAFE`) — `allowed`/`creator_id`/participant lookups must resolve both to the same identity or private-room admission misses intermittently.
-- Review the **capability/feature trust model**: per-feature `auth` tiers, no implicit escalation across features, user-consent prompts for non-`core.*` namespaces, per-feature byte/stream/datagram quotas.
-- Review third-party feature module signing and load-time trust prompts (native cdylib now; WASM sandbox later).
-- In-app portal games must use the identity channel bridge (`window.doubleslash` / `/_doubleslash/channel/*`); do not reintroduce external WebTransport.
-- Review release manifest verification and Ed25519 signing.
-- Validate peer-to-peer build attestation challenges and responses.
-- Review installer supply-chain trust (SignPath, Apple notary, Sigstore).
-- Ensure action SHA pinning in CI/CD workflows.
-- Keep threat model aligned with client-only topology even as bespoke supernode features are added.
-
-Working style:
-- Add negative-path tests for invalid, expired, or replayed messages.
-- Verify profile/key material isolation across multi-profile runs.
-
-### 5. QA/Testing Agent
-Responsibilities:
-- Run unit and integration tests and targeted manual checks. Scale as measured on 2026-09-02: **498** listed in the outer workspace (`doubleslash-supernode` 256, `doubleslash-features` 145 + 3 doc, `doubleslash-installer` 83, `doubleslash-vpx` 9 + 1 doc, `doubleslash-opus` 0 + 1 doc) and **68** in the separate supernode-manager workspace. The most recent verified headless-client count remains **584** from 2026-08-07; re-derive it after repairing any stale CMake generator cache rather than treating that number as current. These drift every sprint — always use `cargo test -- --list` per workspace for sign-off.
-- Track **line/region coverage %** on high-ROI crates via `scripts/coverage.ps1` / `scripts/coverage.sh` (cargo-llvm-cov); CI job `Rust coverage %` publishes the summary artifact.
-- Stress race-prone flows (rapid connect/disconnect, duplicate signaling).
-- Validate trusted-peer persistence and UI synchronization.
-- Cover QUIC relay path and WebSocket membership signaling for room audio.
-
-Working style:
-- Prioritize lockup prevention, audio continuity, and deterministic outcomes.
-- Keep acceptance checklist current.
-- Before sign-off on Rust changes: `cargo fmt --all -- --check` in affected workspace(s), then targeted `cargo test` / `cargo clippy -D warnings` for touched crates; use `scripts/ci_local.ps1` when changes span workspaces or hit release/installer paths. For protocol/SFU/feature work, prefer a hot-scope coverage run (`scripts/coverage.ps1 -Scope features` or `supernode`) when measuring regressions.
-
-### 6. DevOps/Infra Agent (Transport + Feature Hosting)
-Responsibilities:
-- Maintain QUIC relay, SFU, and in-app portal (`web.host.app.v1`) deployment guidance and scripts.
-- Maintain supernode packaging (`scripts/build_supernode.sh` for Linux/macOS `.tar.gz`, `scripts/build_supernode.ps1` for Windows `win64` `.zip`) and release/CI jobs for **linux-x86_64**, **linux-aarch64**, and **win64**.
-- Maintain the supernode feature manifest (`supernode.toml`-style typed capability list replacing ad-hoc env-var toggles).
-- Support hot-reload of feature modules and bespoke `x.<vendor>.*` plug-ins.
-- Keep infra docs aligned with no-backend policy: supernodes assist transport and host feature modules; they are never identity authorities.
-- Ensure endpoint mailbox (`supernode_endpoints.json`, 24h TTL) and ticket renewal (1h TTL, 10-min renewal window) persist across restarts. SFU room state must **not** be persisted — only peer trust (`peers.json`), identity, manifest, and endpoint mailbox belong on disk.
-- Document how to host static in-app portal games under `games/<slug>/` (native `d://` only — no public HTTP game ports).
-- Do **not** reintroduce a public HTTP/WebTransport surface (`web_port`, `web_cert.*`, `web.host.h3.v1`).
-- **Maintain the supernode manager** (`rust/doubleslash-supernode-manager/`) as the primary integration-testing and cluster-ops tool: provisioning, `cluster-sync`, `exec`-based remote debugging, and `build-deploy` for live cluster testing against the acdc test cluster (nodes a/b/c). See `rust/doubleslash-supernode-manager/agents.md` for the full operator contract.
-
-Working style:
-- Treat infra as transport + opt-in feature hosting only.
-- Do not introduce app-layer central services or mandatory features.
-- Use `cluster-sync` after any install or redeploy that changes cluster membership; `install`/`config-push` preserve the existing `[cluster]` section automatically.
-
-### 7. Documentation Agent
-Responsibilities:
-- Keep README, plan docs, and runbooks aligned with implementation.
-- Document invite flow, troubleshooting, and migration-impact changes.
-- **Treat local device capture as a privacy disclosure, not a feature note.** Camera, screen/window, and loopback-audio capture are documented in `PRIVACY.md` (*Camera, screen, and shared-audio capture*) and summarised in the README Privacy Policy section. A **new capture backend — a platform, a source kind, or a wider default — changes what a user is exposing and must update that section in the same change.** Two facts there are load-bearing and must not be quietly dropped: a whole-screen share includes whatever pops up over it, and per-application audio capture falls back to **whole-machine** audio below Windows build 20348 rather than to silence.
-- Keep the README settings tables matched to the `SettingsModel` qproperties and their `default_*` functions (`ui/settings_model.rs`) — defaults printed in docs are the ones most often left stale by a code change.
-- Keep the `docs/ARCHITECTURE.md` mermaid diagram in the same change as a new subsystem. It drifted a whole media layer behind before 2026-08-07 (and still showed STUN servers, which this codebase does not use), because a diagram is easy to skip when the prose is updated. A new crate, capture backend, or wire tag belongs on it.
-- **Do not document a params key as a restriction unless something reads it.** `allow_public_rooms` is enforced from `room.audio.sfu` only; the copies on the video/content-audio descriptors enforce nothing (see the room-type creation policy invariant). Check for the consuming call site before writing "X is limited to Y".
-
-Working style:
-- Update docs in the same change as behavior/protocol updates.
-- Keep language user-focused and architecture-accurate.
-
-### 8. UX/UI Agent
-Responsibilities:
-- Improve chat-first usability and call-state clarity in the native Rust Qt/QML client (`rust/doubleslash-client/src/ui/`).
-- Keep session status banner consistent across voice modes (direct peer vs room); `AppBridge::connection_mode` property drives the native banner colour.
-- Maintain unread/badge/tray behavior consistency, including the `missed_calls` qproperty increment/clear cycle.
-- Preserve DPI-aware behavior and accessible layout constraints.
-- Keep the Privacy and Data `SettingCard` in `SettingsPage.qml` (Privacy tab) in sync with `ChatStore` methods and `keyring_delete_aes_key`.
-- Keep the peer block/unblock context menu toggle in `PeerList.qml` in sync with `ConnectionCommand::BlockPeer` / `UnblockPeer`.
-- Keep the **Peers vs Rooms** split: the Peers rail (`PeerList.qml` / `PeerListModel`) must list only `PeerStore::list_non_supernode_peers()`; the Rooms sidebar (`MainWindow.qml` `nodeListModel`, `RoomPanel.qml`) must list only trusted supernodes (`PeerStore::supernodes()`, `AppBridge::isKnownSupernode`). Never show supernodes in Peers or ordinary peers in Rooms.
-- Keep **room UX** aligned with client-owned definitions + ephemeral supernode hosting: `CreateRoomDialog.qml` / `create_room` for user-initiated create (auto-join); `RoomStore::hide_from_sidebar` for sidebar remove (local only — no `SfuRoomDelete`); `SupernodeConnected` replay via `CreateRoom { materialize_only: true }` must not auto-join; room list filtering uses `filter_sfu_rooms_for_sidebar` + composite `(supernodeId, roomId)` keys.
-- **Voice hang-up is the VoiceRail End/Leave control only** (`VoiceRail.qml`, `x-circle.svg`). `RoomPanel.qml` is the text room. Leaving voice must not deselect that text room (`MainWindow.qml` VoiceRail `onEndCallRequested`: stay on Rooms when `roomPanel.roomId` is set). Do not add a hang-up / leave control on RoomPanel that calls `LeaveRoom` and jumps to Peers.
-- Keep the Avatar section on the Identity settings tab (`SettingsPage.qml`, `settingsTab = 1`) in sync with `AvatarConfig` fields in `avatar_config.rs`; the `settings.avatar_config_json` qproperty on `SettingsModel` bridges the two. Avatar SVGs are rendered via `backend.avatarSvg(peerId, configJson)` → `data:image/svg+xml;base64,...` in `Avatar.qml`.
-- Keep the video surfaces (`VideoTile.qml`, `VideoRegion.qml`, `VideoPopoutWindow.qml`, the `VoiceRail.qml` share control, Settings device list + local preview) driven by the `video_active` / `content_audio_active` / `video_preview_active` qproperties on `AppBridge`. Multi-source PiP is a **pre-encode composite**, not extra tiles fed by extra streams — there is exactly one inbound stream per peer. Where a platform has no capture/encode backend, surface an explicit "video unavailable on this platform" state rather than a silently failing toggle (`MainWindow.qml` `videoUnavailableReason`, VoiceRail share + Settings preview).
-- **Starting a share asks about audio; stopping does not** (`VoiceRail.qml` `sharePopup`). The source list is re-snapshotted on every open (`shareOptionsOpened`) because windows open and close constantly and a list built once at startup offers things that are gone; a saved source that has disappeared shows "Source unavailable" rather than silently sharing whatever is first. Shared audio follows the picture — `setContentAudioViewers` pushes the viewer set as a **whole set**, never per-peer toggles (see the content-audio playout invariants).
-- Keep `CreateRoomDialog.qml`'s "members can invite" toggle and sub-room nesting ("Create Sub-room", `parentRoomId`) in sync with the Space tree: both flow through `AppBridge::create_room_impl`/`create_sub_room` → `ConnectionCommand::CreateRoom` → `RoomStore::adopt_room_into_space`. Sidebar expand/collapse in `MainWindow.qml` reflects `has_children`; don't add a new Space node `kind` for nesting — `parent_id` already supports arbitrary depth (see `backlog.md` Space Merkle section).
-
-Working style:
-- Avoid backend-dependent UX affordances.
-- Verify key flows with two-client manual checks.
+| Role | Responsibility |
+|---|---|
+| Project manager | Track scope, acceptance gaps, lockups, races, and call reliability. Distinguish implemented, automatically tested, and manually validated behavior. |
+| Signaling / handshake developer | Maintain invite persistence, signed handshake/signaling, replay controls, endpoint discovery, and deterministic reconnect transitions. |
+| Transport / feature developer | Maintain direct and relay channels, capability negotiation, auth, quotas, and media budgets. Treat the UI as a framework consumer. |
+| Security reviewer | Review identity/device trust, encryption boundaries, room key installation, plugin trust, release verification, and negative paths. |
+| QA | Run focused tests and lint, then broader checks where warranted. Exercise reconnects, duplicate messages, profile isolation, and two-client media flows. |
+| Operations | Maintain supernode packaging, manifests, relay/SFU/portal hosting, and cluster deployment through the manager. Preserve identity and trust during redeploys. |
+| Documentation | Update behavior, defaults, privacy disclosures, and architecture diagrams in the same change. Verify claims against consuming code. |
+| UX/UI | Keep chat, voice, rooms, media controls, permissions, and local data actions consistent across the relevant client surfaces. |
 
 ## Global Guardrails
-- Keep architecture client-owned and invite-only.
-- No backend drift; no mandatory features.
-- Supernodes provide transport assistance and *opt-in* feature hosting; they are never identity authorities.
-- **Supernode opacity**: treat every supernode as an untrusted relay — it may see connection metadata (peer ids, room ids, indices, byte volumes, timestamps) but must never receive decryptable chat, file, or voice content. Forward opaque bytes only; never log or persist payload fields.
-- Every cross-peer behavior must be expressible as a `FeatureModule` with a stable capability id; no hidden side channels.
-- Per-feature `auth` tier and quota are mandatory — don't bypass the capability layer for convenience.
-- Stability and security take precedence over new features.
-- **Never silence a warning to make the build or tests pass.** A `#[allow(...)]` is a claim that the compiler is wrong, and it is almost never the right first move. When rustc or clippy complains, fix the underlying issue first: delete the item if it is genuinely unused, wire it up if it should be called, or narrow the type/visibility so the warning stops being true. This applies equally to `#[allow(dead_code)]`, `#[allow(unused)]`, an `unwrap()` added to dodge a `Result`, `#[ignore]` on a failing test, and `-A` flags in CI.
-- **If a lint genuinely must be suppressed, use `#[expect(lint, reason = "...")]`, not `#[allow(...)]`.** `expect` warns once the suppression stops being needed, so it cleans itself up; `allow` rots silently and hides real gaps. The `reason` is mandatory and must say *why the item exists without a caller* — not merely restate the lint. Scope it to the narrowest item; never add a crate- or module-level `#![allow]` to cover a single case.
-- **`doubleslash-supernode` is a binary crate (no `lib.rs`), so `pub` exempts nothing from dead-code analysis** — reachability is computed from `main()`. Code reachable only from unit tests will therefore warn in the normal build; that is the one legitimate `#[expect(dead_code, reason = "exercised by unit tests only")]` case in this repo. `doubleslash-client` is a library plus a thin binary, so it needs none of this and must stay at zero suppressions. Before adding one, confirm which situation you are in: strip the attribute, run `cargo check -p <crate>` and again with `--tests`, and read what rustc actually reports.
-- Pair meaningful code changes with tests or reproducible validation steps.
-- **Format before finish**: after any Rust edit, run `cargo fmt --all` in every workspace you touched (`rust/`, `rust/doubleslash-client/`, and/or `rust/doubleslash-supernode-manager/`), then verify with `cargo fmt --all -- --check`. Do not leave formatting for the pipeline to catch. If `--check` prints a diff, apply it (or re-run `cargo fmt --all`) and re-check before moving on.
+
+- Keep identity and trust client-owned and invite-only. Supernodes are transport/hosting peers, never identity authorities. Do not introduce mandatory central services.
+- Represent cross-peer application features through stable capability IDs with auth and quota policies. Do not bypass negotiation or authorization for UI convenience.
+- Keep supernodes opaque to private application content. Do not add payload logging, decryption, disk persistence, or store-and-forward caching. Routing metadata and operator-hosted portal assets are separate from participant content.
+- Preserve restart safety, bounded queues, and real-time media budgets. Do not block a manager event loop waiting for an event that the same loop must process.
+- Pair meaningful behavior changes with tests or reproducible validation. Do not report builds, deployments, or manual acceptance without evidence from the current task.
+- Fix warnings at their source. Do not add `#[allow(...)]`, `-A` flags, ignored tests, or unchecked unwraps merely to make checks pass. If a suppression is justified, use narrowly scoped `#[expect(lint, reason = "...")]` and explain the actual reason.
+- Binary-crate reachability differs from library visibility: `pub` does not make unused supernode code live. Check normal and test builds before suppressing test-only dead code. Do not assume existing crates are suppression-free.
+- After Rust edits, format and verify every affected workspace as described under [Validation](#validation).
 
 ## Architecture Notes (Agent Contract)
 
-This section captures implementation locations and invariants that agents must respect. For a human-oriented overview of crates, layers, and the modular framework, see the README.
+### Source map
 
-### Critical Crates & Agent Invariants
-- `doubleslash-client` (Qt 6 / QML via CXX-Qt, `cargo build -p doubleslash-client --features qt-ui`): primary desktop binary. All first-party `core.*` modules and desktop UX live here. Headless mode (no `qt-ui`) is used for integration tests.
-  - `src/ui/bridge.rs` + models: `AppBridge` QObject and QML-facing state (`connection_mode`, `call_duration_secs`, `missed_calls`, `mic_level`, etc.).
-  - `src/peer_store.rs`: trusted-peer persistence (`is_supernode`, `supernode_from_invite`, `relay_hints`); `supernodes()` vs `list_non_supernode_peers()` split drives Rooms vs Peers (see supernode detection invariant below).
-  - `doubleslash-android` (`cargo ndk -t arm64-v8a build --lib`, or just `android/gradlew assembleDebug`): JNI `cdylib` wrapping the **same** `doubleslash-client` core the desktop uses, behind a Kotlin/Compose UI. It never enables `qt-ui` — that is what keeps Qt out of the Android graph.
-  - The boundary is **four native methods plus a JSON command/event channel**, not one JNI method per feature. `src/command.rs` dispatches `{"cmd": ...}`; `src/event.rs` maps `ConnectionEvent` to `{"event": ...}`. Wire names in `event.rs` are written out literally rather than derived from Rust variant names, so renaming a variant cannot silently reshape the app's contract.
-  - **Filtering media out of the JSON is only half the job — it must still be routed.** `session.rs::route_media` forwards `DirectAudioReceived` -> `CallCommand::DirectAudioInbound` and `SfuAudioReceived` -> `RoomAudioInbound`, mirroring what the Qt bridge does. Dropping these from the event JSON *without* handing them to `CallController` is why a call can connect, signal correctly, and stay completely silent — there is no error anywhere, the frames simply go nowhere. The same applies to any media variant added later (`VideoFrameReceived`, `ContentAudioReceived` are not yet routed because nothing consumes them on Android).
-  - **Room voice is not room chat.** `CallCommand::SetRoomMode` redirects outbound Opus through the supernode instead of to individual QUIC peers, and must be set *before* `StartAudio` or the first frames go to the wrong destination; `ClearRoomMode` before `StopAudio` on the way out. Leaving a room has to stop voice too, or the microphone stays live for a room the user is no longer in.
-  - **Real-time media must never cross that boundary.** `event.rs` returns `None` for `SfuAudioReceived`, `DirectAudioReceived`, `VideoFrameReceived`, `ContentAudioReceived` and `PortalGameDatagram`; their pipelines live in Rust, and audio I/O reaches the device through cpal's Oboe backend without touching JNI. Adding a media variant to the forwarded set is a per-frame JSON encode on every call.
-  - Events are pumped by a **dedicated OS thread** (`doubleslash-events`) that attaches to the JVM once, not by a tokio task — tokio migrates tasks between workers, which would force an attach/detach around every event.
-  - **Room chat history is keyed on the room, never on its host** (`chat_store::room_conversation_id` -> `room:{room_id}`). A `room_id` is already `SHA-256(creator_public_id ":" room_name)[..16]` (`derive_room_id`, supernode `crypto.rs`), so it is anchored in the creator's key space and identical on every supernode that ever hosts the room. The original `room:{supernode_id}:{room_id}` form added nothing to uniqueness and broke identity: a cluster failover re-keys the room to a sibling and silently starts a second conversation. Both the Qt bridge (`room_chat_store_peer_id`) and the JNI layer call the one core function — they share a profile, so a byte of divergence splits the history in half. `ChatStore::migrate` folds legacy three-part keys on open and is idempotent (the `LIKE 'room:%:%'` filter needs two colons; a folded key has one). Do not reintroduce a host component.
-  - **`RoomStore::list()` is not the sidebar list.** The hide state is a tombstone set keyed on `(supernode_id, room_id)` (`deleted_ids`, reached via `is_hidden_from_sidebar`), *not* a field on `RoomEntry` — so serialising entries alone resurrects every room the user has ever hidden. `room.list` annotates each row with `hidden` and the client filters. Any new consumer of the room store has to ask separately, or it will show the same ghosts.
-  - `NullCamera` and `SourceSpec::open`'s `cfg(not(any(windows, linux, macos)))` arm are what make Android compile without a capture backend. Keep that fallback when adding platforms.
-  - **The Android session foreground service is `specialUse`, not `dataSync`.** `CoreService` holds the QUIC session while the identity is unlocked. `dataSync` is a 6-hour user-initiated transfer type; Play rejects using it as a standing socket, and Android 15 kills it with `RemoteServiceException` if `onTimeout` does not `stopSelf()`. Microphone/camera types are claimed only during a call with the matching runtime grant. The notification Disconnect action must keep working.
-  - **Android Play policy gate.** `TERMS.md` is accepted (`Legal.TERMS_VERSION`) before Home. Mic/camera requests go through `rememberExplainedPermission` so background-capture use is disclosed before the system dialog. Report is a share-sheet of identifiers, not a server. Portal WebView must not navigate to `https://` with the JS bridge attached.
-  - **Incoming calls are not the in-app dialog alone.** `CoreService` observes `call_request` and `IncomingCallNotifier` posts a `CallStyle` notification plus a lock-screen full-screen intent. Decline can run with no activity; Answer re-seeds `CallState` if the ViewModel was recreated. Do not drop `call_request` on the floor when `MainActivity` is gone.
-- `src/avatar_config.rs`: compiled unconditionally (so `peer_store.rs` can hold `Option<AvatarConfig>` even without `qt-ui`); `settings.avatar_config_json` qproperty lives on `SettingsModel`.
-  - `src/chat_store.rs`: per-peer `trim_by_age` / `trim_by_count` / `purge_all` (identity lock also drops the AES key via `keyring_delete_aes_key` in `identity.rs`).
-  - `src/room_store.rs`: client-owned encrypted room definitions (`my_rooms.dat`), keyed by `(supernode_id, room_id)`; sidebar hide list; replay source for `SfuRoomCreate` on supernode connect. **Never** persist room definitions on the supernode.
-  - `src/identity.rs`: Ed25519 + OS keyring integration.
-  - `ConnectionManager` (`src/connection_manager/` module — top-level `mod.rs`, `internal.rs`, `quic.rs`, `ws.rs`, `events.rs`, `tests.rs`, plus `manager/{mod,routing,inbound,room_session,peer_session,video_session,invite}.rs`): direct QUIC + relay client paths; outbound `core.chat.v1` / `core.file.v1` must call `gate_through_feature`; audio datagrams must use the quota-checked send helpers.
-  - `src/video/` + `manager/video_session.rs`: video capture, composite/PiP, codec registry, fragmentation, and send/receive routing. A/V sync and adaptive bitrate both landed (see the media-layer modules below and `video/sender.rs` `set_adaptive_bitrate`); what remains is **platform reach**, not media plumbing — see `backlog.md` (Video calling) for screen capture off Windows and hardware validation of the non-Windows backends.
-    - **Capture** is per-platform behind the `CameraSource` trait: `MfCamera` on Windows, `V4l2Camera` (the `v4l` crate) on Linux, `AvfCamera` on macOS. Screen/window capture is still **Windows-only** (`Windows.Graphics.Capture`). Platforms without a backend get `NullCamera`, which reports no devices rather than failing to compile — keep that property, it is what keeps their builds green.
-    - The macOS backend is an **Objective-C shim** (`src/video/macos_camera.m`, compiled by `build.rs`, ARC on), not Rust bindings: AVFoundation pushes frames through a delegate protocol, and owning that in Obj-C is far less machinery than declaring a protocol-conforming class through the runtime from Rust. Rust sees a synchronous `next_frame`. Same rationale as `doubleslash-vpx`'s `shim.c` — put the FFI boundary where the Rust side becomes trivial.
-    - **Encode/decode** is per-codec behind `VideoEncoder`/`VideoDecoder`: Media Foundation H.264 on Windows (OS-held AVC licence) and **VP8 everywhere** via the vendored `doubleslash-vpx`. Never vendor openh264 or another in-tree AVC encoder — licensing review required first; VP8 is the royalty-free answer and is why cross-platform calls work at all.
-  - `src/content_capture.rs` + `src/content_sender.rs` + `src/content_playout.rs`: the audio shared *with* a video. Two WASAPI paths on Windows — endpoint loopback for the whole machine, and `ActivateAudioInterfaceAsync` against `VAD\Process_Loopback` for one application's tree; per-process activation failing (pre-20348 Windows) falls back to system audio rather than to silence.
-    - **Frame offsets come from the capture device, never from a frame counter** (`CaptureTimeline`, `ContentFrame::offset_us`). A loopback device produces no packets at all while its source is quiet, so counting frames treats every silence as though it had not happened and leaves the audio permanently behind the video — the defect grows with each pause and never self-corrects. This matters most for per-application capture, where silence is the normal state. Receivers key their jitter buffer on **sequence**, which stays contiguous across a gap, so a large PTS jump is adopted cleanly and concealment decodes nothing while still advancing the A/V anchor.
-  - `src/media_clock.rs` + `src/media_sync.rs` + `src/content_audio.rs`: the A/V sync layer (landed 2026-08-02). One `SessionMediaClock` per video session stamps content audio and video from the same timeline at capture, so they are synchronised by construction rather than correlated after the fact. Receive side is **audio-led**: `media_sync` records a `PlayoutAnchor` each time a content frame plays and extrapolates between anchors with the monotonic clock, holding or dropping video to meet it (`LATE_TOLERANCE_US` 50 ms, `EARLY_TOLERANCE_US` 10 ms, `MAX_QUEUED_FRAMES` 6). Two properties must not regress: a peer sending **video with no content audio free-runs** (camera-only calls, and older builds, have no anchor — `SyncDecision::Show` whenever the anchor is absent or stale past `ANCHOR_STALE_AFTER` 400 ms), and anchors are **per sender, never compared across senders**, because each timestamp is on its own sender's clock. Never slave video to the *mic* stream — voice carries no PTS and that is the lip-sync bug this design exists to avoid.
-  - **Video ABR** (`video/sender.rs`): `apply_network_quality(loss_pct)` runs on the same connection-stats tick as audio ABR so both media adapt from one measurement instead of each estimating separately. Backs off above `ABR_BACKOFF_LOSS_PCT` (10 %), climbs below `ABR_RECOVER_LOSS_PCT` (4 %), and never falls below `MIN_VIDEO_BITRATE_BPS` (120 kbps) — far above the 16 kbps audio floor because sub-floor video stops being a picture and costs bandwidth without conveying anything. The user's quality preset is the *ceiling*, which adaptation may drop below but never exceed; every shipping preset must retain room to adapt downward (`every_preset_has_room_to_adapt_downward`).
-  - `DirectFallbackCoordinator` (`src/connection_fallback.rs` + `manager/room_session.rs`): after `CallAccept`, allow 5 seconds for direct QUIC; if it is still unavailable, create a temporary private SFU room on a mutually trusted connected supernode, invite the peer, and move both call legs to room audio. Cancel the pending fallback if direct transport recovers or the call ends.
-- `doubleslash-features`: the spine. `FeatureRegistry`, `FeatureModule` trait, `dispatch_message` / `dispatch_invoke_datagram`, inbound/outbound quota enforcement (token-bucket per `(feature, peer)`), auth tiers, channel-tag registry. All transports (direct QUIC, relay, WS) must go through the registry for capability-gated paths; hot paths may call `gate_inbound_through_feature` directly but must still respect the same buckets.
-- `doubleslash-opus`: first-party libopus wrapper (DRED + OSCE). Requires DNN data (see Build Notes). Linked only into `doubleslash-client`.
-- `doubleslash-vpx`: first-party VP8 wrapper over a vendored libvpx submodule. Linked only into `doubleslash-client`. **Built without libvpx's own `configure`/`make`/assembler**: `build.rs` generates `vpx_config.h` and the RTCD headers (via libvpx's `rtcd.pl`, so **perl** is a build requirement) and compiles the C with `cc`. The source list is *parsed from libvpx's own `.mk` manifests*, `ifeq` blocks included — do not replace it with a directory glob, which picks up VP9-only sources that fail against a VP8-only RTCD header. Configured for a generic architecture, so **no SIMD**: the trade is deliberate (see the crate docs), and re-enabling it means adding an assembler plus the matching `VPX_ARCH_*`/`HAVE_*` flags, not restructuring anything above.
-- `doubleslash-supernode`: sole supernode implementation (QUIC relay, WS signaling, QUIC bidi `web.host.app.v1` portal, SFU, `game.relay.v1` session fan-out, manifest-driven feature hosting).
-- `doubleslash-installer`: release download + apply + manifest verification + signing helper.
+Unless stated otherwise, client paths below are relative to `rust/doubleslash-client/src/`.
 
-**Quota symmetry invariant**: inbound (`dispatch_message`, `dispatch_invoke_datagram`, transport hot-path `gate_inbound_through_feature`) and outbound (`gate_through_feature` called from `ConnectionManager::dispatch_outbound`, audio send helpers) use consistent per-feature/per-peer token buckets, and buckets are cleared on `drop_peer` / `peer_left` / disconnect paths (including WS signaling). The deliberate supernode exception is in-flight `SfuFileChunk` / `SfuFileComplete`: quota refusal is observed but does not drop the payload, because one missing ordered frame permanently strands the transfer. This exception is safe only while both WS and QUIC-relay signaling retain per-connection `FileFrameLimiter` pacing, the 256 KiB message cap, and `PEER_QUEUE_MAX_BYTES` (8 MiB) per recipient; `SfuFileOffer` / `Request` / `Revoke` remain fully gated. Do not generalize the exception to other features or transports.
+| Area | Source |
+|---|---|
+| Identity, devices, local stores | `identity.rs`, `device.rs`, `device/store.rs`, `peer_store.rs`, `chat_store.rs`, `room_store.rs`, `backup.rs`, `backup/` |
+| Transport and signaling | `connection_manager/`, especially `manager/{inbound,routing,invite,peer_session,room_session,device_session,device_calls,video_session}.rs`; `quic_relay_client.rs`, `quic_tls.rs` |
+| Calls and media | `call_controller.rs`, `video/`, `content_capture.rs`, `content_sender.rs`, `content_playout.rs`, `content_audio.rs`, `media_clock.rs`, `media_sync.rs`, `group_key.rs` |
+| Desktop UI | `ui/bridge.rs`, `ui/settings_model.rs`, models in `ui/`, and `rust/doubleslash-client/qml/` |
+| Android | `rust/doubleslash-android/src/{lib,command,event,session,video}.rs` and `android/app/src/main/java/com/doubleslash/client/` |
+| Capability runtime | `rust/doubleslash-features/src/{descriptor,registry,quota,client_modules,wellknown,channel_frame,channel_tag,loader}.rs` |
+| Supernode | `rust/doubleslash-supernode/src/{main,relay,signaling,sfu,manifest,cluster_link}.rs` |
+| Installer / packaging | `rust/doubleslash-installer/`, `build_win64.ps1`, `build_linux.sh`, `build_macos.sh`, `scripts/build_supernode.*`, `.github/workflows/` |
 
-**CXX-Qt qproperty rule**: every `#[qproperty(T, name)]` in a `#[cxx_qt::bridge]` block must have a matching field in the Rust state struct (`AppBridgeRust` etc.) and be initialised in `impl Default`. Missing fields are silent in headless mode but fail at runtime/Qt meta-object construction.
+### Identity, signaling, and reconnects
 
-**Relay reconnect bootstrap rule**: supernode `RelayGranted` and `SupernodeInfo` replies prefer the live WebSocket via `send_bootstrap_to_peer`, with QUIC fallback only when WebSocket delivery fails. A prior client process's QUIC signaling queue can remain open until transport timeout; sending bootstrap replies there strands the new process even though its WebSocket is connected. Ordinary signaling retains QUIC preference. Client portal fetches wait for `RelayClientReady` outside the manager event loop, with a bounded timeout; never sleep inside the manager waiting for state that its own event handler must install.
+- Invite handshakes require ephemeral X25519 material, signature verification, transcript binding, and expiry checks. Do not restore the empty session-key compatibility path.
+- Post-handshake signaling requires Ed25519 verification and timestamp freshness (`MAX_MESSAGE_AGE_SECS`, currently 300 seconds), plus per-sender signature replay deduplication. `SfuAudio`, `FileTransferChunk` / `FileTransferComplete`, and `SfuFileChunk` / `SfuFileComplete` skip deduplication, not signatures or freshness. Preserve negative tests for replayed, stale, and future-dated messages.
+- Preserve the mutual-trust receiver gate for all chat/call/file message classes, including call accept/end and file payloads. An authenticated relay connection alone does not authorize a peer to send application traffic.
+- Normalize padded/unpadded Ed25519 public IDs where identity equality or ordering matters, including SFU ACLs and group-key election. A hex peer-store key is not a `public_id`.
+- Direct video/content-audio signatures bind `direct_conv_id(sender_public_id, recipient_public_id)`. Resolve the recipient through `recipient_public_id` in `manager/peer_session.rs`; signing against the `peers` map's hex key makes the receiver reconstruct a different conversation ID.
+- Classify new supernodes from the signed invite's `is_supernode`, persisted as `is_supernode` / `supernode_from_invite`. Do not infer supernode identity from `relay_hints` or a WebSocket URL. Existing `restore_supernodes_referenced_by_ids` recovery uses saved room references; it is not a general endpoint heuristic.
+- Client UDP hole punching is implemented in `manager/peer_session.rs` (`request_hole_punch`, `handle_punch_ready`). Preserve the connected-supernode and known-peer checks, endpoint validation, bounded scheduling delay, and registration expiry. Do not describe it as server-only scaffolding. This path does not use STUN.
+- Direct-call fallback allows five seconds for direct QUIC before requesting a temporary private SFU room through a trusted connected node. Cancel pending fallback on recovery or call end.
+- Supernode bootstrap replies (`RelayGranted`, `SupernodeInfo`) prefer the live WebSocket through `send_bootstrap_to_peer`, then QUIC if delivery fails. Ordinary signaling prefers QUIC. A stale prior-process QUIC writer must not swallow a new connection's bootstrap.
+- Portal fetch readiness waits for `RelayClientReady` outside the manager loop, with a bounded timeout. Reconnect testing must include close/reopen without a cluster restart that could mask stale state.
+- Preserve relay ticket renewal and the persisted endpoint mailbox used after address changes or restarts. Keep expiration and renewal windows aligned with their implementation constants.
 
-**Replay / freshness rule**: post-handshake signaling uses Ed25519 signatures + 5-minute freshness window (`MAX_MESSAGE_AGE_SECS` on the client; `is_fresh(300.0)` on the supernode WS path) + per-sender `ReplayGuard` (keyed on signature) inside the freshness window. `SfuAudio` and ordered bulk-file payloads (`FileTransferChunk` / `FileTransferComplete` and `SfuFileChunk` / `SfuFileComplete`) skip signature deduplication but never signature verification or freshness checks. File chunks are idempotent by chunk index and completion only acts on a transfer still in progress; this prevents a legitimate sustained transfer from filling the replay window and blacking out the sender. `ReplayGuard` replay negative-path tests are in `replay.rs`; client stale/future timestamp rejection is covered in `protocol.rs` and `connection_manager::tests`.
+### Devices and backups
 
-**Supernode detection invariant** (client UI + transport):
-- **Authoritative source**: signed invite payload `is_supernode` → persisted on accept as `PeerRecord.is_supernode` and `PeerRecord.supernode_from_invite` (`connection_manager/manager/invite.rs` `AcceptInvite` / `InviteHandshakeAccept`). `docs/THREAT_MODEL.md` calls the invite field advisory for *security escalation* — the client still uses it as the canonical UI/transport classifier.
-- **Never infer on new accepts**: do not treat `relay_hints` / `ws://` / `wss://` alone as supernode identity. Ordinary peers may carry a supernode ws URL for NAT/relay traversal; that must not open a WS session keyed under their identity or add them to the Rooms sidebar.
-- **Transport**: `ConnectionManager::connect_supernode_ws` and startup WS auto-reconnect (`PeerStore::supernodes()` in `run_inner`) run only for trusted supernode records.
-- **UI**: `PeerStore::list_non_supernode_peers()` → `peersUpdated` / Peers rail; `PeerStore::supernodes()` + `AppBridge::resolveSupernodeNodeId` / `isKnownSupernode` → Rooms sidebar (`nodesUpdated`, `sfuRoomsUpdated`). Room selection is scoped by `(supernodeId, roomId)` — never `room_id` alone.
-- **Supernode flags are explicit (2026-07-12)** — `is_supernode` / `supernode_from_invite` are set from the signed invite accept path only. There is no load-time heuristic repair or ws-hint grandfathering; mis-tagged rows require re-invite. `restore_supernodes_referenced_by_ids` still re-promotes peers referenced by saved room definitions.
+- `device-routing` is a default feature of `doubleslash-features`; `DEVICE_ROUTING_READY` and `core.devices.v1` describe root-authorized endpoint routing. Keep clients and nodes compatible before registration. Do not equate this with completed device pairing or continuous sync.
+- Preserve root/device TLS claim checks, separately tracked direct/relay routes, sibling-safe replacement/disconnect, per-endpoint room subscriptions, and one-answer call selection. A stale disconnect must not delete a replacement or sibling route.
+- Own-device room-key handoff in `manager/device_session.rs` is encrypted and binds the device roster and a fresh challenge. Reject malformed, cleartext, late, or conflicting replies; a sibling sharing the identity must not bypass that gate.
+- Registered signaling writers share the identity's 8 MiB queue budget; adding devices must not multiply the allowance.
+- `DeviceTrustStore` persists encrypted accepted registries with transactional predecessor, revocation, rollback, and fork checks. Backup snapshots must preserve and validate this optional database. Local version checks cannot detect rollback of an entire profile to an old backup.
+- `open_with_key` store APIs separate data access from signing authority, but delegated registry authentication and a full independent storage-key distribution scheme are not integrated into live sessions.
+- Restore validates in staging and creates a separate selectable profile. Do not overwrite an existing profile or copy `device-key.dat`, keyring/Keystore entries, or native plugin binaries. Keep Qt settings pinned to the profile they loaded until restart.
+- JNI session handles are registry IDs, not raw pointers. In-flight backup operations must retain valid store references when a session stops.
+- File-based device moves still require quitting the source before connecting the destination. Same-identity acceptance targets the normal packaged desktop profile and phone, not the historical `.clientA` test identity. Do not claim installed simultaneous-use support until that acceptance is demonstrated. See [Devices and backups](docs/DEVICES_AND_BACKUPS.md).
 
-**Room ownership invariant** (client definitions, supernode ephemeral only):
-- **Authoritative room definitions live on peers** — encrypted `my_rooms.dat` via `RoomStore`, keyed by `(supernode_id, room_id)`. Entries are written on user create (`RoomCreated`), join (`join_room`), or chat subscribe (`subscribe_room_chat`). Chat history stays in `ChatStore` / `room_chat_history` on each peer; the supernode does not store messages or room metadata to disk.
-- **Supernode rooms are in-memory only** — `SFURoomManager` in `rust/doubleslash-supernode/src/sfu.rs`. Do **not** reintroduce `sfu_rooms.json` or other room persistence on the supernode. The built-in `default` room is always present; user-created rooms idle-GC after `IDLE_ROOM_GC_SECS` (900 s) with zero voice participants and zero chat subscribers.
-- **Materialize on connect** — when **any** cluster member WS session comes up (invite host *or* multi-home sibling), `AppBridge` rematerializes non-hidden `RoomStore` entries for the whole cluster set onto that live host (`CreateRoom { materialize_only: true, …, invite_token }`). Sources include rooms saved under the invite supernode so B/C get private rooms after A is down. `ClusterMembersUpdated` re-runs rematerialize once the roster is known. `ConnectionManager::pending_materialize` suppresses auto-join on the matching `SfuRoomCreated`. User-initiated create (`materialize_only: false`) still auto-joins.
-- **Wire shape** — `SfuRoomCreate` payload may include `room_name`, `room_type`, optional `room_id`, optional `creator_id` (original creator when a non-creator peer replays a saved definition), optional `invite_token` (see re-admission bullet below). Supernode `handle_sfu_room_create` uses `creator_id` from payload when present.
-- **Private-room re-admission after idle GC (2026-07-10)** — the SFU's in-memory `allowed`/invite-token state is wiped by idle GC or a restart, which used to strand non-creator members on rejoin (spent single-use token, empty `allowed`). `RoomStore::RoomEntry.invite_token` is now replayed on `SfuRoomCreate` materialize; `SFURoomManager::reregister_invite_token` re-seeds it as a durable multi-use credential (`max_uses = 0`) and admits the presenting peer. The creator (or the first materializer of a brand-new room) always self-admits. Room-id alone is **never** sufficient — a bare materialize with no matching creator id and no client-held token does not admit a non-creator peer. Tests: `reregister_invite_token_survives_gc_and_readmits_member`, `reregister_empty_token_is_rejected` in `sfu.rs`.
-- **Join denials are signaled; `room_absent` is retried (2026-07-19)** — a denied `SfuJoin` (`sfu.rs`/`main.rs`) sends a signed `SfuJoinResult { accepted: false, reason }`. The client clears the optimistic `current_room_id`/voice scope and pending failover state. Ordinary denials emit `ConnectionEvent::RoomJoinRejected` immediately; the transient `room_absent` reason instead arms a bounded exponential retry (`ROOM_JOIN_RETRY_BASE_MS = 500`, cap 8 s, 8 attempts) so a cold cluster member can receive `RoomRoster` before the failure reaches the UI. A failed `SfuRoomInvite` gets the same client-side rollback.
-- **Room-type creation policy is an operator setting on one descriptor** — `allow_public_rooms` / `allow_private_rooms` are read from **`room.audio.sfu` only** (`manifest::sfu_room_creation_policy`, merged manifest params over the well-known defaults: public **off**, private on). They gate **room creation** in `handle_sfu_room_create`, which answers a denied create with a signed `SfuRoomCreated { denied: true, reason }`, and are surfaced to clients as `public_rooms_enabled` in `SUPERNODE_INFO`. The same keys carried on `room.video.sfu` / `room.audio.content.sfu` are **advertisement only and enforce nothing** — do not document or rely on them as a media gate, and do not assume room video is blocked in a public room. If a media-level restriction is ever wanted, it needs a real check on the send/forward path, not a params key.
-- **Sidebar hide is local** — `RoomStore::hide_from_sidebar` + `remove_room` in `bridge.rs` / `MainWindow.qml`; does not delete on the supernode (ephemeral GC handles server-side cleanup). Hidden rooms are filtered from `sfuRoomsUpdated` and skipped on replay.
-- **Outbound routing** — room signaling must target the correct supernode WS session (`resolve_supernode_ws_target` in `dispatch_outbound`); never fan `SfuRoomCreate` to the first connected supernode when multiple nodes share a host.
-- **Cross-cluster room audio (2026-07-10)** — `SfuAudio` frames replicate across cluster members the same way `replicate_room_chat` does: `SupernodeState::replicate_room_audio` fans opaque signed frames over the cluster `Replicate` link from both native ingress paths (WS and the QUIC relay bridge), so members of the same logical room attached to different nodes hear each other. Receivers dedupe by frame signature (`audio_replication_id`, falling back to `room:sender:seq`) via `deliver_replicated_room_frame` and never re-replicate — the same loop-safety contract as chat.
-- **No cluster per-peer room ACL (2026-07-12)** — `ClusterMsgKind::RoomGrant` is gone. Cluster gossip carries **room existence** (`RoomRoster` with `creator_id` / `invite_policy`), chat/audio frames, Space roots, and **client trust** (`PeerAuth` + bulk `PeerAuthRoster` on link-up/periodic — so invite-to-A converges on B/C without re-invite) — not private-room `allowed` sets. Cold-node admit for non-creators is **Space proof + grant** on join/invite (`try_space_admission`), or **local invite-token rematerialize** (`SfuRoomCreate` *and* `SfuRoomInvite`/`SfuJoin` re-seed a client-held `RoomStore` token as multi-use) / creator self-admit. Do not reintroduce supernode-to-supernode room ACL push.
-- **Room content inbound is E2E-only (2026-07-12)** — receivers reject `SfuChat` / `SfuAudio` / `SfuFileChunk` when `e2e` is absent (no cleartext interop). Outbound already fails closed without real group-key material (`may_send_room_e2e_content`). Room video fragments follow the same rule: `send_room_video` drops the frame when `has_real_key` is false.
-- **Admission paths (post-`RoomGrant`, Space Layer 1 shipped)** — these are the only ways a peer is admitted to a private room; do not add a sixth:
+### Rooms, Space trees, and history
 
-  | Path | Scope |
-  |---|---|
-  | **Space proof + grant** (`try_space_admission`) | Cluster-portable: materialize + local `allow_peer` on any node |
-  | **`RoomRoster` gossip** | Room *existence* + `creator_id` / `invite_policy` on every cluster member |
-  | **Local invite token** + local `allowed` | Same-node rejoin, shareable links, GC rematerialize re-seed |
-  | **Creator self-admit** | Owner joins without token or proof |
-  | **`PeerAuth`** | Unrelated: client trust / relay auth (kept) |
-
-  Space Layer 1 implementation: `space.rs` (byte-identical client + supernode), signed wire structs (`SignedSpaceRoot`, `SpaceInclusionProof`, `SpaceGrant`), owner builder, cluster gossip + `SpaceRootStore`, invite envelope fields, `RoomEntry.{space_id, parent_id, invite_policy}` in `my_rooms.dat`, `"members"` invite policy + UI toggle, periodic root re-broadcast, and root-equivocation flagging. Reserved leaf fields `inherit` / `key_commit` and the invite `space_node_key` slot are present but defaulted empty/false so Layer 2 changes leaf *values*, not leaf *shape* — **do not bump the `v1` hash labels** to add them.
-- **Invite handshake requires X25519 (2026-07-12)** — supernode `process_init` rejects INIT without `joiner_ephemeral_pub` (no empty session-key legacy path).
+- `RoomStore` owns encrypted definitions in `my_rooms.dat`, keyed by `(supernode_id, room_id)`. SFU hosting is in-memory only; do not add `sfu_rooms.json` or other room-definition persistence on nodes. User-created rooms expire after 900 seconds without voice participants or chat subscribers; the built-in `default` room is retained.
+- **History uses a different key:** `chat_store::room_conversation_id` returns `room:{room_id}`. Desktop and Android must use this helper. Preserve the idempotent migration from legacy host-qualified keys; failover must not split history.
+- Sidebar hiding is a local tombstone, queried through `is_hidden_from_sidebar`; it is not a field returned by `RoomStore::list()`. New consumers must filter/annotate it separately. Keep sidebar/host routing scoped by `(supernodeId, roomId)` even though history is host-independent.
+- Reconnect rematerialization replays saved non-hidden definitions onto the live cluster host, with the original creator and retained invite credential. `CreateRoom { materialize_only: true }` must not auto-join voice; user create may auto-join. Re-run cluster replay when the verified roster arrives.
+- Route room signaling through the correct node (`resolve_supernode_ws_target`), not the first connected node. Preserve signed join/create denials and rollback of optimistic UI state. Only transient `room_absent` uses bounded backoff; ordinary denials surface immediately.
+- Private-room authorization comes from validated Space proof/grant, local allowed/token state, or creator admission. Client-held invite tokens can be re-registered after GC/restart. Room ID alone is not a credential. `RoomRoster` describes room existence and policy; `PeerAuth` describes peer trust. Neither is a private-room membership grant.
+- Do not reintroduce cluster `RoomGrant`/private allowed-set replication. Cluster links propagate room rosters, Space roots, peer trust, and opaque room frames. Replicated chat/audio must be deduplicated and never re-replicated.
+- Public/private creation policy is read from `room.audio.sfu` only (`manifest::sfu_room_creation_policy`); defaults are public off, private on. The similarly named video/content-audio params are not media restrictions. Verify a consuming check before documenting any descriptor parameter as enforcement.
+- Nesting uses Space `parent_id`, not a new node kind. Keep the “Members can invite” toggle, `invite_policy`, signed roots, inclusion proofs, and grant validation aligned. Preserve equivocation detection and periodic root reannouncement. Reserved `inherit`, `key_commit`, and `space_node_key` fields do not justify changing existing `v1` hash labels.
 
 ### Supernode Opacity (Agent Contract)
 
-Supernodes are **untrusted for content**. They assist NAT traversal, WS/QUIC relay, SFU fan-out, and opt-in feature hosting — never identity or decryption.
+Supernodes may use peer/device IDs, room/session IDs, membership, indices, signatures, message types, control state, timing, and wire-byte counts. Room names and file offer/completion metadata can be visible. They must not gain participant chat/file/media keys or inspect private content.
 
-| Supernode may see (routing metadata) | Supernode must NOT see (application content) |
-|---|---|
-| Peer `public_id`, room id, relay peer indices | Chat message bodies |
-| WS/QUIC connection timing, byte volumes | Opus/audio payloads (E2E-sealed under the room sender key) |
-| Ed25519 signatures + message `type` on the wire | File chunk bytes (E2E-sealed under the room sender key) |
-| Room membership rosters (who joined/left) | Room content keys or session keys |
-| `SfuRoomCreate` room name/type (ephemeral, not persisted) | Decrypted `game.relay.v1` / bespoke datagram payloads |
-| Camera on/off state (`SfuVideoState`), keyframe requests | Video frame bytes (E2E-sealed under the room sender key) |
+- Forward `EncryptedSignal`, sealed room payloads, and media fragments without decrypting them. Compute quotas from wire/ciphertext lengths. Do not log bodies, audio, file bytes, or filenames, or retain payloads for later replay.
+- `game.relay.v1` forwards application datagrams without parsing them. This is opaque forwarding, not proof of end-to-end encryption: the SDK does not itself seal game payloads against the relay. Do not promise game confidentiality that the application has not implemented.
+- QUIC provides transport encryption on direct peer sessions. Relayed direct datagrams use the pairwise key derived by `derive_pairwise_relay_key` from static identity keys; that construction does not provide forward secrecy. Distinguish it from ephemeral invite-handshake encryption.
+- Room media uses `SenderKeysGroup` epoch keys. Preserve AAD separation: voice's existing bytes stay unchanged; video adds `0x02`, content audio `0x03`. The relay must not interpret media timestamps or codec payloads to make routing decisions.
+- High-level room sends require real distributed keys (`may_send_room_e2e_content` / `has_real_key`); reject cleartext inbound room payloads and fail closed on failed opens. The low-level group-key API still has a deterministic epoch-0 fallback. Do not treat that API's ability to return a key as authorization to send private content.
+- `accept_group_key_from` requires the current elected keyer. Election uses normalized public IDs and authoritative membership; it is not restricted to the room creator. First mint waits for another member. Preserve epoch checks: first install accepts the offered epoch; subsequent installs accept current or at most `MAX_EPOCH_ADVANCE` ahead using wrapping comparison. Epochs remain `u8`.
+- Preserve group-key ACK/reseal recovery: 750 ms retries, at most 16 attempts, and bounded rearming for lagging members after the distribution window. Own-device handoff has its separate roster/challenge gate described above.
 
-**Opaque today (correct):**
-- `game.relay.v1` — raw datagram fan-out on the QUIC relay (fixed tag `0x05`); supernode never parses inner bytes (`relay.rs` game-session membership).
-- QUIC relay datagram forwarding — inner channel tag + payload forwarded verbatim (`wire.rs`).
-- `EncryptedSignal` — pass-through relay type on the WS path (`MessageType::EncryptedSignal` in `doubleslash-supernode/src/main.rs`); the envelope for direct 1:1 E2E ciphertext and the sealed `SfuGroupKey` distribution.
-- `SfuAudio` / `room.audio.sfu` — Opus frames are E2E-sealed as `[epoch:u8][nonce:12][AES-256-GCM(opus)]` (AAD = conv_id ‖ sender ‖ seq) under a per-room sender key; the supernode fans out verbatim and cannot decode. Receivers reject frames without `e2e`. Active-speaker selection uses frame arrival only, never decode (`sfu.rs`).
-- `SfuChat` / `room.chat.v1` — the `body` is E2E-sealed as `nonce ‖ AES-256-GCM(body)` (AAD = conv_id ‖ sender ‖ message_id) under the same per-room sender key. Receivers reject cleartext (`e2e` required). Quota helpers prefer the opaque `ciphertext` length (`sfu_chat_byte_count` in `main.rs`).
-- `SfuFile*` / `room.file.v1` — each chunk's `data` is E2E-sealed as `nonce ‖ AES-256-GCM(data)` (AAD = conv_id ‖ sender ‖ transfer_id ‖ chunk_index) under the same per-room sender key (`group_key::seal_file_chunk` / `open_file_chunk`). **Fails closed (2026-07-10 outbound, 2026-07-12 inbound):** the chunk is dropped, not sent or accepted cleartext, if no real group-key material is installed / `e2e` is missing — a race right after join costs a dropped chunk, not confidentiality. `SfuFileOffer` / `SfuFileComplete` metadata (size, sha256, rel_path) stays cleartext — it is not content.
-- **Room files are advertised and pulled, never pushed (2026-08-29).** `SfuFileOffer` is an advertisement carrying metadata only; no chunk is sent until a member answers with `SfuFileRequest`, and chunks then carry `to = <requester>` so the supernode narrows delivery to that one peer instead of broadcasting. Previously every offer auto-pushed every chunk and every receiver auto-accepted, so all members downloaded every file — untenable once the size cap rose to 250 MB. **The supernode still stores nothing:** a late acceptor is served by the *originator* re-reading the file from its own disk (offers stay answerable for `OFFER_TTL_SECS`, holding a path, never bytes). Caching the blob on the relay was considered and rejected — it would contradict "never persist file bytes" below and the declined store-and-forward item in `backlog.md`. The cost of that choice is one upload per acceptor; that is deliberate.
-- **A file message is an offer, so deleting it revokes the share (2026-08-30).** Because the sender holds the only copy, dropping the outbound record is a *real* revocation: nobody can obtain the file afterwards. Both sides key the chat message `xfer-{transfer_id}` — that shared key is the only path from "the user deleted this message" back to the transfer, so do not re-key either side to a bare UUID. Delete broadcasts `SfuFileRevoke`; a request naming a missing offer gets one back targeted (`to`), so a requester fails fast instead of waiting for chunks that will never come. `handle_sfu_file_revoke` **only honours a revoke from the peer that made the offer** — otherwise any room member could cancel someone else's transfer. Limits, by construction: bytes already delivered cannot be un-sent (peers who downloaded keep their copy), and an in-flight transfer aborts rather than finishing.
-- **Streaming transfers are never compressed or delta-encoded** (`file_transfer.rs`, files above `INLINE_MAX` = 8 MiB). That is a correctness invariant, not a tuning choice: it makes `payload_len == size`, which is what lets a receiver write chunk `i` straight to byte offset `i * CHUNK_SIZE` in a sparse `.part` file without buffering. Adding compression to that path silently corrupts every large transfer unless the offset calculation is replaced too.
-- `room.video.sfu` — video frames are fragmented into a lean **binary** wire format (`FRAGMENT_VERSION` `0x03`: codec byte + `pts_us` in the header, one Ed25519 signature per *frame* carried in fragment 0 — deliberately **not** the signed-JSON envelope room audio uses, which costs more than half of each datagram at video rates) and E2E-sealed under the same per-room sender key with `MediaKind::Video` AAD domain separation from voice (`group_key::media_aad` appends `0x02`; `MediaKind::Voice` appends nothing so existing voice bytes stay byte-identical; `MediaKind::ContentAudio` appends `0x03`). The supernode forwards `ROOM_VIDEO_TAG` frames through the generic opaque relay path with **no dedicated arm** (`relay.rs`, covered by `room_video_is_forwarded_opaquely_without_a_dedicated_arm`). Control plane only — `SfuVideoState` (camera on/off + join-time reannounce) and `SfuVideoKeyframeRequest` — is parsed, and is membership-gated by sender id + room id like every other room message.
-- Room sender keying: the lexicographically smallest current member (`is_elected_keyer`) generates the room's per-epoch key, seals it to each member inside an `EncryptedSignal` carrying `SfuGroupKey`, and rotates it on member departure. `SenderKeysGroup::{current_epoch, epoch_key}` in `group_key.rs` consume installed epoch state (they must never hardcode epoch 0 — that pinned every room to the deterministic key forever). `has_real_key` distinguishes "holds distributed key material" from the always-available deterministic per-room key, which is an **emergency fallback only**, used until real material exists. Distribution is not gated on "did I create this room" — any member holding real key material can act as keyer, which is what covers the ownerless built-in `default` room and reconnect-after-drop. First-key minting waits until another member is visible. Installation is gated by `accept_group_key_from` in `connection_manager/manager/room_session.rs`: the sender must be the elected keyer and the epoch must be first-ever, current, or ahead by at most `MAX_EPOCH_ADVANCE` — a member that missed rotations has to be able to take the room's epoch directly (adjacent-only stranded it, deaf in both directions, until it restarted); earlier epochs are refused as rollbacks. The keyer tracks `SfuGroupKeyAck` and reseals unacknowledged distributions every 750 ms for at most 16 attempts (`pending_group_key_acks` in `manager/mod.rs` / `room_session.rs`); after that, a member whose audio or chat frames still carry an older epoch re-arms it (`reseal_to_lagging_member`), but only once the epoch has been current longer than that whole window, so frames in flight across a rotation do not. **Remaining v1 caveats:** `epoch` is `u8` (wraps after 256 rotations/session); a narrow simultaneous-join bootstrap race self-heals on the next shared membership snapshot.
+### File delivery
 
-**Signed but not yet opaque (must not regress):**
-- Invite handshake derives an X25519/HKDF `session_key` (`crypto.rs` / `handshake.rs`); direct 1:1 relay uses a pairwise key (`derive_pairwise_relay_key` in `crypto.rs` — static Ed25519→Montgomery DH, so no forward secrecy; see the post-quantum section of `backlog.md` for why this construction is also the hardest surface to migrate), and room content uses the `SenderKeysGroup` per-room key.
+- Room offers are advertise-then-pull: chunks target the requesting member; late requests are served from the originator's disk, not a supernode cache.
+- Preserve `xfer-{transfer_id}` chat IDs, offer withdrawal on deletion, and sender-authenticated `SfuFileRevoke`. Missing offers should fail visibly. Revocation cannot remove already downloaded copies.
+- Files above `INLINE_MAX` (8 MiB) stream uncompressed and without delta encoding. Sparse receiver offsets depend on `payload_len == size`; changing encoding requires changing that framing/offset contract. Maximum transfer size is 250 MiB.
+- Keep sender pacing, bounded queues, retries, stalled-transfer detection, and completion/hash checks. Never trade missing ordered chunks for silent success.
 
-**Supernode operator prohibitions (code review checklist):**
-- Never `info!` / `debug!` payload fields (`body`, `audio`, `data`, file names).
-- Never persist chat, audio, or file bytes to disk, and never cache them in memory for later replay (room definitions stay client-owned; SFU rooms are in-memory only). This is why room file transfer re-fetches from the origin peer instead of caching the sealed blob for late acceptors.
-- Quota accounting uses wire-byte or `ciphertext` length — not decrypted content.
-- Membership gates (`is_chat_sender`, `audio_forward_targets`) use sender id + room id only.
+### Desktop UX
 
-All room-content types (`SfuChat`, `SfuAudio`, `SfuFile*`, and room video fragments) are now E2E-sealed under the per-room `SenderKeysGroup` key — the room-content opacity gap is closed. Direct QUIC P2P may remain signed-only (no supernode on path) unless users opt into pairwise encryption there too.
+- Keep Peers limited to `list_non_supernode_peers()`; Rooms lists trusted `supernodes()`. Keep `connection_mode`, participant state, unread/missed-call badges, and tray behavior synchronized.
+- Voice ends through `VoiceRail` End/Leave. `RoomPanel` is the text room; leaving voice must retain its selection. Sidebar removal is local hiding, not a remote delete or voice hang-up action.
+- Wire room nesting/invite controls through `create_room_impl` / `create_sub_room` and `adopt_room_into_space`. Preserve expand/collapse for existing `parent_id` hierarchies.
+- Re-enumerate share sources on every popup open. A missing saved source must show “Source unavailable,” not silently select another. Ask about audio when starting a share, not stopping it.
+- Drive video UI from `video_active`, `content_audio_active`, and `video_preview_active`. Show an explicit unavailable state where a capture/encode path is absent.
+- Keep avatar serialization in `avatar_config.rs`, SettingsModel, and `Avatar.qml` aligned; exchange custom configs only after trust. Keep the core avatar module available without Qt.
+- Keep privacy controls wired to the actual ChatStore trim/purge methods and identity-keyring deletion. Every CXX-Qt qproperty needs a matching Rust field and initialization; headless checks alone do not validate the Qt build.
 
-### Build Gotchas (Agent-Relevant)
-- **Two vendored C libraries, both git submodules**: `rust/doubleslash-opus/opus` (libopus, CMake) and `rust/doubleslash-vpx/libvpx` (VP8, built by our own `build.rs`). `git submodule update --init --recursive` is required before any build; CI passes `submodules: recursive` on every job. `doubleslash-vpx` additionally needs **perl** on `PATH` for libvpx's RTCD codegen — present in base on Linux/macOS and shipped with Git for Windows, which `build.rs` probes for explicitly since it is not on the PATH cargo inherits there.
-- **Linux client builds need `libclang-dev`**: the `v4l` camera crate pulls `v4l2-sys-mit`, which runs bindgen. That is deliberate — V4L2's structs are kernel UAPI and generating them from the real headers is what keeps x86_64 and aarch64 both correct.
-- **Four Cargo workspaces**: `rust/` (features, supernode, installer, opus, vpx), `rust/doubleslash-client/` (desktop client), `rust/doubleslash-supernode-manager/` (cluster operations), and `rust/doubleslash-android/` (the Android JNI cdylib). Format/check every workspace you touch. `scripts/ci_local.ps1` covers the two product workspaces; manager changes must also run fmt/check and targeted tests from its own workspace root.
-- **`doubleslash-opus` DNN data** (required for default `dnn` feature): run `scripts/fetch_opus_weights.ps1` (Windows) or `.sh` (Linux/macOS) before building. Extracts Xiph.Org C arrays into `rust/doubleslash-opus/opus/dnn/`. Idempotent. Set `default-features = false` on the dep to build without DNN support.
-- **Android cross-build** (`rust/doubleslash-android`, built through `android/gradlew`): needs NDK r28 (`ndk;28.2.13676358`), `cmake;3.31.6` — **not** CMake 4, which rejects libopus's declared `cmake_minimum_required` — `cargo-ndk`, the `aarch64-linux-android` rustup target, and SDK platform 36 (`compileSdk` / `targetSdk` 36, Play's 2026 floor). `android/local.properties` must spell `sdk.dir` with **forward slashes**: Java properties files silently eat single backslashes, turning `C:\Users\you` into `C:Usersyou`, and the failure surfaces as an unrelated "filename, directory name, or volume label syntax is incorrect" during task-graph construction. `doubleslash.ndkApi` in `gradle.properties` must equal `minSdk` — cargo-ndk bakes it into the clang target triple, so a mismatch yields a library `dlopen` refuses on older devices with no useful diagnostic. See `docs/ANDROID.md`.
-- **The Android cdylib links `-Wl,--no-undefined`, and must keep doing so** (`rust/doubleslash-android/build.rs`). A shared object is allowed to have undefined symbols, so an incomplete link *succeeds* and only fails as a `dlopen` "cannot locate symbol" crash on the device, with nothing at build time to warn you. That is exactly how the first on-device build failed: `oboe-sys` (reached via cpal's Android backend) emits only `-lc++_static`, which supplies libc++ but **not** the ABI layer beneath it — `operator new`/`delete`, the `__cxxabiv1` type-info vtables, `__cxa_pure_virtual`, `__gxx_personality_v0` and the `std::runtime_error` family all live in `libc++abi.a`. The same build.rs adds `-lc++abi` to pair them. Keep `libc++_static` rather than switching to `libc++_shared`: exactly one `.so` in the APK uses C++, which is the case Google recommends static for, and shared would mean packaging a second library. `getrandom` stays a **weak** undefined symbol by design — the crate probes for it and falls back to `/dev/urandom` below API 28.
-- **Build scripts see the *host*, not the target.** `cfg!(target_os = ...)` inside a `build.rs` describes the machine running cargo; cross-compiling needs `CARGO_CFG_TARGET_OS`. Both vendored C crates had this bug and both are now fixed — `doubleslash-opus` picked its `-lm` and cmake config off the host, `doubleslash-vpx` emitted `cargo:rustc-link-lib=pthread` for every non-Windows target. **Bionic has no `libpthread`** (pthreads live in libc), so that one is a hard link error on Android rather than a no-op. Any new `build.rs` platform branch must read the env var.
-- **Qt requirement**: `doubleslash-client --features qt-ui` needs Qt 6.x on `PATH` (`QMAKE` or `CMAKE_PREFIX_PATH`). Headless builds (no `qt-ui`) are valid for tests.
-- **Optional `aec` feature** (`doubleslash-client`): experimental pure-Rust NLMS acoustic echo cancellation on the capture path (`src/aec.rs`). Off by default and dependency-free; the canceller always compiles (its DSP unit tests run on every `cargo test`) but only activates at runtime when built with `--features aec`. Integration: `mix_and_play` tees the far-end into a reference ring → capture closure pops it in `process_capture_mono_f32` and subtracts the modelled echo before the noise gate. Needs real two-device tuning (delay must fall within the filter tap span); not yet enabled in shipped builds.
-- **Version sync (SignPath requirement)**: `rust/doubleslash-client/Cargo.toml` and `rust/doubleslash-installer/Cargo.toml` **must** carry the identical version so PE `ProductVersion` metadata matches across signed artifacts.
-- **CXX-Qt qproperty alignment** (see Architecture Notes above): missing Rust-side fields for `#[qproperty]` entries are silent in headless mode but hard-fail when the Qt meta-object system is active.
-- **Windows signing** (optional for local builds): `signtool.exe` on `PATH`; `build_win64.ps1` skips gracefully if absent or no cert env vars are set.
-- **Supernode PE metadata**: `rust/doubleslash-supernode/build.rs` derives Windows version info from `CARGO_PKG_VERSION`; keep its `Cargo.toml` in sync if distributing a signed supernode binary.
-- See README "Developer Guide" and "Code Signing Policy" for human-oriented build, portable packaging, and SignPath bootstrap details. Code signing team roles (`doubleslash-authors`, `reviewers`, `approvers`) are documented in the README.
+### Android boundary
+
+- The JNI bridge uses four lifecycle/command methods **plus** `nativeSubmitCameraFrame` for CameraX buffers. Add ordinary features through the JSON command/event channel; keep literal event wire names stable. Camera frames use the dedicated buffer interface, not JSON.
+- Never serialize incoming per-frame audio/video/content-audio events into UI JSON. `session.rs::route_media` must route direct and room voice into `CallController`; simply filtering events would produce silent calls. Incoming video/shared-audio consumers are still missing. Portal datagrams are queued for the portal bridge separately.
+- Keep the dedicated event OS thread attached to the JVM; do not turn it into a migrating Tokio task that reattaches for each event.
+- Set room mode before starting room audio; clear it before stopping. Leaving a voice room must stop capture. Preserve incoming-call notifications and Answer/Decline handling when the activity or ViewModel is absent.
+- Keep the unlocked-session foreground service as `specialUse`; claim microphone/camera types only for an active call with the matching permission. Preserve the notification Disconnect action, terms acceptance, explained runtime permissions, and identifier-only share-sheet reporting.
+- Never navigate to external HTTPS content with the native portal JS bridge attached. Keep file/content-provider access disabled in the portal WebView.
+- Keep CameraX-to-Rust sending separate from unsupported-platform `NullCamera` fallback. Android is no longer a platform with no camera implementation.
+
+### Media invariants
+
+- Camera implementations cover Windows, Linux, macOS, and Android. Screen/window capture and WASAPI shared-audio capture remain Windows-only. The macOS camera uses an ARC Objective-C shim; preserve a compiling empty-device fallback on unsupported targets.
+- Retain VP8 on every platform. Advertise only codecs the build can encode and decode (`available_codecs`); never advertise test `Stub`. Windows also has Media Foundation H.264. Do not add an in-tree AVC encoder without licensing review.
+- Capability IDs are codec-independent. Direct calls negotiate a common codec; rooms send one codec chosen by the sender. Decoders are per `(sender, codec)`. A decoder change must not reuse another codec's reference state.
+- `video/fragment.rs` owns framing (`FRAGMENT_VERSION = 0x03`). Codec and PTS are signature-bound; unknown codecs and mixed-frame metadata must be rejected. Preserve frozen codec bytes in `rust/doubleslash-features/src/video_codec.rs`.
+- Picture-in-picture is composited before encoding, into one stream per peer. Room video is relay-datagram-only; do not add a WebSocket media envelope. WebSocket-only members can retain room voice.
+- `SessionMediaClock` stamps video and shared audio at capture. Content offsets come from the capture device (`CaptureTimeline`), not frame counts: a quiet loopback device emits no packets, but time still passes. Preserve resampler phase across capture reads.
+- Shared-audio playout anchors video per sender. Hold/drop against that sender's timeline; free-run when no anchor exists or it is stale. Do not compare different senders' PTS or slave video to the microphone stream, which has no PTS.
+- Preserve content-audio prebuffering, bounded backlog, and rebuffering without advancing `next_seq` past in-flight frames. Resume from the buffered head after refill. Concealment is bounded (currently 400 ms), so stopped audio cannot keep a phantom sync timeline alive.
+- Shared audio follows the whole viewer set from `setContentAudioViewers`, with independent voice/content gains. Continue decoding silent content slots to maintain codec/sync state; muting voice must not mute the presentation.
+- A dry voice queue is not immediately packet loss. Count a bounded short gap only when that sender resumes; discard intentional longer silence. Room ABR's inbound-loss proxy is not receiver feedback for the local outgoing stream.
+- Video ABR uses the connection-statistics tick, stays below the configured ceiling, and keeps room to adapt downward in every preset. Read thresholds and bitrate floors from `video/sender.rs` instead of maintaining a second tuning table here.
 
 ## Using the Modular Framework (Agent Contract)
 
-This section defines the precise runtime contract for the modular framework. Every cross-peer behavior must be expressed as a `FeatureModule` registered against a `CapabilityDescriptor`. Agents working on transport, supernode, or UX **must** go through the framework — no hidden side channels, no bypassing auth/quota gates.
+### Registration, authorization, and dispatch
 
-The README presents a human-oriented view of the same concepts (lighter tables, operator guidance, authoring examples). This section is authoritative for implementation details, dispatch paths, enforcement order, and negative-path requirements.
-
-### Registering a feature module (Rust)
-
-```rust
-use doubleslash_features::{
-    AuthTier, CapabilityDescriptor, ChannelKind, FeatureModule, PeerId,
-};
-
-pub struct MyModule;
-
-impl FeatureModule for MyModule {
-    fn descriptor(&self) -> CapabilityDescriptor {
-        CapabilityDescriptor::new("x.vendor.thing", "1.0", ChannelKind::Datagram)
-            .with_auth(AuthTier::TrustedPeer)
-    }
-    fn on_message(&self, source: PeerId, payload: &[u8]) { /* handle */ }
-}
-
-let m = std::sync::Arc::new(MyModule);
-if !state.features.bind_module("x.vendor.thing", m.clone()) {
-    let _ = state.features.register_module(m);
-}
-```
-
-- `register_module` adds descriptor + module in one step (errors on duplicate id).
-- `bind_module(id, m)` attaches a module to a descriptor that the supernode manifest already loaded — preferred for first-party modules so operators retain manifest control.
-- `dispatch_message(id, source, payload)` is the single inbound entry point used by all transports (QUIC peer, QUIC relay). The runtime enforces auth tier + quota before calling the module; returns `false` silently if the quota bucket is exhausted.
-- `dispatch_invoke_datagram(id, peer, params, tags)` is the invoke entry point (from `CAPABILITY_INVOKE`). Returns `ModuleError::Internal` (e.g. `"datagram quota exceeded"`) if over limit.
-
-### Supernode capability surface
-
-Hosted feature declarations come from `<data_dir>/supernode.toml` (typed schema in `rust/doubleslash-supernode/src/manifest.rs`). The supernode also upserts built-in core/room/game descriptors into the registry so quota gates and relay fan-out can classify first-party traffic even when a manifest omits those entries. **Do not** add new env-var toggles — extend the manifest. Reserved namespaces: `core.*`, `transport.*`, `room.*`, `web.*`, `game.*`. Bespoke modules use `x.<vendor>.*`.
-
-### Capability negotiation
-
-`rust/doubleslash-features/src/wellknown.rs` is the source of truth for well-known capability IDs. Negotiation rule: same `id` + same major `version` (see `CapabilityDescriptor.is_compatible_with`). Consumers (chat panel, call overlay, room controller) only enable UI/logic for capabilities present in the negotiated intersection.
-
-### Channel-tag rules
-
-The shared tagged-frame contract lives in `rust/doubleslash-features/src/channel_frame.rs` (single source of truth, re-exported from the crate root and mirrored in `web-sdk/doubleslash.mjs` as `ChannelTag` / `encodeFrame` / `decodeFrame`). Fixed first-party tags `0x00`–`0x0F`: `CONTROL_TAG=0x00`, `AUDIO_TAG=0x01`, `CHAT_TAG=0x02`, `FILE_TAG=0x03`, `ROOM_AUDIO_TAG=0x04`, `GAME_RELAY_TAG=0x05`, `VIDEO_TAG=0x06` (`core.video.v1`), `ROOM_VIDEO_TAG=0x07` (`room.video.sfu`), `CONTENT_AUDIO_TAG=0x08` (`core.audio.content.v1`), `ROOM_CONTENT_AUDIO_TAG=0x09` (`room.audio.content.sfu`). On the direct QUIC peer stream every frame is tagged: control uses `CONTROL_TAG`, and chat/file/audio use their fixed tags via `encode_frame`/`classify`. Untagged leading-`{` JSON is **rejected** (pre-release; no interop path). `ROOM_AUDIO_TAG` carries signed, E2E-sealed `SfuAudio` JSON on the relay datagram path; `GAME_RELAY_TAG` carries opaque portal-game session payloads. `ROOM_VIDEO_TAG` is deliberately **absent** from `classify` (like `ROOM_AUDIO_TAG`) so the supernode forwards it opaquely instead of growing a media arm. `ROOM_CONTENT_AUDIO_TAG` is absent for the same reason; `CONTENT_AUDIO_TAG` classifies to `FrameClass::ContentAudio` on the direct peer path. Content audio is the sound shared *with* a video and is a separate track from voice: it never touches `AUDIO_TAG`/`ROOM_AUDIO_TAG`, so the shipped voice wire is unchanged. The supernode relay (`wire.rs`) is transparent to the inner channel byte and application payload.
-
-Room video is **relay-datagram-only** — there is no WebSocket media fallback (unlike room audio). Members on a WS-only path keep audio, not video; that is intentional, documented on `SendRoomVideo`, and must not be "fixed" by adding a WS envelope. One outbound stream per peer is also by design: multi-source PiP is a **pre-encode composite** (`CaptureLayout` + `composite`), not multiple wire streams — the wire identifies a stream by sender alone, so changing that is a protocol bump.
-
-**Content-audio playout invariants (2026-08-02)** — four rules the send and receive sides must keep:
-- **Shared audio follows the picture.** It is mixed only for peers whose video is open — expanded tile or popout — and unmuted: `resolve_mix_gain` returns 0 for any content slot outside the viewer set, which QML pushes as a **whole set** via `setContentAudioViewers` (per-peer toggles would leave a closed tile audible forever the first time one removal was missed). It is still *decoded* while silent, exactly as a muted peer's voice is, so the Opus decoder and the A/V anchor stay continuous and a tile opened mid-stream is in sync from its first frame. Voice is untouched by this: not watching a share is not muting a person.
-- **A voice queue running dry is not an underrun until the peer's audio resumes.** Room ABR and the adaptive jitter buffer both read `playout_underruns` in `call_controller.rs`, and an empty slot is either a late frame or a sender that went quiet — push-to-talk released or muted, since capture sends nothing at all while muted. Counting both made every push-to-talk release read as ~27 underruns, so each listener cut its *own* outgoing bitrate toward the 16 kbps floor and grew its jitter buffer after every sentence anyone else finished, and never recovered while the conversation went on. Empty slots are held per peer (`peer_dry_slots`) and counted only when that peer's next frame arrives within `MAX_UNDERRUN_GAP_FRAMES` (the deepest jitter buffer); a longer gap, or the peer timing out as silent, discards them. Room ABR still sets a sender's bitrate from what it *receives* — the room path has no receiver feedback — so treat it as a coarse proxy.
-- **The jitter buffer prebuffers, and an underrun rebuffers rather than skipping ahead.** `content_playout` holds `JITTER_DEPTH` frames before it plays anything, and on an underrun sets `buffering` again while **holding `next_seq`**. Both halves matter, and the failure without them is not "slightly less smooth": playing on the first frame left zero tolerance, so the next frame arriving a millisecond after its tick was concealed, `push` then discarded it as already-played, and — because the sender's capture cadence and the 20 ms playout tick keep a fixed phase — every following frame met the same fate. Roughly one frame in twenty reached the speakers; the rest was concealment. Advancing `next_seq` during a refill re-creates exactly that, because it is what makes `push` throw away the frames the refill is waiting for. Leaving the cushion always resumes from the buffer head even if it is not the expected sequence: the refill already spent those ticks concealing, and stepping through the hole again would pay for the same gap twice. `MAX_BUFFERED_FRAMES` caps the other direction — a sender whose capture clock outruns the tick would otherwise grow the buffer without bound, and since video is synchronised to this stream that is unbounded latency on the picture too.
-- **Concealment is bounded.** `content_playout` conceals for at most `MAX_CONCEALED_FRAMES` (400 ms, matching `media_sync::ANCHOR_STALE_AFTER`) and then drops the peer's buffer. Unbounded concealment re-anchored `media_sync` forever, so a peer who stopped sharing left a phantom timeline climbing at real time on every receiver — and their *next* share, if it carried no content audio to resynchronise it, had every video frame dropped as hopelessly late while the tile sat on "Waiting for video…". A loopback source emits nothing at all while its application is quiet, so a gap is normal and must end the timeline rather than extend it.
-- **The capture resampler carries its phase.** `content_capture::Resampler` is held by `WasapiLoopback` across device reads, not rebuilt per read. A device read is an arbitrary slice of a continuous signal, so restarting interpolation at phase 0 — and interpolating the last sample against a duplicate of itself — inserts a step at every buffer boundary: at WASAPI's ~10 ms polling that is a hundred discontinuities a second, heard as constant distortion rather than as clicks. Keeping the exact fractional remainder also keeps the *rate* exact, which the A/V sync depends on. Only endpoints that are not already 48 kHz resample at all, which is why this stayed invisible on most machines.
-
-**Video codec invariant (hybrid negotiation, 2026-07-30)** — video is the one media channel where peers can legitimately disagree about the payload bytes, because which encoder a build can run is a platform fact (MF H.264 is Windows-only). The rules:
-- **Capability ids name no codec.** `core.video.v1` / `room.video.sfu` carry `params.codecs` (e.g. `["h264"]`); `doubleslash_features::video_codec` owns the `VideoCodec` enum, its **frozen wire bytes** (`h264=0x01`, `vp8=0x02`, `stub=0xFF` — never renumber), the fixed preference order, and `negotiate()`. Descriptor matching is id + major version only, so a codec in the id would either block negotiation outright or negotiate then exchange undecodable frames.
-- **Advertise only what this build can run.** `video::codec::available_codecs()` is the single source; the client registers via `register_client_modules_with_video_codecs`. Advertising a codec with no implementation is the exact dishonesty this design removes — the registry test asserts every advertised codec can build *both* an encoder and a decoder. `VideoCodec::Stub` is transport-test-only and `advertised_codecs` filters it out. Today: Windows advertises `["h264","vp8"]`, other platforms `["vp8"]`. **VP8 must stay available on every platform** — it is the only codec a Windows peer and a Linux peer share, so dropping it anywhere silently removes cross-platform video rather than degrading it.
-- **Every frame carries its codec**, in fragment-header byte 2 (`FRAGMENT_VERSION` `0x03`, which also carries `pts_us`), **bound into the frame signature** (`video_frame_signing_bytes`) so a relay flipping codec or timestamp fails verification. An unknown codec byte is refused at parse; fragments of one frame that disagree on codec never combine.
-- **Direct calls negotiate; rooms do not.** Direct 1:1 intersects both peers' advertised sets and refuses to start the camera when there is no mutual codec. A room sender fans one encoded stream to everyone, so it picks its own preferred codec and stamps it; a member without that decoder drops the frames and logs the codec by name. Do not "fix" this by encoding once per codec or falling to a worst common denominator — membership changes mid-call would force a re-encode and keyframe on every join.
-- Decoders are per **(sender, codec)**: `video::codec::make_decoder` is called with the frame's codec, and a sender that switches codec gets a fresh decoder because the old reference frames are meaningless.
-
-`doubleslash-client` dynamic registry: `0x10`–`0xEF` per session (negotiated/bespoke caps), `0xFF` broadcast, others reserved. Allocate dynamic tags via the registry — never hard-code.
+- Descriptors define ID, version, kind, params, auth, and experimental status. Compatibility uses ID plus major version. Use `wellknown.rs` and `client_modules.rs` as the descriptor sources.
+- `register_module` registers a descriptor and implementation; `bind_module` attaches an implementation to an existing manifest descriptor. Preserve operator parameters when binding. Use the opt-in [matchmaker example](rust/doubleslash-features/src/examples.rs) as a template rather than duplicating an example here.
+- **Registry dispatch is not an authorization boundary.** `dispatch_message` checks module presence and inbound quota. `dispatch_invoke` calls the module directly. `dispatch_invoke_datagram` checks kind/quota and allocates a tag. None of these establishes peer trust or room membership by itself.
+- Preserve authorization at transport/invocation entry points. Client `handle_capability_invoke` in `manager/inbound.rs` checks the peer's announcement, local descriptor auth, and `FeatureTrustGate` before dispatch. Keep equivalent trust/membership checks on other entry paths; do not assume a lower-level registry helper supplied them.
+- First-party `core.*`, `transport.*`, `room.*`, `web.*`, and `game.*` namespaces bypass the bespoke consent prompt, not transport authentication or auth-tier checks. Other namespaces require stored consent for the `(feature, peer)` pair.
+- Hosted declarations belong in `supernode.toml`; extend its schema rather than adding ad-hoc feature environment toggles. Missing manifests load first-party defaults; built-in core/room/game descriptors are also registered for quota/routing classification. Omitting a descriptor is not necessarily a traffic-disable switch.
+- Native modules require signature/trusted-signer checks but execute in-process. Do not describe the loader as a sandbox or assume hot reload is wired simply because registry replacement exists.
 
 ### Auth + quota enforcement
 
-The runtime enforces `auth` (`public` | `room-member` | `trusted-peer`) and per-feature byte/datagram quotas before invoking `on_invoke` / `on_message`. Modules MUST NOT re-implement these checks. Non-`core.*` namespaces without explicit `quota_bytes_per_sec` / `quota_datagrams_per_sec` fall back to `DEFAULT_BYTES_PER_SEC` / `DEFAULT_DATAGRAMS_PER_SEC` in `quota.rs` (64 KB/s, 256 datagrams/s) automatically.
+- Use `gate_through_feature` for outbound chat/files and quota-checked media send helpers. Hot receive paths that bypass `dispatch_message` still require `gate_inbound_through_feature` or the appropriate fan-out helper.
+- Maintain separate inbound/outbound buckets per `(feature, peer)` and clear both on the relevant disconnect. “Symmetry” means both directions are enforced, not identical numeric rates: room-video senders and fan-out recipients have distinct descriptor limits. On device-aware paths, do not clear a sibling's active state prematurely.
+- `quota_bytes_per_sec_outbound` / `quota_datagrams_per_sec_outbound` override outbound rates; otherwise they inherit inbound rates. Missing rates default to 64 KiB/s and 256 datagrams/s. A zero rate is an unbounded sentinel; do not introduce it as a workaround for pressure.
+- Read current video quota constants from `wellknown.rs`. `ROOM_VIDEO_CONCURRENT_SENDERS` sizes a budget; it does not enforce a sender-count limit.
+- The deliberate ordered-file exception is supernode forwarding of `SfuFileChunk` / `SfuFileComplete`: observe quota refusal without dropping those payloads. Retain `FileFrameLimiter` on both signaling transports, the 256 KiB message cap, and the 8 MiB recipient/identity queue bound. Offers, requests, and revokes stay quota-gated. Do not generalize the exception.
 
-Outbound sends are gated symmetrically: `FeatureRegistry::gate_through_feature(feature_id, peer_id, byte_count) → bool` runs the same token-bucket logic against a separate `outbound_quotas` registry. The Rust `ConnectionManager::dispatch_outbound` calls it for `core.chat.v1` and `core.file.v1` before signing and transmitting; `ConnectionManager::send_audio_datagram` / `send_room_audio` gate `core.audio.opus` and `room.audio.sfu` datagrams via dedicated helpers. Transport-layer inbound paths that skip `dispatch_message` (direct QUIC `AUDIO_TAG`, client `SfuAudio`, supernode QUIC relay `handle_datagram`, supernode WS `SfuAudio` fan-out) call `gate_inbound_through_feature` with the same token buckets. Quota buckets (both directions) are cleared on `drop_peer` / `peer_left` / `disconnect` (native WS signaling).
+### Channel-tag rules
 
-### In-app portal games
+[Channel framing](rust/doubleslash-features/src/channel_frame.rs) is shared by Rust and [web-sdk/doubleslash.mjs](web-sdk/doubleslash.mjs). Keep fixed tags and SDK helpers aligned; allocate dynamic tags through the registry (`0x10`–`0xEF`), with `0xFF` reserved for broadcast.
 
-Portal pages and games load only inside the native client (`d://` + injected `window.doubleslash`). Games use `web-sdk/doubleslash.mjs` over portal channel APIs (`/_doubleslash/channel/*`) that ride the authenticated QUIC relay — not a public browser transport. Room chat/voice/file stay native (QML + `ConnectionManager`); do not reintroduce page-side SFU clients or WebTransport.
+| Tags | Use |
+|---|---|
+| `0x00`–`0x03` | Control, voice, chat, files |
+| `0x04` / `0x05` | Room voice / game relay |
+| `0x06` / `0x07` | Direct / room video |
+| `0x08` / `0x09` | Direct / room shared audio |
 
-### Reference modules in-tree
-
-- `core.chat.v1`, `core.audio.opus`, `core.file.v1` — desktop client (`doubleslash-client`).
-- `room.audio.sfu`, `room.chat.v1`, `room.file.v1` — descriptors/modules in `rust/doubleslash-features/src/client_modules.rs`, with supernode membership and opaque fan-out paths in `rust/doubleslash-supernode/src/sfu.rs`, `relay.rs`, and `main.rs`.
-- `x.doubleslash.matchmaker.v1` — **reference bespoke `x.*` example** (`rust/doubleslash-features/src/examples.rs`). A complete `FeatureModule` template (Request kind, `TrustedPeer` auth, explicit quota, stateful lobby `on_invoke` with a "lobby ready" hook). Opt-in only via `register_example_modules`; never auto-advertised. Demonstrates how a coordination feature composes with the opaque `game.relay.v1` relay (the ready roster is exactly the set of peers wired together over `game.relay.v1`).
-
-### Feature trust
-
-Inbound `CAPABILITY_INVOKE` gating is enforced by `doubleslash-features` at the Rust layer before any module callback:
-- First-party namespaces (`core.*`, `transport.*`, `room.*`, `web.*`, `game.*`) bypass the user-consent prompt.
-- Bespoke `x.*` namespaces require explicit user consent (prompted once per `(feature, peer)` pair) and are subject to `DEFAULT_BYTES_PER_SEC` / `DEFAULT_DATAGRAMS_PER_SEC` until the operator sets explicit quotas in the feature descriptor.
-- Three gates are enforced in order: (1) feature intersection check, (2) auth tier (`trusted-peer` / `room-member` / `public`), (3) consent gate for non-first-party namespaces.
+Direct peer stream frames must be tagged; do not restore untagged JSON compatibility. Room video/content-audio tags remain outside application-content classification at the relay. Media descriptors advertise capability/quota while dedicated paths carry the bytes; this module shape is not a product-readiness claim.
 
 ## Feature Module Reference (Agent Contract)
 
-The authoritative implementation is the `doubleslash-features` crate (linked into both `doubleslash-client` and `doubleslash-supernode`). This is the condensed capability catalogue and wire/behaviour spec for agents; see "Using the Modular Framework" above for the registration/dispatch API and enforcement rules.
+Keep the catalogue in [wellknown.rs](rust/doubleslash-features/src/wellknown.rs), implementations in [client_modules.rs](rust/doubleslash-features/src/client_modules.rs), and the reader-facing summary in [README.md](README.md#built-in-capabilities). Do not duplicate quota tables that drift from those constructors.
 
-The README contains a friendlier "Built-in Capabilities" table and operator guidance for humans. Numbers, auth enforcement order, quota symmetry requirements, and negative-path expectations here take precedence for code changes.
+The current families are `core.chat.v1`, `core.file.v1`, `core.audio.opus`, `core.video.v1`, `core.audio.content.v1`, `core.devices.v1`; room chat/file/audio/video/content-audio; `web.host.app.v1`; `game.relay.v1`; and `transport.quic.*` descriptors. Bespoke modules use `x.<vendor>.*`.
 
-### Discovery
+The portal uses `WebAppRequest` / `WebAppResponseHeader` framing from [web_app.rs](rust/doubleslash-features/src/web_app.rs) over authenticated QUIC bidi streams. Keep native `d://` navigation, the Chromium `doubleslash://` alias, and the `window.doubleslash` bridge aligned. Do not reintroduce public HTTP/WebTransport game listeners or page-side SFU clients. Portal assets and game reuse/testing instructions belong in the [operator guide](docs/SUPERNODE.md) and [game guide](games/README.md).
 
-Invite-only, no central registry:
-1. **Out-of-band invite** (primary, mandatory): a signed `d://` URL bootstraps the first connection and establishes the trust root — preserving the invite-only model.
+## Build Gotchas (Agent-Relevant)
 
-On connect, each peer sends `CAPABILITY_ANNOUNCE`; the runtime activates only the **negotiated intersection**. Two descriptors are compatible if they share the same `id` **and** the same major version (`CapabilityDescriptor.is_compatible_with`). Missing support means silent non-negotiation — no fallback, no error.
+- There are four Rust workspaces: `rust/` (features, supernode, installer, Opus, VP8), `rust/doubleslash-client/`, `rust/doubleslash-android/`, and `rust/doubleslash-supernode-manager/`. Run commands in the intended workspace; `--manifest-path` does not make Cargo read that directory's local `.cargo/config.toml` when invoked from elsewhere.
+- Initialize both codec submodules. Opus uses CMake and default DNN weights from `scripts/fetch_opus_weights.ps1` / `.sh`. With CMake 4, preserve `CMAKE_POLICY_VERSION_MINIMUM=3.5` where configured.
+- VP8 builds through the wrapper's `build.rs`, Perl RTCD generation, and parsed libvpx `.mk` source manifests. Do not replace this with source globs that include VP9. Generic C builds currently avoid assembler/SIMD; changing that requires matching architecture flags and build tooling.
+- Cross-compiling `build.rs` must use `CARGO_CFG_TARGET_OS`, not host `cfg!`. Android/Bionic must not link a separate `pthread` library.
+- Preserve Android `-Wl,--no-undefined` and the `c++abi` link alongside the static C++ runtime. Keep the deliberate weak `getrandom` probe compatible with older supported APIs.
+- Qt UI requires Qt 6 (`QMAKE` / `CMAKE_PREFIX_PATH`); WebEngine is an optional additional feature. Linux camera bindings need libclang. Headless checks cannot validate QML, CXX-Qt properties, or native platform capture.
+- Android Gradle drives cargo-ndk. Keep `doubleslash.ndkApi` equal to `minSdk`; current defaults are API 26 and ARM64. Use forward slashes in `android/local.properties` SDK paths. Read tool versions from Gradle/configuration and [docs/ANDROID.md](docs/ANDROID.md), not a duplicated policy deadline.
+- `aec` remains optional/experimental; DSP unit coverage is not real-device echo-cancellation acceptance. `lint-macos` type-checks the Rust camera wrapper on other hosts; it does not validate the Objective-C shim or hardware.
+- Keep client/installer release versions and platform metadata aligned; use `scripts/check_version_sync.ps1`. Supernode PE metadata is derived from its package version.
+- `run_client.bat` launches the packaged executable with `.clientA`; profile-isolated tests must launch the binary directly with explicit profile directories. Do not use development launchers to infer the user's normal profile.
 
-Planned (not yet implemented): **in-band capability gossip** — connected peers exchanging each other's supernode capability bundles for organic discovery while the invite-only trust root stays intact (see P3 backlog).
+## Documentation and release verification
 
-### Capability descriptor wire shape
+- Update [PRIVACY.md](PRIVACY.md) and its README summary whenever capture adds a platform/source or widens defaults. Preserve the disclosures that whole-screen sharing includes overlays/notifications and pre-build-20348 Windows application audio falls back to whole-machine audio.
+- Match README desktop defaults to SettingsModel qproperties and defaults. Keep Android preferences separate. Update the architecture diagram with new crates, capture backends, or wire tags.
+- Do not claim encryption, quota enforcement, consent, or platform support from a descriptor or comment alone; inspect the calling path. Keep implemented behavior separate from remaining acceptance work.
+- Installer stable-release manifests, when supplied, require the project Ed25519 signature and matching archive hash. A stable install can currently proceed without a manifest; nightly installs require a manifest but accept it unsigned. Published SHA-256 sidecars are checked when present. Do not document unconditional signed-manifest enforcement.
+- Release automation supports conditional SignPath, Apple signing/notarization, and artifact attestations. Do not infer configured credentials, program approval, signing status, or live deployment state from workflow support.
+- Keep third-party CI actions pinned to immutable commit SHAs and retain supply-chain checks when changing workflows.
+- Use the in-tree `sign-release-manifest` helper and final packaged archive hashes. Its public key is in `keys/release-signer-public.pem` and installer `release_manifest.rs`; do not invent a key-rotation protocol. Peer build attestations are signed claims, not proof of unmodified remote execution.
 
-Exchanged as JSON inside `CAPABILITY_ANNOUNCE`:
+## Validation
 
-```json
-{ "id": "core.chat.v1", "version": "1.0", "kind": "stream",
-  "auth": "trusted-peer",
-  "params": { "quota_bytes_per_sec": 32768, "quota_datagrams_per_sec": 50 },
-  "experimental": false }
-```
+For each affected Rust workspace, run `cargo fmt --all`, then `cargo fmt --all -- --check`. Run focused `cargo test` and `cargo clippy -- -D warnings` for touched crates. Changes spanning workspaces or installer/release paths need the applicable broader local CI checks. Diagnose failures before hand-off; report environment blocks and manual checks not performed.
 
-| Field | Description |
-|---|---|
-| `id` | Reverse-DNS capability identifier |
-| `version` | Semver; negotiation uses **major version only** |
-| `kind` | `datagram` (unreliable), `stream` (reliable), or `request` (single-shot RPC) |
-| `auth` | Required auth tier (default `trusted-peer`) |
-| `params` | Optional feature params (codec, quota limits, framing) |
-| `experimental` | Advisory flag; clients may skip experimental features |
-
-### Auth tiers
-
-Enforced by the runtime in `dispatch_message` / `dispatch_invoke_datagram` **before** any callback. Modules must not re-implement these checks.
-
-| Tier (`auth`) | Who can use it |
-|---|---|
-| `public` | Any connected peer, no prior trust |
-| `room-member` | Peers holding a valid room membership token |
-| `trusted-peer` | Peers in the local trust store (default for all `core.*`) |
-
-### First-party module catalogue
-
-Desktop peer modules (active in direct P2P sessions; bundled and audited, never prompt):
-
-| Capability ID | Kind | Auth | Quota (bytes/s · dgram/s) | Notes |
-|---|---|---|---|---|
-| `core.chat.v1` | stream | trusted-peer | 32 KB · 50 | Signed text chat, delivery acks, typing indicators; per-feature token-bucket quota. Supernode WS signaling also enforces 60 control messages / 10 s per connection. Send path in `ConnectionManager`. |
-| `core.audio.opus` | datagram | trusted-peer | 32 KB · 200 | Direct voice via Opus over QUIC datagrams; latency-optimised in `ConnectionManager::send_audio_datagram`. |
-| `core.file.v1` | stream | trusted-peer | 8 MB · 4096 | Chunked file transfer; sub-types: offer/accept/reject/chunk/completed/ack/error. |
-| `core.video.v1` | datagram | trusted-peer | 512 KB · 1200 | Direct peer video over `VIDEO_TAG` datagrams; frames are fragmented (≈4 fragments typical, ~25 for a keyframe at the 640×360/30 fps/~600 kbps default) with quotas sized ~3× the ceiling so ABR overshoot and keyframe bursts do not trip shedding. Outbound gated in `send_video_datagram`. **The id names no codec** — `params.codecs` carries the runtime-available set and peers negotiate it (see the video-codec invariant below). Advertisement-only *module* (no `on_message`), like `core.audio.opus`. |
-| `core.audio.content.v1` | datagram | trusted-peer | 64 KB · 200 | The audio shared **with** a video — a game, a browser tab, a track — carried as its own track over `CONTENT_AUDIO_TAG` rather than mixed into the call mic. `params` advertise `av_sync: 1` and `pts_unit: "us"`: registering the descriptor is how a peer learns this stream can anchor video. Opus in `audio` application mode, not `voip`. |
-
-Supernode-hosted modules (multi-party; require a connected supernode):
-
-| Capability ID | Kind | Auth | Notes |
-|---|---|---|---|
-| `room.audio.sfu` | datagram | room-member | Ephemeral SFU voice in supernode memory (`sfu.rs`); idle-GC after 900 s empty; definitions owned by clients (`room_store.rs`). Transport prefers a **QUIC relay datagram** carrying `[ROOM_AUDIO_TAG][signed SfuAudio JSON]` and falls back to the same envelope over WebSocket. Frames are **Ed25519-signed** and **E2E-sealed** under the room sender key (`[epoch:u8][nonce:12][AES-256-GCM(opus)]`, AAD = conv_id ‖ sender ‖ seq). The supernode relays the frame verbatim and cannot decode Opus; its active-speaker gate uses arrival activity only. The native ingress paths are WS and the QUIC relay bridge (`relay.rs` `set_room_audio_bridge` → `main.rs`); there is no page/browser SFU path. `JoinRoom` requests a relay grant and WS fallback is automatic. The SFU forwards at most `MAX_ACTIVE_SPEAKERS` (5) concurrent talkers per room. Every ingress path also calls `SupernodeState::replicate_room_audio` so members attached to sibling cluster nodes hear the same logical room. |
-| `room.video.sfu` | datagram | room-member | 512 KB/s · 1200 dgram/s. Room video over `ROOM_VIDEO_TAG` relay datagrams — binary fragment framing, one Ed25519 signature per frame in fragment 0, E2E-sealed under the room sender key with `MediaKind::Video` AAD separation. Relay-datagram-only (no WS fallback); supernode fan-out is fully opaque. Codec is **not** negotiated room-wide — the sender picks its own and stamps each frame (see below). `params` mirror the room-audio `allow_public_rooms: false` / `allow_private_rooms: true` shape, but **nothing reads them on this descriptor** — see the room-type creation policy invariant. |
-| `room.audio.content.sfu` | datagram | room-member | 64 KB/s · 200 dgram/s. Room content audio over `ROOM_CONTENT_AUDIO_TAG`, sealed under the room sender key with `MediaKind::ContentAudio` AAD separation. Same `av_sync` / `pts_unit` params, and the same advertisement-only `allow_public_rooms` key as room video. The supernode forwards these frames opaquely and **never parses the timestamp** — teaching the SFU a media timeline would give it a reason to inspect content it is not trusted with. |
-| `room.chat.v1` | stream | room-member | Room text chat broadcast via supernode; `body` is E2E-sealed under the per-room sender key (content not persisted server-side). |
-| `room.file.v1` | stream | room-member | Signed room file transfer via supernode, **advertise-then-pull**: `SfuFileOffer` is metadata only, and chunks flow only to peers who answer with `SfuFileRequest` (carried on the chunk's `to` field so the relay narrows delivery). Each chunk's `data` is E2E-sealed under the per-room sender key (AAD = conv_id ‖ sender ‖ transfer_id ‖ chunk_index); recipients verify + decrypt before saving. Offer/complete metadata stays cleartext. Up to 250 MiB; anything over 8 MiB streams from/to disk uncompressed. |
-| `web.host.app.v1` | stream | public | In-app `d://` portal over QUIC bidi streams in embedded Chromium (4 MB/s). |
-| `game.relay.v1` | datagram | room-member | Opaque portal game session relay over identity QUIC (fixed tag `0x05`). |
-
-Transport descriptors (handled by the QUIC layer directly; no application module code): `transport.quic.audio.v1`, `transport.quic.relay.v1`, `transport.quic.stream.v1`, `transport.quic.feature_datagram.v1`, `transport.quic.uni_stream.v1`, `transport.quic.stream_priority.v1`, `transport.quic.zero_rtt.v1`, `transport.quic.pmtud.v1`, `transport.quic.migration.v1`, `transport.quic.flow_control.v1`.
-
-### `web.host.app.v1` portal
-
-The native client browses a supernode's in-app portal without leaving the app: an embedded Chromium view navigates to `d://<supernode_pub>/<path>`. The scheme handler issues QUIC bidi-stream requests tagged with this capability instead of HTTPS — one stream per request:
-
-1. Client → supernode: one length-prefixed `WebAppRequest` JSON frame (`{ "path": "/index.html", "method": "GET" }`).
-2. Supernode → client: one `WebAppResponseHeader` JSON frame (`{ "status": 200, "content_type": "text/html", "total_len": N }`) then length-prefixed binary body chunks terminated by a zero-length chunk.
-
-The QUIC connection is the identity gate (the supernode already knows which Ed25519 key opened the stream), so requests are not re-signed. Dynamic routes answered inline: `/health` · `/api/stats` (relay/SFU/peer counts), `/api/peers`, `/api/config`, `/api/metrics`. Static assets are served from `<data_dir>/web/` and `<data_dir>/games/`. The view is restricted to `d://` URLs (external links open in the system browser); a `window.doubleslash` JS bridge (`supernodeId`, `ready` → `{ myPeerId, supernodeId, version, nativeTransport, openChannel/sendDatagramB64/pollDatagrams/closeChannel, fetch() }`) is injected at document creation.
-
-### Quotas and channel tags
-
-Token-bucket per `(feature_id, peer_id)`, refilled each second. On exhaustion `dispatch_message` returns `false` (payload dropped) and `dispatch_invoke_datagram` returns `ModuleError::Internal("quota exceeded")`. Bespoke `x.*` modules without explicit `params` fall back to `DEFAULT_BYTES_PER_SEC` / `DEFAULT_DATAGRAMS_PER_SEC` (64 KB/s · 256 dgram/s). The channel-tag multiplexer maps a 1-byte tag to a feature: `0x10`–`0xEF` dynamic per session (~224 channels), `0xFF` broadcast, others reserved — always allocate via the registry.
-
-### Non-goals
-
-No central feature registry, no mandatory features, no implicit cross-feature privilege escalation, and supernodes are never identity authorities.
+- Before changing quota, dispatch, signaling, or capability behavior, establish a relay/SFU/room test baseline and a two-client baseline. Repeat the affected flows after the change, including reconnect and denial paths.
+- Run a Qt-enabled build for desktop bridge/QML integration changes. For Rust macOS-camera changes, include `cargo clippy --no-default-features --features lint-macos -- -D warnings` from the client workspace; native shim checks require macOS.
+- Use [scripts/ci_local.ps1](scripts/ci_local.ps1) or [ci_local.sh](scripts/ci_local.sh) for their configured product/manager checks; Android requires the checks in its [guide](docs/ANDROID.md). Verify script scope rather than assuming every target is covered.
+- Measure current test inventory with `cargo test -- --list` when counts are needed. Do not reuse dated totals as sign-off. Coverage scripts report LLVM line/region coverage; use focused features/supernode scopes for protocol regressions and report the actual result.
+- Documentation-only changes require source verification, local-link/anchor checks, and `git diff --check`; no Rust test run is implied by editing prose.
 
 ## Roadmap & Status
 
-This section is the single source of truth for delivery status (condensed from the former `ROADMAP.md` / `IMPROVEMENT_PLAN.md` / `TODO.md`).
+Maintain open work and acceptance criteria in [backlog.md](backlog.md), not a second milestone history here. Keep this file's durable invariants current when behavior changes. Remove completed status items instead of appending dated “fixed” narratives.
 
-**Last reviewed:** 2026-09-02. Cross-platform video is present through vendored VP8 (`doubleslash-vpx`) on every platform, hybrid codec negotiation, and camera capture on Windows/Linux/macOS. A synced content-audio layer rides its own tags (`0x08`/`0x09`) on the video session's clock, with audio-led playout in `media_sync.rs`, and one **Share video** control that chooses audio at start. The voice path remains independent — muting a peer's voice must not silence what they are sharing (`resolve_mix_gain`). File-transfer reliability was hardened on 2026-09-01: client senders now pace and retry instead of losing ordered frames to quota pressure, detect stalled transfers, and use bounded queues; supernodes pace bulk file frames on both signaling transports, cap messages and recipient queues, and exempt receiver-idempotent file payloads from replay deduplication and quota drops without exempting signatures, freshness, or file control frames.
+Current boundaries that affect agent claims:
 
-**Two gaps closed since the last review, so do not repeat them as open:** A/V sync shipped 2026-08-02 (`media_clock.rs` / `media_sync.rs`, audio-led with free-run fallback), and **video adaptive bitrate** shipped with it (`video/sender.rs` `apply_network_quality` / `set_adaptive_bitrate`, sharing the audio ABR stats tick). What is genuinely still open for video is **platform reach and validation**, not media plumbing: screen/window capture is Windows-only, content-audio capture is Windows-only, no capture backend outside Windows has been run against real hardware, and the end-to-end 2-client + room product checklist in `backlog.md` has not been signed off. Treat "is video shippable" as a question about those four items.
-
-**Docs caught up on 2026-08-07** (second pass, same day): `PRIVACY.md` gained the *Camera, screen, and shared-audio capture* disclosure — the last known docs gap for video — and `docs/THREAT_MODEL.md` gained the matching capture surface (§9). `docs/ARCHITECTURE.md` was a full media layer behind: its diagram now carries `video/`, the content-audio modules, the session clock and sync, and `doubleslash-vpx`, and no longer shows STUN servers the client does not use. One prose claim was wrong and is now corrected in both README and the descriptor table: **room video is not restricted to private rooms by its `allow_public_rooms` param** — only `room.audio.sfu`'s copy of that key is read, and it gates room *creation* (see the room-type creation policy invariant above).
-
-Current reliability work includes the split `connection_manager/manager/` modules, capped direct-QUIC reconnects, five-second direct-call fallback through a temporary private SFU room, clean-close WS reconnect, portal-only gated relay tickets, multi-room text subscriptions, trusted-peer handle/avatar exchange, cross-node room chat/audio, bounded `room_absent` join retries, voice participant-count/identity normalization, and paced/bounded file delivery that fails visibly instead of silently truncating. Legacy `RoomGrant`, cleartext room-content interop, untagged peer frames, public WebTransport/game TLS, and load-time supernode heuristics remain removed. Test inventories drift every sprint — the QA role above carries a dated measurement, but `cargo test -- --list` per workspace is the only current answer. Durable behavior belongs in the invariant sections above, while historical detail remains in git and `backlog.md`.
-
-### Health summary
-
-DoubleSlash is in strong shape for a 1.0 privacy-first modular P2P framework: over a thousand listed Rust tests across the outer product and client workspaces (see the QA role for the dated breakdown), plus the separate supernode-manager suite and **LLVM line/region coverage %** on the hot path (`scripts/coverage.ps1` / `coverage.sh` → `coverage/summary.md`; CI job `Rust coverage %`, report-only floors). Architecture is capability-gated, client-owned, and invite-only; supply-chain hardening includes SHA-pinned actions, version sync, and optional signing with graceful fallbacks. In-app portal games use `game.relay.v1` over the identity QUIC relay with no external WebTransport surface. SFU room definitions are client-owned and supernodes host rooms ephemerally only. The **supernode manager** (`rust/doubleslash-supernode-manager/`) is the primary cluster integration/operations tool; the acdc three-node cluster (a/b/c) is the live target for `build-deploy`, `cluster-sync`, and `exec`-based debugging.
-
-### Foundations — stable ✅
-
-P0–P2 delivery is complete and covered by tests: CI hardening, post-handshake replay protection, relay/SFU smoke tests, quota symmetry, cross-platform CI, platform notification/UPnP TODOs, supply-chain scanning, operator runbook, threat model, version automation, metrics export, in-app portal game relay (`game.relay.v1` over identity QUIC), ephemeral SFU rooms, and Space Merkle **Layer 1** (authenticated room tree, including the `"members"` invite-policy widening, its client UI toggle, periodic Space-root re-broadcast, and root-equivocation flagging).
-
-The durable invariants for each of these live in **Architecture Notes**, **Using the Modular Framework**, and **Feature Module Reference** above; operator/build/signing detail is in the README and `docs/`. This file tracks invariants and open work — not a changelog, so completed-work detail is not re-logged here.
-
-Open / deferred work is tracked in **`backlog.md`** (Space Merkle remaining items including Layer 2 crypto, video calling productization, plugin sandbox, audio-quality polish, speculative discovery/federation, and declined items).
-
-
-### Pre-signing checklist (SignPath Foundation)
-
-Code-side items (LICENSE, PE metadata, Code Signing Policy + Uninstalling sections in the README) are done.
-
-**Release manifest signing (Ed25519)**: A project-controlled Ed25519 keypair is used for `releases_manifest.json` (the list of version+build_hash+build_id verified by the installer). The public key is committed in source (`keys/release-signer-public.pem` and the hex constant). The private key is kept offline/secure.
-
-Because SignPath Foundation (for Windows Authenticode / PE signatures) and similar programs usually require a public OSS project with at least one release to grant free access, the first release(s) may use unsigned binaries for the PE files while still shipping a properly signed manifest (using the project Ed25519 key).
-
-Once approved for SignPath:
-- Subsequent releases get automated binary signatures.
-- The Ed25519 manifest key continues to be the canonical root of trust for the manifest (easy to rotate via a signed rotation entry).
-
-The remaining human action for binary signing is to apply for a SignPath Foundation subscription at https://signpath.io — the README `## Code Signing Policy` section satisfies the project-home-page requirement. See the bootstrap language in README.md for details on the initial release(s).
-
-Update `agents.md` (this section) in the same change as any signing-related work.
-
-**Initial / per-release manifest steps (approvers):**
-- `cargo run -p doubleslash-installer --bin sign-release-manifest -- --generate-unsigned`
-- Fill the three platform entries with the real `build_hash` (from CI artifacts or local `build_*.ps1` .sha256) and `build_id` (the exact string injected via `DOUBLESLASH_BUILD_ID` or derived at tag build time; this is what peers will see in attestations).
-- Sign with the private key → produces `releases_manifest.json` (overwrite).
-- Commit the signed manifest (public) as part of the release prep / tag.
-- The release workflow (publish-release job) now includes it in the GitHub Release assets.
-- The skeleton generator + signer live in the installer crate so the canonical + verify code never drifts from the signing code.
-
-### Process
-
-- Same-identity acceptance target: the user's normal profile in `dist/DoubleSlash/DoubleSlash.exe` and the phone (Wi-Fi debugging when needed), not the earlier `.clientA` baseline profile. Development now includes root-authorized TLS device IDs, separate direct/relay routes, sibling-safe reconnect/disconnect, per-endpoint SFU subscriptions and own-room-chat delivery, and encrypted room-key handoff between own devices. `device-routing` (on by default since 2026-09-15, as the `doubleslash-features` default feature) adds pre-registration compatibility negotiation, encrypted relay copies for missing direct siblings, and one-answer call selection with direct media binding. Every client and node an identity uses must include it: a build without it next to one with it keeps dropping both devices' connections. Discovery, file/room-media/game endpoint state and cluster roster coordination still need integration. Do not report installed apps as supporting concurrent identity use yet.
-
-- Device routing checks on 2026-09-14 pass 695 headless client tests (7 existing ignored), 165 shared-feature tests and 289 supernode tests, with strict library/test lint and Android arm64 native lint. Direct and relay tests reject forged root/device TLS claims and preserve sibling routes through replacement and stale disconnects. Own-room key handoffs bind roster and fresh challenge inside encrypted signaling, reject malformed/cleartext/late replies and fail closed on conflicting keys. Registered signaling writers retain the shared 8 MiB identity queue budget. These automated checks do not establish installed same-identity phone/desktop acceptance, voice or continuous local-data sync.
-
-- Multi-device groundwork now provides independent device keys, identity-signed registries, revocation/rollback/fork validation and transcript-bound possession proofs in `src/device.rs`; store `open_with_key` APIs separate local-data access from identity signing authority. `DeviceTrustStore` persists encrypted accepted registries with transactional predecessor checks across processes, and backups preserve/validate this optional database using SQLite online snapshots. Delegated registry authentication is not wired into live sessions; the explicit preview uses root-authorized endpoints and advertises `core.devices.v1`. Pairing and continuous history sync remain pending; installed simultaneous-use acceptance is still required. Backup restore must not copy `device-key.dat`. Local version checks cannot detect restoration of an older whole profile.
-
-- Devices & Backups first delivery adds a shared streaming encrypted archive, validated staged restore, selectable preserved profiles, and desktop/Android wizards. The archive and its own password recover the identity without the old passphrase/keyfile/keyring. Qt settings remain pinned to their loaded profile across selection; Android JNI handles are registry IDs so stopping a session cannot invalidate an export's store references. File-based moves still require one live device per identity. Device subkeys, storage-key separation, device-aware routing and continuous sync remain open; see `docs/DEVICES_AND_BACKUPS.md`. Real-device cross-platform restore acceptance remains required.
-
-- Portal showcase expanded to seven bundled demos on 2026-09-12: Task Board, Focus Timer, Four in a Row and Memory Match join the existing three. Their bounded, repeated snapshots are ephemeral; concurrent edits resolve by version and guest ID. Focus Timer assumes synchronized device clocks. Real-device QUIC acceptance remains a separate check from the local browser fixtures.
-- Cluster firewall repair on 2026-09-06: manager install cleanup removed restricted cluster UDP rules during redeploy, isolating ac1/a1 despite all services being active. The missing member-IP-restricted rules were restored without service restarts; install cleanup now preserves cluster rules and matches instance tags with a trailing colon.
-- Reconnect fixes on 2026-09-06 cover stale-relay bootstrap routing and nonblocking portal fetch readiness. Local CI passed; the server fix is deployed to acdc/a, acdc/b, acdc/c, and ac1/a1, and the Windows client package is rebuilt. Live close/reopen validation remains required without cluster resync, which restarts nodes and can temporarily mask stale-session failures.
-- Update this section in the same change as any work that shifts status or adds risk.
-- Before touching quotas, dispatch, signaling, or capability paths: run the relay/SFU/room tests + a manual 2-client check.
-- Use the 8 Agent Roles above as the per-release checklist; PM keeps updates short (done / in progress / risks).
-
-**Pre-submit validation (agents — run locally, do not defer to CI):**
-
-1. **Format** — in each touched workspace root (`rust/`, `rust/doubleslash-client/`, `rust/doubleslash-supernode-manager/`):
-   - `cargo fmt --all`
-   - `cargo fmt --all -- --check` (must exit 0; if it fails, read the diff, apply, repeat)
-2. **Compile / lint** — `cargo clippy -D warnings` and `cargo test` for affected crates; full gate: `scripts/ci_local.ps1` (Windows) or equivalent steps on Linux/macOS runners.
-   - **Platform-gated code is invisible to your host's clippy.** A lint inside `#[cfg(target_os = "macos")]` cannot fail a Windows or Linux run, so it reaches CI unchallenged — this has already cost one red build. The macOS capture module is therefore compilable anywhere via the `lint-macos` feature (clippy type-checks without linking, so no Mac is needed):
-     ```
-     cargo clippy -p doubleslash-client --no-default-features --features lint-macos -- -D warnings
-     ```
-     `scripts/ci_local.ps1` and the Linux CI job both run it. **If you add platform-gated code, give it the same escape hatch** rather than relying on a runner for that platform to exist. Note the Objective-C/C half genuinely does need its platform — only the Rust is cross-checkable.
-   - `rustfmt` parses `cfg`-gated code regardless of target, so `cargo fmt --check` already proves platform-specific modules are syntactically valid everywhere.
-3. **Coverage % (optional but preferred for protocol/SFU/feature changes)** — `scripts/coverage.ps1 -Scope hot` (or `features` / `supernode` alone); inspect `coverage/summary.md`. Report-only by default; use `-FailUnderLines N` only after a baseline is agreed.
-4. **Debug failures before hand-off** — reproduce CI errors locally (fmt diff, clippy, test panic, cross-target naming like Linux CI vs Windows-only paths). Fix root cause in the same change; do not stop at "CI will tell us."
-
-Typical fmt commands from repo root:
-
-```powershell
-# rust/ workspace (features, supernode, installer, opus, vpx)
-cargo fmt --manifest-path rust/Cargo.toml --all
-cargo fmt --manifest-path rust/Cargo.toml --all -- --check
-
-# client workspace (when doubleslash-client changed)
-cargo fmt --manifest-path rust/doubleslash-client/Cargo.toml --all
-cargo fmt --manifest-path rust/doubleslash-client/Cargo.toml --all -- --check
-
-# supernode-manager workspace (when cluster-ops code changed)
-cargo fmt --manifest-path rust/doubleslash-supernode-manager/Cargo.toml --all
-cargo fmt --manifest-path rust/doubleslash-supernode-manager/Cargo.toml --all -- --check
-```
+- A/V sync and adaptive bitrate are implemented. Windows has camera, screen/window, and shared-audio capture; Linux/macOS camera hardware validation and non-Windows screen/shared-audio capture remain gaps. Android has camera sending but lacks incoming video/shared-audio consumers. Full media acceptance still needs physical-device/two-client/room checks.
+- Device routing, device keys/registries, and portable backups exist. Pairing, delegated live authorization, continuous local-data sync, remaining endpoint-state integration, and installed simultaneous-use/restore acceptance are unfinished.
+- Space Layer 1 supplies signed trees and admission proofs; remaining Space crypto work is in the backlog. Native plugin sandboxing is not implemented.
+- Portal demo state is ephemeral. Browser fixtures do not establish real-device QUIC acceptance; Focus Timer also assumes synchronized device clocks.
+- Use the supernode manager for cluster operations. Preserve cluster configuration and member-restricted firewall rules during redeploy; run `cluster-sync` when membership changes. Consult the manager inventory and live checks for actual deployment status rather than treating historical acdc/ac1 results as current.

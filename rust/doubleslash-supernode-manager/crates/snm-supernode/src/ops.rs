@@ -14,7 +14,7 @@ use crate::binary_probe::{
 use crate::cluster_cache::ClusterCache;
 use crate::firewall::{
     apply_cluster_firewall_report, apply_firewall_on_install_report,
-    apply_firewall_on_uninstall_report,
+    apply_firewall_on_uninstall_report, ClusterFirewallRule,
 };
 use crate::invite::{collect_identity_pub, fetch_invite, InviteInfo};
 use crate::layout::{
@@ -565,7 +565,7 @@ async fn ensure_directories(
         shell_escape(&layout.binary_dir),
         shell_escape(&layout.data_dir),
         shell_escape(
-            &layout
+            layout
                 .current_binary_link
                 .rsplit_once('/')
                 .map(|(p, _)| p)
@@ -804,11 +804,13 @@ pub async fn cluster_sync_report(
         report.extend(
             apply_cluster_firewall_report(
                 &transport,
-                prefix,
-                &resolved.host.name,
-                &resolved.instance.id,
-                resolved.cluster_port,
-                &peer_ips,
+                &ClusterFirewallRule {
+                    prefix,
+                    host_name: &resolved.host.name,
+                    instance_id: &resolved.instance.id,
+                    cluster_port: resolved.cluster_port,
+                    peer_ips: &peer_ips,
+                },
                 resolved.defaults.firewall,
                 &label,
             )

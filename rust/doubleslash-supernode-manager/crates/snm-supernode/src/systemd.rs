@@ -30,8 +30,8 @@ WantedBy=multi-user.target
 /// Per-instance override: data dir and public relay ticket host.
 /// Ports and access mode live in `supernode.toml`.
 pub fn render_unit_dropin(layout: &InstanceLayout, network: &NetworkEnv) -> String {
-    let lines = vec![
-        "[Service]".into(),
+    let lines = [
+        "[Service]".to_owned(),
         format!(
             "Environment=DOUBLESLASH_HOME={}",
             shell_escape(&layout.data_dir)

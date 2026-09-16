@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run the same checks as .github/workflows/ci.yml before pushing.
 #
-# Mirrors the Linux "Rust tests" job (fmt, clippy, tests, cargo-audit for both
-# Cargo workspaces). Supernode packaging jobs (linux-x86_64 / aarch64 / win64)
+# Mirrors the Linux "Rust tests" job (fmt, clippy, tests, cargo-audit for all
+# three Cargo workspaces: rust/, the client, and the supernode manager). Supernode packaging jobs (linux-x86_64 / aarch64 / win64)
 # run separately in CI — use scripts/build_supernode.sh locally when needed.
 # Run from the repository root:
 #
@@ -37,6 +37,7 @@ done
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUST_DIR="$REPO_ROOT/rust"
 CLIENT_DIR="$RUST_DIR/doubleslash-client"
+MANAGER_DIR="$RUST_DIR/doubleslash-supernode-manager"
 
 step() {
     echo ""
@@ -80,8 +81,11 @@ run_cargo "$RUST_DIR" fmt --all -- --check
 step "cargo fmt --check (client workspace)"
 run_cargo "$CLIENT_DIR" fmt --all -- --check
 
+step "cargo fmt --check (supernode-manager workspace)"
+run_cargo "$MANAGER_DIR" fmt --all -- --check
+
 step "cargo clippy (rust/ workspace, -D warnings)"
-run_cargo "$RUST_DIR" clippy --all -- -D warnings
+run_cargo "$RUST_DIR" clippy --all --all-targets -- -D warnings
 
 step "Release manifest signer self-test"
 run_cargo "$RUST_DIR" run -p doubleslash-installer --bin sign-release-manifest -- --self-test
@@ -92,10 +96,16 @@ if [[ "$SKIP_TESTS" -eq 0 ]]; then
 
     step "cargo test (client workspace, headless)"
     run_cargo "$CLIENT_DIR" test
+
+    step "cargo test (supernode-manager workspace)"
+    run_cargo "$MANAGER_DIR" test
 fi
 
 step "cargo clippy (client workspace, headless, -D warnings)"
-run_cargo "$CLIENT_DIR" clippy -p doubleslash-client --no-default-features -- -D warnings
+run_cargo "$CLIENT_DIR" clippy -p doubleslash-client --no-default-features --all-targets -- -D warnings
+
+step "cargo clippy (supernode-manager workspace, -D warnings)"
+run_cargo "$MANAGER_DIR" clippy --all-targets -- -D warnings
 
 if [[ "$SKIP_AUDIT" -eq 0 ]]; then
     if ! command -v cargo-audit >/dev/null 2>&1; then
@@ -110,6 +120,9 @@ if [[ "$SKIP_AUDIT" -eq 0 ]]; then
 
     step "cargo audit (client workspace)"
     (cd "$CLIENT_DIR" && cargo audit --file Cargo.lock)
+
+    step "cargo audit (supernode-manager workspace)"
+    (cd "$MANAGER_DIR" && cargo audit --file Cargo.lock)
 fi
 
 echo ""

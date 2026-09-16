@@ -311,8 +311,8 @@ pub fn to_json(event: &ConnectionEvent) -> Option<Value> {
         E::DeviceRoutingUnsupported { peer_id } => {
             json!({ "event": "device_routing_unsupported", "peer_id": peer_id })
         }
-        E::OwnDeviceOutdated { room_id } => {
-            json!({ "event": "own_device_outdated", "room_id": room_id })
+        E::OwnDeviceOutdated { room_id, outdated } => {
+            json!({ "event": "own_device_outdated", "room_id": room_id, "outdated": outdated })
         }
 
         // ── Capabilities ──────────────────────────────────────────────────

@@ -701,9 +701,11 @@ mod tests {
             let file = File::create(&archive).unwrap();
             let mut writer = ArchiveWriter::new(BufWriter::new(file)).unwrap();
             // The name is what carries the attack; the payload is irrelevant.
-            let mut entry = ArchiveEntry::default();
-            entry.name = "../escaped.txt".to_owned();
-            entry.has_stream = true;
+            let entry = ArchiveEntry {
+                name: "../escaped.txt".to_owned(),
+                has_stream: true,
+                ..Default::default()
+            };
             writer
                 .push_archive_entry(entry, Some(&b"pwned"[..]))
                 .unwrap();

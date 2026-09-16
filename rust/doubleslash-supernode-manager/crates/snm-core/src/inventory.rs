@@ -99,10 +99,11 @@ pub struct Defaults {
     pub supernode: SupernodeDefaults,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FirewallMode {
     Off,
+    #[default]
     Ufw,
     Report,
 }
@@ -189,12 +190,6 @@ impl Default for Defaults {
             build_features: None,
             supernode: SupernodeDefaults::default(),
         }
-    }
-}
-
-impl Default for FirewallMode {
-    fn default() -> Self {
-        Self::Ufw
     }
 }
 

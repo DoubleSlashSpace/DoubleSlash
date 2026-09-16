@@ -49,6 +49,7 @@ impl ConnectionManager {
                 self.record_room_devices(&host, room, Some(&value));
             }
         }
+        self.clear_outdated_warning_if_unrostered(room);
     }
 
     pub(super) fn forget_host_device_rosters(&mut self, host: &str) {
@@ -60,6 +61,32 @@ impl ConnectionManager {
             .collect();
         for room in rooms {
             self.forget_room_device_scope(host, &room);
+        }
+    }
+
+    /// Lift the outdated-own-device warning for `room` and tell the UI.
+    fn clear_outdated_own_device(&mut self, room: &str) {
+        if self.outdated_own_device_rooms.remove(room) {
+            self.emit_event(
+                crate::connection_manager::ConnectionEvent::OwnDeviceOutdated {
+                    room_id: room.to_owned(),
+                    outdated: false,
+                },
+            );
+        }
+    }
+
+    /// Once no roster for `room` is held (left, or every host dropped), its
+    /// warning is stale. Lifting it means rejoining while the old device is
+    /// still signed in warns again instead of leaving chat silently dead.
+    fn clear_outdated_warning_if_unrostered(&mut self, room: &str) {
+        let suffix = format!(":{room}");
+        if !self
+            .room_device_rosters
+            .keys()
+            .any(|scope| scope.ends_with(&suffix))
+        {
+            self.clear_outdated_own_device(room);
         }
     }
 
@@ -93,6 +120,7 @@ impl ConnectionManager {
             tracing::debug!("[own-room-key] {room}: no usable device roster from {supernode}");
             self.room_device_rosters.remove(&scope);
             self.own_room_key_rounds.remove(room);
+            self.clear_outdated_warning_if_unrostered(room);
             return false;
         };
         if !roster.iter().any(|entry| {
@@ -104,6 +132,7 @@ impl ConnectionManager {
             );
             self.room_device_rosters.remove(&scope);
             self.own_room_key_rounds.remove(room);
+            self.clear_outdated_warning_if_unrostered(room);
             return false;
         }
         self.room_device_rosters.insert(scope, roster);
@@ -120,13 +149,14 @@ impl ConnectionManager {
                 self.emit_event(
                     crate::connection_manager::ConnectionEvent::OwnDeviceOutdated {
                         room_id: room.to_owned(),
+                        outdated: true,
                     },
                 );
             }
             self.own_room_key_rounds.remove(room);
             return false;
         }
-        self.outdated_own_device_rooms.remove(room);
+        self.clear_outdated_own_device(room);
         if devices.len() > MAX_LIVE_DEVICE_ROUTES {
             tracing::debug!(
                 "[own-room-key] {room}: no round ({} devices exceeds the live route limit)",
@@ -895,7 +925,7 @@ mod tests {
                 .record_room_devices("host", "room", Some(&with_legacy)));
         }
         let warned = std::iter::from_fn(|| desktop.events.try_recv().ok())
-            .filter(|event| matches!(event, ConnectionEvent::OwnDeviceOutdated { room_id } if room_id == "room"))
+            .filter(|event| matches!(event, ConnectionEvent::OwnDeviceOutdated { room_id, outdated: true } if room_id == "room"))
             .count();
         assert_eq!(warned, 1, "repeated rosters must not repeat the warning");
 
@@ -904,13 +934,60 @@ mod tests {
         assert!(desktop
             .manager
             .record_room_devices("host", "room", Some(&updated)));
+        assert!(
+            std::iter::from_fn(|| desktop.events.try_recv().ok()).any(|event| matches!(
+                event,
+                ConnectionEvent::OwnDeviceOutdated {
+                    outdated: false,
+                    ..
+                }
+            )),
+            "recovery must lift the warning"
+        );
         assert!(!desktop
             .manager
             .record_room_devices("host", "room", Some(&with_legacy)));
         assert!(
-            std::iter::from_fn(|| desktop.events.try_recv().ok())
-                .any(|event| matches!(event, ConnectionEvent::OwnDeviceOutdated { .. })),
+            std::iter::from_fn(|| desktop.events.try_recv().ok()).any(|event| matches!(
+                event,
+                ConnectionEvent::OwnDeviceOutdated { outdated: true, .. }
+            )),
             "a recurrence after recovery must warn again"
+        );
+    }
+
+    #[tokio::test]
+    async fn leaving_a_room_rearms_the_outdated_device_warning() {
+        use crate::connection_manager::ConnectionEvent;
+        let identity = Arc::new(crate::identity::Identity::generate());
+        let mut desktop = client(identity.clone(), 2);
+        let me = identity.public_id();
+        let with_legacy = json!([
+            {"identity": me, "device": desktop.manager.device_id, "voice": false},
+            {"identity": me, "device": null, "voice": false},
+        ]);
+        assert!(!desktop
+            .manager
+            .record_room_devices("host", "room", Some(&with_legacy)));
+        desktop.manager.forget_room_device_scope("host", "room");
+        let states: Vec<bool> = std::iter::from_fn(|| desktop.events.try_recv().ok())
+            .filter_map(|event| match event {
+                ConnectionEvent::OwnDeviceOutdated { outdated, .. } => Some(outdated),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(states, [true, false], "leaving must lift the warning");
+
+        // The old device is still signed in when we come back.
+        assert!(!desktop
+            .manager
+            .record_room_devices("host", "room", Some(&with_legacy)));
+        assert!(
+            std::iter::from_fn(|| desktop.events.try_recv().ok()).any(|event| matches!(
+                event,
+                ConnectionEvent::OwnDeviceOutdated { outdated: true, .. }
+            )),
+            "rejoining with the old device still signed in must warn again"
         );
     }
 }

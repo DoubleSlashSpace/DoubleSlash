@@ -6,7 +6,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use home::home_dir;
 use russh::client::{self, KeyboardInteractiveAuthResponse, Prompt};
-use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKey};
+use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::ChannelMsg;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
@@ -105,10 +105,21 @@ impl client::Handler for ClientHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &PublicKey,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        // known_hosts pins bare host keys. A certificate would only mean
+        // something against a trusted CA, and none is configured — nor is a
+        // certificate algorithm advertised, since russh leaves
+        // `Preferred::host_key_certificates` empty — so refuse rather than
+        // quietly trust the key inside one.
+        let PublicKeyOrCertificate::PublicKey { key, .. } = server_public_key else {
+            return Err(ClientError::Other(format!(
+                "host key verification: {} offered a host certificate, which this client does not trust",
+                self.host
+            )));
+        };
         self.known_hosts
-            .verify_or_accept_new(&self.host, server_public_key)
+            .verify_or_accept_new(&self.host, key)
             .map_err(|e| ClientError::Other(format!("host key verification: {e}")))
     }
 }
@@ -149,7 +160,7 @@ async fn authenticate(
         password = Some(
             prompt_for_password(target.label(), &cache_key)
                 .await
-                .map_err(|e| TransportError::Other(e))?,
+                .map_err(TransportError::Other)?,
         );
     }
 
@@ -160,10 +171,10 @@ async fn authenticate(
         if try_keyboard_interactive_auth(session, user, Some(pw.clone()), &cache_key).await? {
             return Ok(true);
         }
-    } else if interactive_allowed() {
-        if try_keyboard_interactive_auth(session, user, None, &cache_key).await? {
-            return Ok(true);
-        }
+    } else if interactive_allowed()
+        && try_keyboard_interactive_auth(session, user, None, &cache_key).await?
+    {
+        return Ok(true);
     }
 
     Ok(false)
@@ -186,7 +197,7 @@ async fn try_public_key_auth(
         let auth = session
             .authenticate_publickey(
                 user.to_string(),
-                PrivateKeyWithHashAlg::new(Arc::new(key), rsa_hash.clone()),
+                PrivateKeyWithHashAlg::new(Arc::new(key), rsa_hash),
             )
             .await
             .map_err(|e| TransportError::Other(format!("publickey auth: {e}")))?;
@@ -280,7 +291,7 @@ async fn keyboard_interactive_responses(
     tokio::task::spawn_blocking(move || read_prompt_responses(&prompt_specs, Some(&cache_key)))
         .await
         .map_err(|e| TransportError::Other(format!("prompt task: {e}")))?
-        .map_err(|e| TransportError::Other(e))
+        .map_err(TransportError::Other)
 }
 
 fn can_auto_fill_password_prompts(prompts: &[Prompt]) -> bool {
@@ -412,6 +423,17 @@ impl Transport for EmbeddedTransport {
     }
 }
 
+pub async fn upload_local_file_embedded(
+    transport: &EmbeddedTransport,
+    local_path: &Path,
+    remote_path: &str,
+    mode: u32,
+) -> Result<(), TransportError> {
+    let contents = std::fs::read(local_path)
+        .map_err(|e| TransportError::Other(format!("read {}: {e}", local_path.display())))?;
+    transport.upload_bytes(remote_path, &contents, mode).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,15 +459,4 @@ mod tests {
             },
         ]));
     }
-}
-
-pub async fn upload_local_file_embedded(
-    transport: &EmbeddedTransport,
-    local_path: &Path,
-    remote_path: &str,
-    mode: u32,
-) -> Result<(), TransportError> {
-    let contents = std::fs::read(local_path)
-        .map_err(|e| TransportError::Other(format!("read {}: {e}", local_path.display())))?;
-    transport.upload_bytes(remote_path, &contents, mode).await
 }

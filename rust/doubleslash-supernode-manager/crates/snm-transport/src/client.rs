@@ -101,18 +101,6 @@ impl Transport for SshTransport {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_backend_names() {
-        assert_eq!(SshBackend::parse("embedded").unwrap(), SshBackend::Embedded);
-        assert_eq!(SshBackend::parse("openssh").unwrap(), SshBackend::OpenSsh);
-        assert!(SshBackend::parse("invalid").is_err());
-    }
-}
-
 pub async fn upload_local_file(
     transport: &SshTransport,
     local_path: &Path,
@@ -126,5 +114,17 @@ pub async fn upload_local_file(
         SshTransport::OpenSsh(t) => {
             upload_local_file_openssh(t, local_path, remote_path, mode).await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_backend_names() {
+        assert_eq!(SshBackend::parse("embedded").unwrap(), SshBackend::Embedded);
+        assert_eq!(SshBackend::parse("openssh").unwrap(), SshBackend::OpenSsh);
+        assert!(SshBackend::parse("invalid").is_err());
     }
 }

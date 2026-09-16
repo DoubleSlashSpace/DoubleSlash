@@ -152,7 +152,7 @@ async fn lifecycle_one(
 }
 
 async fn config_push_one(
-    inventory_path: &PathBuf,
+    inventory_path: &std::path::Path,
     inventory: &Inventory,
     row: usize,
     backend: SshBackend,

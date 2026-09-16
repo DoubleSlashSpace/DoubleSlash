@@ -258,6 +258,10 @@ fun JsonObject.stringOrEmpty(key: String): String = string(key).orEmpty()
 fun JsonObject.number(key: String): Double =
     (this[key] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull() ?: 0.0
 
+/** Read a boolean field, or `default` when absent or not a boolean. */
+fun JsonObject.boolean(key: String, default: Boolean): Boolean =
+    (this[key] as? JsonPrimitive)?.booleanOrNull ?: default
+
 /**
  * Whether an event describes something this client did.
  *

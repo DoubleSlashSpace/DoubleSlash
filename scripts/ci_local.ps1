@@ -5,7 +5,8 @@
 .DESCRIPTION
     Mirrors the Linux "Rust tests" job and the Windows "Rust tests (non-Qt)"
     job: version sync, Opus weights, fmt, clippy, release-manifest self-test,
-    release-mode tests, and cargo-audit (both Cargo workspaces).
+    release-mode tests, and cargo-audit, across all three Cargo workspaces
+    (rust/, the client, and the supernode manager).
 
     Supernode packaging (linux-x86_64, linux-aarch64, win64) is validated in
     separate CI jobs — run scripts/build_supernode.sh or build_supernode.ps1 locally
@@ -45,6 +46,7 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $RustDir = Join-Path $RepoRoot 'rust'
 $ClientDir = Join-Path $RustDir 'doubleslash-client'
+$ManagerDir = Join-Path $RustDir 'doubleslash-supernode-manager'
 
 function Write-Step([string]$Name) {
     Write-Host ""
@@ -108,8 +110,12 @@ Invoke-Step 'cargo fmt --check (client workspace)' {
     Invoke-Cargo $ClientDir @('fmt', '--all', '--', '--check')
 }
 
+Invoke-Step 'cargo fmt --check (supernode-manager workspace)' {
+    Invoke-Cargo $ManagerDir @('fmt', '--all', '--', '--check')
+}
+
 Invoke-Step 'cargo clippy (rust/ workspace, -D warnings)' {
-    Invoke-Cargo $RustDir @('clippy', '--all', '--', '-D', 'warnings')
+    Invoke-Cargo $RustDir @('clippy', '--all', '--all-targets', '--', '-D', 'warnings')
 }
 
 Invoke-Step 'Release manifest signer self-test' {
@@ -126,12 +132,21 @@ if (-not $SkipTests) {
     Invoke-Step 'cargo test (client workspace, headless)' {
         Invoke-Cargo $ClientDir @('test')
     }
+
+    Invoke-Step 'cargo test (supernode-manager workspace)' {
+        Invoke-Cargo $ManagerDir @('test')
+    }
 }
 
 Invoke-Step 'cargo clippy (client workspace, headless, -D warnings)' {
     Invoke-Cargo $ClientDir @(
-        'clippy', '-p', 'doubleslash-client', '--no-default-features', '--', '-D', 'warnings'
+        'clippy', '-p', 'doubleslash-client', '--no-default-features', '--all-targets',
+        '--', '-D', 'warnings'
     )
+}
+
+Invoke-Step 'cargo clippy (supernode-manager workspace, -D warnings)' {
+    Invoke-Cargo $ManagerDir @('clippy', '--all-targets', '--', '-D', 'warnings')
 }
 
 # The macOS capture module is cfg-gated, so a lint inside it is invisible to
@@ -165,6 +180,17 @@ if (-not $SkipAudit) {
 
     Invoke-Step 'cargo audit (client workspace)' {
         Push-Location $ClientDir
+        try {
+            cargo audit --file Cargo.lock
+            if ($LASTEXITCODE -ne 0) { throw "cargo audit failed (exit $LASTEXITCODE)" }
+        }
+        finally {
+            Pop-Location
+        }
+    }
+
+    Invoke-Step 'cargo audit (supernode-manager workspace)' {
+        Push-Location $ManagerDir
         try {
             cargo audit --file Cargo.lock
             if ($LASTEXITCODE -ne 0) { throw "cargo audit failed (exit $LASTEXITCODE)" }

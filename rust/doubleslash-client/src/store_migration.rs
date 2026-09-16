@@ -205,4 +205,43 @@ mod tests {
         assert_eq!(history[0].body, "written before the rename");
         assert_eq!(history[0].sender_handle, "alice");
     }
+
+    #[test]
+    fn unreadable_oldest_chat_row_does_not_block_the_upgrade() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("chat.db");
+        let identity = Identity::generate();
+        let old = legacy(&identity, CHAT_STORE_LABEL);
+        drop(ChatStore::open_with_key(&old, &db).unwrap()); // creates the schema
+
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        for (id, body) in [
+            ("m0", b"not an envelope".to_vec()),
+            (
+                "m1",
+                encrypt_blob(&old[..], b"written before the rename").unwrap(),
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO messages (id, peer_id, sender, recipient, body, timestamp, sender_handle)
+                 VALUES (?1, 'peer-1', 'a', 'b', ?2, 1.0, ?3)",
+                rusqlite::params![id, body, encrypt_blob(&old[..], b"alice").unwrap()],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        drop(ChatStore::open(&identity, Some(&db)).unwrap());
+        let current = identity.derive_store_key(CHAT_STORE_LABEL).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let body: Vec<u8> = conn
+            .query_row("SELECT body FROM messages WHERE id = 'm1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            decrypt_blob(&current, &body).unwrap(),
+            b"written before the rename"
+        );
+    }
 }

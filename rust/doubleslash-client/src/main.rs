@@ -867,8 +867,12 @@ async fn handle_event(
         ConnectionEvent::DeviceRoutingUnsupported { peer_id } => {
             warn!("Node {peer_id} needs an update for simultaneous identity use");
         }
-        ConnectionEvent::OwnDeviceOutdated { room_id } => {
-            warn!("Another device on this identity needs an update; room {room_id} chat is paused");
+        ConnectionEvent::OwnDeviceOutdated { room_id, outdated } => {
+            if outdated {
+                warn!("Another device on this identity needs an update; room {room_id} chat is paused");
+            } else {
+                info!("Room {room_id} is no longer paused on an outdated device");
+            }
         }
         ConnectionEvent::SupernodeConnected(u) => {
             info!("Supernode connected: {}", u);

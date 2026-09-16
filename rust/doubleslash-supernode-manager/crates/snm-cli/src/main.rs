@@ -673,7 +673,7 @@ fn selector_from(args: TargetArgs) -> Selector {
     Selector::from_flags(args.host, args.instance, args.all)
 }
 
-fn cache_path_for(inventory_path: &PathBuf) -> std::path::PathBuf {
+fn cache_path_for(inventory_path: &std::path::Path) -> std::path::PathBuf {
     inventory_path.with_file_name("cluster_cache.toml")
 }
 

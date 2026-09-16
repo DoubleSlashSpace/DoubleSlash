@@ -490,7 +490,7 @@ fn draw_confirm_remove(frame: &mut Frame, area: Rect, app: &mut App) {
             frame,
             y,
             Line::from(Span::styled(
-                format!("{err}"),
+                err.to_string(),
                 Style::default().fg(Color::Red).bold(),
             )),
         );
@@ -595,7 +595,7 @@ fn draw_confirm_uninstall(frame: &mut Frame, area: Rect, app: &mut App) {
             frame,
             y,
             Line::from(Span::styled(
-                format!("{err}"),
+                err.to_string(),
                 Style::default().fg(Color::Red).bold(),
             )),
         ) {
@@ -705,14 +705,16 @@ fn draw_node_form(frame: &mut Frame, area: Rect, app: &mut App) {
         frame,
         area,
         app,
-        &title,
-        hint,
-        &fields,
-        focused,
-        scroll,
-        error.as_deref(),
-        ButtonId::SaveNode,
-        ButtonId::CancelNode,
+        ScrollForm {
+            title: &title,
+            hint,
+            fields: &fields,
+            focused_field: focused,
+            scroll,
+            error: error.as_deref(),
+            save_id: ButtonId::SaveNode,
+            cancel_id: ButtonId::CancelNode,
+        },
     );
 }
 
@@ -877,30 +879,45 @@ fn draw_settings_form(frame: &mut Frame, area: Rect, app: &mut App) {
         frame,
         area,
         app,
-        " Fleet Settings ",
-        "[defaults] install source, SSH/systemd settings, and supernode manifest defaults",
-        &fields,
-        focused,
-        scroll,
-        error.as_deref(),
-        ButtonId::SaveSettings,
-        ButtonId::CancelSettings,
+        ScrollForm {
+            title: " Fleet Settings ",
+            hint:
+                "[defaults] install source, SSH/systemd settings, and supernode manifest defaults",
+            fields: &fields,
+            focused_field: focused,
+            scroll,
+            error: error.as_deref(),
+            save_id: ButtonId::SaveSettings,
+            cancel_id: ButtonId::CancelSettings,
+        },
     );
 }
 
-fn draw_scroll_form(
-    frame: &mut Frame,
-    area: Rect,
-    app: &mut App,
-    title: &str,
-    hint: &str,
-    fields: &[(ClickTarget, &str, String)],
+/// What a scrolling form renders, beyond the frame it draws into.
+///
+/// One value rather than eight arguments: every caller fills all of them.
+struct ScrollForm<'a> {
+    title: &'a str,
+    hint: &'a str,
+    fields: &'a [(ClickTarget, &'a str, String)],
     focused_field: usize,
     scroll: u16,
-    error: Option<&str>,
+    error: Option<&'a str>,
     save_id: ButtonId,
     cancel_id: ButtonId,
-) {
+}
+
+fn draw_scroll_form(frame: &mut Frame, area: Rect, app: &mut App, form: ScrollForm<'_>) {
+    let ScrollForm {
+        title,
+        hint,
+        fields,
+        focused_field,
+        scroll,
+        error,
+        save_id,
+        cancel_id,
+    } = form;
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -964,7 +981,7 @@ fn draw_scroll_form(
             Style::default().fg(Color::Gray)
         };
         frame.render_widget(Paragraph::new(display).style(value_style), value_rect);
-        app.register_hit_zone(Rect::new(inner.x, y, inner.width, 1), target.clone());
+        app.register_hit_zone(Rect::new(inner.x, y, inner.width, 1), *target);
         y = y.saturating_add(1);
     }
 

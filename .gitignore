@@ -61,13 +61,9 @@ rust/check_out.txt
 # Local debug / run capture artifacts (from client and tools)
 debug_*.txt
 rust/doubleslash-client/debug_*.txt
-rust/conquerd-client/debug_*.txt
 
 # Loose compiled extensions (dev-only copies)
 doubleslash_*.dll
-conquerd_crypto.dll
-conquerd_quic.dll
-conquerd_audio.dll
 
 # Auto-generated packaging metadata
 packaging/version_info.txt
@@ -87,10 +83,8 @@ ruff_audit.json
 /.clientC
 /rust/target
 /rust/doubleslash-client/target-check
-/rust/conquerd-client/target-check
 /rust/target-check
 /rust/doubleslash-client/target
-/rust/conquerd-client/target
 /terminals
 /agent-tools
 # Grok / agent MCP tool schema cache (not project source)
@@ -107,7 +101,6 @@ rust/sz2.html
 /rust/target-android
 # Default cargo target for the JNI workspace (`cd rust/doubleslash-android && cargo ndk …`).
 /rust/doubleslash-android/target
-/rust/conquerd-android/target
 
 # Supernode-manager workspace (nested .gitignore also covers these)
 /rust/doubleslash-supernode-manager/target
@@ -116,14 +109,6 @@ rust/sz2.html
 /rust/doubleslash-supernode-manager/agent-tools
 
 # Leftover pre-rename crate copies (git-mv remnants; do not commit)
-/rust/conquerd-client/
-/rust/conquerd-android/
-/rust/conquerd-opus/
-/rust/conquerd-features/
-/rust/conquerd-supernode/
-/rust/conquerd-installer/
-/rust/conquerd-vpx/
-/rust/conquerd-supernode-manager/
 /android/.gradle
 /android/.kotlin
 /android/.cxx

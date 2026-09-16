@@ -194,21 +194,36 @@ pub async fn apply_firewall_on_uninstall_report(
     Ok(report)
 }
 
+/// Which instance a cluster rule belongs to, and who may reach it.
+///
+/// One value rather than five arguments: they always travel together, and
+/// `render_cluster_ufw_script` takes the same five.
+pub struct ClusterFirewallRule<'a> {
+    pub prefix: &'a str,
+    pub host_name: &'a str,
+    pub instance_id: &'a str,
+    pub cluster_port: u16,
+    /// `public_host` values of the *other* members.
+    pub peer_ips: &'a [String],
+}
+
 /// Add a cluster-port ufw rule restricted to specific source IPs (member peers only).
 ///
-/// Runs on the *host* that owns `instance_id`; `peer_ips` are the `public_host`
-/// values of the *other* members.  Each rule is tagged so it can be removed on
-/// uninstall.
+/// Runs on the *host* that owns `rule.instance_id`. Each rule is tagged so it
+/// can be removed on uninstall.
 pub async fn apply_cluster_firewall_report(
     transport: &SshTransport,
-    prefix: &str,
-    host_name: &str,
-    instance_id: &str,
-    cluster_port: u16,
-    peer_ips: &[String],
+    rule: &ClusterFirewallRule<'_>,
     mode: FirewallMode,
     label: &str,
 ) -> Result<Vec<String>> {
+    let ClusterFirewallRule {
+        prefix,
+        host_name,
+        instance_id,
+        cluster_port,
+        peer_ips,
+    } = *rule;
     let mut report = Vec::new();
     match mode {
         FirewallMode::Off => {}

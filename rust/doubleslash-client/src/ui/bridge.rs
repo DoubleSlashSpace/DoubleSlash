@@ -73,6 +73,11 @@ pub mod ffi {
         #[qproperty(QString, ollama_models_json)]
         /// Last model-list error (empty on success). Pair with `ollama_models_json`.
         #[qproperty(QString, ollama_models_error)]
+        /// JSON array of room ids whose chat is paused because another device
+        /// signed in as this identity lacks device routing. `RoomPanel` shows a
+        /// notice while its room is listed; the session banner is overwritten
+        /// too often to carry it.
+        #[qproperty(QString, own_device_outdated_rooms_json)]
         /// Normalized audio input level (0.0–1.0), updated each Opus frame.
         /// Non-zero only while a call or mic test is active.
         #[qproperty(f32, mic_level)]
@@ -1342,6 +1347,11 @@ pub struct AppBridgeRust {
     /// Latest model-list error. Mirrors the `ollama_models_error` qproperty.
     ollama_models_error: QString,
 
+    /// Rooms paused on an outdated own device; serialized into the
+    /// `own_device_outdated_rooms_json` qproperty.
+    own_device_outdated_rooms: std::collections::BTreeSet<String>,
+    own_device_outdated_rooms_json: QString,
+
     /// In-flight auto-reply streams: request_id → reply target.
     auto_reply_pending: std::collections::HashMap<String, AutoReplyTarget>,
 
@@ -1671,6 +1681,8 @@ impl Default for AppBridgeRust {
             ollama_available: false,
             ollama_models_json: QString::from("[]"),
             ollama_models_error: QString::from(""),
+            own_device_outdated_rooms: std::collections::BTreeSet::new(),
+            own_device_outdated_rooms_json: QString::from("[]"),
             auto_reply_pending: std::collections::HashMap::new(),
             auto_reply_buf: std::collections::HashMap::new(),
             mic_level: 0.0,
@@ -8264,10 +8276,21 @@ fn dispatch_event(
                     "This node needs an update before it can connect multiple devices using one identity."));
             });
         }
-        ConnectionEvent::OwnDeviceOutdated { .. } => {
-            let _ = qt_thread.queue(|mut bridge| {
-                bridge.as_mut().set_session_banner(QString::from(
-                    "Another device signed in as you is running an older DoubleSlash. Room chat is paused until it is updated."));
+        ConnectionEvent::OwnDeviceOutdated { room_id, outdated } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let json = {
+                    let mut r = bridge.as_mut().rust_mut();
+                    if outdated {
+                        r.own_device_outdated_rooms.insert(room_id);
+                    } else {
+                        r.own_device_outdated_rooms.remove(&room_id);
+                    }
+                    serde_json::to_string(&r.own_device_outdated_rooms)
+                        .unwrap_or_else(|_| "[]".to_owned())
+                };
+                bridge
+                    .as_mut()
+                    .set_own_device_outdated_rooms_json(QString::from(json.as_str()));
             });
         }
         ConnectionEvent::ClusterMembersUpdated {
