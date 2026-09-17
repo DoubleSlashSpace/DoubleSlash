@@ -1,6 +1,7 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Cursor, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use flate2::read::GzDecoder;
@@ -194,6 +195,40 @@ pub fn build_local_binary(
             binary_path.display()
         );
     }
+    let repository = source_dir
+        .parent()
+        .and_then(Path::parent)
+        .context("Cannot locate repository for license generation")?;
+    let host;
+    let target = if let Some(target) = target_triple {
+        target
+    } else {
+        let output = std::process::Command::new("rustc").arg("-vV").output()?;
+        anyhow::ensure!(
+            output.status.success(),
+            "Cannot identify build target for notices"
+        );
+        host = String::from_utf8(output.stdout)?;
+        host.lines()
+            .find_map(|line| line.strip_prefix("host: "))
+            .context("rustc omitted host target")?
+    };
+    let mut notices = std::process::Command::new("node");
+    notices
+        .arg(repository.join("scripts/generate_licenses.mjs"))
+        .args(["--product", "supernode", "--target", target, "--output"])
+        .arg(license_directory(&binary_path));
+    if let Some(features) = features.filter(|f| !f.trim().is_empty()) {
+        notices.args(["--features", features]);
+    }
+    anyhow::ensure!(
+        notices
+            .status()
+            .context("Generate local build notices (Node and cargo-about required)")?
+            .success(),
+        "Local build license generation failed; refusing deployment"
+    );
+    license_files(&binary_path)?;
     Ok(binary_path)
 }
 
@@ -233,13 +268,20 @@ pub async fn download_supernode_artifact(
         .with_context(|| format!("download {}", artifact.sha256_url))?;
     verify_sha256(&archive, &sha_sidecar).context("verify release sha256")?;
 
-    let binary = extract_supernode_binary(&archive, &artifact)?;
-    let path = cache_path(&artifact, "doubleslash-supernode")?;
+    let package = extract_supernode_package(&archive, &artifact)?;
+    let archive_hash = format!("{:x}", Sha256::digest(&archive));
+    let path = cache_path(&artifact, &format!("{archive_hash}/doubleslash-supernode"))?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("create cache dir {}", parent.display()))?;
     }
-    fs::write(&path, binary).with_context(|| format!("write {}", path.display()))?;
+    let notices = license_directory(&path);
+    for (name, bytes) in package.notices {
+        let destination = notices.join(name);
+        fs::create_dir_all(destination.parent().context("notice has no parent")?)?;
+        fs::write(destination, bytes)?;
+    }
+    fs::write(&path, package.binary).with_context(|| format!("write {}", path.display()))?;
 
     Ok(DownloadedSupernode {
         binary_path: path,
@@ -319,7 +361,70 @@ fn verify_sha256(bytes: &[u8], sidecar: &str) -> Result<()> {
     Ok(())
 }
 
-fn extract_supernode_binary(archive_bytes: &[u8], artifact: &ReleaseArtifact) -> Result<Vec<u8>> {
+struct SupernodePackage {
+    binary: Vec<u8>,
+    notices: BTreeMap<String, Vec<u8>>,
+}
+
+pub fn license_directory(binary: &Path) -> PathBuf {
+    let mut name = binary.as_os_str().to_os_string();
+    name.push(".licenses");
+    PathBuf::from(name)
+}
+
+/// Validate local and downloaded deployments before any remote mutation.
+pub fn license_files(binary: &Path) -> Result<Vec<(PathBuf, String)>> {
+    fn walk(root: &Path, directory: &Path, result: &mut Vec<(PathBuf, String)>) -> Result<()> {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            anyhow::ensure!(
+                !kind.is_symlink(),
+                "License trees must not contain symlinks"
+            );
+            if kind.is_dir() {
+                walk(root, &entry.path(), result)?;
+            } else {
+                anyhow::ensure!(kind.is_file(), "License entry must be a regular file");
+                let name = entry
+                    .path()
+                    .strip_prefix(root)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                result.push((entry.path(), name));
+            }
+        }
+        Ok(())
+    }
+    let directory = license_directory(binary);
+    for name in [
+        "rust-licenses.html",
+        "DoubleSlash-LICENSE.txt",
+        "inventory.json",
+    ] {
+        let path = directory.join(name);
+        anyhow::ensure!(
+            path.is_file() && fs::metadata(&path)?.len() > 0,
+            "Missing notice {}; generate notices beside the binary before installing",
+            path.display()
+        );
+    }
+    let inventory: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.join("inventory.json"))?)?;
+    anyhow::ensure!(
+        inventory["product"] == "supernode" && inventory["scope"] == "distribution-notices",
+        "Supernode install requires distribution notices, not an audit inventory"
+    );
+    let mut result = Vec::new();
+    walk(&directory, &directory, &mut result)?;
+    result.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(result)
+}
+
+fn extract_supernode_package(
+    archive_bytes: &[u8],
+    artifact: &ReleaseArtifact,
+) -> Result<SupernodePackage> {
     match artifact.asset_name.as_str() {
         name if name.ends_with(".tar.gz") => extract_from_tar_gz(archive_bytes),
         name if name.ends_with(".zip") => {
@@ -329,21 +434,71 @@ fn extract_supernode_binary(archive_bytes: &[u8], artifact: &ReleaseArtifact) ->
     }
 }
 
-fn extract_from_tar_gz(archive_bytes: &[u8]) -> Result<Vec<u8>> {
+fn extract_from_tar_gz(archive_bytes: &[u8]) -> Result<SupernodePackage> {
     let gz = GzDecoder::new(Cursor::new(archive_bytes));
     let mut archive = Archive::new(gz);
+    let mut binary = None;
+    let mut notices = BTreeMap::new();
+    let mut package_root = None;
     for entry in archive.entries().context("read tar entries")? {
         let mut entry = entry.context("read tar entry")?;
-        let path = entry.path().context("read tar path")?;
-        if path.file_name().and_then(|name| name.to_str()) == Some("doubleslash-supernode") {
-            let mut binary = Vec::new();
-            entry
-                .read_to_end(&mut binary)
-                .context("extract doubleslash-supernode")?;
-            return Ok(binary);
+        let path = entry
+            .path()
+            .context("read tar path")?
+            .to_string_lossy()
+            .replace('\\', "/");
+        anyhow::ensure!(
+            !path.starts_with('/') && !path.contains(':') && !path.split('/').any(|p| p == ".."),
+            "Unsafe release archive path: {path}"
+        );
+        let parts: Vec<_> = path
+            .split('/')
+            .filter(|p| !p.is_empty() && *p != ".")
+            .collect();
+        if entry.header().entry_type().is_dir() {
+            continue;
+        }
+        anyhow::ensure!(
+            entry.header().entry_type().is_file(),
+            "Release archive contains a non-regular file: {path}"
+        );
+        anyhow::ensure!(
+            parts.len() >= 2,
+            "Release archive must have a package directory"
+        );
+        let root = package_root.get_or_insert_with(|| parts[0].to_string());
+        anyhow::ensure!(
+            root == parts[0],
+            "Multiple package roots in release archive"
+        );
+        if parts.len() == 2 && parts[1] == "doubleslash-supernode" {
+            anyhow::ensure!(binary.is_none(), "Duplicate supernode binary");
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            binary = Some(bytes);
+        } else if parts.len() >= 3 && parts[1] == "licenses" {
+            let name = parts[2..].join("/");
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            anyhow::ensure!(
+                notices.insert(name, bytes).is_none(),
+                "Duplicate license entry"
+            );
         }
     }
-    bail!("archive did not contain doubleslash-supernode");
+    let binary = binary.context("archive did not contain doubleslash-supernode")?;
+    anyhow::ensure!(!binary.is_empty(), "Empty supernode binary");
+    for name in [
+        "rust-licenses.html",
+        "DoubleSlash-LICENSE.txt",
+        "inventory.json",
+    ] {
+        anyhow::ensure!(
+            notices.get(name).is_some_and(|bytes| !bytes.is_empty()),
+            "Archive missing license notice: {name}"
+        );
+    }
+    Ok(SupernodePackage { binary, notices })
 }
 
 fn cache_path(artifact: &ReleaseArtifact, filename: &str) -> Result<PathBuf> {
@@ -425,6 +580,46 @@ mod tests {
     use snm_core::Defaults;
 
     use super::*;
+
+    fn package_fixture(include_notices: bool, duplicate: bool) -> Vec<u8> {
+        let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(gz);
+        let mut files = vec![("package/doubleslash-supernode", "binary")];
+        if duplicate {
+            files.push(("package/doubleslash-supernode", "other binary"));
+        }
+        if include_notices {
+            files.extend([
+                ("package/licenses/rust-licenses.html", "licenses"),
+                ("package/licenses/DoubleSlash-LICENSE.txt", "MIT"),
+                ("package/licenses/inventory.json", "{}"),
+                ("package/licenses/supplement/nested.txt", "nested notice"),
+            ]);
+        }
+        for (path, bytes) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, path, bytes.as_bytes())
+                .unwrap();
+        }
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn release_extraction_preserves_all_notices() {
+        let package = extract_from_tar_gz(&package_fixture(true, false)).unwrap();
+        assert_eq!(package.binary, b"binary");
+        assert_eq!(package.notices["supplement/nested.txt"], b"nested notice");
+    }
+
+    #[test]
+    fn release_extraction_rejects_missing_notices_or_duplicate_binary() {
+        assert!(extract_from_tar_gz(&package_fixture(false, false)).is_err());
+        assert!(extract_from_tar_gz(&package_fixture(true, true)).is_err());
+    }
 
     #[test]
     fn nightly_linux_x86_64_uses_fixed_github_asset() {

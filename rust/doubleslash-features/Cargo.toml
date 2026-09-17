@@ -2,6 +2,7 @@
 name = "doubleslash-features"
 version = "1.0.0"
 edition = "2021"
+license = "MIT"
 description = "Capability registry and feature module spine for the Doubleslash peer-connectivity framework."
 
 [lib]

@@ -84,6 +84,7 @@ pub async fn install_instance_report(
     if resolved.defaults.privilege == PrivilegeMode::RootlessSystemd {
         bail!("rootless-systemd install is not implemented in the prototype");
     }
+    let notice_files = crate::release::license_files(local_binary)?;
 
     let mut report = Vec::new();
     let layout = InstanceLayout::from_resolved(resolved);
@@ -105,6 +106,33 @@ pub async fn install_instance_report(
     ensure_directories(transport, prefix, &layout).await?;
 
     let remote_binary = &layout.versioned_binary;
+    for (local, relative) in notice_files {
+        let remote = format!("{remote_binary}.licenses/{relative}");
+        let parent = remote.rsplit_once('/').context("Notice has no parent")?.0;
+        run_checked(
+            transport,
+            &format!(
+                "{prefix}install -d -o {} -g {} -m 0755 {}",
+                shell_escape(&layout.service_user),
+                shell_escape(&layout.service_user),
+                shell_escape(parent)
+            ),
+        )
+        .await?;
+        let staged = format!("{remote}.snm-staging");
+        upload_local_file(transport, &local, &staged, 0o644)
+            .await
+            .with_context(|| format!("upload license notice {relative}"))?;
+        run_checked(
+            transport,
+            &format!(
+                "{prefix}mv -f {} {}",
+                shell_escape(&staged),
+                shell_escape(&remote)
+            ),
+        )
+        .await?;
+    }
     let staging_binary = format!("{remote_binary}.snm-staging");
     upload_local_file(transport, local_binary, &staging_binary, 0o755)
         .await

@@ -2,6 +2,7 @@
 name = "doubleslash-installer"
 version = "1.0.0"
 edition = "2021"
+license = "MIT"
 description = "DoubleSlash standalone installer and updater"
 
 [[bin]]

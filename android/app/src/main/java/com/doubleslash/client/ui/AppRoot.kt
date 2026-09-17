@@ -2308,6 +2308,7 @@ private fun SettingsScreen(
     var handle by remember(state.identity.handle) { mutableStateOf(state.identity.handle) }
     var showAvatarEditor by remember { mutableStateOf(false) }
     var confirmPurge by remember { mutableStateOf(false) }
+    var showLicenses by remember { mutableStateOf(false) }
     var confirmRemoveNode by remember { mutableStateOf<SupernodeInfo?>(null) }
 
     Column(Modifier.fillMaxSize()) {
@@ -2545,6 +2546,9 @@ private fun SettingsScreen(
             TextButton(onClick = { Legal.openUrl(legalContext, Legal.TERMS_URL) }) {
                 Text("Terms of use")
             }
+            TextButton(onClick = { showLicenses = true }) {
+                Text("Third-party licenses")
+            }
 
             Spacer(Modifier.height(24.dp))
             Text(
@@ -2554,6 +2558,8 @@ private fun SettingsScreen(
             )
         }
     }
+
+    if (showLicenses) LicenseViewer(onDismiss = { showLicenses = false })
 
     if (showAvatarEditor) {
         AvatarEditorDialog(

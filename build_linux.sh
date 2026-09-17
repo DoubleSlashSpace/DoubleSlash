@@ -103,6 +103,14 @@ cp "$BINARY" "$APPDIR/usr/bin/doubleslash"
 cp "$INSTALLER_BIN" "$APPDIR/usr/bin/doubleslash-installer"
 chmod +x "$APPDIR/usr/bin/doubleslash" "$APPDIR/usr/bin/doubleslash-installer"
 
+TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+node "$ROOT/scripts/generate_licenses.mjs" --product client --target "$TARGET" \
+    --features qt-ui --output "$APPDIR/usr/share/doubleslash/licenses/client" \
+    --supplement "${DOUBLESLASH_LICENSE_SUPPLEMENT:?Set DOUBLESLASH_LICENSE_SUPPLEMENT; see docs/LICENSING.md}"
+node "$ROOT/scripts/generate_licenses.mjs" --product installer --target "$TARGET" \
+    --output "$APPDIR/usr/share/doubleslash/licenses/installer"
+cp "$ROOT/LICENSE" "$APPDIR/usr/share/doubleslash/LICENSE.txt"
+
 # Desktop integration
 cp "$ROOT/packaging/AppRun" "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
@@ -151,6 +159,7 @@ else
     echo ""
     echo "==> Creating AppImage: $APPIMAGE"
     ARCH="$ARCH" "$APPIMAGETOOL" "$APPDIR" "$APPIMAGE"
+    node "$ROOT/scripts/licenses/verify_artifact.mjs" "$APPIMAGE" client installer
     sha256sum "$APPIMAGE" | tee "${APPIMAGE}.sha256"
     echo "==> Done: $APPIMAGE"
 fi

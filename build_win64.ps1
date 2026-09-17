@@ -243,6 +243,21 @@ Copy-Item $CLIENT_EXE    $BUNDLE_EXE
 Copy-Item $INSTALLER_EXE $BUNDLE_INSTALLER
 Write-Host "    Copied binaries"
 
+$licenseArgs = @(
+    (Join-Path $ROOT "scripts\generate_licenses.mjs"),
+    "--product", "client", "--target", "x86_64-pc-windows-msvc",
+    "--features", $_features, "--output", (Join-Path $BUNDLE "licenses\client")
+)
+if ($env:DOUBLESLASH_LICENSE_SUPPLEMENT) {
+    $licenseArgs += @("--supplement", $env:DOUBLESLASH_LICENSE_SUPPLEMENT)
+}
+& node @licenseArgs
+if ($LASTEXITCODE -ne 0) { Write-Error "Client license generation failed; see docs/LICENSING.md" }
+& node (Join-Path $ROOT "scripts\generate_licenses.mjs") --product installer --target x86_64-pc-windows-msvc --output (Join-Path $BUNDLE "licenses\installer")
+if ($LASTEXITCODE -ne 0) { Write-Error "Installer license generation failed" }
+Copy-Item (Join-Path $BUNDLE "licenses\installer\rust-licenses.html") (Join-Path $DIST "doubleslash-installer-win64-licenses.html")
+Copy-Item (Join-Path $ROOT "LICENSE") (Join-Path $BUNDLE "LICENSE.txt")
+
 # ── windeployqt6 ─────────────────────────────────────────────────────────────
 Write-Host "`n==> Running windeployqt6..."
 $vcInstallDir = Resolve-VcInstallDir
@@ -374,6 +389,8 @@ Release archives must be non-solid (-ms=off) so the installer's embedded sevenz-
 Write-Host "`n==> Creating 7z archive with 7-Zip (non-solid, installer-compatible)..."
 & $sevenZip.Source a -t7z -mx=9 -ms=off $archivePath "$BUNDLE\*" | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "7z failed to create archive" }
+& node (Join-Path $ROOT 'scripts/licenses/verify_artifact.mjs') $archivePath client installer
+if ($LASTEXITCODE -ne 0) { throw 'Final Windows archive license validation failed' }
 
 if (Test-Path $archivePath) {
     Write-Host "    Archive ready: $archivePath"

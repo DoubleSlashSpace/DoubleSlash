@@ -70,7 +70,11 @@ mkdir -p "$STAGING"
 cp "$BINARY" "$STAGING/doubleslash-supernode"
 chmod +x "$STAGING/doubleslash-supernode"
 
+TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+node "$ROOT/scripts/generate_licenses.mjs" --product supernode --target "$TARGET" --output "$STAGING/licenses"
+
 tar -czf "$ARCHIVE" -C "$DIST" "$STAGING_NAME"
+node "$ROOT/scripts/licenses/verify_artifact.mjs" "$ARCHIVE" supernode
 if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
 elif command -v shasum >/dev/null 2>&1; then

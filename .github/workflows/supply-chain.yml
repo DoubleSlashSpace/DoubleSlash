@@ -20,14 +20,9 @@ permissions:
 
 jobs:
   cargo-deny:
-    name: cargo-deny
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - uses: EmbarkStudios/cargo-deny-action@e2f4ede4a7b0cb2f4fe3d17c9c1c0f7d6a0f9a0e # v1 (pinned commit as of 2026)
-        with:
-          command: check
+    uses: ./.github/workflows/licenses.yml
+    with:
+      checks: all
 
   cargo-audit:
     name: cargo-audit

@@ -92,6 +92,14 @@ cp "$BINARY" "$MACOS/doubleslash"
 cp "$INSTALLER_BIN" "$MACOS/doubleslash-installer"
 chmod +x "$MACOS/doubleslash" "$MACOS/doubleslash-installer"
 
+TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+node "$ROOT/scripts/generate_licenses.mjs" --product client --target "$TARGET" \
+    --features qt-ui --output "$RESOURCES/licenses/client" \
+    --supplement "${DOUBLESLASH_LICENSE_SUPPLEMENT:?Set DOUBLESLASH_LICENSE_SUPPLEMENT; see docs/LICENSING.md}"
+node "$ROOT/scripts/generate_licenses.mjs" --product installer --target "$TARGET" \
+    --output "$RESOURCES/licenses/installer"
+cp "$ROOT/LICENSE" "$RESOURCES/LICENSE.txt"
+
 # Info.plist (from packaging template, with version substitution)
 PLIST_TEMPLATE="$ROOT/packaging/Info.plist.in"
 if [ -f "$PLIST_TEMPLATE" ]; then
@@ -209,7 +217,8 @@ fi
 
 # ── Checksum ───────────────────────────────────────────────────────────────────
 if [ -f "$DMG" ]; then
-    shasum -a 256 "$DMG" | tee "${DMG}.sha256"
+node "$ROOT/scripts/licenses/verify_artifact.mjs" "$DMG" client installer
+shasum -a 256 "$DMG" | tee "${DMG}.sha256"
     echo ""
     echo "==> Done: $DMG"
 fi

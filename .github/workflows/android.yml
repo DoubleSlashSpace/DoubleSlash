@@ -19,6 +19,11 @@ on:
       - 'rust/doubleslash-opus/**'
       - 'rust/doubleslash-vpx/**'
       - '.github/workflows/android.yml'
+      - '.github/workflows/licenses.yml'
+      - 'scripts/generate_licenses.mjs'
+      - 'scripts/licenses/**'
+      - 'packaging/licenses/**'
+      - 'deny.toml'
 
 permissions:
   contents: write
@@ -37,7 +42,11 @@ env:
   CMAKE_VERSION: "3.31.6"
 
 jobs:
+  license-checks:
+    uses: ./.github/workflows/licenses.yml
+
   build-android:
+    needs: license-checks
     runs-on: ubuntu-22.04
     env:
       # Mapped here so the steps below can branch on whether it is set —
@@ -127,12 +136,17 @@ jobs:
       - name: Derive the build stamp
         run: echo "BUILD_STAMP=${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
 
+      - name: Install license tooling
+        run: cargo install cargo-about --version 0.8.4 --locked
+
       - name: Build the APK
         working-directory: android
         env:
           # Stamped into versionName only. See build.gradle.kts for why
           # versionCode deliberately stays put.
           DOUBLESLASH_BUILD_ID: ${{ env.BUILD_STAMP }}
+          DOUBLESLASH_DISTRIBUTION: '1'
+          DOUBLESLASH_LICENSE_SUPPLEMENT: ${{ github.workspace }}/packaging/licenses/android
         run: ./gradlew assembleDebug --console=plain --no-daemon
 
       - name: Stage the APK
@@ -142,6 +156,7 @@ jobs:
           mkdir -p dist
           NAME="DoubleSlash-android-arm64-${BUILD_STAMP}.apk"
           cp android/app/build/outputs/apk/debug/app-debug.apk "dist/$NAME"
+          node scripts/licenses/verify_artifact.mjs "dist/$NAME" android
           echo "apk_name=$NAME" >> "$GITHUB_OUTPUT"
           ls -l dist
 

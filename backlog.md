@@ -14,6 +14,96 @@ invariant into the relevant `agents.md` section and delete it from this file rat
 
 ---
 
+## Dependency license release acceptance
+
+Implemented and locally checked on 2026-09-16:
+
+- Explained all 98 matched Qt SBOM checksum differences by reconstructing the
+  pre-Authenticode PE images; retained file evidence and seven upstream SBOMs in
+  [the evidence directory](packaging/licenses/evidence/windows-qt-6.8.3/README.md).
+- Added native/build/asset input hashes, Android resolved-runtime/variant binding,
+  working-tree source snapshots, and final-archive notice/native-file validation.
+- Fixed launcher self-copy and supernode-manager extraction/upload to retain
+  notices. Fixed SignPath's artifact ID input and restore the standalone notice
+  from the unsigned artifact before signed publication. Installer font notices
+  now include the exact upstream font texts.
+- Added the Android offline notice reader under Settings > Legal. Added Gradle
+  collectors for debug/release artifacts, POMs, nested notices, NDK notices and
+  per-ABI C++ runtime hashes. Device acceptance remains open.
+- Built and extracted the Windows supernode release ZIP; its notices, source
+  snapshot, and inventory passed the archive validator. This does not constitute
+  acceptance of the other distribution targets or live installation paths.
+
+Remaining release blockers:
+
+Findings that still block release approval (recorded 2026-09-16; details in
+[the licensing guide](docs/LICENSING.md#remaining-release-approval-findings)):
+
+- **Runtime notices.** Desktop Settings > About has no license, About Qt, or
+  Chromium credits UI. Archive `licenses/` files are not a prominent in-app
+  notice. Android's Legal reader exists but has not been accepted on a device
+  and currently packages no approved native/runtime texts. Qt LGPL requires
+  the license text plus a prominent notice that an LGPL library is used.
+- **Chromium and corresponding source.** The Qt WebEngine 6.8.3 SBOM lists
+  wrapper DLLs only; it does not list Chromium, V8, Skia, Blink, FFmpeg, or
+  `QtWebEngineProcess.exe`. Matching `Qt6WebEngineCore.dll` by reconstructed
+  pre-signing checksum is not Chromium notice or source evidence. The
+  first-party source snapshot does not include those trees. LGPL
+  replacement/relinking instructions are unrecorded.
+- **Checksum and provenance verification.** All 98 Qt SBOM matches are
+  reconstructed pre-signing PE hashes, not raw shipped-file checksums. Twelve
+  files including QtWebEngineProcess and FFmpeg remain unmatched. 93 SBOM
+  packages remain `NOASSERTION`. The collector inventories DLL/EXE only, so
+  embedded components are outside that provenance.
+
+- Complete the native/runtime/asset reviews in [the licensing guide](docs/LICENSING.md)
+  and commit target-specific supplements with actual notices, source information,
+  reviewer/date, matching features, and dependency lockfile hashes. Desktop and
+  distributable Android packaging fail closed until these exist; Rust audit
+  notices are not approval.
+- Establish the licensing basis for the exact shipped Qt modules, plugins,
+  Chromium/WebEngine, FFmpeg, and other deployed runtimes. Retain SBOM evidence,
+  resolve missing license information, and verify corresponding-source access
+  and applicable LGPL replacement/relinking obligations; dynamic linking alone
+  does not complete this review. The owner selected open-source Qt. Use the
+  [native evidence collector](scripts/collect_qt_license_evidence.mjs) to match
+  actual bundle files; complete the missing QtWebEngineProcess, FFmpeg, shader
+  compiler, software OpenGL, and VC
+  runtime evidence documented in [the licensing guide](docs/LICENSING.md).
+- Review resolved Android JVM dependencies and NOTICE files, Oboe, the NDK C++
+  runtime, and code/assets embedded by native build scripts. Cover both debug
+  and release dependency sets where both are distributed, and every shipped ABI.
+- Establish provenance and redistribution terms for fonts, icons, sounds,
+  game/portal dependencies, and Opus model data. Resolve any required patent or
+  legal review instead of inferring permission from Cargo license metadata. The
+  owner confirmed original project artwork, icons, and sounds; remaining review
+  concerns dependency-supplied assets, fonts, game/portal dependencies, and model
+  data, not re-confirmation of that project-owned artwork.
+- Build and inspect final Windows archives, macOS applications/DMGs, Linux
+  AppImages, supernode archives, and Android APKs/AABs after supplements are
+  supplied. Match included components to the reviewed inventories and verify
+  readable notices and working source links; staging-directory checks alone
+  are not acceptance. Windows supernode archive validation passed; desktop,
+  Android, Linux/macOS supernode, and signed artifact acceptance remains open.
+- Verify stable, nightly, signed, and unsigned publication paths retain the
+  standalone-installer companion notice, including SignPath artifact handling.
+  Exercise the fixed installer-update and supernode deployment paths on actual
+  installations; automated retention tests alone are not live acceptance.
+- Verify the implemented Android reader on a device with a reviewed package,
+  including supplemental notices and external source links. No device was
+  connected during the local licensing work.
+- Run the new license and release workflows in GitHub Actions, including the
+  scheduled advisory/ban/source checks. Verify missing or stale evidence blocks
+  distribution and approved evidence permits packaging. Configure repository
+  branch protection/rulesets to require the license checks; workflow wiring alone
+  does not enforce merge protection. No authenticated GitHub credential was
+  available locally; the new license workflow is not yet published. Require the
+  `License checks required` status after publishing and running it.
+- Establish review ownership and refresh checks for Qt, Gradle/NDK, assets, model
+  data, and packaging changes. The input/source snapshot checks now cover changes
+  without Rust lockfile edits; a named component reviewer must still approve
+  each supplement and verify the source/replacement arrangements.
+
 ## Post-quantum crypto (ML-KEM / ML-DSA) — assessed 2026-07-11, deferred
 
 Codebase is fully classical (Ed25519 + X25519 + AES-256-GCM/HKDF-SHA256). Symmetric bulk AEAD is

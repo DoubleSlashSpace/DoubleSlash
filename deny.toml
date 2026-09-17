@@ -9,10 +9,6 @@
 # If true, metadata will be collected with `--all-features`.
 all-features = false
 
-[output]
-# The output format for diagnostics.
-format = "human"
-
 # A list of advisory IDs to ignore.
 # e.g. "RUSTSEC-0000-0000"
 [advisories]
@@ -34,9 +30,19 @@ allow = [
     "Apache-2.0",
     "MIT",
     "BSD-3-Clause",
+    "BSD-2-Clause",
     "ISC",
     "Unicode-DFS-2016",
+    "Unicode-3.0",
     "Zlib",
+    "CC0-1.0",
+    "BSL-1.0",
+    "MPL-2.0",
+    "OpenSSL",
+    "CDLA-Permissive-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "bzip2-1.0.6",
 ]
 
 [bans]
@@ -65,10 +71,3 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 
 # List of URLs for allowed Git repositories.
 allow-git = []
-
-# If true, then the allow list is the only source of truth for which crates
-# are allowed.
-# If false (the default), then crates from the allow list are allowed, but
-# other sources are also allowed as long as they are not denied.
-# For a strict policy, set to true and populate allow-git / allow-registry.
-strict = false
