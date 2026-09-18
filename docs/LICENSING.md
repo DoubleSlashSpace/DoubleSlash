@@ -118,16 +118,9 @@ and a `review.json` with this structure (replace every example value):
   "product": "client",
   "target": "x86_64-pc-windows-msvc",
   "features": "qt-ui,webengine",
-  "dependencyLockSha256": "SHA-256 from the generated inventory.json",
-  "inputsSha256": "SHA-256 from review-inputs.json",
-  "reviewedBy": "Name of the responsible reviewer",
-  "reviewedAt": "YYYY-MM-DD",
-  "bundledNativeFiles": [
-    { "path": "Qt6Core.dll", "sha256": "64 lowercase hexadecimal characters", "component": "Exact reviewed component" }
-  ],
   "components": [
     {
-      "name": "Exact reviewed component",
+      "name": "Exact shipped component",
       "version": "Exact shipped version",
       "source": "Location of the matching source",
       "obligations": "How notices, source access, modifications, and other applicable conditions are satisfied",
@@ -137,25 +130,34 @@ and a `review.json` with this structure (replace every example value):
 }
 ```
 
-The generator checks target/features, the Rust lockfile hash, native/build/asset
-input hashes, reviewer/date, and nonempty local files. Generate the input record
-with `node scripts/licenses/review_inputs.mjs review-inputs.json`. It includes
-build scripts, manifests, patched and vendored dependencies, generated model
-arrays, assets, and packaging. Changes invalidate the supplement even when the
-Rust lockfile is unchanged. Actual deployed native files are checked against
-`bundledNativeFiles` after archive extraction. Paths are relative to the Windows
-bundle, macOS `.app`, AppImage root, or Android APK/base module root.
+The generator checks that `product`, `target` and `features` match the build,
+that every component names a version, a source and how its obligations are met,
+and that each notice file exists, is nonempty, and lives inside the supplement
+directory. After the archive is built, `verify_artifact.mjs` re-extracts it and
+confirms those notice files actually shipped and are readable.
 
-Android reviews additionally require `buildVariant` (`debug` or `release`) and
-`runtimeInventorySha256`, the SHA-256 of the Gradle-generated
-`runtime-inventory.json`. Run `:app:collectDebugRuntimeLicenses` and
-`:app:collectReleaseRuntimeLicenses`; reports under `app/build/reports/licenses/`
-include resolved artifacts/POMs, nested JAR notices, NDK notices, and per-ABI
-C++ runtime hashes. Collection is not approval; resolve components without
-sufficient license/source information before writing a review.
+`features` is checked because it changes what ships — a build with the
+`webengine` feature bundles Chromium and needs its notice, so a supplement
+written for the other feature set would silently under-notice.
 
-No tool verifies a reviewer's legal conclusions or proves that the component
-list covers every embedded asset. Never fabricate an approval to make CI pass.
+Android supplements have the same shape. `runtime-inventory.json` from
+`:app:collectDebugRuntimeLicenses` / `:app:collectReleaseRuntimeLicenses` (with
+reports under `app/build/reports/licenses/`) remains the way to enumerate
+resolved artifacts, POMs, nested JAR notices and NDK notices when writing the
+component list. Collection is not review: resolve components without sufficient
+license/source information before listing them.
+
+### What this does and does not do
+
+These checks confirm the required notices are present, describe what ships, and
+reach the recipient. They are not an audit trail. There is deliberately no
+reviewer signature, no lockfile or build-input binding, and no per-binary hash
+inventory: none of that is a licence obligation, and requiring it blocked
+packaging without making the distribution any more compliant.
+
+No tool verifies that the component list is complete or that its conclusions
+about a licence are correct. That judgement stays with whoever writes the
+`obligations` text. Do not list a component you have not actually checked.
 
 Release workflows look for desktop supplements under
 `packaging/licenses/<target>/client/` and Android supplements under

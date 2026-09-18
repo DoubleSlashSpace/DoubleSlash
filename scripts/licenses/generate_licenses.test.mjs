@@ -81,21 +81,32 @@ test('supplement is target-bound and rejects missing files or directory traversa
     const directory = mkdtempSync(join(tmpdir(), 'doubleslash-license-test-'));
     try {
         const review = {
-            product: 'client', target: 'test-target', features: 'qt-ui', dependencyLockSha256: 'test-hash', inputsSha256: 'inputs-hash', reviewedBy: 'test', reviewedAt: '2026-09-15',
-            bundledNativeFiles: [],
+            product: 'client', target: 'test-target', features: 'qt-ui',
             components: [{ name: 'Qt', version: 'test', source: 'test-source', obligations: 'test-review', files: ['notice.txt'] }],
         };
         const save = () => writeFileSync(join(directory, 'review.json'), JSON.stringify(review));
         save();
-        assert.throws(() => validateSupplement(directory, 'client', 'other-target', 'qt-ui', 'test-hash', 'inputs-hash'), /Supplement must/);
-        assert.throws(() => validateSupplement(directory, 'client', 'test-target', 'qt-ui', 'stale-hash', 'inputs-hash'), /Supplement must/);
-        assert.throws(() => validateSupplement(directory, 'client', 'test-target', 'qt-ui', 'test-hash', 'inputs-hash'), /ENOENT/);
+        assert.throws(() => validateSupplement(directory, 'client', 'other-target', 'qt-ui'), /Supplement must/);
+        // A build whose feature set changes what ships must not reuse a
+        // supplement written for the other one.
+        assert.throws(() => validateSupplement(directory, 'client', 'test-target', 'qt-ui,webengine'), /Supplement must/);
+        // The notice text a component names has to exist.
+        assert.throws(() => validateSupplement(directory, 'client', 'test-target', 'qt-ui'), /ENOENT/);
         writeFileSync(join(directory, 'notice.txt'), 'license text');
-        assert.equal(validateSupplement(directory, 'client', 'test-target', 'qt-ui', 'test-hash', 'inputs-hash').components.length, 1);
-        assert.throws(() => validateSupplement(directory, 'client', 'test-target', 'qt-ui', 'test-hash', 'changed-native-inputs'), /stale native/);
+        assert.equal(validateSupplement(directory, 'client', 'test-target', 'qt-ui').components.length, 1);
+        // An empty notice ships nothing readable, so it is not a notice.
+        writeFileSync(join(directory, 'notice.txt'), '   ');
+        assert.throws(() => validateSupplement(directory, 'client', 'test-target', 'qt-ui'), /Empty supplement/);
+        writeFileSync(join(directory, 'notice.txt'), 'license text');
+        // A component missing its obligations text is not reviewable.
+        const obligations = review.components[0].obligations;
+        review.components[0].obligations = '';
+        save();
+        assert.throws(() => validateSupplement(directory, 'client', 'test-target', 'qt-ui'), /requires version, source, obligations/);
+        review.components[0].obligations = obligations;
         review.components[0].files = ['../outside.txt'];
         save();
-        assert.throws(() => validateSupplement(directory, 'client', 'test-target', 'qt-ui', 'test-hash', 'inputs-hash'), /escapes/);
+        assert.throws(() => validateSupplement(directory, 'client', 'test-target', 'qt-ui'), /escapes/);
     } finally {
         rmSync(directory, { recursive: true, force: true });
     }

@@ -175,11 +175,25 @@ impl ConnectionManager {
         let dedup_exempt =
             msg.msg_type == MessageType::SfuAudio || Self::is_ordered_file_payload(&msg.msg_type);
         if !dedup_exempt && !self.check_replay(&msg) {
-            warn!(
-                "[signaling] dropping {:?} from {} — replayed message",
-                msg.msg_type,
-                &msg.sender[..8.min(msg.sender.len())],
-            );
+            // Multi-homing to a cluster means every attached supernode forwards
+            // the same signed message, so N-1 duplicates per message are the
+            // normal path rather than an anomaly — logging those at WARN makes
+            // a healthy session look alarming and buries real warnings. A
+            // duplicate that did *not* arrive via a supernode is not fan-out,
+            // so it keeps its warning.
+            if inbound_supernode_id.is_some() {
+                debug!(
+                    "[signaling] dropping duplicate {:?} from {} — already delivered via another supernode",
+                    msg.msg_type,
+                    &msg.sender[..8.min(msg.sender.len())],
+                );
+            } else {
+                warn!(
+                    "[signaling] dropping {:?} from {} — replayed message",
+                    msg.msg_type,
+                    &msg.sender[..8.min(msg.sender.len())],
+                );
+            }
             return;
         }
         // Positive mutual-trust gate for chat/call/file-class signaling. These

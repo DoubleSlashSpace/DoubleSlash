@@ -1,0 +1,44 @@
+Microsoft redistributable components — source and license information
+=====================================================================
+
+What is shipped
+---------------
+windeployqt deploys three Microsoft-supplied files into the bundle:
+
+  D3Dcompiler_47.dll   Direct3D HLSL shader compiler (Windows SDK redistributable)
+  dxcompiler.dll       DirectX Shader Compiler
+  vc_redist.x64.exe    Microsoft Visual C++ Runtime redistributable installer
+
+
+Terms
+-----
+These are Microsoft redistributable components, distributed under Microsoft's
+redistribution terms rather than an open-source licence. They ship unmodified,
+exactly as supplied by the Windows SDK and the Visual Studio 2022
+redistributable package. DoubleSlash does not recompile or patch them.
+
+  Visual C++ redistributable files
+    https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution
+  Windows SDK redistributable components
+    covered by the Windows SDK licence terms accepted at SDK install time
+
+The DirectX Shader Compiler is additionally developed in the open under the
+NCSA/LLVM licence at https://github.com/microsoft/DirectXShaderCompiler; the
+dxcompiler.dll deployed here is the Microsoft-supplied build.
+
+OPEN ITEM — redistribution rights confirmation
+----------------------------------------------
+Microsoft's redistribution terms are tied to the licences accepted when the
+Windows SDK and Visual Studio are installed, and they constrain who may
+redistribute these files and in what form. A reviewer must confirm that the
+project's Visual Studio / Windows SDK licence grants redistribution of these
+three files in a product distributed this way, and record that conclusion
+here.
+
+This is a question about Microsoft's terms, not a technical one, and nothing
+in this supplement resolves it. Note that vc_redist.x64.exe is a full
+installer binary rather than a runtime library; if confirming its
+redistribution terms proves awkward, the alternative is to drop it from the
+bundle and document the Visual C++ Runtime as a prerequisite, or to deploy the
+individual runtime DLLs instead. That is a packaging decision for the
+reviewer.
