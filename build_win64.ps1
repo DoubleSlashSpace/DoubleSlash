@@ -164,6 +164,68 @@ function Resolve-VcInstallDir {
     return $null
 }
 
+# PowerShell Move-Item enumerates a directory's children, so a running client
+# that still has icudtl.dat (or another Qt file) mapped aborts halfway and
+# leaves dist\DoubleSlash\ gutted. Directory.Move is a same-volume rename:
+# it either succeeds as one directory rename or fails without copying files.
+function Get-BundleLockers {
+    param([Parameter(Mandatory = $true)][string]$BundleDir)
+    if (-not (Test-Path -LiteralPath $BundleDir)) { return @() }
+    $prefix = [System.IO.Path]::GetFullPath($BundleDir).TrimEnd('\') + '\'
+    return @(Get-CimInstance Win32_Process | Where-Object {
+        $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+    } | ForEach-Object {
+        [pscustomobject]@{ Name = $_.Name; Id = $_.ProcessId; Path = $_.ExecutablePath }
+    })
+}
+
+function Move-BundleDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$From,
+        [Parameter(Mandatory = $true)][string]$To
+    )
+    if (-not (Test-Path -LiteralPath $From)) {
+        throw "Move-BundleDirectory source missing: $From"
+    }
+    if (Test-Path -LiteralPath $To) {
+        throw "Move-BundleDirectory destination already exists: $To"
+    }
+    try {
+        [System.IO.Directory]::Move($From, $To)
+    } catch {
+        $fromPrefix = $From.TrimEnd('\') + '\'
+        $lockers = @(Get-CimInstance Win32_Process | Where-Object {
+            $_.ExecutablePath -and $_.ExecutablePath.StartsWith($fromPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+        } | ForEach-Object { "{0} ({1})" -f $_.Name, $_.ProcessId })
+        $hint = if ($lockers.Count -gt 0) {
+            " Processes using the bundle: $($lockers -join ', ')."
+        } else {
+            ""
+        }
+        throw "Failed to rename '$From' -> '$To': $_$hint Close DoubleSlash and retry."
+    }
+}
+
+function Get-RetiredBundlePath {
+    $base = Join-Path $DIST ".DoubleSlash.previous"
+    if (-not (Test-Path -LiteralPath $base)) { return $base }
+    try {
+        Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction Stop
+    } catch {
+        # A prior swap left this tree in use by a still-running client.
+    }
+    if (-not (Test-Path -LiteralPath $base)) { return $base }
+    $stamp = Get-Date -Format 'yyyyMMddHHmmss'
+    return Join-Path $DIST ".DoubleSlash.previous.$stamp"
+}
+
+$_earlyLockers = @(Get-BundleLockers $FINAL_BUNDLE)
+if ($_earlyLockers.Count -gt 0) {
+    $names = ($_earlyLockers | ForEach-Object { "{0} ({1})" -f $_.Name, $_.Id }) -join ', '
+    Write-Host "    [warn] dist\DoubleSlash is in use by: $names" -ForegroundColor Yellow
+    Write-Host "           Live folder will not be replaced until those processes exit." -ForegroundColor Yellow
+}
+
 # Include the Qt WebEngine (Chromium) scheme handler for the in-app node portal
 # (doubleslash:// custom scheme). Auto-detected from the Qt install. Override with
 # DOUBLESLASH_NO_WEBENGINE=1 to force-disable (e.g. Qt WebEngine not installed).
@@ -430,23 +492,39 @@ if ($_doSign) {
 # The old tree is moved aside first and only deleted once the new one is in
 # place, so an interrupted swap leaves a recoverable directory behind.
 Write-Host "`n==> Publishing to dist\DoubleSlash\..."
-$_retired = Join-Path $DIST ".DoubleSlash.previous"
-if (Test-Path $_retired) { Remove-Item -LiteralPath $_retired -Recurse -Force }
-if (Test-Path $FINAL_BUNDLE) {
-    Move-Item -LiteralPath $FINAL_BUNDLE -Destination $_retired
+$_lockers = @(Get-BundleLockers $FINAL_BUNDLE)
+$_liveSwap = $true
+if ($_lockers.Count -gt 0) {
+    $_liveSwap = $false
+    $names = ($_lockers | ForEach-Object { "{0} ({1})" -f $_.Name, $_.Id }) -join ', '
+    Write-Host "    Skipping live folder swap; in use by: $names" -ForegroundColor Yellow
+    Write-Host "    Archive will be built from staging. Close those processes and re-run to update dist\DoubleSlash\." -ForegroundColor Yellow
+} else {
+    $_retired = Get-RetiredBundlePath
+    if (Test-Path -LiteralPath $FINAL_BUNDLE) {
+        Move-BundleDirectory $FINAL_BUNDLE $_retired
+    }
+    try {
+        Move-BundleDirectory $STAGING $FINAL_BUNDLE
+    } catch {
+        if ((Test-Path -LiteralPath $_retired) -and -not (Test-Path -LiteralPath $FINAL_BUNDLE)) {
+            try { [System.IO.Directory]::Move($_retired, $FINAL_BUNDLE) } catch { }
+        }
+        Write-Error "Failed to publish bundle: $_"
+    }
+    if (Test-Path -LiteralPath $_retired) {
+        try {
+            Remove-Item -LiteralPath $_retired -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-Host "    Left $_retired in place (still in use by a running DoubleSlash process)"
+        }
+    }
+    $BUNDLE = $FINAL_BUNDLE
+    Write-Host "    Published"
 }
-try {
-    Move-Item -LiteralPath $STAGING -Destination $FINAL_BUNDLE
-} catch {
-    if (Test-Path $_retired) { Move-Item -LiteralPath $_retired -Destination $FINAL_BUNDLE }
-    Write-Error "Failed to publish bundle: $_"
-}
-if (Test-Path $_retired) { Remove-Item -LiteralPath $_retired -Recurse -Force }
 
-$BUNDLE           = $FINAL_BUNDLE
 $BUNDLE_EXE       = Join-Path $BUNDLE "DoubleSlash.exe"
 $BUNDLE_INSTALLER = Join-Path $BUNDLE "doubleslash-installer.exe"
-Write-Host "    Published"
 
 # ── Copy installer to dist\ root (run-alongside-archive entry point) ──────────
 $DIST_INSTALLER = Join-Path $DIST "doubleslash-installer.exe"
@@ -508,6 +586,9 @@ Write-Host "    Launcher  : $BUNDLE_EXE"
 Write-Host "    Installer : $BUNDLE_INSTALLER"
 Write-Host "    Folder    : $BUNDLE\"
 Write-Host "    Size      : $dirSize MB"
+if (-not $_liveSwap) {
+    Write-Host "    Live folder not updated (DoubleSlash still running). Staging left at $STAGING" -ForegroundColor Yellow
+}
 
 # Guarded on -not $DEV_BUILD, not on Test-Path: a dev build must not report or
 # re-checksum an archive left behind by an earlier release build.
