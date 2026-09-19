@@ -51,10 +51,11 @@ condition has been satisfied.
 ## Supplemental Review
 
 Desktop and distributable Android packages require a reviewed supplement.
-No approved supplements are committed yet, so those distribution builds are
-intentionally blocked. Ordinary `cargo build` remains available. Local Android
-debug builds generate audit-only notices; setting `DOUBLESLASH_DISTRIBUTION=1`
-makes debug builds require the same review as release builds. Android CI sets it.
+The Windows client supplement is under
+`packaging/licenses/x86_64-pc-windows-msvc/client/`. Android has no approved
+supplement yet, so `assembleRelease` and `DOUBLESLASH_DISTRIBUTION=1` stay
+blocked. Ordinary `cargo build`, local `assembleDebug`, and the Android
+nightly debug APK generate Rust/codec audit notices only.
 
 Review the exact binaries and assets that will be shipped, including:
 
@@ -162,9 +163,11 @@ about a licence are correct. That judgement stays with whoever writes the
 Release workflows look for desktop supplements under
 `packaging/licenses/<target>/client/` and Android supplements under
 `packaging/licenses/android/<target>/<variant>/`. For local desktop packaging, set
-`DOUBLESLASH_LICENSE_SUPPLEMENT` to the review directory. For Android, set it
-to `packaging/licenses/android` (containing target and variant subdirectories).
-These files are public distribution materials, not credentials.
+`DOUBLESLASH_LICENSE_SUPPLEMENT` to the review directory. For a distributable
+Android build, set it to `packaging/licenses/android` (containing target and
+variant subdirectories) together with `DOUBLESLASH_DISTRIBUTION=1`. The Android
+nightly debug APK does not set those; it packages rust-only notices. These files
+are public distribution materials, not credentials.
 
 ## Remaining Release-Approval Findings
 

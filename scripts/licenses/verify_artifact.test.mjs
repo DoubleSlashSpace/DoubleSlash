@@ -30,6 +30,10 @@ test('final archive validation rejects lost notices and audit-only packages', ()
         assert.throws(() => verifyArtifact(stage, ['supernode']), /not a staging directory/);
         inventory.scope = 'rust-audit-only'; save();
         assert.throws(() => verifyExtracted(root, ['supernode']), /Audit-only/);
+        assert.equal(verifyExtracted(root, ['supernode'], { allowAuditOnly: true }).inventories, 1);
+        inventory.product = 'android'; save();
+        assert.equal(verifyExtracted(root, ['android'], { allowAuditOnly: true }).inventories, 1);
+        inventory.product = 'supernode';
         inventory.scope = 'distribution-notices'; save();
         writeFileSync(join(directory, 'source.tar.gz'), 'changed');
         assert.throws(() => verifyExtracted(root, ['supernode']), /changed source snapshot/);

@@ -316,9 +316,20 @@ androidComponents {
                 if (firstProp("doubleslash.deviceRouting") == "true") {
                     arguments += listOf("--features", "device-routing")
                 }
-                if (variant.buildType == "release" || firstEnv("DOUBLESLASH_DISTRIBUTION") == "1") {
-                    firstEnv("DOUBLESLASH_LICENSE_SUPPLEMENT")?.let { supplement ->
-                        arguments += listOf("--supplement", file("$supplement/$target/${variant.name}").absolutePath)
+                val distribution = variant.buildType == "release" || firstEnv("DOUBLESLASH_DISTRIBUTION") == "1"
+                val supplementDir = firstEnv("DOUBLESLASH_LICENSE_SUPPLEMENT")
+                    ?.let { file("$it/$target/${variant.name}") }
+                if (distribution) {
+                    if (supplementDir != null && supplementDir.resolve("review.json").isFile) {
+                        arguments += listOf("--supplement", supplementDir.absolutePath)
+                    } else {
+                        val path = supplementDir?.absolutePath
+                            ?: "DOUBLESLASH_LICENSE_SUPPLEMENT/$target/${variant.name}"
+                        doFirst {
+                            throw IllegalStateException(
+                                "Distribution Android builds need review.json under $path; see docs/LICENSING.md"
+                            )
+                        }
                     }
                 } else {
                     arguments += "--rust-only"

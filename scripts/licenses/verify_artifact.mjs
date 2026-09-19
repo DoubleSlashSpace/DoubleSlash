@@ -32,14 +32,19 @@ function localFile(directory, name) {
 
 // This validates a freshly extracted final artifact, never a pre-package staging
 // directory. It cannot attest that a reviewer's legal conclusions are correct.
-export function verifyExtracted(directory, products) {
+export function verifyExtracted(directory, products, options = {}) {
+    const allowAuditOnly = options.allowAuditOnly === true;
     const entries = files(directory);
     const inventories = entries.filter(path => /(?:^|\/)licenses\/(?:.*\/)?inventory\.json$/.test(path));
     const found = new Set();
     for (const path of inventories) {
         const base = dirname(join(directory, path));
         const inventory = JSON.parse(readFileSync(join(directory, path), 'utf8'));
-        if (inventory.scope !== 'distribution-notices') throw new Error(`Audit-only notices in distribution: ${path}`);
+        if (inventory.scope !== 'distribution-notices') {
+            if (!(allowAuditOnly && inventory.scope === 'rust-audit-only')) {
+                throw new Error(`Audit-only notices in distribution: ${path}`);
+            }
+        }
         found.add(inventory.product);
         const html = readFileSync(localFile(base, 'rust-licenses.html'), 'utf8');
         if (!html.includes('<html') || !html.includes('DoubleSlash')) throw new Error(`Unreadable license HTML: ${path}`);
@@ -49,7 +54,9 @@ export function verifyExtracted(directory, products) {
         const snapshot = inventory.sourceSnapshot;
         if (!snapshot || sha256(readFileSync(localFile(base, snapshot.file))) !== snapshot.sha256) throw new Error(`Missing or changed source snapshot: ${path}`);
         const review = inventory.supplement;
-        if (['client', 'android'].includes(inventory.product) && !review) throw new Error(`Missing supplemental review: ${path}`);
+        if (['client', 'android'].includes(inventory.product) && !review && inventory.scope === 'distribution-notices') {
+            throw new Error(`Missing supplemental review: ${path}`);
+        }
         if (review) {
             for (const key of ['product', 'target', 'features']) {
                 if (review[key] !== inventory[key]) throw new Error(`Supplement ${key} mismatch: ${path}`);
@@ -82,7 +89,7 @@ export function verifyExtracted(directory, products) {
     return { inventories: inventories.length, products: [...found] };
 }
 
-export function verifyArtifact(artifact, products) {
+export function verifyArtifact(artifact, products, options = {}) {
     artifact = resolve(artifact);
     if (!lstatSync(artifact).isFile()) throw new Error('Supply a final archive, not a staging directory');
     const temporary = mkdtempSync(join(tmpdir(), 'doubleslash-artifact-'));
@@ -102,7 +109,7 @@ export function verifyArtifact(artifact, products) {
             const sevenZip = process.env.SEVENZIP ?? (process.platform === 'win32' && existsSync('C:/Program Files/7-Zip/7z.exe') ? 'C:/Program Files/7-Zip/7z.exe' : '7z');
             run(sevenZip, ['x', '-y', `-o${temporary}`, artifact]);
         } else throw new Error('Unsupported release archive');
-        return { artifact, sha256: sha256(readFileSync(artifact)), ...verifyExtracted(directory, products) };
+        return { artifact, sha256: sha256(readFileSync(artifact)), ...verifyExtracted(directory, products, options) };
     } finally {
         if (mounted) run('hdiutil', ['detach', directory]);
         rmSync(temporary, { recursive: true, force: true });
@@ -111,7 +118,10 @@ export function verifyArtifact(artifact, products) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
     try {
-        if (process.argv.length < 4) throw new Error('Usage: node scripts/licenses/verify_artifact.mjs ARCHIVE PRODUCT [PRODUCT...]');
-        console.log(JSON.stringify(verifyArtifact(process.argv[2], process.argv.slice(3)), null, 2));
+        const args = process.argv.slice(2);
+        const allowAuditOnly = args.includes('--allow-audit-only');
+        const positional = args.filter(value => value !== '--allow-audit-only');
+        if (positional.length < 2) throw new Error('Usage: node scripts/licenses/verify_artifact.mjs ARCHIVE PRODUCT [PRODUCT...] [--allow-audit-only]');
+        console.log(JSON.stringify(verifyArtifact(positional[0], positional.slice(1), { allowAuditOnly }), null, 2));
     } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

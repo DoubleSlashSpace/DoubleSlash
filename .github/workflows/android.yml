@@ -145,8 +145,8 @@ jobs:
           # Stamped into versionName only. See build.gradle.kts for why
           # versionCode deliberately stays put.
           DOUBLESLASH_BUILD_ID: ${{ env.BUILD_STAMP }}
-          DOUBLESLASH_DISTRIBUTION: '1'
-          DOUBLESLASH_LICENSE_SUPPLEMENT: ${{ github.workspace }}/packaging/licenses/android
+          # Debug nightly is not a distribution package. Rust/codec notices
+          # only until packaging/licenses/android/<target>/<variant>/ exists.
         run: ./gradlew assembleDebug --console=plain --no-daemon
 
       - name: Stage the APK
@@ -156,7 +156,7 @@ jobs:
           mkdir -p dist
           NAME="DoubleSlash-android-arm64-${BUILD_STAMP}.apk"
           cp android/app/build/outputs/apk/debug/app-debug.apk "dist/$NAME"
-          node scripts/licenses/verify_artifact.mjs "dist/$NAME" android
+          node scripts/licenses/verify_artifact.mjs "dist/$NAME" android --allow-audit-only
           echo "apk_name=$NAME" >> "$GITHUB_OUTPUT"
           ls -l dist
 
@@ -183,6 +183,7 @@ jobs:
             - APK: `${{ steps.stage.outputs.apk_name }}`
             - Commit: ${{ github.sha }}
             - Shows in Settings as version `1.0.0-${{ env.BUILD_STAMP }}`
+            - Third-party notices are Rust/codec audit notices only; this APK is not a reviewed distribution package.
 
             Open this page on the device and tap the APK to install over the
             existing app. The browser needs "Install unknown apps" once, under

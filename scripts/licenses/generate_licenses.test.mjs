@@ -80,6 +80,7 @@ test('desktop distribution requires supplemental evidence', () => {
 test('supplement is target-bound and rejects missing files or directory traversal', () => {
     const directory = mkdtempSync(join(tmpdir(), 'doubleslash-license-test-'));
     try {
+        assert.throws(() => validateSupplement(directory, 'android', 'aarch64-linux-android', ''), /No review.json under/);
         const review = {
             product: 'client', target: 'test-target', features: 'qt-ui',
             components: [{ name: 'Qt', version: 'test', source: 'test-source', obligations: 'test-review', files: ['notice.txt'] }],

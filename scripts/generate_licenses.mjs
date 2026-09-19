@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -70,7 +70,11 @@ function run(command, args, cwd = root) {
 // that is a licence obligation, and requiring it only blocked packaging without
 // making the distribution any more compliant.
 export function validateSupplement(directory, product, target, features) {
-    const manifest = JSON.parse(readFileSync(join(directory, 'review.json'), 'utf8'));
+    const reviewPath = join(directory, 'review.json');
+    if (!existsSync(reviewPath)) {
+        throw new Error(`No review.json under ${directory}; see docs/LICENSING.md`);
+    }
+    const manifest = JSON.parse(readFileSync(reviewPath, 'utf8'));
     // `features` is kept because it changes what actually ships: a build with
     // the webengine feature bundles Chromium and needs its notice, and a
     // supplement written for the other feature set would silently under-notice.
