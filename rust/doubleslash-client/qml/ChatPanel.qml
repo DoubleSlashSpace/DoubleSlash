@@ -273,14 +273,29 @@ Item {
             model: root.chatModel
             spacing: 2
 
-            onContentYChanged: {
+            // Both distances are measured from `originY`, which prepending
+            // older history moves - see JumpToCurrentButton.distanceFromLatest.
+            // The button owns that arithmetic so the view that follows the
+            // newest message and the button offering a way back to it can
+            // never disagree about where it is.
+            function _restPosition() {
                 root._pinnedToLatest = contentHeight <= height
-                    || contentY >= contentHeight - height - 24
+                    || atYEnd
+                    || jumpToCurrent.distanceFromLatest <= 24
                 if (root._loadingHistory || !root._hasMoreHistory || root.selectedPeerId === "")
                     return
-                if (contentHeight > height && contentY <= 48)
+                if (contentHeight > height && (atYBeginning || contentY - originY <= 48))
                     root.loadOlderHistory()
             }
+
+            // Scrolling is not the only thing that moves the end away: a
+            // delegate settling to its real height, an inline preview loading,
+            // and the prepend itself all change the geometry underneath a
+            // stationary `contentY`.
+            onContentYChanged: _restPosition()
+            onContentHeightChanged: _restPosition()
+            onOriginYChanged: _restPosition()
+            onHeightChanged: _restPosition()
 
             onCountChanged: {
                 if (root._pinnedToLatest)
@@ -294,6 +309,7 @@ Item {
             // past the bottom edge, where clip hides it at every scroll
             // position but the very top.
             JumpToCurrentButton {
+                id: jumpToCurrent
                 list: msgList
                 z: 2
                 anchors.horizontalCenter: parent.horizontalCenter
