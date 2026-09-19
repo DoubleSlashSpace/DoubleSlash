@@ -311,7 +311,8 @@ Play Console still needs a `specialUse` declaration (and a video of the
 notification) at upload time.
 
 `targetSdk` is 36, which Play requires of new apps as of 2026-08-31. Local-network
-access stays implicit until `targetSdk` 37; see backlog item 10 before that bump.
+access stays implicit until `targetSdk` 37; see
+[Phase 4 in the backlog](../backlog.md#access-local-network) before that bump.
 
 **Play policy surfaces in the client.** Terms of use (`TERMS.md`) must be
 accepted after unlock before the Home screen; the version is stored in
