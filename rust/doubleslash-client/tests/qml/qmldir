@@ -2,3 +2,6 @@ module DoubleSlash.Client
 singleton Theme 1.0 Theme.qml
 StyledButton 1.0 StyledButton.qml
 StyledTextField 1.0 StyledTextField.qml
+JumpToCurrentButton 1.0 JumpToCurrentButton.qml
+HistoryAnchor 1.0 HistoryAnchor.qml
+BackupWizard 1.0 BackupWizard.qml

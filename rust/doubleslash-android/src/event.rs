@@ -433,6 +433,11 @@ pub fn call_event_to_json(event: &doubleslash_client::call_controller::CallEvent
         E::LocalLevelChanged(_) | E::RemoteLevelChanged { .. } | E::MetricsUpdated(_) => {
             return None
         }
+        // Only the desktop has anything to do with this: it reopens
+        // whole-system loopback when the default render endpoint moves.
+        // Android has no loopback capture, and following the default for voice
+        // is handled inside the controller, so the UI has nothing to act on.
+        E::OsDefaultDeviceChanged { .. } => return None,
     };
 
     Some(value)
