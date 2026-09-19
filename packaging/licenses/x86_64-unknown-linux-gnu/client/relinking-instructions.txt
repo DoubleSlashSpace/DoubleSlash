@@ -1,0 +1,43 @@
+Replacing the LGPL libraries in DoubleSlash (Linux)
+========================================
+
+DoubleSlash uses Qt 6.8.3 and FFmpeg 7.1 under the LGPL. Both licences give you
+the right to modify those libraries and to run DoubleSlash against your
+modified versions. This file explains how to exercise that right here.
+
+No relinking of DoubleSlash itself is required. Every LGPL library is a
+separate shared library loaded at run time; none is statically linked into the
+DoubleSlash binary. Replacing one is a file substitution, not a rebuild.
+
+Procedure
+---------
+1. Obtain the corresponding source for the library you want to change:
+
+     Qt 6.8.3   https://download.qt.io/archive/qt/6.8/6.8.3/single/
+                https://code.qt.io/cgit/qt/qt5.git/  (tag v6.8.3)
+
+     FFmpeg 7.1 https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz
+                https://github.com/FFmpeg/FFmpeg  (tag n7.1)
+
+2. Build it for x86_64 Linux, keeping the same library name, the same exported ABI
+   and the same major version as the file you are replacing. For Qt, use the
+   same configuration options as the official 6.8.3 release for this platform
+   so the module set and ABI match.
+
+3. Extract the AppImage (`./DoubleSlash.AppImage --appimage-extract`),
+   replace the corresponding file under squashfs-root/usr/lib (Qt plugins
+   and QML modules live under usr/plugins and usr/qml), keeping the
+   original file name, then either run squashfs-root/AppRun directly or
+   repack with appimagetool.
+
+4. Launch DoubleSlash. It loads whichever library is present under those names;
+   there is no signature check, hash check, or version pin in DoubleSlash that
+   prevents a substituted LGPL library from loading.
+
+Notes
+-----
+* The AppImage may be signed. Any signature covers the DoubleSlash payload
+  only; it does not prevent you from extracting, substituting a library and
+  running the result.
+* If you change a library's exported ABI, DoubleSlash may fail to start. That
+  is a consequence of the change, not a restriction imposed by DoubleSlash.

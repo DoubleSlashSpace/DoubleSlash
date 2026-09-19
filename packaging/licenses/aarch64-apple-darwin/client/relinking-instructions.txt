@@ -1,0 +1,43 @@
+Replacing the LGPL libraries in DoubleSlash (macOS)
+========================================
+
+DoubleSlash uses Qt 6.8.3 and FFmpeg 7.1 under the LGPL. Both licences give you
+the right to modify those libraries and to run DoubleSlash against your
+modified versions. This file explains how to exercise that right here.
+
+No relinking of DoubleSlash itself is required. Every LGPL library is a
+separate shared library loaded at run time; none is statically linked into the
+DoubleSlash binary. Replacing one is a file substitution, not a rebuild.
+
+Procedure
+---------
+1. Obtain the corresponding source for the library you want to change:
+
+     Qt 6.8.3   https://download.qt.io/archive/qt/6.8/6.8.3/single/
+                https://code.qt.io/cgit/qt/qt5.git/  (tag v6.8.3)
+
+     FFmpeg 7.1 https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz
+                https://github.com/FFmpeg/FFmpeg  (tag n7.1)
+
+2. Build it for arm64 macOS, keeping the same library name, the same exported ABI
+   and the same major version as the file you are replacing. For Qt, use the
+   same configuration options as the official 6.8.3 release for this platform
+   so the module set and ABI match.
+
+3. Replace the corresponding framework or dylib under
+   DoubleSlash.app/Contents/Frameworks, keeping the original bundle and
+   file names. Qt plugins live under Contents/PlugIns.
+
+4. Launch DoubleSlash. It loads whichever library is present under those names;
+   there is no signature check, hash check, or version pin in DoubleSlash that
+   prevents a substituted LGPL library from loading.
+
+Notes
+-----
+* DoubleSlash.app may carry an Apple code signature. Replacing a bundled
+  library invalidates that signature for the modified bundle; re-sign it
+  with your own identity (`codesign --force --deep --sign -`) or run it
+  with Gatekeeper permitting an unsigned build. The signature exists to
+  attest the shipped build, not to prevent substitution.
+* If you change a library's exported ABI, DoubleSlash may fail to start. That
+  is a consequence of the change, not a restriction imposed by DoubleSlash.

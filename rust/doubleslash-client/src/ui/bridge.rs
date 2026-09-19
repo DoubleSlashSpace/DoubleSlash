@@ -9114,11 +9114,19 @@ fn dispatch_event(
                 }
             });
         }
-        ConnectionEvent::SfuAudioReceived { peer_id, opus_data } => {
+        ConnectionEvent::SfuAudioReceived {
+            peer_id,
+            seq,
+            opus_data,
+        } => {
             // Forward relayed room audio to the call controller's inbound pipeline.
             let _ = qt_thread.queue(move |bridge: Pin<&mut ffi::AppBridge>| {
                 if let Some(ref tx) = bridge.rust().call_cmd_tx {
-                    let _ = tx.try_send(CallCommand::RoomAudioInbound { peer_id, opus_data });
+                    let _ = tx.try_send(CallCommand::RoomAudioInbound {
+                        peer_id,
+                        seq,
+                        opus_data,
+                    });
                 }
             });
         }

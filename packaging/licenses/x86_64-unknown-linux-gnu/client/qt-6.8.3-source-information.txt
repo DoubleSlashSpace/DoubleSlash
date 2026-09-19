@@ -1,0 +1,53 @@
+Qt 6.8.3 — source and license information (Linux AppImage)
+==========================================================
+
+What is shipped
+---------------
+The DoubleSlash Linux AppImage bundles the Qt 6.8.3 runtime as shared objects
+(libQt6Core.so.6, libQt6Gui.so.6, libQt6Quick.so.6 and the other Qt modules)
+together with the Qt plugin and QML module trees, deployed by linuxdeployqt
+under usr/lib and usr/plugins inside the AppImage.
+
+This build is configured with the `qt-ui` feature only. Qt WebEngine is **not**
+included, so no Chromium snapshot ships in this bundle.
+
+Licence
+-------
+These libraries are used under the GNU Lesser General Public License version 3
+(LGPL-3.0). The full licence text ships beside this file as
+qt-6.8.3-LGPL-3.0.txt and is reproduced in the application's third-party
+notices. The LGPL-3.0 incorporates the GPL-3.0 by reference; the GPL-3.0 text
+is retained in the project's evidence directory.
+
+Provenance — unmodified upstream
+--------------------------------
+Qt is used as supplied by The Qt Company for Linux x86_64 and is not modified
+by DoubleSlash. No patch is applied to any Qt module and no Qt source file is
+recompiled as part of the DoubleSlash build. The project's only vendored
+patches apply to the Rust crates `cpal` and `wayland-scanner`, neither of which
+is part of Qt. There are therefore no modifications to Qt to disclose.
+
+Corresponding source
+--------------------
+Complete corresponding source for Qt 6.8.3 is published by The Qt Company:
+
+  https://download.qt.io/archive/qt/6.8/6.8.3/single/
+  https://code.qt.io/cgit/qt/qt5.git/  (tag v6.8.3)
+
+The project's own corresponding-source.tar.gz covers DoubleSlash sources and
+its modified local dependencies. It does not contain Qt sources, which are
+obtained from the upstream locations above.
+
+How the LGPL-3.0 obligations are met
+------------------------------------
+* Notice — the application's Settings > About > Third-Party Notices screen
+  states that DoubleSlash uses Qt under the LGPL-3.0 and displays this text
+  and the full licence. The same files ship under
+  usr/share/doubleslash/licenses/client/supplement/ inside the AppImage.
+* Licence text — qt-6.8.3-LGPL-3.0.txt accompanies the distribution.
+* Source availability — the upstream locations above are published in the
+  notices screen and in this file.
+* Relinking — Qt is dynamically linked. Each Qt module is a separate shared
+  object inside the AppImage and none is statically linked into the DoubleSlash
+  binary. See relinking-instructions.txt for the procedure.
+* No modifications — as recorded above, Qt is shipped unmodified.
