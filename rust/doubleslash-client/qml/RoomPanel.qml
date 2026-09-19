@@ -548,10 +548,22 @@ Item {
             */
             property bool pinnedToLatest: true
 
-            onContentYChanged: {
+            // Measured from `originY` rather than from zero, and through the
+            // button so that following the newest message and offering a way
+            // back to it cannot disagree about where it is - see
+            // JumpToCurrentButton.distanceFromLatest.
+            function _restPosition() {
                 pinnedToLatest = contentHeight <= height
-                    || contentY >= contentHeight - height - 24
+                    || atYEnd
+                    || jumpToCurrent.distanceFromLatest <= 24
             }
+
+            // A delegate settling to its real height moves the end away from a
+            // stationary `contentY`, so scroll alone is not enough to ask on.
+            onContentYChanged: _restPosition()
+            onContentHeightChanged: _restPosition()
+            onOriginYChanged: _restPosition()
+            onHeightChanged: _restPosition()
 
             onCountChanged: {
                 if (pinnedToLatest)
@@ -565,6 +577,7 @@ Item {
             // past the bottom edge, where clip hides it at every scroll
             // position but the very top.
             JumpToCurrentButton {
+                id: jumpToCurrent
                 list: roomChat
                 z: 2
                 anchors.horizontalCenter: parent.horizontalCenter
