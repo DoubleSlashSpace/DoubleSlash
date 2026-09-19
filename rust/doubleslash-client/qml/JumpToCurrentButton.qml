@@ -31,10 +31,34 @@ StyledButton {
     */
     property int threshold: 96
 
+    /*!
+        How far the newest message sits below the bottom of the viewport.
+
+        Measured from \c originY, not from zero. A chat list grows at both
+        ends - older history is inserted at row 0 - and Qt keeps the visible
+        rows still across such an insert by moving the content's origin rather
+        than every row, so the scrollable range is \c originY to
+        \c {originY + contentHeight - height}. Treating it as starting at zero
+        reads as "away" or "at the end" by whatever the origin has drifted to,
+        which is how this button used to hide at the top of a long history and
+        linger at the bottom of one.
+    */
+    readonly property real distanceFromLatest: control.list === null
+        ? 0
+        : Math.max(0, control.list.originY + control.list.contentHeight
+            - control.list.height - control.list.contentY)
+
     /*! True while the list is scrolled past \l threshold from the newest message. */
     readonly property bool awayFromLatest: control.list !== null
         && control.list.contentHeight > control.list.height
-        && control.list.contentY < control.list.contentHeight - control.list.height - control.threshold
+        // Both ends come from the view's own reckoning rather than from the
+        // arithmetic above, because with variable-height delegates
+        // `contentHeight` is an estimate until every row has been built: at
+        // the very end there is nothing to jump to whatever it estimates, and
+        // at the very start of a list taller than its viewport there always
+        // is.
+        && !control.list.atYEnd
+        && (control.list.atYBeginning || control.distanceFromLatest > control.threshold)
 
     text: qsTr("Jump to current")
     primary: true
