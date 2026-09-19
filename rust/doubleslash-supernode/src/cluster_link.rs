@@ -92,6 +92,12 @@ pub enum ClusterMsgKind {
         /// this false so open-mode TOS still applies after failover.
         #[serde(default)]
         direct_invite: bool,
+        /// True when the origin node has already admitted this peer through the
+        /// access gate. Without it a grant stayed on whichever member served
+        /// the portal, leaving the other members portal-only — so a client
+        /// whose room audio landed elsewhere was silently refused.
+        #[serde(default)]
+        access_granted: bool,
     },
     /// Full set of client-authorization grants this member currently holds.
     /// Sent on link-up and periodically so cold / restarted members converge
@@ -119,6 +125,9 @@ pub struct PeerAuthDescriptor {
     /// Origin admitted via direct supernode invite (handshake transcript).
     #[serde(default)]
     pub direct_invite: bool,
+    /// Origin has already admitted this peer through the access gate.
+    #[serde(default)]
+    pub access_granted: bool,
 }
 
 /// One durable room as advertised in a [`ClusterMsgKind::RoomRoster`]. Carries
@@ -230,6 +239,8 @@ pub struct PeerAuthGrant {
     pub handle: String,
     /// Origin admitted via direct supernode invite (handshake transcript).
     pub direct_invite: bool,
+    /// Origin has already admitted this peer through the access gate.
+    pub access_granted: bool,
 }
 
 /// Fetches the `room_id`s this node currently has local subscribers for.
@@ -374,12 +385,19 @@ impl ClusterLink {
 
     /// Broadcast a client-authorization grant to all peer members so any member
     /// accepts this client's signaling/relay after it fails over.
-    pub fn replicate_peer_auth(&self, identity_pub: &str, handle: &str, direct_invite: bool) {
+    pub fn replicate_peer_auth(
+        &self,
+        identity_pub: &str,
+        handle: &str,
+        direct_invite: bool,
+        access_granted: bool,
+    ) {
         let msg = ClusterMsg::signed(
             ClusterMsgKind::PeerAuth {
                 identity_pub: identity_pub.to_string(),
                 handle: handle.to_string(),
                 direct_invite,
+                access_granted,
             },
             &self.identity,
         );
@@ -802,11 +820,13 @@ impl ClusterLink {
                 identity_pub,
                 handle,
                 direct_invite,
+                access_granted,
             } => {
                 (self.on_peer_auth)(PeerAuthGrant {
                     identity_pub,
                     handle,
                     direct_invite,
+                    access_granted,
                 });
             }
             ClusterMsgKind::PeerAuthRoster { peers } => {
@@ -815,6 +835,7 @@ impl ClusterLink {
                         identity_pub: p.identity_pub,
                         handle: p.handle,
                         direct_invite: p.direct_invite,
+                        access_granted: p.access_granted,
                     });
                 }
             }
@@ -1488,7 +1509,7 @@ mod tests {
 
         let mut delivered = false;
         for _ in 0..100 {
-            link_a.replicate_peer_auth("client-XYZ", "Alice", true);
+            link_a.replicate_peer_auth("client-XYZ", "Alice", true, true);
             if !auths.lock().is_empty() {
                 delivered = true;
                 break;
@@ -1501,6 +1522,10 @@ mod tests {
             assert_eq!(got[0].identity_pub, "client-XYZ");
             assert_eq!(got[0].handle, "Alice");
             assert!(got[0].direct_invite);
+            // The gate decision has to cross the link too: without it a peer
+            // that passed the portal on A stays portal-only on B, and their
+            // room audio is refused wherever the session actually lands.
+            assert!(got[0].access_granted);
         }
         link_a.shutdown();
         link_b.shutdown();
@@ -1522,6 +1547,7 @@ mod tests {
                 identity_pub: "client-HISTORIC".into(),
                 handle: "Bob".into(),
                 direct_invite: true,
+                access_granted: true,
             }]
         });
 

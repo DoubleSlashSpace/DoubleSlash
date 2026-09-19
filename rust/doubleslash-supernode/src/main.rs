@@ -756,7 +756,11 @@ impl SupernodeState {
                 )
             })
             .unwrap_or_default();
-        link.replicate_peer_auth(identity_pub, &handle, direct_invite);
+        // Carry the gate decision too: a grant earned on this node must reach
+        // the siblings, otherwise the peer stays portal-only wherever their
+        // room media session happens to land.
+        let access_granted = self.access_controller.check_access(identity_pub);
+        link.replicate_peer_auth(identity_pub, &handle, direct_invite, access_granted);
     }
 
     /// Apply a client-authorization grant replicated from another member: trust
@@ -767,8 +771,25 @@ impl SupernodeState {
     /// PeerAuth), also issues tickets + room list so voice counts unlock
     /// without requiring a reconnect. Does **not** re-gossip PeerAuth (source
     /// already has the peer; bulk roster handles convergence).
-    fn apply_peer_auth(&self, identity_pub: &str, handle: &str, direct_invite: bool) {
+    fn apply_peer_auth(
+        &self,
+        identity_pub: &str,
+        handle: &str,
+        direct_invite: bool,
+        access_granted: bool,
+    ) {
         let identity_pub = crate::crypto::normalize_public_id(identity_pub);
+        // A sibling has already put this peer through the gate. Record it here
+        // before the relay decision below so they are admitted as a full peer
+        // rather than a portal-only guest. Never the reverse: absence of a
+        // grant elsewhere is not evidence of revocation here.
+        if access_granted && !self.access_controller.check_access(&identity_pub) {
+            self.access_controller.on_peer_granted(&identity_pub);
+            info!(
+                "Applied replicated access grant for {}",
+                &identity_pub[..12.min(identity_pub.len())]
+            );
+        }
         let mut newly_or_upgraded = false;
         {
             let mut store = self.peer_store.write();
@@ -932,6 +953,9 @@ impl SupernodeState {
         }
         self.access_controller.on_peer_granted(&identity_pub);
         self.issue_relay_ticket(&identity_pub);
+        // Tell the siblings, so passing the gate once admits the peer
+        // cluster-wide rather than only on whichever member served the portal.
+        self.replicate_peer_auth(&identity_pub);
         info!(
             "Portal access granted to {} ({} gate passed)",
             &identity_pub[..12.min(identity_pub.len())],
@@ -3525,7 +3549,8 @@ async fn main() -> anyhow::Result<()> {
     info!("Loaded {} trusted peers", peer_store.trusted_count());
 
     // Initialize access controller
-    let access_controller = create_access_controller(config.access_mode, &config.access_code);
+    let access_controller =
+        create_access_controller(config.access_mode, &config.access_code, &config.data_dir);
 
     // Handshake manager
     let listener_host = config.external_host.as_deref().unwrap_or("0.0.0.0");
@@ -3650,7 +3675,12 @@ async fn main() -> anyhow::Result<()> {
             let weak = weak.clone();
             Arc::new(move |g: cluster_link::PeerAuthGrant| {
                 if let Some(state) = weak.upgrade() {
-                    state.apply_peer_auth(&g.identity_pub, &g.handle, g.direct_invite);
+                    state.apply_peer_auth(
+                        &g.identity_pub,
+                        &g.handle,
+                        g.direct_invite,
+                        g.access_granted,
+                    );
                 }
             })
         };
@@ -3737,6 +3767,7 @@ async fn main() -> anyhow::Result<()> {
                         identity_pub: p.identity_pub.clone(),
                         handle: p.handle.clone(),
                         direct_invite: is_direct_invite_transcript(&p.transcript_hash),
+                        access_granted: state.access_controller.check_access(&p.identity_pub),
                     })
                     .collect()
             })
