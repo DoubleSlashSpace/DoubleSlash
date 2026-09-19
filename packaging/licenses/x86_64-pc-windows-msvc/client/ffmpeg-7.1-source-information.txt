@@ -41,8 +41,9 @@ Complete corresponding source for FFmpeg 7.1 is published upstream:
   https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz
   https://github.com/FFmpeg/FFmpeg  (tag n7.1)
 
-The project's own corresponding-source.tar.gz covers DoubleSlash sources and
-its modified local dependencies. It does not contain FFmpeg sources, which are
+DoubleSlash's own sources and its modified local dependencies are published at
+https://github.com/DoubleSlashSpace/DoubleSlash; the notices name the exact
+revision each build came from. They do not contain FFmpeg sources, which are
 obtained from the upstream locations above.
 
 How the LGPL-2.1 obligations are met

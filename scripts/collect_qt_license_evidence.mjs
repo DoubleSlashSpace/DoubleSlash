@@ -129,7 +129,7 @@ export function collectEvidence(qtRoot, bundle, output) {
         '## Unresolved Package Metadata', '',
         ...unresolvedPackages.map(pkg => `- ${pkg.sbom}: ${pkg.name}; license: ${pkg.license ?? 'missing'}; source: ${pkg.source ?? 'missing'}`), '',
         'See evidence.json for file-level licenses, copyright notices, and package sources. Copied SBOMs retain their upstream metadata.', '',
-        'No review.json is generated. Do not rename this evidence to bypass the distribution gate.', '',
+        'This is technical evidence, not a licence conclusion or an approval to ship.', '',
     ].join('\n');
     writeFileSync(join(output, 'README.md'), summary);
     return report;

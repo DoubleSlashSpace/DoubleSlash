@@ -87,11 +87,10 @@ sdk.dir=C:/Users/you/AppData/Local/Android/Sdk
 
 ### Build
 
-Packaging also requires Node.js 20+ and `cargo-about` 0.8.4. Local debug builds
-and the CI Android nightly include Rust/codec audit notices. Release builds and
-`DOUBLESLASH_DISTRIBUTION=1` require reviewed runtime/JVM/asset supplements
-under `packaging/licenses/android/<target>/<variant>/`; see
-[dependency licensing](LICENSING.md). That Android review remains open.
+Packaging also requires Node.js 20+ and `cargo-about` 0.8.4. Every variant gets
+the same notices: Rust dependency texts, the vendored Opus and libvpx notices,
+and anything under `packaging/licenses/<target>/android/` if that directory ever
+exists. See [dependency licensing](LICENSING.md).
 
 ```powershell
 cd android

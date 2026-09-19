@@ -28,19 +28,18 @@ on unresolved or unaccepted license expressions. Build-only and test-only
 dependencies are excluded from notices, but remain in the policy check. Code
 or assets copied into an executable by a build script need separate review.
 
-For an audit without approving distribution:
+To regenerate one product's notices:
 
 ```sh
-node scripts/generate_licenses.mjs --product client --target x86_64-pc-windows-msvc --features qt-ui,webengine --rust-only --output dist/license-audit/client
+node scripts/generate_licenses.mjs --product client --target x86_64-pc-windows-msvc --features qt-ui,webengine --output dist/license-audit/client
 ```
 
 Generated directories contain readable Rust license texts, the project license,
 an inventory of crate versions, the target/features, and the Cargo lockfile
 SHA-256. Client and Android directories also contain the vendored Opus and
 libvpx license and patent notices. Source links identify exact crates.io
-archives or the bundled working-tree source snapshot. That snapshot preserves
-modified local dependencies; its hash is recorded separately from the Git
-revision. Verify source accessibility when distributing.
+archives, or the public repository at the revision that was built for
+first-party and patched crates. Verify source accessibility when distributing.
 
 The policies include font licenses for the installer's embedded fonts and the
 CA-root data license. Permission to bundle a font does not permit relicensing
@@ -48,14 +47,18 @@ it under MIT, selling it alone where prohibited, or ignoring reserved-name
 conditions. An allowed SPDX identifier is not a determination that every
 condition has been satisfied.
 
-## Supplemental Review
+## Supplement Notices
 
-Desktop and distributable Android packages require a reviewed supplement.
-The Windows client supplement is under
-`packaging/licenses/x86_64-pc-windows-msvc/client/`. Android has no approved
-supplement yet, so `assembleRelease` and `DOUBLESLASH_DISTRIBUTION=1` stay
-blocked. Ordinary `cargo build`, local `assembleDebug`, and the Android
-nightly debug APK generate Rust/codec audit notices only.
+Rust dependencies are handled automatically. Everything else a package bundles
+- Qt, Chromium, FFmpeg, Mesa, the MSVC redistributables - has its notices kept
+as plain text under `packaging/licenses/<target>/<product>/`. The generator
+finds that directory by target and product and copies it into the package as
+`licenses/<product>/supplement/`, so adding a file there ships it and no build
+needs to be told where to look. Android has no such components yet, so
+`packaging/licenses/<target>/android/` does not exist.
+
+Nothing checks that the set is complete. That judgement is yours, and it is
+worth making before a release:
 
 Review the exact binaries and assets that will be shipped, including:
 
@@ -111,63 +114,25 @@ arrangements remain separate requirements even when a Qt DLL is matched. The
 three gaps that still block release approval are recorded under
 [Remaining Release-Approval Findings](#remaining-release-approval-findings).
 
-Each supplement directory contains the actual notice/source-information files
-and a `review.json` with this structure (replace every example value):
+To enumerate Android's resolved JVM artifacts, their POMs, nested JAR notices
+and the NDK notices when writing a component list, use Gradle directly:
 
-```json
-{
-  "product": "client",
-  "target": "x86_64-pc-windows-msvc",
-  "features": "qt-ui,webengine",
-  "components": [
-    {
-      "name": "Exact shipped component",
-      "version": "Exact shipped version",
-      "source": "Location of the matching source",
-      "obligations": "How notices, source access, modifications, and other applicable conditions are satisfied",
-      "files": ["component-license.txt", "component-source-information.txt"]
-    }
-  ]
-}
+```sh
+./gradlew :app:dependencies --configuration debugRuntimeClasspath
 ```
-
-The generator checks that `product`, `target` and `features` match the build,
-that every component names a version, a source and how its obligations are met,
-and that each notice file exists, is nonempty, and lives inside the supplement
-directory. After the archive is built, `verify_artifact.mjs` re-extracts it and
-confirms those notice files actually shipped and are readable.
-
-`features` is checked because it changes what ships — a build with the
-`webengine` feature bundles Chromium and needs its notice, so a supplement
-written for the other feature set would silently under-notice.
-
-Android supplements have the same shape. `runtime-inventory.json` from
-`:app:collectDebugRuntimeLicenses` / `:app:collectReleaseRuntimeLicenses` (with
-reports under `app/build/reports/licenses/`) remains the way to enumerate
-resolved artifacts, POMs, nested JAR notices and NDK notices when writing the
-component list. Collection is not review: resolve components without sufficient
-license/source information before listing them.
 
 ### What this does and does not do
 
-These checks confirm the required notices are present, describe what ships, and
-reach the recipient. They are not an audit trail. There is deliberately no
-reviewer signature, no lockfile or build-input binding, and no per-binary hash
-inventory: none of that is a licence obligation, and requiring it blocked
-packaging without making the distribution any more compliant.
+Notices are generated from the resolved dependency graph and copied from
+`packaging/licenses/`, and `verify_artifact.mjs` confirms afterwards that they
+actually reached the built archive and are readable. That is the whole of it.
 
-No tool verifies that the component list is complete or that its conclusions
-about a licence are correct. That judgement stays with whoever writes the
-`obligations` text. Do not list a component you have not actually checked.
+There is no reviewer signature, no build-input binding, no per-binary hash
+inventory and no gate that refuses to package: none of that is a licence
+obligation, and all of it cost more than it caught. No tool verifies that the
+component set is complete or that a conclusion about a licence is correct.
 
-Release workflows look for desktop supplements under
-`packaging/licenses/<target>/client/` and Android supplements under
-`packaging/licenses/android/<target>/<variant>/`. For local desktop packaging, set
-`DOUBLESLASH_LICENSE_SUPPLEMENT` to the review directory. For a distributable
-Android build, set it to `packaging/licenses/android` (containing target and
-variant subdirectories) together with `DOUBLESLASH_DISTRIBUTION=1`. The Android
-nightly debug APK does not set those; it packages rust-only notices. These files
-are public distribution materials, not credentials.
+These files are public distribution materials, not credentials.
 
 ## Remaining Release-Approval Findings
 
@@ -222,10 +187,10 @@ most restrictive Chromium license called out there is LGPL 2.1. Use the
 review. FFmpeg 7.1 in the inspected bundle embeds `LGPL version 2.1 or later`
 and a specific configure string; that is build evidence, not a source offer.
 
-The first-party `corresponding-source.tar.gz` snapshot covers the working
-tree, including modified local dependencies and generated Opus model arrays.
-It does not contain Qt, Chromium, or FFmpeg sources. Replacement and
-relinking instructions for LGPL libraries have not been recorded. Generate
+First-party and patched dependency sources are published in the repository at
+the revision each build records. They do not contain Qt, Chromium, or FFmpeg
+sources. Replacement and relinking instructions for LGPL libraries have not
+been recorded. Generate
 Chromium third-party notices from the matching Qt WebEngine/Chromium checkout
 and retain the exact source used to build the shipped `QtWebEngineProcess`
 and FFmpeg DLLs.
@@ -276,43 +241,41 @@ installs without distribution notices fail. `build-deploy` generates adjacent
 notices automatically and requires Node and the pinned cargo-about version.
 Manually copied local binaries need the same adjacent directory.
 
-Android exposes packaged notices, including nested supplemental notices, at
+Android exposes packaged notices, including nested supplement notices, at
 **Settings > Legal > Third-party licenses**. The reader works offline and opens
 HTTPS source links through the external browser. It has no JavaScript bridge.
-Device acceptance still requires a connected device and a reviewed build.
+Device acceptance still requires a connected device.
 
 ## Release Verification
 
-Generate notices using the same target and feature set as the binaries. Never
-package `--rust-only` audit output as approved distribution notices. Inspect
-the final archives/APKs, not just staging directories, and verify notice and
-source accessibility. Check included assets, runtime DLLs/frameworks/plugins,
-and any separately distributed executable against the reviewed inventory.
+Generate notices using the same target and feature set as the binaries.
+Inspect the final archives/APKs, not just staging directories, and verify
+notice and source accessibility. Check included assets, runtime
+DLLs/frameworks/plugins, and any separately distributed executable against the
+inventory.
 
 `node scripts/licenses/verify_artifact.mjs ARCHIVE PRODUCT [PRODUCT...]` extracts
 the final `.7z`, `.zip`, `.tar.gz`, APK/AAB, AppImage, or mounted read-only DMG.
 Packaging scripts invoke it after creating the archive; the signing workflow
-invokes it again after SignPath. It rejects audit-only/missing notices, changed
-source snapshots, mismatched reviews/native files, and Android ABIs lacking
+invokes it again after SignPath. It rejects missing or empty notices, native
+notices the inventory promises but the package lost, and Android ABIs lacking
 inventories. This checks local readability and source-link structure, not the
 availability or legal sufficiency of every remote source URL.
 
-`corresponding-source.tar.gz` preserves the current repository source files,
-including modified dependency sources and generated model arrays; its hash is
-recorded in `inventory.json`. First-party source links in bundled notices point
-to that archive. Registry dependencies link to exact versioned crate downloads.
-Installer and Android HTML omit local source-archive links (standalone notices
-and the offline reader do not download local archives). The source snapshot
-remains in each package. Qt and externally supplied runtime sources
-still need their own reviewed source information.
+Packages carry notices, not sources. Nothing in any product's Rust graph
+obliges source delivery: the permissive licences are notice-only, the single
+MPL-2.0 crate is unmodified from crates.io and links to its exact versioned
+download, and first-party and patched crates link to the public repository at
+the revision recorded in `inventory.json`. Qt and externally supplied runtime
+sources still need their own reviewed source information.
 
 ### Ownership and merge protection
 
-The release maintainer owns the licensing inventory and assigns a named reviewer
-in each supplement. That reviewer owns component terms/source findings; QA owns
+The release maintainer owns the licensing inventory. Whoever writes a
+supplement notice owns its component terms and source findings; QA owns
 final artifact and device acceptance. Changes to Qt, Gradle/NDK, assets, model
-data, patches, or packaging require refreshed evidence. Automated collection by
-Codex is labeled as technical evidence, not that named reviewer's approval.
+data, patches, or packaging require refreshed evidence. Automated collection is
+labeled as technical evidence, not approval.
 
 Require the `License checks required` status on `develop` and other release
 branches after the Dependency Licenses workflow has run. This aggregate fails

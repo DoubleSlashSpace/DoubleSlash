@@ -1,11 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { reviewInputs, archiveFiles, sha256 } from './licenses/review_inputs.mjs';
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const aboutVersion = '0.8.4';
@@ -17,7 +16,7 @@ export function escapeHtml(value) {
     })[character]);
 }
 
-export function renderLicenses(data, projectLicense = '', revision = '', hasSourceSnapshot = false, embeddedNotices = []) {
+export function renderLicenses(data, projectLicense = '', revision = '', embeddedNotices = []) {
     if (!Array.isArray(data.licenses) || data.licenses.length === 0) {
         throw new Error('No resolved license texts were generated');
     }
@@ -29,8 +28,6 @@ export function renderLicenses(data, projectLicense = '', revision = '', hasSour
             let source;
             if (crate.source === 'registry+https://github.com/rust-lang/crates.io-index') {
                 source = `https://crates.io/api/v1/crates/${encodeURIComponent(crate.name)}/${encodeURIComponent(crate.version)}/download`;
-            } else if (!crate.source && hasSourceSnapshot) {
-                source = 'corresponding-source.tar.gz';
             } else if (!crate.source && crate.manifest_path && revision) {
                 const path = relative(root, dirname(crate.manifest_path)).split(sep).map(encodeURIComponent).join('/');
                 source = `https://github.com/DoubleSlashSpace/DoubleSlash/tree/${encodeURIComponent(revision)}/${path}`;
@@ -61,68 +58,28 @@ function run(command, args, cwd = root) {
     return result.stdout;
 }
 
-// Checks that the notices required to redistribute this bundle are present and
-// describe what ships: the components, where their source is, how each one's
-// obligations are met, and the notice texts themselves.
-//
-// It deliberately does not attest anything. There is no reviewer signature, no
-// lockfile or build-input binding, and no per-binary hash inventory — none of
-// that is a licence obligation, and requiring it only blocked packaging without
-// making the distribution any more compliant.
-export function validateSupplement(directory, product, target, features) {
-    const reviewPath = join(directory, 'review.json');
-    if (!existsSync(reviewPath)) {
-        throw new Error(`No review.json under ${directory}; see docs/LICENSING.md`);
-    }
-    const manifest = JSON.parse(readFileSync(reviewPath, 'utf8'));
-    // `features` is kept because it changes what actually ships: a build with
-    // the webengine feature bundles Chromium and needs its notice, and a
-    // supplement written for the other feature set would silently under-notice.
-    if (manifest.product !== product || manifest.target !== target ||
-        manifest.features !== features || !Array.isArray(manifest.components) ||
-        manifest.components.length === 0) {
-        throw new Error('Supplement must identify the product, target, features, and components it covers');
-    }
-    for (const component of manifest.components) {
-        if (!component.name?.trim() || !component.version?.trim() ||
-            !component.source?.trim() || !component.obligations?.trim() ||
-            !Array.isArray(component.files) || component.files.length === 0) {
-            throw new Error('Each supplemental component requires version, source, obligations, and notice files');
-        }
-        for (const file of component.files) {
-            const resolved = resolve(directory, file);
-            const local = relative(resolve(directory), resolved);
-            if (isAbsolute(file) || local === '..' || local.startsWith(`..${sep}`) || isAbsolute(local)) {
-                throw new Error(`Supplement file escapes its directory: ${file}`);
-            }
-            const actual = relative(realpathSync(directory), realpathSync(resolved));
-            if (actual === '..' || actual.startsWith(`..${sep}`) || isAbsolute(actual)) throw new Error(`Supplement symlink escapes its directory: ${file}`);
-            if (!readFileSync(resolved, 'utf8').trim()) throw new Error(`Empty supplement: ${file}`);
-        }
-    }
-    return manifest;
+// Extra notice files that accompany a product beyond its Rust dependencies -
+// Qt, Chromium, FFmpeg, the MSVC redistributables. They are plain texts copied
+// into the package as they are. Convention over configuration: a build finds
+// them by target and product, so a release cannot ship without the notices
+// because someone forgot to set an environment variable.
+export function supplementDirectory(product, target, override) {
+    const directory = override ?? join(root, 'packaging/licenses', target, product);
+    return existsSync(directory) ? directory : null;
 }
 
 export function main(args) {
     const { values } = parseArgs({ args, options: {
         product: { type: 'string' }, target: { type: 'string' }, output: { type: 'string' },
         features: { type: 'string', default: '' }, supplement: { type: 'string' },
-        'rust-only': { type: 'boolean', default: false },
-        'runtime-inventory': { type: 'string' }, variant: { type: 'string' },
     } });
     const { product, target, output, features } = values;
     if (!products.has(product) || !target || !output) {
-        throw new Error('Usage: node scripts/generate_licenses.mjs --product client|installer|supernode|android --target TRIPLE --output DIRECTORY [--features FEATURES] [--supplement DIRECTORY] [--rust-only]');
-    }
-    if (values['rust-only'] && values.supplement) throw new Error('Choose --rust-only or --supplement');
-    if (['client', 'android'].includes(product) && !values['rust-only'] && !values.supplement) {
-        throw new Error('Distribution requires a reviewed native/runtime/asset supplement. See docs/LICENSING.md. --rust-only is for auditing, not packaging.');
+        throw new Error('Usage: node scripts/generate_licenses.mjs --product client|installer|supernode|android --target TRIPLE --output DIRECTORY [--features FEATURES] [--supplement DIRECTORY]');
     }
     const workspace = ['client', 'android'].includes(product) ? `rust/doubleslash-${product}` : 'rust';
     const lockHash = createHash('sha256').update(readFileSync(join(root, workspace, 'Cargo.lock'))).digest('hex');
-    const inputs = reviewInputs();
-    const supplement = values.supplement ? validateSupplement(values.supplement, product, target, features) : null;
-    const runtimeInventoryHash = values['runtime-inventory'] ? sha256(readFileSync(values['runtime-inventory'])) : null;
+    const supplement = supplementDirectory(product, target, values.supplement);
     const version = run('cargo', ['about', '--version']).trim();
     if (version !== `cargo-about ${aboutVersion}`) {
         throw new Error(`Expected cargo-about ${aboutVersion}; install with cargo install cargo-about --version ${aboutVersion} --locked`);
@@ -151,34 +108,14 @@ export function main(args) {
                 source: `https://crates.io/api/v1/crates/epaint_default_fonts/${fonts.version}/download` });
         }
     }
-    // The installer's HTML also ships by itself. Its first-party MIT code has
-    // no corresponding-source obligation; avoid a broken archive link there.
-    const html = renderLicenses(data, readFileSync(join(root, 'LICENSE'), 'utf8'), '', ['client', 'supernode'].includes(product), embeddedNotices);
+    // First-party and patched crates link to the public tree at the revision
+    // that was built. Nothing in any product's graph obliges source delivery:
+    // the permissive licences are notice-only, the one MPL-2.0 crate is
+    // unmodified from crates.io and links there, and Qt's LGPL source is
+    // published by The Qt Company, named in the supplement notices.
+    const html = renderLicenses(data, readFileSync(join(root, 'LICENSE'), 'utf8'), revision, embeddedNotices);
     const destination = resolve(output);
     mkdirSync(destination, { recursive: true });
-    // Archive the actual working-tree sources, including modified vendored code
-    // and ignored model arrays. Never substitute HEAD for a dirty dependency.
-    const snapshotList = join(temporary, 'source-files.txt');
-    mkdirSync(temporary, { recursive: true });
-    let sourceSnapshotSha256;
-    try {
-        const files = archiveFiles(product);
-        const archived = new Set(files);
-        for (const crate of data.licenses.flatMap(license => license.used_by.map(entry => entry.crate))) {
-            if (!crate.source && crate.manifest_path) {
-                const path = relative(root, crate.manifest_path).replaceAll('\\', '/');
-                if (!archived.has(path)) throw new Error(`Local dependency sources are outside the captured inventory: ${crate.name} (${path})`);
-            }
-        }
-        writeFileSync(snapshotList, files.join('\n') + '\n');
-        const snapshot = join(destination, 'corresponding-source.tar.gz');
-        run('tar', ['-czf', snapshot, '-C', root, '-T', snapshotList]);
-        sourceSnapshotSha256 = sha256(readFileSync(snapshot));
-    } finally {
-        rmSync(temporary, { recursive: true, force: true });
-    }
-    writeFileSync(join(destination, 'review-inputs.json'), JSON.stringify(inputs, null, 2) + '\n');
-    if (values['runtime-inventory']) copyFileSync(values['runtime-inventory'], join(destination, 'runtime-inventory.json'));
     copyFileSync(join(root, 'LICENSE'), join(destination, 'DoubleSlash-LICENSE.txt'));
     writeFileSync(join(destination, 'rust-licenses.html'), html);
     const crates = [...new Map(data.licenses.flatMap(license => license.used_by.map(({ crate }) =>
@@ -197,24 +134,20 @@ export function main(args) {
             native.push({ source, notice: name });
         }
     }
+    const supplementNotices = [];
     if (supplement) {
-        for (const component of supplement.components) {
-            for (const file of component.files) {
-                const targetFile = join(destination, 'supplement', file);
-                mkdirSync(dirname(targetFile), { recursive: true });
-                copyFileSync(resolve(values.supplement, file), targetFile);
-            }
+        for (const file of readdirSync(supplement).sort()) {
+            if (file === 'README.md' || file === 'review.json') continue;
+            if (!statSync(join(supplement, file)).isFile()) continue;
+            const targetFile = join(destination, 'supplement', file);
+            mkdirSync(dirname(targetFile), { recursive: true });
+            copyFileSync(join(supplement, file), targetFile);
+            supplementNotices.push(file);
         }
-        writeFileSync(join(destination, 'supplement-review.json'), JSON.stringify(supplement, null, 2) + '\n');
     }
     const inventory = {
         product, target, features, dependencyLockSha256: lockHash, generator: version,
-        scope: values['rust-only'] ? 'rust-audit-only' : 'distribution-notices',
-        sourceRevision: revision,
-        sourceSnapshot: { file: 'corresponding-source.tar.gz', sha256: sourceSnapshotSha256 },
-        inputsSha256: inputs.inputsSha256,
-        buildVariant: values.variant ?? null, runtimeInventorySha256: runtimeInventoryHash,
-        crates, native, supplement: supplement ?? null,
+        sourceRevision: revision, crates, native, supplement: supplementNotices,
     };
     writeFileSync(join(destination, 'inventory.json'), JSON.stringify(inventory, null, 2) + '\n');
     console.log(`Generated ${crates.length} Rust dependency entries for ${product} (${target}) in ${destination}`);

@@ -94,8 +94,7 @@ chmod +x "$MACOS/doubleslash" "$MACOS/doubleslash-installer"
 
 TARGET="$(rustc -vV | sed -n 's/^host: //p')"
 node "$ROOT/scripts/generate_licenses.mjs" --product client --target "$TARGET" \
-    --features qt-ui --output "$RESOURCES/licenses/client" \
-    --supplement "${DOUBLESLASH_LICENSE_SUPPLEMENT:?Set DOUBLESLASH_LICENSE_SUPPLEMENT; see docs/LICENSING.md}"
+    --features qt-ui --output "$RESOURCES/licenses/client"
 node "$ROOT/scripts/generate_licenses.mjs" --product installer --target "$TARGET" \
     --output "$RESOURCES/licenses/installer"
 cp "$ROOT/LICENSE" "$RESOURCES/LICENSE.txt"

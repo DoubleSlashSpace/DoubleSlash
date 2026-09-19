@@ -1,7 +1,4 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import groovy.json.JsonOutput
-import java.security.MessageDigest
-import java.util.zip.ZipInputStream
 
 plugins {
     alias(libs.plugins.android.application)
@@ -221,79 +218,6 @@ androidComponents {
             .configureEach { dependsOn(cargoTask) }
         val variantName = variant.name.replaceFirstChar(Char::uppercase)
         val licenseAssets = layout.buildDirectory.dir("generated/licenses/${variant.name}")
-        val runtimeEvidence = layout.buildDirectory.dir("reports/licenses/${variant.name}")
-        val collectRuntimeLicenses = tasks.register("collect${variantName}RuntimeLicenses") {
-            group = "verification"
-            description = "Inventory resolved JVM artifacts, embedded notices, and the pinned NDK for license review."
-            doLast {
-                val output = runtimeEvidence.get().asFile
-                output.mkdirs()
-                fun hash(bytes: ByteArray) = MessageDigest.getInstance("SHA-256")
-                    .digest(bytes).joinToString("") { "%02x".format(it) }
-                fun notices(bytes: ByteArray, prefix: String): List<Map<String, String>> {
-                    val result = mutableListOf<Map<String, String>>()
-                    ZipInputStream(bytes.inputStream()).use { zip ->
-                        while (true) {
-                            val entry = zip.nextEntry ?: break
-                            if (entry.isDirectory) continue
-                            val name = entry.name
-                            require(!name.startsWith("/") && !name.contains("\\") && !name.split("/").contains(".."))
-                            if (name.endsWith(".jar")) {
-                                result += notices(zip.readBytes(), "$prefix/$name")
-                            } else if (Regex("(?i)(^|/)(license|notice|copying|al2\\.0|lgpl2\\.1)[^/]*$").containsMatchIn(name)) {
-                                val content = zip.readBytes()
-                                val path = "$prefix/$name"
-                                output.resolve(path).apply { parentFile.mkdirs(); writeBytes(content) }
-                                result += mapOf("file" to path, "sha256" to hash(content))
-                            }
-                        }
-                    }
-                    return result
-                }
-                val artifacts = configurations.getByName("${variant.name}RuntimeClasspath")
-                    .resolvedConfiguration.resolvedArtifacts.sortedBy { it.moduleVersion.id.toString() + it.file.name }
-                    .map { artifact ->
-                        val id = artifact.moduleVersion.id
-                        val bytes = artifact.file.readBytes()
-                        val prefix = "jvm/${id.group}/${id.name}/${id.version}/${artifact.file.name}"
-                        val licenses = if (artifact.extension in listOf("jar", "aar")) notices(bytes, prefix) else emptyList()
-                        val pom = configurations.detachedConfiguration(
-                            dependencies.create("${id.group}:${id.name}:${id.version}@pom"),
-                        ).apply { isTransitive = false }.singleFile
-                        val pomPath = "$prefix.pom"
-                        output.resolve(pomPath).apply { parentFile.mkdirs(); writeBytes(pom.readBytes()) }
-                        mapOf("coordinate" to id.toString(), "artifact" to artifact.file.name,
-                            "sha256" to hash(bytes), "pom" to mapOf("file" to pomPath, "sha256" to hash(pom.readBytes())), "notices" to licenses)
-                    }
-                val ndk = android.ndkDirectory
-                val ndkNotices = ndk.listFiles().orEmpty().filter { it.isFile && (it.name.startsWith("NOTICE") || it.name == "source.properties") }
-                    .sortedBy { it.name }.map { file ->
-                        val path = "ndk/${file.name}"
-                        output.resolve(path).apply { parentFile.mkdirs(); writeBytes(file.readBytes()) }
-                        mapOf("file" to path, "sha256" to hash(file.readBytes()))
-                    }
-                val runtimeLibraries = ndk.resolve("toolchains/llvm/prebuilt").listFiles().orEmpty()
-                    .filter { it.isDirectory }.flatMap { prebuilt ->
-                        doubleslashAbis.flatMap { abi ->
-                            val triple = when (abi) {
-                                "arm64-v8a" -> "aarch64-linux-android"
-                                "armeabi-v7a" -> "arm-linux-androideabi"
-                                "x86_64" -> "x86_64-linux-android"
-                                "x86" -> "i686-linux-android"
-                                else -> error("Unsupported NDK ABI: $abi")
-                            }
-                            listOf("libc++_shared.so", "libc++_static.a", "libc++abi.a").map { name ->
-                                val file = prebuilt.resolve("sysroot/usr/lib/$triple/$name")
-                                require(file.isFile) { "Missing NDK runtime evidence: $file" }
-                                mapOf("abi" to abi, "file" to name, "sha256" to hash(file.readBytes()))
-                            }
-                        }
-                    }
-                val report = mapOf("variant" to variant.name, "abis" to doubleslashAbis.sorted(),
-                    "ndkVersion" to android.ndkVersion, "ndkNotices" to ndkNotices, "runtimeLibraries" to runtimeLibraries, "artifacts" to artifacts)
-                output.resolve("runtime-inventory.json").writeText(JsonOutput.prettyPrint(JsonOutput.toJson(report)) + "\n")
-            }
-        }
         android.sourceSets.getByName(variant.name).assets.srcDir(licenseAssets)
         val licenseTasks = doubleslashAbis.map { abi ->
             val target = when (abi) {
@@ -304,36 +228,19 @@ androidComponents {
                 else -> error("Unsupported ABI for license generation: $abi")
             }
             tasks.register<Exec>("generate${variantName}Licenses${abi.replace("-", "").replace("_", "")}") {
-                dependsOn(collectRuntimeLicenses)
                 group = "build"
                 workingDir = rootProject.projectDir.parentFile
                 val arguments = mutableListOf(
                     "scripts/generate_licenses.mjs", "--product", "android", "--target", target,
                     "--output", licenseAssets.get().dir("licenses/$target").asFile.absolutePath,
-                    "--runtime-inventory", runtimeEvidence.get().file("runtime-inventory.json").asFile.absolutePath,
-                    "--variant", variant.name,
                 )
                 if (firstProp("doubleslash.deviceRouting") == "true") {
                     arguments += listOf("--features", "device-routing")
                 }
-                val distribution = variant.buildType == "release" || firstEnv("DOUBLESLASH_DISTRIBUTION") == "1"
-                val supplementDir = firstEnv("DOUBLESLASH_LICENSE_SUPPLEMENT")
-                    ?.let { file("$it/$target/${variant.name}") }
-                if (distribution) {
-                    if (supplementDir != null && supplementDir.resolve("review.json").isFile) {
-                        arguments += listOf("--supplement", supplementDir.absolutePath)
-                    } else {
-                        val path = supplementDir?.absolutePath
-                            ?: "DOUBLESLASH_LICENSE_SUPPLEMENT/$target/${variant.name}"
-                        doFirst {
-                            throw IllegalStateException(
-                                "Distribution Android builds need review.json under $path; see docs/LICENSING.md"
-                            )
-                        }
-                    }
-                } else {
-                    arguments += "--rust-only"
-                }
+                // Qt, Chromium and the other bundled components have no Android
+                // equivalent yet. When they do, the generator picks their
+                // notices up from packaging/licenses/<target>/android/ on its
+                // own — nothing here needs to point at them.
                 commandLine(listOf("node") + arguments)
             }
         }

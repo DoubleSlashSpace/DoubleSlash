@@ -213,7 +213,6 @@ jobs:
           # Tagged: release-X.Y.Z-<12-char sha> (matches local tag checkout in build.rs)
           # Nightly: nightly-<12-char sha>-<run>
           DOUBLESLASH_BUILD_ID: ${{ steps.meta.outputs.build_id }}
-          DOUBLESLASH_LICENSE_SUPPLEMENT: ${{ github.workspace }}/packaging/licenses/x86_64-pc-windows-msvc/client
         run: .\build_win64.ps1
 
       - name: Copy installer for separate upload
@@ -445,7 +444,6 @@ jobs:
           DOUBLESLASH_RELEASE: "1"
           DOUBLESLASH_SIGN_ID: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           DOUBLESLASH_BUILD_ID: ${{ steps.meta.outputs.build_id }}
-          DOUBLESLASH_LICENSE_SUPPLEMENT: ${{ github.workspace }}/packaging/licenses/aarch64-apple-darwin/client
         run: bash build_macos.sh
 
       - name: Notarize DMG
@@ -582,7 +580,6 @@ jobs:
         env:
           DOUBLESLASH_RELEASE: "1"
           DOUBLESLASH_BUILD_ID: ${{ steps.meta.outputs.build_id }}
-          DOUBLESLASH_LICENSE_SUPPLEMENT: ${{ github.workspace }}/packaging/licenses/x86_64-unknown-linux-gnu/client
         run: bash build_linux.sh
 
       - name: Verify artifacts

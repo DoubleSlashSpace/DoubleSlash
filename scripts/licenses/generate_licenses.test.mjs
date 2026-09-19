@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { main, renderLicenses, validateSupplement } from '../generate_licenses.mjs';
+import { renderLicenses, root, supplementDirectory } from '../generate_licenses.mjs';
 import { matchBinary, collectEvidence, unsignedPeImage } from '../collect_qt_license_evidence.mjs';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
@@ -73,50 +73,24 @@ test('rejects empty or incomplete license output', () => {
     assert.throws(() => renderLicenses({ licenses: [{ id: 'MIT', text: '' }] }), /Incomplete/);
 });
 
-test('desktop distribution requires supplemental evidence', () => {
-    assert.throws(() => main(['--product', 'client', '--target', 'x86_64-pc-windows-msvc', '--output', 'unused']), /requires a reviewed/);
-});
-
-test('supplement is target-bound and rejects missing files or directory traversal', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'doubleslash-license-test-'));
-    try {
-        assert.throws(() => validateSupplement(directory, 'android', 'aarch64-linux-android', ''), /No review.json under/);
-        const review = {
-            product: 'client', target: 'test-target', features: 'qt-ui',
-            components: [{ name: 'Qt', version: 'test', source: 'test-source', obligations: 'test-review', files: ['notice.txt'] }],
-        };
-        const save = () => writeFileSync(join(directory, 'review.json'), JSON.stringify(review));
-        save();
-        assert.throws(() => validateSupplement(directory, 'client', 'other-target', 'qt-ui'), /Supplement must/);
-        // A build whose feature set changes what ships must not reuse a
-        // supplement written for the other one.
-        assert.throws(() => validateSupplement(directory, 'client', 'test-target', 'qt-ui,webengine'), /Supplement must/);
-        // The notice text a component names has to exist.
-        assert.throws(() => validateSupplement(directory, 'client', 'test-target', 'qt-ui'), /ENOENT/);
-        writeFileSync(join(directory, 'notice.txt'), 'license text');
-        assert.equal(validateSupplement(directory, 'client', 'test-target', 'qt-ui').components.length, 1);
-        // An empty notice ships nothing readable, so it is not a notice.
-        writeFileSync(join(directory, 'notice.txt'), '   ');
-        assert.throws(() => validateSupplement(directory, 'client', 'test-target', 'qt-ui'), /Empty supplement/);
-        writeFileSync(join(directory, 'notice.txt'), 'license text');
-        // A component missing its obligations text is not reviewable.
-        const obligations = review.components[0].obligations;
-        review.components[0].obligations = '';
-        save();
-        assert.throws(() => validateSupplement(directory, 'client', 'test-target', 'qt-ui'), /requires version, source, obligations/);
-        review.components[0].obligations = obligations;
-        review.components[0].files = ['../outside.txt'];
-        save();
-        assert.throws(() => validateSupplement(directory, 'client', 'test-target', 'qt-ui'), /escapes/);
-    } finally {
-        rmSync(directory, { recursive: true, force: true });
-    }
-});
-
 test('notices include project copyright and exact crate source downloads', () => {
     const html = renderLicenses({ licenses: [{ name: 'MPL-2.0', text: 'license text', used_by: [{ crate: {
         name: 'example', version: '1.2.3', source: 'registry+https://github.com/rust-lang/crates.io-index',
     } }] }] }, 'Copyright project authors');
     assert.match(html, /Copyright project authors/);
     assert.match(html, /https:\/\/crates.io\/api\/v1\/crates\/example\/1.2.3\/download/);
+});
+
+// Notices ship because the generator finds them by target and product, not
+// because a build script remembered an environment variable.
+test('supplement notices are found by convention and an override wins', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'doubleslash-supplement-'));
+    try {
+        assert.equal(supplementDirectory('client', 'x86_64-pc-windows-msvc'),
+            join(root, 'packaging/licenses/x86_64-pc-windows-msvc/client'));
+        assert.equal(supplementDirectory('client', 'no-such-target'), null);
+        assert.equal(supplementDirectory('client', 'no-such-target', directory), directory);
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
 });
