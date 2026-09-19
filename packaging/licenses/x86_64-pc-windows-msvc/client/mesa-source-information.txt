@@ -1,0 +1,41 @@
+Mesa llvmpipe (opengl32sw.dll) — source and license information
+===============================================================
+
+What is shipped
+---------------
+  opengl32sw.dll
+
+This is the Mesa llvmpipe software OpenGL rasteriser that Qt deploys as a
+fallback for systems without a usable hardware OpenGL driver. It sits in the
+application directory alongside the Qt libraries.
+
+Licence
+-------
+Mesa's core is licensed under the MIT licence; the distribution as a whole
+consists of components under several compatible licences, described in the
+accompanying mesa-license.txt (Mesa's own "License and Copyright" document).
+
+Provenance
+----------
+The deployed opengl32sw.dll is the build supplied by The Qt Company with the
+official Qt 6.8.3 MSVC 2022 x64 packages from download.qt.io. DoubleSlash does
+not build or modify Mesa.
+
+Corresponding source
+--------------------
+  https://gitlab.freedesktop.org/mesa/mesa
+  https://archive.mesa3d.org/
+
+How the obligations are met
+---------------------------
+* Notice — mesa-license.txt accompanies the distribution and is reproduced in
+  the application's third-party notices, satisfying the MIT requirement to
+  include the copyright and permission notice.
+* No modifications — shipped unmodified.
+
+OPEN ITEM — exact Mesa version
+------------------------------
+Qt does not record the Mesa version used for its opengl32sw.dll build in the
+deployed artifact, and this file therefore does not state one. A reviewer
+should either record the version Qt documents for the 6.8.3 release or note
+that the version is not established for this build.

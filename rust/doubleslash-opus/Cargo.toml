@@ -2,6 +2,7 @@
 name = "doubleslash-opus"
 version = "1.0.0"
 edition = "2021"
+license = "MIT"
 description = "First-party libopus wrapper with DRED/OSCE support for DoubleSlash."
 
 [lib]

@@ -229,6 +229,8 @@ pub fn self_copy(base_dir: &Path, nightly: bool) -> Result<()> {
     let self_exe = std::env::current_exe().context("Cannot determine own exe path")?;
     let dest = installer_path(base_dir, nightly);
 
+    copy_launcher_notice(&self_exe, base_dir)?;
+
     // Don't copy over ourselves
     if let (Ok(a), Ok(b)) = (
         std::fs::canonicalize(&self_exe),
@@ -245,10 +247,55 @@ pub fn self_copy(base_dir: &Path, nightly: bool) -> Result<()> {
     Ok(())
 }
 
+/// The standalone launcher and the launcher inside a bundle use the same notice.
+/// Resolve it beside the running binary; another installed version is not evidence
+/// for this executable. Copy it before promoting the executable.
+fn copy_launcher_notice(executable: &Path, destination: &Path) -> Result<()> {
+    let parent = executable
+        .parent()
+        .context("Installer has no parent directory")?;
+    let candidates = [
+        parent.join("doubleslash-installer-win64-licenses.html"),
+        parent.join("licenses/installer/rust-licenses.html"),
+    ];
+    let source = candidates.iter().find(|path| path.is_file()).context(
+        "Installer license notice is missing. Keep doubleslash-installer-win64-licenses.html beside the downloaded installer.",
+    )?;
+    let bytes = std::fs::read(source)?;
+    anyhow::ensure!(!bytes.is_empty(), "Installer license notice is empty");
+    std::fs::create_dir_all(destination)?;
+    let target = destination.join("doubleslash-installer-win64-licenses.html");
+    std::fs::write(&target, bytes)
+        .with_context(|| format!("Failed to retain installer notice at {}", target.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn launcher_update_retains_notice_and_rejects_missing_notice() {
+        let source = tmp_dir();
+        let destination = tmp_dir();
+        let executable = source.path().join("doubleslash-installer-nightly.exe");
+        assert!(copy_launcher_notice(&executable, destination.path()).is_err());
+        let notices = source.path().join("licenses/installer");
+        fs::create_dir_all(&notices).unwrap();
+        fs::write(notices.join("rust-licenses.html"), "bundled notices").unwrap();
+        copy_launcher_notice(&executable, destination.path()).unwrap();
+        let companion = "doubleslash-installer-win64-licenses.html";
+        assert_eq!(
+            fs::read_to_string(destination.path().join(companion)).unwrap(),
+            "bundled notices"
+        );
+        fs::write(source.path().join(companion), "standalone notices").unwrap();
+        copy_launcher_notice(&executable, destination.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(destination.path().join(companion)).unwrap(),
+            "standalone notices"
+        );
+    }
 
     fn tmp_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")

@@ -1,0 +1,30 @@
+[
+  {
+    "file": "qtbase-6.8.3.spdx.json.gz",
+    "uncompressedSha256": "73b4dee169c8f3a1c0c2e2f904d0679cc156ce7e9320f7c866bb723dd4faac68"
+  },
+  {
+    "file": "qtdeclarative-6.8.3.spdx.json.gz",
+    "uncompressedSha256": "a8ecaf2320ea7dde15ec8f1914e7edd0522a3d087cf8fcdafed1debd7e7d9441"
+  },
+  {
+    "file": "qtmultimedia-6.8.3.spdx.json.gz",
+    "uncompressedSha256": "c3e105598aa7a32073e4d2d7bfbf18c037ecfc12b753fec84e9e710cb2858be6"
+  },
+  {
+    "file": "qtpositioning-6.8.3.spdx.json.gz",
+    "uncompressedSha256": "3339b34e049afff241bccd745aa8ccdf88693d6a3ae1b20f563801f7a76bf1a8"
+  },
+  {
+    "file": "qtsvg-6.8.3.spdx.json.gz",
+    "uncompressedSha256": "bb2422665242611dc001b3ec8269b1a5a623da6d5dc08bc8e64467cfd2e50685"
+  },
+  {
+    "file": "qtwebchannel-6.8.3.spdx.json.gz",
+    "uncompressedSha256": "f532bb8971050cecd0ac0cf3fc1da8351746f9c8e2fc973e0bdc1af882778ff4"
+  },
+  {
+    "file": "qtwebengine-6.8.3.spdx.json.gz",
+    "uncompressedSha256": "71c2ba1d7643a42e464ca87781faf633c225ba991e1a8f8eddf8ff8d4c477b7c"
+  }
+]

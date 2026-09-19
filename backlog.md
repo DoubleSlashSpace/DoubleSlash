@@ -1,595 +1,505 @@
-# Backlog — deferred / open work
+# Backlog
 
-Open work deferred while the core framework stabilized. The two original drivers — **E2E text
-chat** and **supernode cluster support** — have both landed, as has Space Merkle **Layer 1**,
-room voice/chat/file E2E (sender keys), and group-key reliability (elected keyer, ack + reseal
-loop, fail-closed room content). Video calling — including A/V sync and adaptive bitrate — is complete
-on Windows; what remains there is platform reach and validation, not media plumbing. See the
-Video section below. What remains is grouped below by theme; ordering within each group is rough
-priority.
+Open work and acceptance criteria. Durable *shipped* invariants live in
+[`agents.md`](agents.md); when an item here lands, move its invariant there and
+**delete the item** rather than marking it shipped. This file is not a changelog.
 
-**Durable *shipped* invariants live in `agents.md`, not here** — when an item below lands, move its
-invariant into the relevant `agents.md` section and delete it from this file rather than marking it
-"shipped" in place. This file is not a changelog; git history is.
+Phases are **priority order**, not calendar dates. Finish or explicitly defer a
+phase before treating a later one as current work. Public “in progress” claims
+in [`README.md`](README.md), [`ConquerD_www/index.html`](ConquerD_www/index.html),
+and [`ConquerD_www/architecture.html`](ConquerD_www/architecture.html) must have
+a home here.
+
+| Public claim | Phase |
+|---|---|
+| Dependency license / distribution blockers | 0 |
+| Linux/macOS camera hardware validation | 1 |
+| Two-client / room media acceptance | 1 |
+| Incoming video (and shared-audio playout) on Android | 2 |
+| Device pairing and installed simultaneous-use | 2, 6 |
+| Screen and shared-audio capture outside Windows | 3 |
+| WASM plugin sandbox | 7 |
+| Space Layer 2 cryptography | 7 |
 
 ---
 
-## Post-quantum crypto (ML-KEM / ML-DSA) — assessed 2026-07-11, deferred
-
-Codebase is fully classical (Ed25519 + X25519 + AES-256-GCM/HKDF-SHA256). Symmetric bulk AEAD is
-already PQ-adequate *if keys are*; quantum risk is key agreement (harvest-now-decrypt-later) and
-signatures (forge after CRQC). Assessed for **ML-KEM** (FIPS 203, encryption/KEM) + **ML-DSA**
-(FIPS 204, signatures). Defaults if/when built: **ML-KEM-768** + **ML-DSA-65**, hybrid with
-classical (not pure-PQ cutover).
-
-### Surfaces
-
-| Role | Classical today | PQ approach |
-|------|-----------------|-------------|
-| Invite session key | Ephemeral X25519 → HKDF (`doubleslash-invite-session-v1`) | Hybrid: X25519 ss ‖ ML-KEM ss → new HKDF info (`…-v2-hybrid`) |
-| Pairwise relay / `SfuGroupKey` wrap | Static Ed25519→Montgomery DH (no FS) | KEM-DEM (see finding 2); prefer ephemeral hybrid where interactive |
-| Room content | AES-GCM under sender keys | Unchanged AEAD; only key *wrap* migrates |
-| Identity / signaling / invites / Space roots | Ed25519 | Dual-sign transition; high-rate envelopes stay Ed25519 early |
-| Release + module manifests | Offline Ed25519 | Cheap early dual-sign (long-lived, low rate) |
-| QUIC/WS/WT TLS | rustls + `ring` | Hybrid group via `aws-lc-rs` provider swap (finding 1 — transport only; build/size cost) |
-| Browser `web-sdk` | `@noble/ed25519` | After native wire freeze (JS/WASM PQ) |
-
-### Findings (priority order)
-
-1. **Hybrid PQ TLS (transport only; real engineering cost, still a sensible first step).** Switch
-   rustls 0.23 from the pinned `ring` provider to `aws-lc-rs` in client + supernode for the
-   `X25519MLKEM768` hybrid group on QUIC / WebSocket TLS. **Not free:** hard-coded
-   `rustls::crypto::ring::default_provider()` call sites (`quic_tls.rs`, `relay.rs`, `main.rs`,
-   cluster-link tests), larger/slower builds (AWS-LC native toolchain), bigger binaries, possible
-   dual-provider graph via `reqwest` / `tokio-tungstenite`, and CI matrix risk (win64 + linux-x86_64
-   + linux-aarch64). **Scope of protection is narrow:** only transport TLS HNDL between upgraded
-   peers; app-layer invite X25519, pairwise relay keys, and room AES keys stay classical. No
-   invite/protocol change, but do not market as “PQ-ready.”
-2. **Structural casualty — `derive_pairwise_relay_key` cannot be ported.** It relies on the
-   Ed25519→Montgomery birational map so one identity key does both signing and static DH
-   (`crypto.rs`); ML-DSA keys have no map to ML-KEM. Replacement is KEM-DEM: each identity carries
-   a **second static ML-KEM key signed by the ML-DSA identity key**, distributed wherever
-   `identity_pub` travels; sealing to a peer = encapsulate against their static KEM key and carry
-   the ~1.1 KB ciphertext in the envelope header (stays non-interactive / offline-capable; cache a
-   per-pair session key to amortize). Direction now matters — the "both sides derive the identical
-   key" property and sorted-pair binding go away. Affects `EncryptedSignal` and `SfuGroupKey`
-   sealing.
-3. **Invite handshake maps cleanly** (inviter's ephemeral X25519 point → ML-KEM-768 encapsulation
-   key, joiner replies with the ciphertext), but the invite blob grows 32 B → 1,184 B of key
-   material + 1,088 B reply; re-check invite-link and **QR-code size limits**. Prefer out-of-band
-   / compressed invite blobs over stuffing full PQ material into `doubleslash://` query strings.
-4. **`public_id` under ML-DSA.** Today public_id *is* the verifying key (44 chars b64); ML-DSA-65
-   pubkeys are 1,952 B (~2.6k chars b64). Preferred transition: **keep Ed25519-derived `public_id`
-   as the stable peer id** (room ACL / peer-store / SFU padding unchanged) and attach `ml_dsa_pub`
-   as a verified binding (cross-cert by both keys). Alternative: short hash fingerprint + explicit
-   full-pubkey distribution protocol-wide. `peer_id` (SHA-256 of classical pubkey) can survive
-   either path if binding is explicit.
-5. **Signature payload growth is fine, sigs go last.** ML-DSA-65 sigs are 3,309 B vs 64 B — do
-   **not** dual-sign every high-rate signaling envelope or SFU audio frame early. Prefer dual-sign
-   on low-rate objects first: **invites, Space roots** (one treehead per Space per epoch — best
-   amortization), grants, tickets. Signatures have no harvest-now risk, so they migrate *after*
-   KEM work — **except release-manifest (and module-manifest) signing**, which is isolated and
-   long-lived: cheap to dual-sign early.
-6. **Identity storage barely changes.** FIPS 203/204 support seed-based keygen (32 B ξ / 64 B d‖z);
-   identity file + keyring keep storing small seeds, derive both keypairs via HKDF domain
-   separation.
-
-### Shape when built
-
-- **Hybrid, not pure PQ** — length-prefixed X25519 ‖ ML-KEM-768 through HKDF (as TLS does) and
-  dual-sign rather than replace Ed25519, so a break in either primitive isn't fatal.
-- **Negotiation** (capability-style): advertise e.g. `crypto.kem.v1` /
-  `crypto.sig.v1` lists; pick the best mutual hybrid. Supernode accepts classical and hybrid
-  joiners during transition; opacity model unchanged (still no content access).
-- **Suggested phases:** (1) hybrid TLS provider (finding 1 — build/CI cost, not free), (2) hybrid
-  invite handshake + new session-key info, (3) KEM-DEM pairwise / group-key wrap, (4) dual-sign
-  low-rate + release/module manifests, (5) identity ML-DSA binding + optional high-rate policy,
-  (6) browser parity, (7) deprecate pure classical by policy only after ecosystem age.
-- Pre-release status still allows freer wire changes than a dual-stack fleet would; app-layer
-  ML-KEM CPU is usually fine vs X25519. Real costs: finding 1 build/size/CI, finding 2's redesign,
-  finding 4's id strategy, ~1–3 KB envelope/invite growth.
-- Crates: `aws-lc-rs` (rustls side); app layer RustCrypto `ml-kem`/`ml-dsa` (dalek-style, check
-  maturity) or `libcrux-ml-kem` (formally verified). Require NIST KATs + client↔supernode cross
-  KATs before calling anything “PQ-ready” in user docs.
-
-### PQ non-goals (near-term)
-
-- Pure ML-KEM without X25519 hybrid on first ship.
-- ML-DSA on every SFU audio / high-rate control frame.
-- Reviving TreeKEM for PQ rooms (still declined for membership scale; hybrid wrap of current
-  pairwise sender-keys is enough).
-- QUIC-stack PQ as a hard dependency of app-layer PQ (TLS hybrid is additive).
-- SLH-DSA / FN-DSA unless a later size/speed trade-off demands it.
-
-See also the Space-section post-quantum note: Layer 1 already confines directory trust to one
-treehead signature per Space per epoch.
-
-## Space Merkle tree — remaining
-
-**Layer 1 (authenticated room tree) is shipped** — implementation, admission-path table, reserved
-Layer 2 leaf fields, and the `v1` hash-label freeze rule now live in `agents.md` (Architecture
-Notes → room ownership invariant). Only the open items are tracked here.
-
-### Still open
-
-- **Root-equivocation: append-only history tree (deferred).** We use a **set** tree, not an
-  append-only log, so there are no consistency proofs between epochs. A malicious owner can sign
-  two different roots for the same epoch. Today's equivalent (creator controls the room set on the
-  supernode it talks to) is strictly weaker, so this is not a regression; the lighter mitigation
-  (equivocation detection + logging) is shipped. **Still deferred:** CT-style append-only history
-  with consistency proofs — which could also make the cluster roster itself (replacing the
-  single-signer `SignedClusterDescriptor`) an auditable membership log.
-- **`Closet` node kind.** Distinct node `kind` for a different semantic (e.g. text-only
-  sub-channels). Separate, unbuilt, additive refinement — not required for nesting depth.
-- **Layer 2 — key hierarchy (entirely unbuilt).** Extends the pairwise sender-keys
-  `GroupKeySource` (TreeKEM declined — see Declined). Scope:
-  - Per-node epoch secrets; HKDF inheritance down `inherit=true` edges
-    (`child_key = HKDF(parent_epoch_secret, "space-node" ‖ node_id)`), grants downward only.
-  - `inherit=false` compartments sealed as their own pairwise-distributed group (owner → each
-    member, same mechanism as room sender-keys).
-  - Real values for reserved `inherit` / `key_commit` leaf fields and the invite `space_node_key`
-    slot ("subtree invite = node key + Merkle inclusion proof", minus the key today).
-  - Capability-token admission (`access_proof.rs`: AEAD/MAC under the node key over
-    `{node_id, epoch, relay_id, expiry}` + inclusion proof), swapping Ed25519 `SpaceGrant` for a
-    token MAC'd under the node key **without** changing the admission call shape; under
-    `"members"`, holding the node key is what mints tokens.
-  - **Confirm before freezing `v1` hash labels:** a `SpaceGrant` targets exactly one `node_id` and
-    proofs don't inherit — a *direct member on an inherited node* is fine in Layer 1; grant shape
-    must stay compatible with "wrap node key to individual" (direct member on an inherited node =
-    wrap the derived key to them individually).
-
-### Space non-goals
-
-- **Literal MTC / X.509.** No CA and no name→key binding authority; identities are self-authenticating
-  Ed25519 keys and QUIC TLS certs are throwaway self-signed key carriers. Layer 1 already adopts only
-  the MTC **pattern** (sign one treehead per epoch, disseminate out-of-band, authenticate leaves with
-  inclusion proofs). Origin: evaluation of Merkle Tree Certificates
-  ([Cloudflare MTC](https://blog.cloudflare.com/bootstrap-mtc/), draft-ietf-tls-trust-anchor-ids).
-- **Subtree delegation.** v1: only the Space owner signs roots. Owner-signed delegation leaves are a
-  compatible later addition and do not block `v1` labels.
-- **Inter-cluster federation, blinded/unlinkable tokens, payments** — see Discovery / Declined
-  sections; not Space-specific work.
-
-**Post-quantum note:** codebase is classical today (full assessment: see the *Post-quantum crypto*
-section above). Layer 1 still helps a future PQ migration the same way MTC does: admission/directory
-trust costs **one signature per Space per epoch**, so swapping Ed25519 → ML-DSA later inflates one
-treehead signature, not a per-room/per-grant fan-out.
-
-## Modularity / plugins
-
-- **WASM plugin sandbox.** Bespoke feature modules are native cdylibs with load-time trust prompts
-  today; a WASM sandbox would remove the "trust the binary" requirement.
-- **Ollama / plugin UX polish** — currently experimental.
-
-## Audio quality — remaining
-
-- **Polyphase resampling (V7).** Linear interpolation is near-inaudible for 8 kHz voice at typical
-  device rates; a windowed-sinc or `rubato` `FastFixedIn` drop-in is the right fix if it becomes
-  perceptible.
-- **Stereo / spatial mixdown (V8).** Per-peer pan in `mix_pcm_frames` + stereo ring buffer.
-  Low-priority, pure UX enhancement.
-
-## Video calling — remaining
-
-Large in-tree feature, **complete on Windows and unproven elsewhere**. Transport, capability ads,
-quotas, room E2E, camera-state signaling, codec negotiation, A/V sync, adaptive bitrate, Windows
-capture/encode, and call UI are built under `rust/doubleslash-client/src/video/` +
-`connection_manager/manager/video_session.rs` + the media-layer modules + QML `VideoTile` /
-`VideoRegion` / `VideoPopoutWindow` / `VoiceRail` share control / settings preview.
-
-What follows is what stands between that and a cross-platform capability worth calling shipped.
-It is now **platform reach and validation**, not media plumbing — if you are about to write a
-design for sync or bitrate control, stop and read `agents.md` first, both are done.
-
-### Shipped scaffolding (do not re-litigate)
-
-Merged into `agents.md` — channel tags `0x06`/`0x07` and the relay-datagram-only / one-stream-per-peer
-rules (Channel-tag rules), the `core.video.v1` + `room.video.sfu` descriptor rows and the video
-codec invariant (Feature Module
-Reference), room-video opacity and `MediaKind::Video` AAD separation (Supernode Opacity), and the
-`src/video/` module map with the Windows-only capture caveat (Architecture Notes). Also shipped and
-not re-litigated here: quality presets (low / balanced / high), settings device list + local preview,
-the in-call camera toggle, the `VoiceRail` share menu (source + overlays + audio choice at start),
-**audio-led A/V sync** (`media_clock.rs` / `media_sync.rs` / `content_playout.rs`), the
-**content-audio track** (`0x08` / `0x09`, `core.audio.content.v1` / `room.audio.content.sfu`), and
-**video adaptive bitrate** (`video/sender.rs`, sharing the audio ABR stats tick).
-
-**Docs are done too, as of 2026-08-07** — README video section / Known limitations / capabilities
-table, `agents.md` (media-layer invariants, channel tags, codec + opacity rules), and the
-`PRIVACY.md` *Camera, screen, and shared-audio capture* disclosure covering whole-screen exposure
-and the pre-20348 per-application-audio fallback. Adding a **new capture backend is a privacy-doc
-change as well as a code change** — that rule now lives in the Documentation Agent role in
-`agents.md`. Do not re-open a docs item for video; extend those sections in place.
-
-### Still open (rough priority)
-
-1. **Screen share off Windows.**
-
-   The codec question is **closed** (Option C, hybrid, 2026-07-30): VP8 ships on every platform
-   via the vendored `doubleslash-vpx`, and **camera capture now exists on all three**. Durable
-   invariants live in `agents.md`. What is left is the screen/window surface:
-
-   | Platform | Camera | Screen / window |
-   |---|---|---|
-   | Windows | `MfCamera` ✅ | `Windows.Graphics.Capture` ✅ |
-   | Linux | `V4l2Camera` ✅ | **open** — PipeWire + `xdg-desktop-portal` (Wayland), X11 fallback |
-   | macOS | `AvfCamera` ✅ | **open** — ScreenCaptureKit |
-
-   Notes for whoever picks this up:
-   - **Linux screen capture is the awkward one, and it changes the UX.** Wayland has no
-     screen-scraping API by design; capture goes through `xdg-desktop-portal`'s ScreenCast
-     interface over D-Bus, which returns a PipeWire node id after the *compositor* draws the
-     picker. That dialog is not skippable and cannot be replaced by our own QML source list the
-     way `monitor:` / `window:` ids work on Windows — so `SourceSpec::Screen` needs a
-     portal-shaped variant rather than an id we choose. An X11 fallback (XComposite/XShm) covers
-     older sessions and can keep the current id model.
-   - **macOS needs entitlements, not just code.** ScreenCaptureKit requires Screen Recording
-     permission granted in System Settings, which cannot be prompted for repeatedly, and the app
-     must carry the matching usage strings. Not testable in CI.
-   - VP8 already covers encode everywhere, so a new backend only has to produce `RawFrame`
-     (tightly-packed I420) and the existing pipeline handles the rest.
-
-2. **Verify the platform backends on real hardware — nothing outside Windows has captured a frame.**
-
-   | Backend | Compiles | Logic tested | Run against a camera |
-   |---|---|---|---|
-   | Windows `MfCamera` | ✅ | ✅ | ✅ (dev machine) |
-   | Linux `V4l2Camera` | ✅ (WSL + CI) | ✅ format choice | ⚠️ opens + negotiates, never streams — see below |
-   | macOS `AvfCamera` | ✅ Rust half (verified 2026-08-07) | — | ❌ no Mac on the team |
-
-   The macOS Rust now type-checks clean under `-D warnings` via the `lint-macos` feature, which
-   is checkable from any host:
-
-   ```
-   cargo clippy -p doubleslash-client --no-default-features --features lint-macos -- -D warnings
-   ```
-
-   That covers the Rust FFI only. The **Objective-C shim genuinely needs a Mac to compile and
-   link** — the `test-macos` CI job is the only thing exercising it, so treat a green run there
-   as the real signal, not a local clippy pass.
-
-   **Linux, partially answered on 2026-09-03** against a Logitech C270 passed into WSL with
-   `usbipd attach --wsl`. Enumeration and format negotiation now have a real driver behind
-   them: the camera advertises `["YUYV", "MJPG"]`, `choose_format` correctly refuses MJPG and
-   takes YUYV, and `set_format` returned exactly the requested 640x360 with no silent
-   substitution.
-
-   Frame delivery did **not** get answered, and cannot be from WSL. UVC streams over
-   *isochronous* endpoints, which USB/IP's `vhci_hcd` does not implement — the kernel says
-   so (`vhci_get_frame_number: Not yet implemented`) and `next_frame` then blocks forever
-   rather than failing, which is a nastier failure than an error would be. The WSL kernel has
-   no `vivid` test driver to stand in either (`CONFIG_V4L_TEST_DRIVERS is not set`). So stride
-   handling across the three accepted formats, buffer starvation under load, and
-   unplug-mid-call still need real Linux: a machine, a VM with true USB passthrough, or a
-   custom WSL kernel built with `CONFIG_VIDEO_VIVID=m` — vivid offers YU12/NV12/YUYV, so it
-   would exercise all three converter branches, which the C270 cannot since it offers only
-   YUYV.
-
-   On macOS still unverified: the TCC camera prompt, and whether the chosen
-   `AVCaptureSessionPreset` yields the requested size.
-
-   The `#[ignore]`d `captures_a_frame_from_the_default_camera` now has a Linux sibling (added
-   2026-09-03), which also prints what the driver offers against what `choose_format` picked,
-   since that answer is a property of the device rather than of the code. macOS still needs
-   one. Run all three on hardware before calling any platform done.
-
-3. **End-to-end product validation (2-client + room).**
-   Transport unit tests cover tags, fragmentation, absent-peer drop, and `SfuVideoState` replay;
-   that is not a substitute for:
-   - Direct 1:1 camera on both legs with decode to `QVideoSink`.
-   - Room multi-party fan-out (relay path, mid-join keyframe recovery, camera-off placeholders).
-   - Direct-call → temporary SFU fallback still routing video on the room path (`video_route`).
-   - Failure modes: no camera, camera in use, encoder unavailable, quota shed, stall vs
-     intentional camera-off (`SfuVideoState` is the edge signal).
-   Gate “video calls ship” on a written manual checklist, not compile alone. The README now
-   describes video as complete on Windows and unvalidated elsewhere — this checklist is what
-   replaces that hedge with a claim.
-
-4. **Content-audio capture off Windows.**
-
-   The media layer itself is **done** — `SessionMediaClock`, PTS on video fragments, the
-   `core.audio.content.v1` / `room.audio.content.sfu` wire, audio-led receiver sync, and the
-   opaque supernode fan-out all shipped 2026-08-02. Durable invariants live in `agents.md`
-   (media-layer module map + content-audio playout invariants); do not re-derive the design here.
-
-   What is left is capture on the other two platforms:
-
-   | Platform | Source | State |
-   |---|---|---|
-   | Windows | WASAPI endpoint loopback (whole machine) and `VAD\Process_Loopback` via `ActivateAudioInterfaceAsync` (one app's process tree) | Built |
-   | Linux | PipeWire / PulseAudio monitor source | Unbuilt |
-   | macOS | Hardest — needs a virtual device or ScreenCaptureKit audio | Unbuilt |
-
-   Whichever backend a platform gets, it must report **device capture offsets** per frame rather
-   than counting frames out: a loopback device emits nothing at all while its source is quiet, and
-   a counter silently converts every silence into permanent audio-behind-video lag. See
-   `CaptureTimeline`, and the content-audio playout invariants in `agents.md`.
-
-   Pairs naturally with screen capture (item 1), which needs the same permissions on Linux/macOS.
-   **Echo hazard (open on every platform):** if content is system loopback, remote peers' audio
-   played locally re-enters the loop. Needs exclude-our-own-output, ducking, or a virtual cable.
-
-   Still unsolved by design: **lip sync for a talking-head call.** The mic is not on the synced
-   timeline, so a face and its voice can drift by whatever the two paths' buffering differs by.
-   Accepted: the target was "some sync, not frame-perfect", and a small webcam tile is forgiving.
-   If it proves inadequate, the mic can be *additionally* carried on the media layer during video
-   calls — a follow-on, and one that would need a clean handoff at camera toggle.
-
-5. **Validate A/V sync on a real network.**
-
-   The sync logic has unit coverage with a fake clock, but the lab measurement it was specified
-   against has not been run: clap+flash under a clean network, ~1–2 % loss, and a keyframe burst,
-   plus a multi-peer check that per-sender timelines never cross. Target is ±40–80 ms audio-led.
-   Also confirm the voice path is byte-identical to before the media layer landed — that was the
-   central premise of building beside it rather than modifying it.
-
-6. **Receiver resilience polish.**
-   Decode thread, per-peer decoder map, queue drop, and keyframe-request-on-decode-failure exist;
-   still open: PLI/FIR cadence tuning, idle decoder GC under many room members, graceful degrade
-   when Qt Multimedia / sink is absent (`cfg(qt_multimedia)` already degrades UI — keep that
-   path honest in docs and settings). Align drop/keyframe policy with the shipped A/V sync hold
-   queue (`media_sync.rs`; invariants in `agents.md`) so a PLI storm does not empty the video
-   timeline while audio keeps playing.
-
-7. **UX completeness.**
-   Camera toggle + settings preview + tiles exist; remaining polish as the path stabilizes:
-   - Screen-share picker UX (monitor/window ids are `monitor:` / `window:` in settings today;
-     discovery UI may still be thin) — pair with content-audio toggle from item 4.
-   - Multi-tile layout under several active room cameras (layout stress, not a new wire feature).
-   - Confirm local-preview vs remote tile identity (preview uses local public id).
-   - Separate level meters / mute for voice vs content when both are live (mix-at-sender still
-     benefits from local “content mute” and “mic mute”).
-
-### Video non-goals (near-term)
-
-- **Multiple independent outbound streams per peer** (separate camera + screen without composite)
-  — wire identifies a stream by sender only; changing that is a protocol bump, not a toggle.
-- ~~**Separate content-audio wire track in v1** — prefer mix-at-sender onto existing Opus.~~
-  **Reversed 2026-07-30.** Mix-at-sender was chosen because it needed no wire change, but that
-  benefit evaporated once A/V sync needed a media layer anyway — and it contradicted item 4's own
-  requirement that content audio not run the voice DSP stack, since one Opus encoder cannot hold
-  two application modes. Content audio now gets its own stream; see item 4.
-- **Frame-perfect / broadcast A/V sync** — v1 target is ±40–80 ms audio-led (item 5), not
-  sample-accurate editorial sync, NTP-coupled peers, or full RTP/RTCP.
-- **WebRTC / browser video** — in-app portal stays on identity QUIC; do not reintroduce public
-  WebTransport or page-side SFU video clients.
-- **openh264 (or other in-tree AVC) in our binary** — rejected for MPEG-LA exposure; Windows uses
-  OS MFTs. Any software H.264 path needs an explicit licensing review before packaging.
-- **Simulcast / SVC layers** — single encode ladder + ABR first; layered encode only if room scale
-  demands it after a real multi-party load test.
-- **WS fallback for room video media** — deliberately relay-datagram-only; members on WS-only
-  keep audio, not video (documented on `SendRoomVideo`).
-
-## Crypto — group-key keyer handover on join
-
-Found 2026-09-06 while testing Android room voice against the live `acdc` cluster. Two distinct
-problems; the first is fixed, and the second was addressed 2026-09-12 (below).
-
-**Fixed:** `is_elected_keyer` compared `public_id`s raw. Membership is a union of snapshots and the
-relay path spells ids un-padded while SFU/signaling spell them padded, so one identity appeared as
-both `A...sg` and `A...sg=`; the un-padded copy sorts first, so receivers rejected the rightful
-keyer's `SfuGroupKey` as "not elected". Now normalised, with two regression tests. Invariant is in
-`agents.md`.
-
-**Was open — a newly elected keyer could not take over an established room.** Election picks the
-lexicographically smallest member, so a *joining* member can legitimately become the new keyer. It
-mints via `should_mint_first_room_key`, which fires on `!has_real_key` and so starts at **epoch 0**,
-below every existing member. Observed live: a phone joining `default` became the elected keyer at
-epoch 0/1 while another member kept rotating 2 -> 3 -> 4, and neither side could open the other's
-frames.
-
-**Addressed 2026-09-12 in three parts** (covered by unit and manager-harness tests; not yet verified
-live):
-
-- *The keyer catches up.* `GroupState.seen_high` makes a keyer mint above the highest epoch it has
-  seen on the wire, fed from both chat and audio decrypt failures (`rekey_room_if_behind`). A new
-  keyer that minted 0 moves above the room as soon as it receives room traffic.
-- *Members take forward jumps.* `accept_group_key_epoch` now admits any epoch up to
-  `MAX_EPOCH_ADVANCE` (64) ahead from the elected keyer, and still refuses rollbacks and non-keyers.
-  **This deliberately reverses the note that used to be here** ("the fix is *not* to loosen
-  `accept_group_key_epoch`"). Adjacent-only stranded any member that missed two or more rotations:
-  a desktop held epoch 1 in `default` while the phone keyer rotated to 5 without it, refused 4 and 5,
-  and stayed deaf both ways to everyone keyed since (18.7k unopenable frames) until restarted. The
-  rule guarded nothing — only the elected keyer's offer reaches the epoch check, and that keyer mints
-  the key, so it can silence a room with a bad `current + 1` just as well.
-- *Retries re-arm.* Distribution still gives up after 16 attempts, but the elected keyer now reseals
-  the current epoch to a member whose audio or chat frames carry an older one
-  (`reseal_to_lagging_member`), once the epoch has been current for a full distribution window
-  (12 s), so frames in flight across a rotation don't trigger it.
-
-Still open: a stranded member that only *listens* sends no frames, so the keyer cannot see it is
-behind; it recovers at the next membership change or rejoin. Also unexplained: why that desktop never
-received epochs 2 and 3 at all, which suggests the keyer's membership union briefly excluded it. The
-phone's logcat had already rolled past the event, so capture the keyer's log next time.
-
-**Testing note:** the public `default` room is a bad place to test room E2E. It carries members on
-clients you do not control, and a single un-upgraded participant acting as a competing keyer is
-indistinguishable from a local bug. Use a private two-party room.
-
-## Android client — remaining
-
-Foundation landed 2026-09-06: the **whole `doubleslash-client` core cross-compiles and runs on
-`aarch64-linux-android`**, wrapped by `rust/doubleslash-android` (JNI cdylib) under a Kotlin/Compose
-app in `android/`. One `./gradlew assembleDebug` builds Rust and APK together. Durable invariants
-— the JSON command/event boundary, the media-never-crosses-JNI rule, the event pump thread, the
-build-script host/target rule — are in `agents.md`; the build and debug runbook is
-`docs/ANDROID.md`. Do not re-litigate the Qt-vs-Compose decision; the rationale is recorded there.
-
-Working today: identity create/unlock, all three stores, QUIC + relay + supernode signaling,
-direct chat (history, send, acks, failure status, typing), invite generate/accept plus a
-`doubleslash://` intent filter, room list/join/leave and room chat, a foreground service that keeps
-sessions alive, and `audio.start`/`stop`/`set_muted` into `CallController`.
-
-**First hardware run 2026-09-06** on a Pixel 11 (Android 17 / API 37, arm64-v8a): the library
-loads, the JNI round-trip works, and the core starts clean — identity generated, stores opened,
-`ConnectionManager` and `CallController` running, QUIC endpoint bound. UPnP finds no gateway on
-mobile, as expected. **Still unproven: everything involving a second party** — no invite has been
-exchanged, no message sent, no supernode reached from the device.
-
-### Still open (rough priority)
-
-1. **Room voice on a clean room.** Direct 1:1 voice is proven (see above). Room voice gets as far as
-   `Audio pipeline started` but has never exchanged audible audio, because the only room it has been
-   tried in is the public `default`, where a third participant on an un-upgraded client fights for
-   keyer (see "Crypto - group-key keyer handover"). Retest in a private two-party room before
-   drawing any conclusion about the room path itself.
-
-2. **Survive the background.** Nothing has yet been tested across doze, a screen-off transition, or
-   a Wi-Fi/cellular handover - the three things a desktop never exercises and the most likely place
-   for the next class of failure.
-
-3. **Identity auto-unlock via Android Keystore.** `keyring` compiles for Android but has no backend
-   there, so `keyring_load_aes_key` always misses and *every launch asks for the passphrase*. The
-   fix is a Keystore-backed AES key wrapping the same derived key the desktop caches, reached over
-   JNI — not a new key schedule. Until then the app is usable but tedious.
-
-4. **Call UI polish.** The call flow works end to end; what is missing is refinement - no speaking
-   indicators (the core does not surface per-peer audio activity to this layer), no call duration,
-   no reconnect affordance when a call drops.
-
-5. **Camera capture.** `CameraSource` is the seam and `NullCamera` is what currently satisfies it.
-   Needs a CameraX `ImageAnalysis` (YUV_420_888) → tightly-packed I420 backend, with the frames
-   crossing into Rust through a direct `ByteBuffer` rather than JSON. VP8 encode already works
-   everywhere, so a backend only has to produce `RawFrame`.
-
-6. **Video render.** Decoded I420 to a `Surface` via `ANativeWindow` from Rust, rather than pushing
-   frames up into Compose.
-
-7. **Screen share.** `MediaProjection` → `VirtualDisplay` → `ImageReader`. Note this is a **privacy
-   disclosure as well as a code change** — per the Documentation Agent contract, a new capture
-   backend must update `PRIVACY.md` in the same change.
-
-8. **In-app portal on `android.webkit.WebView`.** The system WebView replaces Qt WebEngine with no
-   binary-size cost and exposes both seams `web.host.app.v1` needs: `shouldInterceptRequest` to
-   serve `doubleslash://` content from the core over the authenticated QUIC session, and
-   `addJavascriptInterface` for the `window.doubleslash` bridge. **Security gate:** that interface must
-   be attached only to `doubleslash://`-origin content, never to arbitrary web pages, with
-   `setAllowFileAccess(false)` and `setAllowUniversalAccessFromFileURLs(false)`. External links
-   belong in a Custom Tab, outside the trust boundary.
-
-9. **File transfer UI** over the Storage Access Framework — Android has no free-standing filesystem
-   path to hand `SendFile`.
-
-10. **`ACCESS_LOCAL_NETWORK` before raising targetSdk to 37.** Official enforcement is
-   Android 17 / `targetSdk` 37: apps at 36 still get an implicit grant from `INTERNET`.
-   `targetSdk` is already 36 (Play's 2026 floor). On the Pixel 11 (API 37) a 35-targeted
-   build showed `granted=true, flags=[REVOKE_WHEN_REQUESTED]`, meaning the grant evaporates
-   the moment the app asks properly. Raising to 37 without adding the request and a
-   rationale turns every direct LAN session into a relayed one, with no error to explain
-   it. Do not declare the permission early — declaring it is what revokes the implicit grant.
-
-11. **Multi-device (one identity, several live endpoints).** Explicit preview; live acceptance pending.
-   The 2026-09-14 implementation adds root-authorized device TLS identities,
-   separate QUIC relay indices and direct routes, sibling-safe disconnects,
-   per-device SFU membership/chat fan-out, and encrypted own-device room-key
-   handoff. The `device-routing` Cargo feature enables the preview; defaults retain
-   legacy routing. Compatibility negotiation precedes registration. Encrypted relay
-   copies reach missing direct siblings; calls select and confirm one answering device.
-   Still required: device discovery, file/room-media/game endpoint
-   state, cluster roster coordination, and installed desktop/phone acceptance.
-   Continuous local-data sync and delegated device authorization are unfinished.
-   Accepted registry persistence uses encrypted SQLite with transactional
-   version/fork checks; backups preserve revocations and reject damaged registry
-   data. This delegated trust store is not consumed by live authentication yet;
-   the current gated device routes require full root identity authority.
-   Desktop/phone direct and private-room chat passed with distinct identities on
-   2026-09-13. Shared-identity validation currently uses automated tests, including
-   real localhost WebSocket and QUIC connections. The installed applications
-   still use legacy routing. See [Devices and backups](docs/DEVICES_AND_BACKUPS.md)
-   for backup/restore instructions and the remaining acceptance work.
-
-12. **CI.** No Android job exists. It needs the NDK, `cargo-ndk`, and `cmake;3.31.6` specifically —
-   CMake 4 rejects libopus's declared `cmake_minimum_required`.
-
-13. **Release APK hardening.** R8 rules for the JNI surface and kotlinx.serialization are written
-    (`app/proguard-rules.pro`) but a minified release build has never been run, so they are
-    untested. `bundleRelease` signs from `DOUBLESLASH_KEYSTORE` when that env is set; a Play
-    upload key has not been used yet.
-
-### Google Play listing — remaining (2026-09-10)
-
-App-side policy work for a first listing is in the tree: `targetSdk` 36, `specialUse` FGS
-(with `onTimeout` and a notification Disconnect), Android-accurate `PRIVACY.md` / `TERMS.md`,
-in-app terms gate, mic/camera/notification disclosures, peer/room Report, portal WebView
-locked to `d://` / `doubleslash://`, and background incoming calls (`CallStyle` + full-screen
-intent). What is left is almost all Play Console, not more Kotlin.
-
-**Blocks a public listing (Console, not code):**
-
-1. **Signed AAB + Play App Signing.** `bundleRelease` with a real upload keystore in
-   `DOUBLESLASH_KEYSTORE`. Package id `com.doubleslash.client` is frozen at first upload.
-2. **`specialUse` declaration + a short video** of the persistent “connected” notification
-   and Disconnect. Play will not accept `dataSync` for a standing P2P session.
-3. **Full-screen intent declaration** for lock-screen incoming calls
-   (`USE_FULL_SCREEN_INTENT`).
-4. **Data Safety** matching `PRIVACY.md`: messages, audio, camera, files, handle; collected
-   on device; shared only with chosen peers; custom E2E in transit; locally deletable; no
-   ads, analytics, or advertising ID.
-5. **Photo and video permissions** declaration — camera is for calls, not a gallery scrape.
-6. **Encryption besides HTTPS** — yes (Ed25519 / X25519 / AES-GCM). US EAR
-   self-classification in the questionnaire.
-7. **IARC.** Chat + UGC typically Teen / 13+. Do not opt into Designed for Families.
-8. **Closed testing** (personal accounts: typically 14 days and enough opted-in testers)
-   before production.
-9. **Developer identity verification** — enforcement in several countries starts
-   2026-09-30.
-10. **Reviewer notes:** unlock passphrase + a working invite. The crawler dies on the lock
-    screen otherwise.
+<a id="dependency-license-release-acceptance"></a>
+
+## Phase 0 — Release licensing
+
+Highest priority: desktop and distributable Android packaging **fail closed**
+until reviewed supplements exist. Details:
+[licensing guide](docs/LICENSING.md#remaining-release-approval-findings).
+
+Implemented and locally checked on 2026-09-16 (not acceptance):
+
+- Explained all 98 matched Qt SBOM checksum differences by reconstructing
+  pre-Authenticode PE images; retained evidence in
+  [the evidence directory](packaging/licenses/evidence/windows-qt-6.8.3/README.md).
+- Added native/build/asset input hashes, Android resolved-runtime/variant
+  binding, working-tree source snapshots, and final-archive notice/native-file
+  validation.
+- Fixed launcher self-copy and supernode-manager extraction/upload to retain
+  notices. Fixed SignPath's artifact ID input and restore the standalone notice
+  from the unsigned artifact before signed publication.
+- Added the Android offline notice reader under Settings > Legal. Device
+  acceptance remains open.
+- Windows supernode release ZIP notices/source/inventory passed the archive
+  validator. That does not accept the other distribution targets.
+
+### Still blocking
+
+1. **Runtime notices.** Desktop Settings > About has no license, About Qt, or
+   Chromium credits UI. Archive `licenses/` files are not a prominent in-app
+   notice. Qt LGPL requires the license text plus a prominent notice that an
+   LGPL library is used. Android's Legal reader exists but has not been accepted
+   on a device and currently packages no approved native/runtime texts.
+2. **Chromium and corresponding source.** The Qt WebEngine 6.8.3 SBOM lists
+   wrapper DLLs only; it does not list Chromium, V8, Skia, Blink, FFmpeg, or
+   `QtWebEngineProcess.exe`. Matching `Qt6WebEngineCore.dll` by reconstructed
+   pre-signing checksum is not Chromium notice or source evidence. LGPL
+   replacement/relinking instructions are unrecorded.
+3. **Checksum and provenance.** All 98 Qt SBOM matches are reconstructed
+   pre-signing PE hashes, not raw shipped-file checksums. Twelve files including
+   QtWebEngineProcess and FFmpeg remain unmatched. 93 SBOM packages remain
+   `NOASSERTION`. The collector inventories DLL/EXE only, so embedded components
+   are outside that provenance.
+4. **Reviewed supplements.** Complete the native/runtime/asset reviews in
+   [the licensing guide](docs/LICENSING.md) and commit target-specific
+   supplements with actual notices, source information, reviewer/date, matching
+   features, and dependency lockfile hashes. Cover Qt modules/plugins,
+   Chromium/WebEngine, FFmpeg, Android JVM/Oboe/NDK, fonts, game/portal
+   dependencies, and Opus model data. The owner confirmed original project
+   artwork; remaining review is dependency-supplied assets, not that artwork.
+5. **Final artifacts.** Build and inspect Windows archives, macOS
+   applications/DMGs, Linux AppImages, supernode archives, and Android APKs/AABs
+   after supplements exist. Staging-directory checks alone are not acceptance.
+6. **Publication paths.** Verify stable, nightly, signed, and unsigned paths
+   retain the standalone-installer companion notice, including SignPath. Exercise
+   installer-update and supernode deployment on actual installations.
+7. **Android device acceptance** of the Legal reader with a reviewed package,
+   including supplemental notices and external source links.
+8. **GitHub enforcement.** Run the license and release workflows in GitHub
+   Actions, including scheduled advisory/ban/source checks. Configure branch
+   protection to require `License checks required`. Workflow wiring alone does
+   not enforce merges. No authenticated GitHub credential was available when
+   this was recorded; the license workflow was not yet published.
+9. **Review ownership.** A named component reviewer must approve each supplement
+   and verify source/replacement arrangements when Qt, Gradle/NDK, assets, model
+   data, or packaging change.
+
+---
+
+## Phase 1 — Prove what already ships
+
+Fixes and live acceptance of paths the product already advertises. Do not start
+new capture backends or pairing protocols until these have a written result.
+
+### Group-key: remaining live gaps
+
+Election padding, catch-up minting, forward epoch jumps (`MAX_EPOCH_ADVANCE`),
+and reseal-to-lagging-member landed 2026-09-12 with unit and manager-harness
+tests. **Not yet verified live.**
+
+Still open:
+
+- A stranded member that only *listens* sends no frames, so the keyer cannot
+  see it is behind; it recovers at the next membership change or rejoin.
+- Unexplained: a desktop never received epochs 2 and 3, which suggests the
+  keyer's membership union briefly excluded it. Capture the **keyer's** log
+  next time; the phone's logcat had already rolled past the event.
+
+**Testing note:** the public `default` room is a bad place to test room E2E. It
+carries members on clients you do not control, and a single un-upgraded
+participant acting as a competing keyer is indistinguishable from a local bug.
+Use a private two-party room.
+
+### Android: private-room voice and background
+
+Direct 1:1 voice is proven. Distinct-identity desktop/phone chat passed
+2026-09-13. Remaining:
+
+1. **Room voice in a private two-party room.** The public `default` room never
+   produced audible audio because a third un-upgraded participant fought for
+   keyer. Retest after the group-key live capture above before drawing any
+   conclusion about the room path itself.
+2. **Survive the background.** Nothing has been tested across doze, screen-off,
+   or a Wi-Fi/cellular handover — the three things a desktop never exercises.
+
+### Windows two-client + room media checklist
+
+Gate “video calls ship” on a written manual checklist, not compile. Cover:
+
+- Direct 1:1 camera on both legs with decode to `QVideoSink`.
+- Room multi-party fan-out (relay path, mid-join keyframe recovery, camera-off
+  placeholders).
+- Direct-call → temporary SFU fallback still routing video (`video_route`).
+- Failure modes: no camera, camera in use, encoder unavailable, quota shed,
+  stall vs intentional camera-off (`SfuVideoState`).
+
+### A/V sync on a real network
+
+Unit coverage uses a fake clock. Still unrun: clap+flash under a clean network,
+~1–2 % loss, and a keyframe burst, plus a multi-peer check that per-sender
+timelines never cross. Target is ±40–80 ms audio-led. Confirm the voice path is
+byte-identical to before the media layer landed.
+
+### Linux / macOS camera hardware
+
+Camera backends compile. Nothing outside Windows has delivered a captured frame
+into a call.
+
+| Backend | Compiles | Logic tested | Run against a camera |
+|---|---|---|---|
+| Windows `MfCamera` | yes | yes | yes (dev machine) |
+| Linux `V4l2Camera` | yes (WSL + CI) | format choice | opens + negotiates, never streams |
+| macOS `AvfCamera` | Rust half via `lint-macos` | — | no Mac on the team |
+
+Linux 2026-09-03 against a Logitech C270 in WSL: enumeration and format
+negotiation work (`YUYV` chosen, 640x360). Frame delivery cannot be answered
+from WSL — UVC isochronous endpoints are unimplemented on USB/IP, so
+`next_frame` blocks forever. Need a real Linux machine, a VM with true USB
+passthrough, or a WSL kernel with `CONFIG_VIDEO_VIVID=m`. Also still open:
+stride across YU12/NV12/YUYV, buffer starvation, unplug-mid-call.
+
+macOS still needs the Objective-C shim compiled on a Mac (`test-macos` CI is
+the real signal), the TCC camera prompt, and confirmation that
+`AVCaptureSessionPreset` yields the requested size. Add a macOS sibling of the
+`#[ignore]`d `captures_a_frame_from_the_default_camera` test.
+
+### Portal over real QUIC
+
+In-tree Qt fixtures do not establish real-device QUIC acceptance. Open the same
+app/room on two devices, exercise catch-up, coordinator leave, and Focus/Session
+layout as described in [`games/README.md`](games/README.md). Focus Timer still
+assumes synchronized device clocks; that is a demo limit, not a framework bug.
+
+---
+
+## Phase 2 — Advertised client gaps
+
+Items the website lists as in progress, and the device-routing preview that
+README/architecture already disclose as unfinished.
+
+### Android incoming video and shared audio
+
+Sending works (CameraX → `nativeSubmitCameraFrame` → VP8). Still missing:
+
+1. **Video render.** Decoded I420 to a `Surface` via `ANativeWindow` from Rust.
+   A phone can be seen but cannot see.
+2. **Shared-audio playout.** Android has no content-audio capture *or* playout
+   anchor. Incoming `ContentAudioReceived` must not be serialized into UI JSON;
+   route it like voice in `session.rs::route_media`.
+
+### Installed simultaneous-use acceptance
+
+`device-routing` is the default of `doubleslash-features` and advertises
+`core.devices.v1`. Routing, device keys/registries, encrypted own-device
+room-key handoff, and portable backups exist. This is **not** completed pairing
+or continuous sync.
+
+Still required before claiming the preview:
+
+- Installed desktop (normal packaged profile, not `.clientA`) + phone, same
+  identity, both unlocked: both stay connected; room chat appears on both with
+  own messages marked sent; an incoming call can be answered on either and
+  stops ringing on the other; reconnecting one leaves the other connected.
+  Repeat with a third contact and with one device on relay.
+- Desktop → real Android → desktop restore with a large attachment, a missing
+  attachment, a keyfile-protected source, a failed/cancelled document-picker
+  copy, and a restart after profile selection. Check actual history and files.
+
+File-based device moves still require quitting the source before connecting the
+destination. Do not enable a “ready” product gate on room-chat tests alone.
+
+Pairing UX, history sync, and delegated authorization are Phase 6.
+
+---
+
+## Phase 3 — Capture outside Windows
+
+The media layer (clock, PTS, content-audio wire, audio-led sync, ABR) is
+shipped. What is left is platform capture. Adding a backend is a
+[`PRIVACY.md`](PRIVACY.md) change in the same commit.
+
+### Screen / window
+
+| Platform | Camera | Screen / window |
+|---|---|---|
+| Windows | `MfCamera` | `Windows.Graphics.Capture` |
+| Linux | `V4l2Camera` | **open** — PipeWire + `xdg-desktop-portal` (Wayland), X11 fallback |
+| macOS | `AvfCamera` | **open** — ScreenCaptureKit |
+| Android | CameraX send | **open** — `MediaProjection` → `VirtualDisplay` → `ImageReader` |
+
+Linux: Wayland has no screen-scraping API; capture goes through
+`xdg-desktop-portal` ScreenCast over D-Bus and returns a PipeWire node after
+the *compositor* draws the picker. That dialog is not skippable and cannot be
+replaced by our QML source list — `SourceSpec::Screen` needs a portal-shaped
+variant. An X11 fallback (XComposite/XShm) can keep the current id model.
+macOS needs Screen Recording entitlement and usage strings; not testable in CI.
+VP8 already covers encode; a backend only has to produce tightly-packed I420
+`RawFrame`.
+
+### Content-audio capture
+
+| Platform | Source | State |
+|---|---|---|
+| Windows | WASAPI loopback and per-app `VAD\Process_Loopback` | Built |
+| Linux | PipeWire / PulseAudio monitor source | Unbuilt |
+| macOS | Virtual device or ScreenCaptureKit audio | Unbuilt |
+
+Whichever backend a platform gets must report **device capture offsets** per
+frame (`CaptureTimeline`), not frame counts: a quiet loopback emits nothing,
+and a counter converts silence into permanent audio-behind-video lag.
+
+Pairs with screen capture (same permissions on Linux/macOS).
+
+**Echo hazard (every platform):** if content is system loopback, remote peers'
+audio played locally re-enters the loop. Needs exclude-our-own-output, ducking,
+or a virtual cable.
+
+Still unsolved by design: **lip sync for a talking-head call.** The mic is not
+on the synced timeline. Accepted for v1; a follow-on could additionally carry
+the mic on the media layer during video calls.
+
+---
+
+## Phase 4 — Android distribution
+
+App-side policy work for a first listing is in the tree (`targetSdk` 36,
+`specialUse` FGS, terms gate, disclosures, Report, locked portal WebView,
+incoming-call notifications). What is left is mostly Play Console, CI, and
+release hardening.
+
+1. **CI.** No Android job exists. It needs the NDK, `cargo-ndk`, and
+   `cmake;3.31.6` (CMake 4 rejects libopus's `cmake_minimum_required`).
+2. **Release APK hardening.** R8 rules exist (`app/proguard-rules.pro`) but a
+   minified release build has never been run. `bundleRelease` signs from
+   `DOUBLESLASH_KEYSTORE` when set; a Play upload key has not been used.
+3. <a id="access-local-network"></a>**`ACCESS_LOCAL_NETWORK` before `targetSdk` 37.**
+   At 36 the grant is implicit from `INTERNET`. Declaring the permission early
+   *revokes* that grant. Raising to 37 without the request and a rationale
+   turns every direct LAN session into a relayed one with no error. Do not
+   declare it at 36.
+4. **Call UI polish.** No speaking indicators (the core does not surface
+   per-peer audio activity to this layer), no call duration, no reconnect
+   affordance when a call drops.
+5. **Play Console (blocks a public listing, not more Kotlin):**
+   - Signed AAB + Play App Signing. Package id `com.doubleslash.client` is
+     frozen at first upload.
+   - `specialUse` declaration + a short video of the persistent connected
+     notification and Disconnect.
+   - Full-screen intent declaration (`USE_FULL_SCREEN_INTENT`).
+   - Data Safety matching `PRIVACY.md`; photo/video permissions declaration;
+     encryption besides HTTPS; IARC (typically Teen / 13+; not Designed for
+     Families); closed testing; developer identity verification.
+   - Reviewer notes: unlock passphrase + a working invite.
+   - First scan you cannot fake: upload the AAB to an **internal testing**
+     track and read Play Protect + the pre-launch report.
 
 Public policy URLs (only after these files are on `develop`):
 
 - https://github.com/DoubleSlashSpace/DoubleSlash/blob/develop/PRIVACY.md
 - https://github.com/DoubleSlashSpace/DoubleSlash/blob/develop/TERMS.md
 
-**First scan you cannot fake from the repo:** upload the AAB to an **internal testing**
-track and read Play Protect + the pre-launch report.
+**Not doing for Play:** `RECEIVE_BOOT_COMPLETED` autostart; in-app APK updater;
+a second HTML privacy page on `doubleslash.space`.
 
-**Optional later (not required to upload):**
+Optional later: full Telecom `ConnectionService` / `phoneCall` FGS; a dedicated
+privacy email (GitHub issues is what `PRIVACY.md` lists today).
 
-- Full Telecom `ConnectionService` / `phoneCall` FGS type (system dialer, unswipeable
-  CallStyle). Incoming already rings via `IncomingCallNotifier`.
-- A dedicated privacy email; GitHub issues is what `PRIVACY.md` lists today.
-- `ACCESS_LOCAL_NETWORK` — only when raising `targetSdk` to 37 (item 10 above). Do not
-  declare it at 36.
+Android already has: CameraX send, portal WebView, SAF file staging, Keystore
+stay-unlocked, Legal reader, backups. Do not re-open those as missing.
 
-**Deliberately not doing for Play:**
+---
 
-- `RECEIVE_BOOT_COMPLETED` autostart (spyware-shaped).
-- In-app APK updater (Play violation if it sideloads like the desktop GitHub path).
-- A second HTML privacy page on `doubleslash.space`; the GitHub `PRIVACY.md` blob is the
-  public copy.
+## Phase 5 — Media and desktop polish
 
-## Discovery / federation (speculative — only if demand appears)
+After the Windows checklist (Phase 1) and any new capture (Phase 3):
 
-- **In-band capability gossip.** Connected peers exchange each other's supernode capability bundles
-  (cluster descriptors + Space-root references), built on existing signaling — not Gossipsub — while
-  the invite-only trust root stays intact.
-- **Signed RelayAds + capacity-aware selection.** `RelayAd` (capacity/load from `RelayStats`) +
-  weighted selection for picking a cluster member / relay set; `HandoffTicket` for directed
-  migration. Only worth building once relay sets grow past a hand-managed cluster.
-- **Inter-cluster federation.** Cluster peering or a DHT — only if cross-operator federation beyond
-  "link into one cluster" is ever required.
+1. **Receiver resilience.** PLI/FIR cadence, idle decoder GC under many room
+   members, graceful degrade when Qt Multimedia / sink is absent. Align
+   drop/keyframe policy with the shipped A/V sync hold queue so a PLI storm
+   does not empty the video timeline while audio keeps playing.
+2. **Video UX.** Screen-share picker may still be thin; multi-tile layout under
+   several active room cameras; confirm local-preview vs remote tile identity;
+   separate level meters / mute for voice vs content when both are live.
+3. **Polyphase resampling (V7).** Linear interpolation is near-inaudible for
+   8 kHz voice at typical device rates; a windowed-sinc or `rubato`
+   `FastFixedIn` drop-in if it becomes perceptible.
+4. **Stereo / spatial mixdown (V8).** Per-peer pan in `mix_pcm_frames` + stereo
+   ring buffer. Low-priority UX.
+5. **Ollama / plugin UX polish** — currently experimental on desktop. Android
+   has no plugin or Ollama surface; that is not a Phase 5 requirement.
+6. **Android room per-peer grants** (`generateRoomInviteForPeer`) are not wired;
+   shareable links carry a Space inclusion proof and no grant.
+
+### Video non-goals (near-term)
+
+- Multiple independent outbound streams per peer (camera + screen without
+  composite) — wire identifies a stream by sender only.
+- Frame-perfect / broadcast A/V sync — v1 target is ±40–80 ms audio-led.
+- WebRTC / browser video — in-app portal stays on identity QUIC.
+- In-tree AVC (openh264) — rejected for MPEG-LA exposure; Windows uses OS MFTs.
+- Simulcast / SVC — single encode ladder + ABR first.
+- WebSocket fallback for room video — relay-datagram-only; WS-only members keep
+  audio, not video.
+
+---
+
+## Phase 6 — Devices as a product
+
+Phase 2 is acceptance of the routing preview. This phase is the remaining
+product:
+
+1. **Short-lived QR pairing**, approval on both devices, and a dedicated
+   authenticated capability with explicit device authorization and quotas.
+   Supernodes forward opaque bytes only. Old clients must reject unsupported
+   linking visibly; copying a seed cannot be the fallback.
+2. **Delegated live authorization.** `DeviceTrustStore` persists encrypted
+   registries with predecessor/revocation/fork checks, but is not consumed by
+   live authentication. Current gated device routes require full root identity
+   authority. `open_with_key` separates data access from signing at the API
+   boundary; it does not distribute storage keys to another device.
+3. **Idempotent history sync** with stable message IDs, deletion/block
+   tombstones, resumable attachment transfer, and deterministic offline
+   conflict resolution. Without a history-holding backend, catch-up requires
+   another reachable device holding the missing data.
+4. **Remaining endpoint-state integration:** device-scoped file / room-media /
+   game state, and coordinated cluster device rosters.
+5. **Explicit device removal** and tests for offline catch-up and revoked
+   devices.
+
+See [Devices and backups](docs/DEVICES_AND_BACKUPS.md).
+
+---
+
+## Phase 7 — Deferred architecture
+
+Planned, not current. Website/README mention WASM as planned; architecture.html
+lists Space Layer 2 and WASM as deferred. Keep them here so those claims stay
+honest.
+
+### WASM plugin sandbox
+
+Bespoke feature modules are native cdylibs with load-time trust prompts. A WASM
+sandbox would remove the “trust the binary” requirement. Native plugins run
+in-process today; registry replacement is not hot reload and is not a sandbox.
+
+### Space Merkle tree — remaining
+
+Layer 1 (authenticated room tree, admission proofs, reserved Layer 2 leaf
+fields, `v1` hash-label freeze) is shipped. Invariants are in `agents.md`.
+
+- **Root-equivocation: append-only history tree.** We use a **set** tree, not
+  an append-only log, so there are no consistency proofs between epochs. A
+  malicious owner can sign two different roots for the same epoch. Today's
+  equivalent (creator controls the room set on the supernode it talks to) is
+  strictly weaker, so this is not a regression; equivocation detection +
+  logging is shipped. Still deferred: CT-style append-only history with
+  consistency proofs — which could also make the cluster roster itself an
+  auditable membership log.
+- **`Closet` node kind.** Distinct node `kind` for a different semantic
+  (e.g. text-only sub-channels). Additive; not required for nesting depth.
+- **Layer 2 — key hierarchy (entirely unbuilt).** Extends pairwise sender-keys
+  `GroupKeySource` (TreeKEM declined). Scope: per-node epoch secrets; HKDF
+  inheritance down `inherit=true` edges; `inherit=false` compartments as their
+  own pairwise-distributed group; real values for reserved `inherit` /
+  `key_commit` / invite `space_node_key`; capability-token admission under the
+  node key without changing the admission call shape. Confirm before freezing
+  `v1` hash labels: a `SpaceGrant` targets exactly one `node_id` and proofs
+  don't inherit.
+
+Space non-goals: literal MTC / X.509; subtree delegation in v1 (owner-signed
+delegation leaves are a compatible later addition); inter-cluster federation,
+blinded tokens, payments.
+
+### Post-quantum crypto (ML-KEM / ML-DSA) — assessed 2026-07-11
+
+Codebase is fully classical (Ed25519 + X25519 + AES-256-GCM/HKDF-SHA256).
+Symmetric bulk AEAD is PQ-adequate *if keys are*; quantum risk is key agreement
+(harvest-now-decrypt-later) and signatures (forge after CRQC). Defaults if/when
+built: **ML-KEM-768** + **ML-DSA-65**, hybrid with classical.
+
+| Role | Classical today | PQ approach |
+|---|---|---|
+| Invite session key | Ephemeral X25519 → HKDF (`doubleslash-invite-session-v1`) | Hybrid: X25519 ss ‖ ML-KEM ss → new HKDF info (`…-v2-hybrid`) |
+| Pairwise relay / `SfuGroupKey` wrap | Static Ed25519→Montgomery DH (no FS) | KEM-DEM (finding 2); prefer ephemeral hybrid where interactive |
+| Room content | AES-GCM under sender keys | Unchanged AEAD; only key *wrap* migrates |
+| Identity / signaling / invites / Space roots | Ed25519 | Dual-sign transition; high-rate envelopes stay Ed25519 early |
+| Release + module manifests | Offline Ed25519 | Cheap early dual-sign (long-lived, low rate) |
+| QUIC/WS TLS | rustls + `ring` | Hybrid group via `aws-lc-rs` provider swap (finding 1) |
+| Browser `web-sdk` | `@noble/ed25519` | After native wire freeze (JS/WASM PQ) |
+
+Findings, still in this order if built:
+
+1. **Hybrid PQ TLS (transport only).** Switch rustls 0.23 from the pinned `ring`
+   provider to `aws-lc-rs` for `X25519MLKEM768`. Hard-coded
+   `rustls::crypto::ring::default_provider()` call sites (`quic_tls.rs`,
+   `relay.rs`, `main.rs`, cluster-link tests), larger/slower builds, possible
+   dual-provider graph, CI matrix risk. Protects only transport TLS HNDL
+   between upgraded peers; invite X25519, pairwise relay keys, and room AES
+   keys stay classical. Do not market as “PQ-ready.”
+2. **`derive_pairwise_relay_key` cannot be ported.** It relies on the
+   Ed25519→Montgomery birational map; ML-DSA keys have no map to ML-KEM.
+   Replacement is KEM-DEM: each identity carries a second static ML-KEM key
+   signed by the ML-DSA identity key. Direction now matters. Affects
+   `EncryptedSignal` and `SfuGroupKey` sealing.
+3. **Invite handshake maps cleanly** but the blob grows 32 B → 1,184 B of key
+   material + 1,088 B reply. Re-check invite-link and QR-code size limits.
+4. **Keep Ed25519-derived `public_id` as the stable peer id**; attach
+   `ml_dsa_pub` as a verified binding. ML-DSA-65 pubkeys are 1,952 B.
+5. **Do not dual-sign high-rate envelopes early.** Prefer invites, Space roots,
+   grants, tickets. Exception: release- and module-manifest signing is cheap
+   and long-lived.
+6. **Identity storage:** FIPS 203/204 seed-based keygen; keep storing small
+   seeds.
+
+Suggested build order: (1) hybrid TLS provider, (2) hybrid invite handshake,
+(3) KEM-DEM pairwise / group-key wrap, (4) dual-sign low-rate + manifests,
+(5) identity ML-DSA binding, (6) browser parity, (7) deprecate pure classical
+by policy only after ecosystem age.
+
+PQ non-goals: pure ML-KEM without X25519 hybrid on first ship; ML-DSA on every
+SFU audio frame; reviving TreeKEM for PQ rooms; QUIC-stack PQ as a hard
+dependency of app-layer PQ; SLH-DSA / FN-DSA unless a later trade-off demands
+it.
+
+Layer 1 still helps a future PQ migration: admission/directory trust costs
+**one signature per Space per epoch**.
+
+### Discovery / federation (only if demand appears)
+
+- In-band capability gossip of supernode bundles while the invite-only trust
+  root stays intact.
+- Signed `RelayAd` + capacity-aware selection, once relay sets grow past a
+  hand-managed cluster.
+- Inter-cluster federation or a DHT — only if cross-operator federation beyond
+  “link into one cluster” is required.
 
 ---
 
 ## Declined / out of scope
 
-- **Custom minimal TreeKEM.** Considered as a `treekem.rs` implementation behind `GroupKeySource`
-  (left-balanced ratchet tree, O(log N) add/remove vs. the pairwise scheme's O(N)). Declined: rooms
-  here are invite-only and sized for manual invitation, not the large/high-churn membership that
-  makes O(N) pairwise rekeying (already implemented — the `SfuGroupKey` path) a real bottleneck.
-  Reimplementing a group-key-agreement protocol from spec was also the single highest-risk item in
-  this backlog (needs KATs, fuzzing, external review before trusting it). Revisit only if room size
-  or churn actually grows enough for O(N) rekey cost to bite in practice.
-- **Per-message forward secrecy (double-ratchet).** Considered as an upgrade over per-epoch keying.
-  Declined: per-message compromise recovery matters most for long-lived pairwise conversations
-  (Signal's model); marginal benefit for ephemeral SFU room sessions rekeyed on membership change.
-- **Payments / usage receipts.** A `UsageReceipt` credits/Lightning layer conflicts with the
-  no-backend, volunteer-supernode, privacy-first model. Not planned; revisit only as a standalone
-  design if the economics of relay hosting ever demand it.
-- **Read receipts (`MessageStatus::Read`).** Deliberately unwired — surfacing read timestamps is at
-  odds with the privacy-first stance. If ever revisited, gate behind a privacy toggle defaulting
-  **off**.
-- **Room-chat history for joiners.** Struck from scope — the supernode does not persist messages.
-- **Offline store-and-forward.** Would require the supernode to hold signed, supernode-opaque
-  E2E-encrypted messages with a TTL. Struck from scope — the supernode does not persist messages.
+Matches the website “Not planned” column plus earlier design rejections.
+
+- **Accounts, a user directory, or discovery.** Identity and trust stay
+  client-owned and invite-only.
+- **A supernode that can read content.** Nodes route opaque bytes.
+- **A public web client / WebTransport game listener.** Portal pages run
+  inside the native app.
+- **Telemetry or analytics.**
+- **Custom minimal TreeKEM.** Rooms are invite-only and sized for manual
+  invitation; O(N) pairwise rekeying is not the bottleneck. Revisit only if
+  room size or churn actually bites.
+- **Per-message forward secrecy (double-ratchet).** Marginal for ephemeral SFU
+  rooms rekeyed on membership change.
+- **Payments / usage receipts.** Conflicts with the no-backend,
+  volunteer-supernode model.
+- **Read receipts (`MessageStatus::Read`).** If ever revisited, gate behind a
+  privacy toggle defaulting **off**.
+- **Room-chat history for joiners / offline store-and-forward.** The supernode
+  does not persist messages.
+- **Durable first-party portal documents.** Demo state lives in open pages;
+  closing the last page loses it. Collaborative-tool durability is an app
+  problem, not a relay cache.

@@ -815,6 +815,16 @@ pub mod ffi {
         #[rust_name = "has_desktop_shortcuts"]
         fn hasDesktopShortcuts(self: Pin<&mut AppBridge>) -> bool;
 
+        /// Absolute path to the packaged third-party notices for this build, or
+        /// an empty string when they are not present beside the executable.
+        ///
+        /// The LGPL notice obligation for Qt and FFmpeg is met by showing these
+        /// from Settings > About, so this resolves the notices that actually
+        /// shipped rather than anything fetched at run time.
+        #[qinvokable]
+        #[rust_name = "third_party_notices_path"]
+        fn thirdPartyNoticesPath(self: Pin<&mut AppBridge>) -> QString;
+
         /// Enumerate available CPAL audio devices.
         /// Returns a JSON object: `{"inputs": ["Default", ...], "outputs": ["Default", ...]}`.
         /// The string "Default" (index 0) means use the OS default; all other entries
@@ -2885,6 +2895,32 @@ impl ffi::AppBridge {
 
     fn has_desktop_shortcuts(self: Pin<&mut Self>) -> bool {
         crate::platform::has_desktop_shortcuts()
+    }
+
+    fn third_party_notices_path(self: Pin<&mut Self>) -> QString {
+        // Packaging layouts differ per platform: Windows and the AppImage keep
+        // `licenses/` beside the executable, the macOS .app puts it in
+        // Contents/Resources. Probe rather than guess, and return empty when
+        // nothing shipped (a plain `cargo run` has no packaged notices) so the
+        // UI can fall back to pointing at the repository instead.
+        let Ok(exe) = std::env::current_exe() else {
+            return QString::from("");
+        };
+        let Some(dir) = exe.parent() else {
+            return QString::from("");
+        };
+        let candidates = [
+            dir.join("licenses"),
+            dir.join("../Resources/licenses"),
+            dir.join("../share/doubleslash/licenses"),
+        ];
+        for candidate in candidates {
+            if candidate.is_dir() {
+                let resolved = candidate.canonicalize().unwrap_or(candidate);
+                return QString::from(&resolved.to_string_lossy().replace(r"\\?\", ""));
+            }
+        }
+        QString::from("")
     }
 
     fn list_audio_devices(self: Pin<&mut Self>) -> QString {

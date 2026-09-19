@@ -64,10 +64,15 @@ if (Test-Path $Staging) {
 New-Item -ItemType Directory -Force -Path $Staging | Out-Null
 Copy-Item $Binary (Join-Path $Staging 'doubleslash-supernode.exe') -Force
 
+& node (Join-Path $Root 'scripts\generate_licenses.mjs') --product supernode --target x86_64-pc-windows-msvc --output (Join-Path $Staging 'licenses')
+if ($LASTEXITCODE -ne 0) { throw 'Supernode license generation failed' }
+
 if (Test-Path $Archive) {
     Remove-Item -Force $Archive
 }
 Compress-Archive -Path $Staging -DestinationPath $Archive -CompressionLevel Optimal
+& node (Join-Path $Root 'scripts/licenses/verify_artifact.mjs') $Archive supernode
+if ($LASTEXITCODE -ne 0) { throw 'Final supernode archive license validation failed' }
 Remove-Item -Recurse -Force $Staging
 
 $Hash = (Get-FileHash -Path $Archive -Algorithm SHA256).Hash.ToLower()

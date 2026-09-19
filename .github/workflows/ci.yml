@@ -382,6 +382,9 @@ jobs:
         run: cargo test -p doubleslash-supernode --release
         working-directory: rust
 
+      - name: Install license tooling
+        run: cargo install cargo-about --version 0.8.4 --locked
+
       - name: Package supernode (linux-aarch64)
         run: DOUBLESLASH_RELEASE=1 bash scripts/build_supernode.sh
 
@@ -416,6 +419,9 @@ jobs:
       - name: Run doubleslash-supernode tests
         run: cargo test -p doubleslash-supernode --release
         working-directory: rust
+
+      - name: Install license tooling
+        run: cargo install cargo-about --version 0.8.4 --locked
 
       - name: Package supernode (linux-x86_64)
         run: DOUBLESLASH_RELEASE=1 bash scripts/build_supernode.sh
@@ -453,6 +459,10 @@ jobs:
         shell: pwsh
         run: cargo test -p doubleslash-supernode --release
         working-directory: rust
+
+      - name: Install license tooling
+        shell: pwsh
+        run: cargo install cargo-about --version 0.8.4 --locked
 
       - name: Package supernode (win64)
         shell: pwsh

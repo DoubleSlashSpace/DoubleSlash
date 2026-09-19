@@ -396,3 +396,8 @@ Version-specific notes are published with [GitHub releases](https://github.com/D
 ## License
 
 [MIT](LICENSE)
+
+Bundled dependencies retain their own licenses. Packaging requires Node.js 20+,
+the pinned notice generator, and reviewed native/runtime supplements for desktop
+and Android distribution. See [dependency licensing](docs/LICENSING.md) for
+setup, packaged notices, and remaining release requirements.

@@ -1,0 +1,47 @@
+Replacing the LGPL libraries in DoubleSlash (Windows)
+=====================================================
+
+DoubleSlash uses Qt 6.8.3 and FFmpeg 7.1 under the LGPL. Both licences give
+you the right to modify those libraries and to run DoubleSlash against your
+modified versions. This file explains how to exercise that right with the
+Windows bundle.
+
+No relinking of DoubleSlash itself is required. Every LGPL library is a
+separate dynamic-link library loaded at run time from the application
+directory; none of them is statically linked into DoubleSlash.exe. Replacing
+a library is therefore a file substitution, not a rebuild.
+
+Procedure
+---------
+1. Obtain the corresponding source for the library you want to change:
+
+     Qt 6.8.3   https://download.qt.io/archive/qt/6.8/6.8.3/single/
+                https://code.qt.io/cgit/qt/qt5.git/  (tag v6.8.3)
+
+     FFmpeg 7.1 https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz
+                https://github.com/FFmpeg/FFmpeg  (tag n7.1)
+
+2. Build it for x86_64 Windows with the MSVC 2022 toolchain, keeping the same
+   module name, the same exported ABI and the same major version as the file
+   you are replacing. For Qt, use the same configuration options as the
+   official 6.8.3 MSVC 2022 x64 release so that the module set and ABI match.
+
+3. Replace the corresponding file in the DoubleSlash application directory
+   with your build, keeping the original file name (for example Qt6Core.dll,
+   or avcodec-61.dll). Qt plugins and QML modules live in subdirectories of
+   the same application directory and are replaced the same way.
+
+4. Run DoubleSlash.exe. It loads whichever library is present under those
+   names; there is no signature check, hash check, or version pin in
+   DoubleSlash that prevents a substituted LGPL library from loading.
+
+Notes
+-----
+* DoubleSlash.exe may carry an Authenticode signature. That signature covers
+  the DoubleSlash executable only. It does not cover the Qt or FFmpeg DLLs and
+  does not prevent you from replacing them.
+* If you change a library's exported ABI, DoubleSlash may fail to start. That
+  is a consequence of the change, not a restriction imposed by DoubleSlash.
+* These instructions cover the Windows bundle. The macOS .app and the Linux
+  AppImage lay their libraries out differently, in Contents/Frameworks and
+  usr/lib respectively, and are otherwise replaced in the same way.

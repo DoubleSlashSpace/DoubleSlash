@@ -1,0 +1,72 @@
+Qt WebEngine 6.8.3 / Chromium 122 — source and license information
+==================================================================
+
+What is shipped
+---------------
+The DoubleSlash Windows bundle includes Qt WebEngine, used for the in-app
+supernode portal (the doubleslash:// custom scheme). Chromium is compiled into
+Qt WebEngine Core rather than shipped as a separate library, so these three
+files carry both Qt's and Chromium's obligations:
+
+  Qt6WebEngineCore.dll
+  Qt6WebEngineQuick.dll
+  QtWebEngineProcess.exe
+
+The Qt WebEngine resource bundles (resources/*.pak,
+v8_context_snapshot.bin, icudtl.dat) and the locale packs under translations/
+ship alongside them.
+
+Chromium version — established from the shipped binary
+------------------------------------------------------
+The deployed Qt6WebEngineCore.dll reports the user-agent product token
+
+  Chrome/122.0.6261.171
+
+so the embedded snapshot is Chromium 122, corresponding to the 122-based
+branch of qt/qtwebengine-chromium. This was read out of the shipped artifact
+rather than inferred from the Qt version.
+
+Licences
+--------
+Qt WebEngine itself is used under the LGPL-3.0, covered by
+qt-6.8.3-source-information.txt and qt-6.8.3-LGPL-3.0.txt.
+
+Chromium is licensed under a BSD-3-Clause licence, whose text ships beside
+this file as chromium-122-LICENSE.txt. Per Qt's own licensing documentation,
+Chromium and its bundled third-party components carry additional licences, of
+which the most restrictive called out by Qt is the LGPL-2.1.
+
+Corresponding source
+--------------------
+  Qt WebEngine 6.8.3   https://code.qt.io/cgit/qt/qtwebengine.git/  (tag v6.8.3)
+  Chromium snapshot    https://code.qt.io/cgit/qt/qtwebengine-chromium.git/
+                       branch 122-based
+
+How the obligations are met
+---------------------------
+* Notice — the application's Settings > About > Third-Party Notices screen
+  states that DoubleSlash includes Qt WebEngine with an embedded Chromium and
+  reproduces the Chromium copyright notice.
+* Licence text — chromium-122-LICENSE.txt accompanies the distribution, which
+  satisfies the BSD-3-Clause requirement to reproduce the copyright notice and
+  disclaimer in materials provided with the distribution.
+* Source availability — the upstream locations above are published in the
+  notices screen and in this file.
+* Relinking — Qt WebEngine is dynamically linked as separate DLLs and is
+  replaceable in the same way as the other Qt modules; see
+  relinking-instructions.txt.
+* No modifications — DoubleSlash uses the official Qt 6.8.3 Qt WebEngine
+  binaries unmodified.
+
+OPEN ITEM — full Chromium third-party credits
+---------------------------------------------
+chromium-122-LICENSE.txt is Chromium's own top-level BSD-3-Clause licence. It
+is NOT the complete third-party credits set for the many components bundled
+inside the Chromium snapshot — the list a Chrome build exposes at
+chrome://credits. Producing that list requires a checkout of the matching
+122-based qtwebengine-chromium tree and running Chromium's credits generator
+(tools/licenses/licenses.py) against it.
+
+Until that generated credits file is produced and added to this supplement,
+this component's notice set is incomplete. Treat this as an open item rather
+than a satisfied obligation.

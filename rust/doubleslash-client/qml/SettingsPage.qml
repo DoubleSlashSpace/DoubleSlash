@@ -2533,6 +2533,65 @@ Item {
                         font.pixelSize: Theme.fontSizeCaption
                     }
                 }
+
+                // Qt's and FFmpeg's LGPL terms require a prominent notice that
+                // the libraries are used, plus access to their licence texts.
+                // Those texts ship in `licenses/` beside the executable; this
+                // card is what makes them reachable from the running app.
+                SettingsCard {
+                    title: "Third-Party Notices"
+
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        color: Theme.muted
+                        text: "DoubleSlash uses Qt 6 and FFmpeg under the GNU Lesser General "
+                            + "Public License (LGPL), and includes Qt WebEngine with an embedded "
+                            + "Chromium under its BSD licence. These libraries ship as separate "
+                            + "dynamic libraries and may be replaced with your own builds."
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        color: Theme.muted
+                        font.pixelSize: Theme.fontSizeCaption
+                        text: "Full licence texts, source locations and replacement instructions "
+                            + "for every bundled component are included with this installation."
+                    }
+
+                    RowLayout {
+                        spacing: Theme.spacingSm
+
+                        StyledButton {
+                            text: "Open Licence Notices"
+                            enabled: noticesStatus.noticesPath !== ""
+                            onClicked: {
+                                if (noticesStatus.noticesPath === "") return
+                                Qt.openUrlExternally("file:///" + noticesStatus.noticesPath.replace(/\\/g, "/"))
+                            }
+                        }
+
+                        StyledButton {
+                            text: "Qt LGPL Terms"
+                            onClicked: Qt.openUrlExternally("https://www.qt.io/development/open-source-lgpl-obligations")
+                        }
+                    }
+
+                    Label {
+                        id: noticesStatus
+                        // Empty for an unpackaged build (e.g. `cargo run`), where
+                        // no licenses/ directory was deployed beside the binary.
+                        property string noticesPath: backend ? backend.thirdPartyNoticesPath() : ""
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        visible: noticesPath === ""
+                        color: Theme.muted
+                        font.pixelSize: Theme.fontSizeCaption
+                        text: "Packaged notices are not present in this build. See the licenses/ "
+                            + "directory in a packaged release, or docs/LICENSING.md in the source tree."
+                    }
+                }
             }
         }
     }

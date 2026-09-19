@@ -1,0 +1,3478 @@
+{
+  "status": "evidence-only-not-approved",
+  "limitations": [
+    "This inventories DLL/EXE files only; data, scripts, fonts, and embedded components require separate review.",
+    "Checksum matches establish file identity, not completeness of notices or satisfaction of license obligations.",
+    "Pre-signing PE matches remove the trailing Authenticode certificate and zero its directory and PE checksum; they reproduce the upstream image hash, not a signature-trust verdict.",
+    "Installed-file matches without a pre-signing match still need signing/postprocessing provenance review.",
+    "Unresolved SBOM packages include build-only entries; investigate their reachability before treating them as shipped.",
+    "Unmatched binaries may include first-party executables, signing changes, or third-party runtimes missing from the SBOM."
+  ],
+  "binaries": [
+    {
+      "path": "D3Dcompiler_47.dll",
+      "sha256": "e994847e01a6f1e4cbdc5a864616ac262f67ee4f14db194984661a8d927ab7f4",
+      "matches": []
+    },
+    {
+      "path": "DoubleSlash.exe",
+      "sha256": "ce8fb93d22eb385dec71bc4824561422127a3630fc93a1f3d4b38ba0b20fef92",
+      "matches": []
+    },
+    {
+      "path": "Qt6Core.dll",
+      "sha256": "0cc62e841959fb8f6d366ea116c6f6bbc273e30f0ef90d8aa2e4adeb81fd63f8",
+      "matches": [
+        {
+          "sbom": "qtbase-6.8.3.spdx.json",
+          "file": "./bin/Qt6Core.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "Core",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "Core",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6Gui.dll",
+      "sha256": "ca9f20d9b59d5bc321a87005b926b853ebcd6a2394823e14d3c8b5fc5702fa8c",
+      "matches": [
+        {
+          "sbom": "qtbase-6.8.3.spdx.json",
+          "file": "./bin/Qt6Gui.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "Gui",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "Gui",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6LabsFolderListModel.dll",
+      "sha256": "55fb45369b529bbf0334d5dbd452349961962cf5b094f14c09060534dc060c25",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6LabsFolderListModel.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "LabsFolderListModel",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "LabsFolderListModel",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6LabsPlatform.dll",
+      "sha256": "54c954a15c38518f5a4d2b4f1b78cc64370f999903f6ede0e1c4ce8a948b1b97",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6LabsPlatform.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "LabsPlatform",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "LabsPlatform",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6Multimedia.dll",
+      "sha256": "94802f20522ff2d64004265b579a7228e7377cdf38144a5d55275e5083341a15",
+      "matches": [
+        {
+          "sbom": "qtmultimedia-6.8.3.spdx.json",
+          "file": "./bin/Qt6Multimedia.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "Multimedia",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtmultimedia.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "Multimedia",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtmultimedia.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6MultimediaQuick.dll",
+      "sha256": "dd5b6f6adf94b6e1c5b8bf6f3396016d5f9bfe85f80487058b71c3203dbd4933",
+      "matches": [
+        {
+          "sbom": "qtmultimedia-6.8.3.spdx.json",
+          "file": "./bin/Qt6MultimediaQuick.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "MultimediaQuickPrivate",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtmultimedia.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "MultimediaQuickPrivate",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtmultimedia.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6Network.dll",
+      "sha256": "2c2f65c70989646f06d668883c031f06fac3f8de1f459278c94cc50dfe89988d",
+      "matches": [
+        {
+          "sbom": "qtbase-6.8.3.spdx.json",
+          "file": "./bin/Qt6Network.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "Network",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "Network",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6OpenGL.dll",
+      "sha256": "85fdcd74cd4a8f6a25a0a4adc7f1e83a1a6e7c17f85b4aec06ad0c80bf827a50",
+      "matches": [
+        {
+          "sbom": "qtbase-6.8.3.spdx.json",
+          "file": "./bin/Qt6OpenGL.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "OpenGL",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "OpenGL",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6Positioning.dll",
+      "sha256": "584c674a0b09f95ad64ad66555ab6297f37eb8746129b125374399ceb0826e19",
+      "matches": [
+        {
+          "sbom": "qtpositioning-6.8.3.spdx.json",
+          "file": "./bin/Qt6Positioning.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "Positioning",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtpositioning.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "Positioning",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtpositioning.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6Qml.dll",
+      "sha256": "5a322b9ea0d262dc7f9c88960a2ceb5ad353911c21f52feba2935a4e67f5f6b9",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6Qml.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "Qml",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "Qml",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QmlMeta.dll",
+      "sha256": "329ff4a43416da0050118aa3d215a588653b580f270d85ccb6472ac9495e12e5",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QmlMeta.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QmlMeta",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QmlMeta",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QmlModels.dll",
+      "sha256": "389367c7afbbb4c5703f97bbc03440370482dd1ce4dc8b80a226c2f0b975c6b2",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QmlModels.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QmlModels",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QmlModels",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QmlWorkerScript.dll",
+      "sha256": "a208b780f9f9a6a9bf767ae16f2991e9f9c57c5a8fb7a1043b56e29b694a8a5c",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QmlWorkerScript.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QmlWorkerScript",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QmlWorkerScript",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6Quick.dll",
+      "sha256": "e20c0c68f756af02fcc8603a3bcf45db1649ce5c3f42d92bddff23b04e661cc0",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6Quick.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "Quick",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "Quick",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickControls2.dll",
+      "sha256": "531924111c72eca55e3f7ec27f10980c1c12e33242888494489cdeea9b5c0493",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickControls2.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickControls2",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickControls2",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickControls2Basic.dll",
+      "sha256": "e5e2b2a73573e891f9be6593ea70b9c85550612d8b446410b2dc39c765af075c",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickControls2Basic.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickControls2Basic",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickControls2Basic",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickControls2BasicStyleImpl.dll",
+      "sha256": "18c5ee438603dcc4bf695c7a499d06748744355c2600945b8cd29e208359c786",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickControls2BasicStyleImpl.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickControls2BasicStyleImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickControls2BasicStyleImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickControls2FluentWinUI3StyleImpl.dll",
+      "sha256": "d86ec2e2b864b56019398ca1b2bc5cf21b671e62448e1b540997dd1e483957a1",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickControls2FluentWinUI3StyleImpl.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickControls2FluentWinUI3StyleImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickControls2FluentWinUI3StyleImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickControls2Fusion.dll",
+      "sha256": "7213619026aaac361eabb227261473c8c86f0e4fe01de8e659848198c0e95c11",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickControls2Fusion.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickControls2Fusion",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickControls2Fusion",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickControls2FusionStyleImpl.dll",
+      "sha256": "429076c478445ccbd8f2fa9d928f1c9ff6bd63c8aab11773bd0a2ca9281f4d60",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickControls2FusionStyleImpl.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickControls2FusionStyleImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickControls2FusionStyleImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickControls2Imagine.dll",
+      "sha256": "0d3ae6e7f5bad0ccfd2ed62ce7b78ed1425a5b940415b032485c329dbca7686e",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickControls2Imagine.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickControls2Imagine",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickControls2Imagine",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickControls2ImagineStyleImpl.dll",
+      "sha256": "ce89130d698318ca41c795248c4208b122963ed704103dcbebc55aabfba7267b",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickControls2ImagineStyleImpl.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickControls2ImagineStyleImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickControls2ImagineStyleImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickControls2Impl.dll",
+      "sha256": "db97d9d8758e0da7abb723b2559bfc4dcc02c9a5c908ffe04620c84bdc12446c",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickControls2Impl.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickControls2Impl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickControls2Impl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickControls2Material.dll",
+      "sha256": "cc8303323f8684cf6d70840d0b77cb47c7245f79024ae0842ed1599b03bdd0d5",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickControls2Material.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickControls2Material",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickControls2Material",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickControls2MaterialStyleImpl.dll",
+      "sha256": "3ebe152ba1825c284f48240529b44d78a7a78cf2056f522e2b7c5479dd1d5b44",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickControls2MaterialStyleImpl.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickControls2MaterialStyleImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickControls2MaterialStyleImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickControls2Universal.dll",
+      "sha256": "5d0924b36215577e3c6835fcbb9155958555944b16cd6e6a95e164e45b683a97",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickControls2Universal.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickControls2Universal",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickControls2Universal",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickControls2UniversalStyleImpl.dll",
+      "sha256": "4dcdc6ef941ff86bf0aac041317c46ecb30af3fc8ffd12f3f6d0e4d223b02a4c",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickControls2UniversalStyleImpl.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickControls2UniversalStyleImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickControls2UniversalStyleImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickControls2WindowsStyleImpl.dll",
+      "sha256": "1b637d3e5a695756c043d4ab7a5969c5caa1302b4d3695fa74e8392a13ebf9a3",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickControls2WindowsStyleImpl.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickControls2WindowsStyleImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickControls2WindowsStyleImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickDialogs2.dll",
+      "sha256": "552926012b90096e65fe42b17caac7280168cb60bdd120c1af85dd658881071d",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickDialogs2.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickDialogs2",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickDialogs2",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickDialogs2QuickImpl.dll",
+      "sha256": "3e8b0b1b0c154da12cfe9b3044c07111776e04add6207f08eec38c994bdd2283",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickDialogs2QuickImpl.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickDialogs2QuickImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickDialogs2QuickImpl",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickDialogs2Utils.dll",
+      "sha256": "641bfa734311887d7b0dfe295b8f6458c4e496cca0a594deb175a432da70f4ec",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickDialogs2Utils.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickDialogs2Utils",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickDialogs2Utils",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickEffects.dll",
+      "sha256": "37a870ea3a51e8c140d2c0ea21fafd62b381f381a13a57dc28f0e83fb618ff99",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickEffects.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickEffectsPrivate",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickEffectsPrivate",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickLayouts.dll",
+      "sha256": "010bfdadd5c1c1a58df239095d12346628483b4e1b7c943c2b8d96671a961752",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickLayouts.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickLayouts",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickLayouts",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickShapes.dll",
+      "sha256": "f0d04343cbc7d643d8d901cd2353de183a11250afac1aac96614cde0afc536f1",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickShapes.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickShapesPrivate",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickShapesPrivate",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6QuickTemplates2.dll",
+      "sha256": "12abebf6cff2d266138aed8596a862770647486265037565eb2b624ac3b87775",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./bin/Qt6QuickTemplates2.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QuickTemplates2",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QuickTemplates2",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6Svg.dll",
+      "sha256": "efaf94c5c757a430ec5b89fc209089b14171b5cce945db961c32264f1cc99f80",
+      "matches": [
+        {
+          "sbom": "qtsvg-6.8.3.spdx.json",
+          "file": "./bin/Qt6Svg.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "Svg",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtsvg.git@c75099a75e81df35e7347a65e301bbf1011831a5",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "Svg",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtsvg.git@c75099a75e81df35e7347a65e301bbf1011831a5",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6WebChannel.dll",
+      "sha256": "a53790ea664f83cced0a40e5f6cd69b9f093dbcd947a4927cfd9202fcfe68666",
+      "matches": [
+        {
+          "sbom": "qtwebchannel-6.8.3.spdx.json",
+          "file": "./bin/Qt6WebChannel.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "WebChannel",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtwebchannel.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "WebChannel",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtwebchannel.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6WebChannelQuick.dll",
+      "sha256": "62fe4f6a1d29352e28074bd3be77989b123206593c2201d03588e9b74702ed56",
+      "matches": [
+        {
+          "sbom": "qtwebchannel-6.8.3.spdx.json",
+          "file": "./bin/Qt6WebChannelQuick.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "WebChannelQuick",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtwebchannel.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "WebChannelQuick",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtwebchannel.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6WebEngineCore.dll",
+      "sha256": "24e44ce56b05e752d752b5daab1e87325ae30a5747c34cc988d8594c89b1d02b",
+      "matches": [
+        {
+          "sbom": "qtwebengine-6.8.3.spdx.json",
+          "file": "./bin/Qt6WebEngineCore.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "WebEngineCore",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtwebengine.git@b586c4eb65d8e46ab2c255e1a141676043a650da",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "WebEngineCore",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtwebengine.git@b586c4eb65d8e46ab2c255e1a141676043a650da",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6WebEngineQuick.dll",
+      "sha256": "8fdfe657cade75f79a0683bbae833b81492a694e07c9ba9abd9bc236e40e02fe",
+      "matches": [
+        {
+          "sbom": "qtwebengine-6.8.3.spdx.json",
+          "file": "./bin/Qt6WebEngineQuick.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "WebEngineQuick",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtwebengine.git@b586c4eb65d8e46ab2c255e1a141676043a650da",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "WebEngineQuick",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtwebengine.git@b586c4eb65d8e46ab2c255e1a141676043a650da",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "Qt6Widgets.dll",
+      "sha256": "d34ef78b3d3b5506ee8279ce6efbfc263d773b74860af76e66b0715346897a3a",
+      "matches": [
+        {
+          "sbom": "qtbase-6.8.3.spdx.json",
+          "file": "./bin/Qt6Widgets.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "Widgets",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "Widgets",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "QtWebEngineProcess.exe",
+      "sha256": "414f962d7b5b0698b3d8a7ccdc5c1b8ed68e71a36e888b4c9d751246b621d712",
+      "matches": []
+    },
+    {
+      "path": "avcodec-61.dll",
+      "sha256": "a689e471103715354102366d5b9db08ef05cca6786c730e93d6ccdab71b10318",
+      "matches": []
+    },
+    {
+      "path": "avformat-61.dll",
+      "sha256": "c20981f412106f6daa4c54ba9fc0406a144507a1fe3e1b5c32ee93590a445b4a",
+      "matches": []
+    },
+    {
+      "path": "avutil-59.dll",
+      "sha256": "2ec506ddd253d3366dfc223d5bb62a30488700b966541287c499764c0a8df782",
+      "matches": []
+    },
+    {
+      "path": "doubleslash-installer.exe",
+      "sha256": "0469c0785da0fc0965093e2c05a499eab3255ca3d6e1664dadc92c509df555d9",
+      "matches": []
+    },
+    {
+      "path": "dxcompiler.dll",
+      "sha256": "4f76c9f8efe1922756ca0fca8d06a46d3aafadf59583e2f2ea90d261cc47884c",
+      "matches": []
+    },
+    {
+      "path": "generic/qtuiotouchplugin.dll",
+      "sha256": "8e123c011d13ddf884d33f6fba50182d6525a3a7504b7eac0788ef45ab2f2cb1",
+      "matches": [
+        {
+          "sbom": "qtbase-6.8.3.spdx.json",
+          "file": "./plugins/generic/qtuiotouchplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QTuioTouchPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QTuioTouchPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "iconengines/qsvgicon.dll",
+      "sha256": "6418cb7f188af89fc6876059692d3940377a80bbdb55d70ab907406b46f671d0",
+      "matches": [
+        {
+          "sbom": "qtsvg-6.8.3.spdx.json",
+          "file": "./plugins/iconengines/qsvgicon.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QSvgIconPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtsvg.git@c75099a75e81df35e7347a65e301bbf1011831a5",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QSvgIconPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtsvg.git@c75099a75e81df35e7347a65e301bbf1011831a5",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "imageformats/qgif.dll",
+      "sha256": "0ee32e5b48bf1404532842862045c523e0c915f223e34ea900c709e7c72b0b1e",
+      "matches": [
+        {
+          "sbom": "qtbase-6.8.3.spdx.json",
+          "file": "./plugins/imageformats/qgif.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QGifPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QGifPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "imageformats/qico.dll",
+      "sha256": "30b344703bccbf4bf70809cb9b6ce0075b74bdc765d18e539339190b095bb552",
+      "matches": [
+        {
+          "sbom": "qtbase-6.8.3.spdx.json",
+          "file": "./plugins/imageformats/qico.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QICOPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QICOPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "imageformats/qjpeg.dll",
+      "sha256": "1c3f3996b18b9a6d3f2690ef333843c9195bec2a4eb08f6e68a3b3bc7f097c32",
+      "matches": [
+        {
+          "sbom": "qtbase-6.8.3.spdx.json",
+          "file": "./plugins/imageformats/qjpeg.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QJpegPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QJpegPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "imageformats/qsvg.dll",
+      "sha256": "d901931d7f5da8b408f9fcfcfe9e53a4d2247b5fa391fd67ac22a9e9f13c1636",
+      "matches": [
+        {
+          "sbom": "qtsvg-6.8.3.spdx.json",
+          "file": "./plugins/imageformats/qsvg.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QSvgPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtsvg.git@c75099a75e81df35e7347a65e301bbf1011831a5",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QSvgPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtsvg.git@c75099a75e81df35e7347a65e301bbf1011831a5",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "multimedia/ffmpegmediaplugin.dll",
+      "sha256": "0b3b9830bcb9cdaff2d9f9f71dd0b6aa6b48c54531cd0cbd60e19a9100e1e89f",
+      "matches": [
+        {
+          "sbom": "qtmultimedia-6.8.3.spdx.json",
+          "file": "./plugins/multimedia/ffmpegmediaplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QFFmpegMediaPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtmultimedia.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QFFmpegMediaPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtmultimedia.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "multimedia/windowsmediaplugin.dll",
+      "sha256": "a0d8985e9fdaaaceb58040b092813f091c6ec6646f17f14f7ca67dd0454221f8",
+      "matches": [
+        {
+          "sbom": "qtmultimedia-6.8.3.spdx.json",
+          "file": "./plugins/multimedia/windowsmediaplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QWindowsMediaPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtmultimedia.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QWindowsMediaPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtmultimedia.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "networkinformation/qnetworklistmanager.dll",
+      "sha256": "9950a4a34df745df88b84bb605982999332f27217cba5802c2c30df5197db247",
+      "matches": [
+        {
+          "sbom": "qtbase-6.8.3.spdx.json",
+          "file": "./plugins/networkinformation/qnetworklistmanager.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QNLMNIPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QNLMNIPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "opengl32sw.dll",
+      "sha256": "b04de4541863bc7d8879040a78889c4849c1b1da2784c4630f734c146c2998ce",
+      "matches": []
+    },
+    {
+      "path": "platforms/qwindows.dll",
+      "sha256": "12577a7c4f2230bbea53f279573d7e3d1a08d631197855481e1e1580f61bb877",
+      "matches": [
+        {
+          "sbom": "qtbase-6.8.3.spdx.json",
+          "file": "./plugins/platforms/qwindows.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QWindowsIntegrationPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QWindowsIntegrationPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtMultimedia/quickmultimediaplugin.dll",
+      "sha256": "22b63e150e7980c5672e191407a92f3ae9ebef8e23596aa9c4a36a05b63519dd",
+      "matches": [
+        {
+          "sbom": "qtmultimedia-6.8.3.spdx.json",
+          "file": "./qml/QtMultimedia/quickmultimediaplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "quickmultimedia",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtmultimedia.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "quickmultimedia",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtmultimedia.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQml/Models/modelsplugin.dll",
+      "sha256": "0152d46d72902cdae64a5d612ea88c5a4b4ecbc50cccd1b107bca79c40f49217",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQml/Models/modelsplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "modelsplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "modelsplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQml/WorkerScript/workerscriptplugin.dll",
+      "sha256": "a08fe7f3941602c9df04055c3b75df716b6ae98c741a8b9e052b56532ad982ce",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQml/WorkerScript/workerscriptplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "workerscriptplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "workerscriptplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQml/qmlplugin.dll",
+      "sha256": "53ba192916ace1433806bbb3283601bb39228b8c5ba34be6fa82d72d475af497",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQml/qmlplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qmlplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qmlplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/Basic/impl/qtquickcontrols2basicstyleimplplugin.dll",
+      "sha256": "ff62fb5708dd80da649f3524799fc5f3b30317da00bd06a83b6d3c8322949fe9",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/Basic/impl/qtquickcontrols2basicstyleimplplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2basicstyleimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2basicstyleimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/Basic/qtquickcontrols2basicstyleplugin.dll",
+      "sha256": "77aacba2ed59b401269ad026ddcbdc5436b5f7c8874cb12113a738ecfe5e3a3a",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/Basic/qtquickcontrols2basicstyleplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2basicstyleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2basicstyleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/FluentWinUI3/impl/qtquickcontrols2fluentwinui3styleimplplugin.dll",
+      "sha256": "4847288b3aafdb25df8213f9c7cf1e245feeafcf0ddf135fb9e1f9f0736989d6",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/FluentWinUI3/impl/qtquickcontrols2fluentwinui3styleimplplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2fluentwinui3styleimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2fluentwinui3styleimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/FluentWinUI3/qtquickcontrols2fluentwinui3styleplugin.dll",
+      "sha256": "10fdf48414df92b0088d4cbfd23a3ae0521c3373a287f06572582c25843152b0",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/FluentWinUI3/qtquickcontrols2fluentwinui3styleplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2fluentwinui3styleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2fluentwinui3styleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/Fusion/impl/qtquickcontrols2fusionstyleimplplugin.dll",
+      "sha256": "8eef46d48e629d4979b3591c5cb833b2a1e5ae4321c3e2b63675b3a08b98103e",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/Fusion/impl/qtquickcontrols2fusionstyleimplplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2fusionstyleimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2fusionstyleimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/Fusion/qtquickcontrols2fusionstyleplugin.dll",
+      "sha256": "5008028fddf61211edad6a8f7dbeb8bd8f3d60a572daf4ff22f8127358efaab4",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/Fusion/qtquickcontrols2fusionstyleplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2fusionstyleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2fusionstyleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/Imagine/impl/qtquickcontrols2imaginestyleimplplugin.dll",
+      "sha256": "1d2ccc709bbad03310bfc103e367a4dcce92623f35bd66e35d583e15e0f1cca5",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/Imagine/impl/qtquickcontrols2imaginestyleimplplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2imaginestyleimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2imaginestyleimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/Imagine/qtquickcontrols2imaginestyleplugin.dll",
+      "sha256": "fc3d98941de8856006e1737c663ea45e5886a9416ce19dceaf18f324c4ccb33b",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/Imagine/qtquickcontrols2imaginestyleplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2imaginestyleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2imaginestyleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/Material/impl/qtquickcontrols2materialstyleimplplugin.dll",
+      "sha256": "539893276656258ac898ab3485ab465301fb9e090303f7776ed7e1f3e32465e8",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/Material/impl/qtquickcontrols2materialstyleimplplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2materialstyleimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2materialstyleimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/Material/qtquickcontrols2materialstyleplugin.dll",
+      "sha256": "66ed87bdf3a3fef3e4c23bf957b01279f58385e4d7910eed1fe576bc545b5684",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/Material/qtquickcontrols2materialstyleplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2materialstyleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2materialstyleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/Universal/impl/qtquickcontrols2universalstyleimplplugin.dll",
+      "sha256": "c94057b1caecf6c318f2b6097eaa0d330f7e4c90390a39ac30875eed7e1fc97f",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/Universal/impl/qtquickcontrols2universalstyleimplplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2universalstyleimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2universalstyleimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/Universal/qtquickcontrols2universalstyleplugin.dll",
+      "sha256": "addb515bdd1162f7b4e51e376e107e0ca706e1d68010c515963927296c124740",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/Universal/qtquickcontrols2universalstyleplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2universalstyleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2universalstyleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/Windows/impl/qtquickcontrols2windowsstyleimplplugin.dll",
+      "sha256": "8f2af1b5caace576106aee3181e2cf1783e56242674672c02112106cd89160bc",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/Windows/impl/qtquickcontrols2windowsstyleimplplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2windowsstyleimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2windowsstyleimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/Windows/qtquickcontrols2windowsstyleplugin.dll",
+      "sha256": "9a58e598f6f73991776dae6a1a07682184e03c5787cfee42c9268e062fced004",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/Windows/qtquickcontrols2windowsstyleplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2windowsstyleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2windowsstyleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/impl/qtquickcontrols2implplugin.dll",
+      "sha256": "51c7a7270eae364360924d385cc8d22003945d4011b52d9a436fcdcd5d0a861e",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/impl/qtquickcontrols2implplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2implplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2implplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Controls/qtquickcontrols2plugin.dll",
+      "sha256": "459fd8258994a19865f5e81ccda1d4a2cd6c0eb51c609bf692c31f3daa157db4",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Controls/qtquickcontrols2plugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2plugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2plugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Dialogs/qtquickdialogsplugin.dll",
+      "sha256": "d0280acb6728066c5d62888ff33340228b1775157493aeaf9a837d39bd4f196d",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Dialogs/qtquickdialogsplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickdialogsplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickdialogsplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Dialogs/quickimpl/qtquickdialogs2quickimplplugin.dll",
+      "sha256": "84fc40687225e175b215c35095fe5cce3bae1c918c8d23f04d95555d8f6acd37",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Dialogs/quickimpl/qtquickdialogs2quickimplplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickdialogs2quickimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickdialogs2quickimplplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Effects/effectsplugin.dll",
+      "sha256": "cba2f1089a2e99d610fefa5bd0b6cd0602fa326abf8fc460ae5504ca1c730b44",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Effects/effectsplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "effectsplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "effectsplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Layouts/qquicklayoutsplugin.dll",
+      "sha256": "298df7ebb2dde96c7a97619c5e38e7d69eafaec3c4b1f64f029caca2cd4d5909",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Layouts/qquicklayoutsplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qquicklayoutsplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qquicklayoutsplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/NativeStyle/qtquickcontrols2nativestyleplugin.dll",
+      "sha256": "7f5ed5fd69f4bfa798f794d86b1b9d90819f176890513ba5fd4aef4b6025d4e2",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/NativeStyle/qtquickcontrols2nativestyleplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquickcontrols2nativestyleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquickcontrols2nativestyleplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Shapes/qmlshapesplugin.dll",
+      "sha256": "f9e2e18842d780f4c1992f6b2ef76c77901b9a4d29e69b48a3341a09037c6d82",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Shapes/qmlshapesplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qmlshapesplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qmlshapesplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Templates/qtquicktemplates2plugin.dll",
+      "sha256": "89be9c2dd571418961451d8ec9ead8fbc3e7cd50c2a95c63474da6b7da97395e",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Templates/qtquicktemplates2plugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquicktemplates2plugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquicktemplates2plugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/Window/quickwindowplugin.dll",
+      "sha256": "c6a6c889f24656c53001725245257f1fc068b9bc9a3d6cc905b73f99f3b2fa04",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/Window/quickwindowplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "quickwindow",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "quickwindow",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtQuick/qtquick2plugin.dll",
+      "sha256": "11506e9a11d12fe8957b8f0daf1a00f50e5230ec5a838f19109b08e1e9554e0b",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/QtQuick/qtquick2plugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtquick2plugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtquick2plugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtWebChannel/webchannelquickplugin.dll",
+      "sha256": "6efd81145e5530a53b0668b25c67490df48a652ca6ba6ee943d4633d5d09d711",
+      "matches": [
+        {
+          "sbom": "qtwebchannel-6.8.3.spdx.json",
+          "file": "./qml/QtWebChannel/webchannelquickplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "WebChannelQuickplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtwebchannel.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "WebChannelQuickplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtwebchannel.git",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/QtWebEngine/qtwebenginequickplugin.dll",
+      "sha256": "4a4009abd9b99dbb66fe834dd0a0f95a3c7314ede6dc5785d47302ae25aae5e4",
+      "matches": [
+        {
+          "sbom": "qtwebengine-6.8.3.spdx.json",
+          "file": "./qml/QtWebEngine/qtwebenginequickplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qtwebenginequickplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtwebengine.git@b586c4eb65d8e46ab2c255e1a141676043a650da",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qtwebenginequickplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtwebengine.git@b586c4eb65d8e46ab2c255e1a141676043a650da",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/Qt/labs/folderlistmodel/qmlfolderlistmodelplugin.dll",
+      "sha256": "c826bfe878b2f840dbd978ea510fbda9079482e076d4d73262802c45e4708fd5",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/Qt/labs/folderlistmodel/qmlfolderlistmodelplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "qmlfolderlistmodelplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "qmlfolderlistmodelplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qml/Qt/labs/platform/labsplatformplugin.dll",
+      "sha256": "99623b3e0ac6c1005acb3160b7548c9f34b99446163b9cec2d45b602f8509589",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./qml/Qt/labs/platform/labsplatformplugin.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "LabsPlatformplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "LabsPlatformplugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qmltooling/qmldbg_debugger.dll",
+      "sha256": "8101cc02bd43c0c715f97212f1237fd2f762ddc4c2cbbb92cf2a91b820bf958e",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./plugins/qmltooling/qmldbg_debugger.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QQmlDebuggerServiceFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QQmlDebuggerServiceFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qmltooling/qmldbg_inspector.dll",
+      "sha256": "17d8d175993852ece1effdd69fcbfbd3ceaca2ac92abacd3dd85d79dee132dc4",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./plugins/qmltooling/qmldbg_inspector.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QQmlInspectorServiceFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QQmlInspectorServiceFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qmltooling/qmldbg_local.dll",
+      "sha256": "f8cff718f3ed0b66c49192eccf2151858e7374422bfe222ee0620d945080dd1b",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./plugins/qmltooling/qmldbg_local.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QLocalClientConnectionFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QLocalClientConnectionFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qmltooling/qmldbg_messages.dll",
+      "sha256": "aa086bd463881afbcf66f40890127d7820dd3ff9d1a2a82f346f991f6b4f3205",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./plugins/qmltooling/qmldbg_messages.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QDebugMessageServiceFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QDebugMessageServiceFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qmltooling/qmldbg_native.dll",
+      "sha256": "30c212b552263903a2203cbeeac4a4a84cdc8141346c9745dd1fc95a3cfa6bce",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./plugins/qmltooling/qmldbg_native.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QQmlNativeDebugConnectorFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QQmlNativeDebugConnectorFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qmltooling/qmldbg_nativedebugger.dll",
+      "sha256": "8e0d63468fbaaef3fa24a59f15e93e24758a16cccd9a70ab890a32e47871f07d",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./plugins/qmltooling/qmldbg_nativedebugger.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QQmlNativeDebugServiceFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QQmlNativeDebugServiceFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qmltooling/qmldbg_preview.dll",
+      "sha256": "b5d37b94e84a4c2da4599166decbca2524388eb94c92f46eaf8e34d2386f884a",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./plugins/qmltooling/qmldbg_preview.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QQmlPreviewServiceFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QQmlPreviewServiceFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qmltooling/qmldbg_profiler.dll",
+      "sha256": "b2c6af0cde7163f3a861a81cdf1ab92dccd80cbed2802ab5f637ffa2873a72f9",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./plugins/qmltooling/qmldbg_profiler.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QQmlProfilerServiceFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QQmlProfilerServiceFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qmltooling/qmldbg_quickprofiler.dll",
+      "sha256": "efd983711a2c30fec840293a9674c81bec1ce6c555c7cbefd20e2fc0628ee4ef",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./plugins/qmltooling/qmldbg_quickprofiler.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QQuickProfilerAdapterFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QQuickProfilerAdapterFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qmltooling/qmldbg_server.dll",
+      "sha256": "c923c01320719fc5291e30905d3cb0eab941049922ad2f88df66ab0422a4e9f6",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./plugins/qmltooling/qmldbg_server.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QQmlDebugServerFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QQmlDebugServerFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "qmltooling/qmldbg_tcp.dll",
+      "sha256": "b722cfab9d0c5d9965f7830e3bc802046bb7722e63dff2c5ca61192c424ebeae",
+      "matches": [
+        {
+          "sbom": "qtdeclarative-6.8.3.spdx.json",
+          "file": "./plugins/qmltooling/qmldbg_tcp.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QTcpServerConnectionFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QTcpServerConnectionFactoryPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "styles/qmodernwindowsstyle.dll",
+      "sha256": "33f30e3ed3159b607cac9fb13c478f3e1059b63b39201194ee5f67d239180f01",
+      "matches": [
+        {
+          "sbom": "qtbase-6.8.3.spdx.json",
+          "file": "./plugins/styles/qmodernwindowsstyle.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QModernWindowsStylePlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QModernWindowsStylePlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "swresample-5.dll",
+      "sha256": "f40248ac7148815185848b638e79174996573c3ea4473429a35c251b5d66f4ba",
+      "matches": []
+    },
+    {
+      "path": "swscale-8.dll",
+      "sha256": "7b09dfd98afb18386c4b30e61641866be375c2f2f12b9515e032d5fb487176fd",
+      "matches": []
+    },
+    {
+      "path": "tls/qcertonlybackend.dll",
+      "sha256": "063f369b7975c97fb989eda88f7a78896e7c6d5de2b73cccf30aefa92b608aff",
+      "matches": [
+        {
+          "sbom": "qtbase-6.8.3.spdx.json",
+          "file": "./plugins/tls/qcertonlybackend.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QTlsBackendCertOnlyPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QTlsBackendCertOnlyPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tls/qschannelbackend.dll",
+      "sha256": "c58ab3c5873d3d5187ff1e6703662810f555ebe60c532e025250c47bbac2e50c",
+      "matches": [
+        {
+          "sbom": "qtbase-6.8.3.spdx.json",
+          "file": "./plugins/tls/qschannelbackend.dll",
+          "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+          "matchBasis": "sbom-pre-signing-pe-checksum",
+          "upstreamChecksumMatches": false,
+          "preSigningChecksumMatches": true,
+          "copyright": "Copyright (C) The Qt Company Ltd. and other contributors.",
+          "packages": [
+            {
+              "name": "QSchannelBackendPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            },
+            {
+              "name": "QSchannelBackendPlugin",
+              "version": "6.8.3",
+              "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f",
+              "license": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "vc_redist.x64.exe",
+      "sha256": "4dfe83c91124cd542f4222fe2c396cabeac617bb6f59bdcbdf89fd6f0df0a32f",
+      "matches": []
+    }
+  ],
+  "unresolvedPackages": [
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "MSVC",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "qtbase",
+      "license": "NOASSERTION",
+      "source": "git://code.qt.io/qt/qtbase.git@c07c2d5a527a644d36e7853d55132ae38921682f"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Platform_Attribution_extra-cmake-modules",
+      "license": "NOASSERTION",
+      "source": "https://api.kde.org/ecm/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Platform_Attribution_kwin",
+      "license": "NOASSERTION",
+      "source": "https://www.kde.org/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Bootstrap_Attribution_pcre2",
+      "license": "NOASSERTION",
+      "source": "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.bz2"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Bootstrap_Attribution_pcre2-sljit",
+      "license": "NOASSERTION",
+      "source": "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.bz2"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "BundledPcre2_Attribution_pcre2-sljit",
+      "license": "NOASSERTION",
+      "source": "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.bz2"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "BundledPcre2",
+      "license": "NOASSERTION",
+      "source": "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.45/pcre2-10.45.tar.bz2"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "BundledZLIB",
+      "license": "NOASSERTION",
+      "source": "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "ZlibPrivate",
+      "license": "NOASSERTION",
+      "source": "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Core_Attribution_unicode-character-database",
+      "license": "NOASSERTION",
+      "source": "https://www.unicode.org/ucd/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Core_Attribution_unicode-cldr",
+      "license": "NOASSERTION",
+      "source": "https://cldr.unicode.org/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Core_Attribution_siphash",
+      "license": "NOASSERTION",
+      "source": "https://raw.githubusercontent.com/veorq/SipHash/adcbf09b1684a718f594faa650ffc56bacdb0777/siphash24.c"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Core_Attribution_blake2",
+      "license": "NOASSERTION",
+      "source": "https://github.com/BLAKE2/BLAKE2/tree/ed1974ea83433eba7b2d95c5dcd9ac33cb847913"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Core_Attribution_md4",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Core_Attribution_md5",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Core_Attribution_sha1",
+      "license": "NOASSERTION",
+      "source": "http://www.dominik-reichl.de/projects/csha1/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Core_Attribution_sha3_endian",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Core_Attribution_sha3_keccak",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Core_Attribution_rfc6234",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Core_Attribution_tinycbor",
+      "license": "NOASSERTION",
+      "source": "https://github.com/intel/tinycbor/archive/v0.6.1/tinycbor-0.6.1.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Core_Attribution_doubleconversion",
+      "license": "NOASSERTION",
+      "source": "https://github.com/google/double-conversion/releases/tag/v3.3.0"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Core_Attribution_easing",
+      "license": "NOASSERTION",
+      "source": "http://robertpenner.com/easing/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Core_Attribution_tika-mimetypes",
+      "license": "NOASSERTION",
+      "source": "https://github.com/apache/tika/blob/5101bc7fb090ed7deffe56837d7633c9485a1e5d/tika-core/src/main/resources/org/apache/tika/mime/tika-mimetypes.xml"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "BundledLibpng",
+      "license": "NOASSERTION",
+      "source": "https://download.sourceforge.net/libpng/libpng-1.6.47.tar.xz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "PngPrivate",
+      "license": "NOASSERTION",
+      "source": "https://download.sourceforge.net/libpng/libpng-1.6.47.tar.xz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "BundledLibjpeg16bits",
+      "license": "NOASSERTION",
+      "source": "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.1.0/libjpeg-turbo-3.1.0.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "BundledLibjpeg12bits",
+      "license": "NOASSERTION",
+      "source": "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.1.0/libjpeg-turbo-3.1.0.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "BundledLibjpeg",
+      "license": "NOASSERTION",
+      "source": "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.1.0/libjpeg-turbo-3.1.0.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "JpegPrivate",
+      "license": "NOASSERTION",
+      "source": "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.1.0/libjpeg-turbo-3.1.0.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "BundledFreetype_Attribution_freetype-zlib",
+      "license": "NOASSERTION",
+      "source": "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "BundledFreetype_Attribution_freetype-bdf",
+      "license": "NOASSERTION",
+      "source": "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "BundledFreetype_Attribution_freetype-pcf",
+      "license": "NOASSERTION",
+      "source": "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "BundledFreetype",
+      "license": "NOASSERTION",
+      "source": "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "FreetypePrivate_Attribution_freetype-zlib",
+      "license": "NOASSERTION",
+      "source": "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "FreetypePrivate_Attribution_freetype-bdf",
+      "license": "NOASSERTION",
+      "source": "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "FreetypePrivate_Attribution_freetype-pcf",
+      "license": "NOASSERTION",
+      "source": "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "FreetypePrivate",
+      "license": "NOASSERTION",
+      "source": "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "BundledHarfbuzz",
+      "license": "NOASSERTION",
+      "source": "https://github.com/harfbuzz/harfbuzz/releases/tag/10.4.0"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "HarfbuzzPrivate",
+      "license": "NOASSERTION",
+      "source": "https://github.com/harfbuzz/harfbuzz/releases/tag/10.4.0"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Network_Attribution_zlib",
+      "license": "NOASSERTION",
+      "source": "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Network_Attribution_psl-data",
+      "license": "NOASSERTION",
+      "source": "https://publicsuffix.org/list/public_suffix_list.dat"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Network_Attribution_libpsl",
+      "license": "NOASSERTION",
+      "source": "https://github.com/rockdaboot/libpsl"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "DBus_Attribution_libdbus-1-headers",
+      "license": "NOASSERTION",
+      "source": "https://www.freedesktop.org/wiki/Software/dbus/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Gui_Attribution_rhi-miniengine-d3d12-mipmap",
+      "license": "NOASSERTION",
+      "source": "https://github.com/microsoft/DirectX-Graphics-Samples"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Gui_Attribution_opengl-headers",
+      "license": "NOASSERTION",
+      "source": "https://www.khronos.org/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Gui_Attribution_opengl-es2-headers",
+      "license": "NOASSERTION",
+      "source": "https://www.khronos.org/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Gui_Attribution_grayraster",
+      "license": "NOASSERTION",
+      "source": "http://www.freetype.org"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Gui_Attribution_smooth-scaling-algorithm",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Gui_Attribution_xserverhelper",
+      "license": "NOASSERTION",
+      "source": "https://www.x.org/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Gui_Attribution_aglfn",
+      "license": "NOASSERTION",
+      "source": "https://github.com/adobe-type-tools/agl-aglfn"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Gui_Attribution_vulkanmemoryallocator",
+      "license": "NOASSERTION",
+      "source": "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Gui_Attribution_webgradients",
+      "license": "NOASSERTION",
+      "source": "https://webgradients.com/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Gui_Attribution_icc-srgb-color-profile",
+      "license": "NOASSERTION",
+      "source": "http://www.color.org/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Gui_Attribution_d3d12memoryallocator",
+      "license": "NOASSERTION",
+      "source": "https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Gui_Attribution_md4c",
+      "license": "NOASSERTION",
+      "source": "https://github.com/mity/md4c/releases/tag/release-0.5.2"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Gui_Attribution_zlib",
+      "license": "NOASSERTION",
+      "source": "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Gui_Attribution_vulkan-xml-spec",
+      "license": "NOASSERTION",
+      "source": "https://www.khronos.org/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "TestInternalsPrivate_Attribution_cmake-runcmake-test-modules",
+      "license": "NOASSERTION",
+      "source": "https://cmake.org/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Test_Attribution_catch2",
+      "license": "NOASSERTION",
+      "source": "https://github.com/catchorg/Catch2"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Test_Attribution_cycle",
+      "license": "NOASSERTION",
+      "source": "http://fftw.org/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Test_Attribution_linuxperf",
+      "license": "NOASSERTION",
+      "source": "https://www.kernel.org"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Test_Attribution_valgrind",
+      "license": "NOASSERTION",
+      "source": "http://valgrind.org/"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "QSQLiteDriverPlugin_Attribution_sqlite",
+      "license": "NOASSERTION",
+      "source": "https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "QWindowsIntegrationPlugin_Attribution_wintab",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "WrapAtomic",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "PostgreSQL",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "ODBC",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtbase-6.8.3.spdx.json",
+      "name": "Mimer",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtdeclarative-6.8.3.spdx.json",
+      "name": "MSVC",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtdeclarative-6.8.3.spdx.json",
+      "name": "qtdeclarative",
+      "license": "NOASSERTION",
+      "source": "git://code.qt.io/qt/qtdeclarative.git@2ec235a2235a119887683e55787b93f99dc5f12f"
+    },
+    {
+      "sbom": "qtdeclarative-6.8.3.spdx.json",
+      "name": "Qml_Attribution_masm",
+      "license": "NOASSERTION",
+      "source": "https://trac.webkit.org/wiki/JavaScriptCore"
+    },
+    {
+      "sbom": "qtdeclarative-6.8.3.spdx.json",
+      "name": "QuickControls2Material_Attribution_shadow_angular_material",
+      "license": "NOASSERTION",
+      "source": "https://angularjs.org/"
+    },
+    {
+      "sbom": "qtdeclarative-6.8.3.spdx.json",
+      "name": "qtquickcontrols2materialstyleplugin_Attribution_shadow_angular_material",
+      "license": "NOASSERTION",
+      "source": "https://angularjs.org/"
+    },
+    {
+      "sbom": "qtmultimedia-6.8.3.spdx.json",
+      "name": "MSVC",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtmultimedia-6.8.3.spdx.json",
+      "name": "qtmultimedia",
+      "license": "NOASSERTION",
+      "source": "git://code.qt.io/qt/qtmultimedia.git"
+    },
+    {
+      "sbom": "qtmultimedia-6.8.3.spdx.json",
+      "name": "BundledResonanceAudio_Attribution_pffft",
+      "license": "NOASSERTION",
+      "source": "https://bitbucket.org/jpommier/pffft/get/02fe7715a5bf.zip"
+    },
+    {
+      "sbom": "qtmultimedia-6.8.3.spdx.json",
+      "name": "BundledResonanceAudio_Attribution_eigen",
+      "license": "NOASSERTION",
+      "source": "https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.bz2"
+    },
+    {
+      "sbom": "qtmultimedia-6.8.3.spdx.json",
+      "name": "BundledResonanceAudio",
+      "license": "NOASSERTION",
+      "source": "https://github.com/resonance-audio/resonance-audio/tree/e225aedb5ec76ca6a0fe7079c0b84dbcbb490553"
+    },
+    {
+      "sbom": "qtmultimedia-6.8.3.spdx.json",
+      "name": "WMF",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtmultimedia-6.8.3.spdx.json",
+      "name": "FFmpeg",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtpositioning-6.8.3.spdx.json",
+      "name": "MSVC",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtpositioning-6.8.3.spdx.json",
+      "name": "qtpositioning",
+      "license": "NOASSERTION",
+      "source": "git://code.qt.io/qt/qtpositioning.git"
+    },
+    {
+      "sbom": "qtpositioning-6.8.3.spdx.json",
+      "name": "Bundled_Poly2Tri",
+      "license": "NOASSERTION",
+      "source": "https://github.com/greenm01/poly2tri"
+    },
+    {
+      "sbom": "qtpositioning-6.8.3.spdx.json",
+      "name": "Bundled_Clipper",
+      "license": "NOASSERTION",
+      "source": "https://sourceforge.net/projects/polyclipping/"
+    },
+    {
+      "sbom": "qtpositioning-6.8.3.spdx.json",
+      "name": "Bundled_Clip2Tri",
+      "license": "NOASSERTION",
+      "source": "https://github.com/raptor/clip2tri"
+    },
+    {
+      "sbom": "qtsvg-6.8.3.spdx.json",
+      "name": "MSVC",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtsvg-6.8.3.spdx.json",
+      "name": "qtsvg",
+      "license": "NOASSERTION",
+      "source": "git://code.qt.io/qt/qtsvg.git@c75099a75e81df35e7347a65e301bbf1011831a5"
+    },
+    {
+      "sbom": "qtsvg-6.8.3.spdx.json",
+      "name": "Svg_Attribution_xsvg",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtwebchannel-6.8.3.spdx.json",
+      "name": "MSVC",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtwebchannel-6.8.3.spdx.json",
+      "name": "qtwebchannel",
+      "license": "NOASSERTION",
+      "source": "git://code.qt.io/qt/qtwebchannel.git"
+    },
+    {
+      "sbom": "qtwebengine-6.8.3.spdx.json",
+      "name": "MSVC",
+      "license": "NOASSERTION",
+      "source": "NOASSERTION"
+    },
+    {
+      "sbom": "qtwebengine-6.8.3.spdx.json",
+      "name": "qtwebengine",
+      "license": "NOASSERTION",
+      "source": "git://code.qt.io/qt/qtwebengine.git@b586c4eb65d8e46ab2c255e1a141676043a650da"
+    }
+  ],
+  "collectedAt": "2026-09-16",
+  "collectedBy": "Codex (automated technical evidence, not legal approval)",
+  "bundleKind": "existing local staging directory, not final release artifact"
+}

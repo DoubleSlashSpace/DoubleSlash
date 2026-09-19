@@ -1,0 +1,66 @@
+Qt 6.8.3 — source and license information
+=========================================
+
+What is shipped
+---------------
+The DoubleSlash Windows bundle includes the Qt 6.8.3 runtime as separate
+dynamic-link libraries (Qt6Core.dll, Qt6Gui.dll, Qt6Quick.dll and the other
+Qt6*.dll modules) together with the Qt plugin and QML module trees deployed
+beneath the application directory.
+
+Licence
+-------
+These libraries are used under the GNU Lesser General Public License version 3
+(LGPL-3.0). The full licence text ships beside this file as
+qt-6.8.3-LGPL-3.0.txt and is reproduced in the application's third-party
+notices. The LGPL-3.0 incorporates the GPL-3.0 by reference; the GPL-3.0 text
+is retained in the project's evidence directory.
+
+Provenance — unmodified upstream binaries
+-----------------------------------------
+The Qt binaries are the official pre-built Qt 6.8.3 MSVC 2022 x64 release
+packages published by The Qt Company, obtained from download.qt.io:
+
+  https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/qt6_683/
+
+DoubleSlash does not modify Qt. No patch is applied to any Qt module, and no
+Qt source file is recompiled as part of the DoubleSlash build. The project's
+only vendored patches apply to the Rust crates `cpal` and `wayland-scanner`,
+neither of which is part of Qt. Because the shipped libraries are unmodified
+upstream binaries, there are no modifications to Qt to disclose.
+
+Corresponding source
+--------------------
+Complete corresponding source for Qt 6.8.3 is published by The Qt Company and
+is available from:
+
+  https://download.qt.io/archive/qt/6.8/6.8.3/single/
+  https://code.qt.io/cgit/qt/qt5.git/  (tag v6.8.3)
+
+The project's own corresponding-source.tar.gz covers DoubleSlash sources and
+its modified local dependencies. It does not contain Qt sources, which are
+obtained from the upstream locations above.
+
+How the LGPL-3.0 obligations are met
+------------------------------------
+* Notice — the application's Settings > About > Third-Party Notices screen
+  states that DoubleSlash uses Qt under the LGPL-3.0 and displays this text
+  and the full licence. The same files ship under licenses/client/supplement/
+  in the distributed bundle.
+* Licence text — qt-6.8.3-LGPL-3.0.txt accompanies the distribution.
+* Source availability — the upstream locations above are published in the
+  notices screen and in this file.
+* Relinking — Qt is dynamically linked. Each Qt module is a separate DLL in
+  the application directory, and no Qt library is statically linked into
+  DoubleSlash.exe. A recipient may replace any Qt DLL with their own build of
+  the same Qt version and run the application against it; nothing in the
+  bundle prevents or restricts that substitution. See
+  relinking-instructions.txt for the procedure supplied to recipients.
+* No modifications — as recorded above, Qt is shipped unmodified.
+
+Scope note
+----------
+Qt WebEngine is covered separately in chromium-122-source-information.txt
+because it embeds Chromium, which carries its own additional obligations.
+FFmpeg ships as its own set of LGPL-2.1 libraries and is covered in
+ffmpeg-7.1-source-information.txt.

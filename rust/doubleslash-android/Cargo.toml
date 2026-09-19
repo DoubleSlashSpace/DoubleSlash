@@ -2,6 +2,7 @@
 name = "doubleslash-android"
 version = "1.0.0"
 edition = "2021"
+license = "MIT"
 description = "JNI bridge exposing the DoubleSlash client core to the Android app."
 
 # cdylib only: this crate exists to be dlopen'd by the JVM as

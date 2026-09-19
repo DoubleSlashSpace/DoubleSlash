@@ -87,6 +87,11 @@ sdk.dir=C:/Users/you/AppData/Local/Android/Sdk
 
 ### Build
 
+Packaging also requires Node.js 20+ and `cargo-about` 0.8.4. Local debug builds
+include Rust/codec audit notices. Release builds and published debug builds
+(`DOUBLESLASH_DISTRIBUTION=1`) require reviewed runtime/JVM/asset supplements;
+see [dependency licensing](LICENSING.md). The distribution review remains open.
+
 ```powershell
 cd android
 ./gradlew assembleDebug          # or assembleRelease
@@ -306,7 +311,8 @@ Play Console still needs a `specialUse` declaration (and a video of the
 notification) at upload time.
 
 `targetSdk` is 36, which Play requires of new apps as of 2026-08-31. Local-network
-access stays implicit until `targetSdk` 37; see backlog item 10 before that bump.
+access stays implicit until `targetSdk` 37; see
+[Phase 4 in the backlog](../backlog.md#access-local-network) before that bump.
 
 **Play policy surfaces in the client.** Terms of use (`TERMS.md`) must be
 accepted after unlock before the Home screen; the version is stored in
@@ -323,5 +329,13 @@ https://github.com/DoubleSlashSpace/DoubleSlash/blob/develop/PRIVACY.md.
 intent for the lock screen. Decline is handled by `CoreService` so the
 activity does not have to come up; Answer opens `MainActivity`. Play Console
 needs a **full-screen intent** declaration for calling apps (`USE_FULL_SCREEN_INTENT`).
+
+**Dependency notices.** Settings > Legal > Third-party licenses opens an offline
+reader for the packaged Rust and supplemental notices. Source links using HTTPS
+open in the system browser. Distribution reviews are scoped by Rust target and
+debug/release variant; see [the licensing guide](LICENSING.md). Gradle's
+`collectDebugRuntimeLicenses` and `collectReleaseRuntimeLicenses` retain resolved
+artifacts/POMs, nested notices, NDK notices and per-ABI C++ runtime hashes under
+`app/build/reports/licenses/`.
 
 See `backlog.md` for the ordered list of what to build next.
