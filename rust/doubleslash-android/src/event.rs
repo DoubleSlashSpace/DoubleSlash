@@ -474,6 +474,7 @@ mod tests {
         let media = [
             ConnectionEvent::SfuAudioReceived {
                 peer_id: "p".into(),
+                seq: Some(1),
                 opus_data: vec![1, 2, 3],
             },
             ConnectionEvent::DirectAudioReceived {

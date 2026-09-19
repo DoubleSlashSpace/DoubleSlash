@@ -462,8 +462,15 @@ fn route_media(call_tx: &mpsc::Sender<CallCommand>, event: &ConnectionEvent) {
                 opus_data: opus_data.clone(),
             }
         }
-        ConnectionEvent::SfuAudioReceived { peer_id, opus_data } => CallCommand::RoomAudioInbound {
+        ConnectionEvent::SfuAudioReceived {
+            peer_id,
+            seq,
+            opus_data,
+        } => CallCommand::RoomAudioInbound {
             peer_id: peer_id.clone(),
+            // Carried through so playout can drop the duplicate copies
+            // multi-homing delivers; direct 1:1 audio has none to suppress.
+            seq: *seq,
             opus_data: opus_data.clone(),
         },
         _ => return,
@@ -841,13 +848,21 @@ mod tests {
             &tx,
             &ConnectionEvent::SfuAudioReceived {
                 peer_id: "peer-b".to_owned(),
+                seq: Some(42),
                 opus_data: vec![9],
             },
         );
 
         match rx.try_recv() {
-            Ok(CallCommand::RoomAudioInbound { peer_id, opus_data }) => {
+            Ok(CallCommand::RoomAudioInbound {
+                peer_id,
+                seq,
+                opus_data,
+            }) => {
                 assert_eq!(peer_id, "peer-b");
+                // Without the sequence number the playout side cannot tell a
+                // multi-homed duplicate from a distinct frame.
+                assert_eq!(seq, Some(42));
                 assert_eq!(opus_data, vec![9]);
             }
             _ => panic!("room audio must be handed to the call controller"),
@@ -875,6 +890,7 @@ mod tests {
                 &tx,
                 &ConnectionEvent::SfuAudioReceived {
                     peer_id: "peer".to_owned(),
+                    seq: None,
                     opus_data: vec![0],
                 },
             );
