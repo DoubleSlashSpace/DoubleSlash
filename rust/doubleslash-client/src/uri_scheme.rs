@@ -172,8 +172,8 @@ mod tests {
         // On non-Windows platforms this should return Ok(false) without error.
         #[cfg(not(target_os = "windows"))]
         {
-            assert_eq!(register().unwrap(), false);
-            assert_eq!(unregister().unwrap(), false);
+            assert!(!register().unwrap());
+            assert!(!unregister().unwrap());
             assert!(!is_registered());
         }
         // On Windows just call is_registered — don't actually write to the registry.
