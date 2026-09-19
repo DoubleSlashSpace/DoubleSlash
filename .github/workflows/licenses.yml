@@ -72,18 +72,18 @@ jobs:
           toolchain: '1.97.1'
       - run: cargo install cargo-about --version 0.8.4 --locked
       - run: node --test scripts/licenses/*.test.mjs
-      - name: Generate locked target-specific audit notices
+      - name: Generate locked target-specific notices
         run: |
           for target in x86_64-pc-windows-msvc x86_64-unknown-linux-gnu aarch64-apple-darwin; do
             features=qt-ui
             if [ "$target" = x86_64-pc-windows-msvc ]; then features=qt-ui,webengine; fi
-            node scripts/generate_licenses.mjs --product client --target "$target" --features "$features" --rust-only --output "dist/license-audit/client-$target"
-            node scripts/generate_licenses.mjs --product installer --target "$target" --rust-only --output "dist/license-audit/installer-$target"
+            node scripts/generate_licenses.mjs --product client --target "$target" --features "$features" --output "dist/license-audit/client-$target"
+            node scripts/generate_licenses.mjs --product installer --target "$target" --output "dist/license-audit/installer-$target"
           done
           for target in x86_64-pc-windows-msvc x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
             node scripts/generate_licenses.mjs --product supernode --target "$target" --output "dist/license-audit/supernode-$target"
           done
-          node scripts/generate_licenses.mjs --product android --target aarch64-linux-android --rust-only --output dist/license-audit/android
+          node scripts/generate_licenses.mjs --product android --target aarch64-linux-android --output dist/license-audit/android
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dependency-license-audit

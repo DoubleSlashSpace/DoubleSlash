@@ -37,8 +37,9 @@ is available from:
   https://download.qt.io/archive/qt/6.8/6.8.3/single/
   https://code.qt.io/cgit/qt/qt5.git/  (tag v6.8.3)
 
-The project's own corresponding-source.tar.gz covers DoubleSlash sources and
-its modified local dependencies. It does not contain Qt sources, which are
+DoubleSlash's own sources and its modified local dependencies are published at
+https://github.com/DoubleSlashSpace/DoubleSlash; the notices name the exact
+revision each build came from. They do not contain Qt sources, which are
 obtained from the upstream locations above.
 
 How the LGPL-3.0 obligations are met

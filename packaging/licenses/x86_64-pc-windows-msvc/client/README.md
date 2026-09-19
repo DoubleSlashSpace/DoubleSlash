@@ -4,10 +4,11 @@ This directory holds the notices required to redistribute the Windows bundle:
 everything in it that is **not** a Rust crate. Rust dependencies are handled
 automatically and end up in `licenses/client/rust-licenses.html`.
 
-`build_win64.ps1` and the release workflow find this via
-`DOUBLESLASH_LICENSE_SUPPLEMENT`. Its contents are copied into
+Every build finds this directory by target and product — no environment
+variable, no manifest. Its contents are copied into
 `licenses/client/supplement/` in the shipped bundle and surfaced in the app
-under Settings > About > Third-Party Notices.
+under Settings > About > Third-Party Notices. Adding a file here ships it;
+`README.md` is the only thing skipped.
 
 ## What is here
 
@@ -36,12 +37,11 @@ above provide.
 
 The only thing that makes this stale is **changing what ships**. After a Qt
 upgrade, a new bundled library, or a feature change that pulls in something
-new, update the affected `*-source-information.txt` and the matching
-`components` entry in `review.json`.
+new, update the affected `*-source-information.txt` and add any new notice
+file to this directory.
 
-`features` in `review.json` must match the build. It is checked because it
-changes the component set: without the `webengine` feature there is no Chromium
-in the bundle, and with it there is.
+Watch the `webengine` feature in particular: without it there is no Chromium in
+the bundle, and with it there is. Nothing checks that for you.
 
 ## Open items
 

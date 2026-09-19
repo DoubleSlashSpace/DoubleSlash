@@ -412,8 +412,9 @@ pub fn license_files(binary: &Path) -> Result<Vec<(PathBuf, String)>> {
     let inventory: serde_json::Value =
         serde_json::from_slice(&fs::read(directory.join("inventory.json"))?)?;
     anyhow::ensure!(
-        inventory["product"] == "supernode" && inventory["scope"] == "distribution-notices",
-        "Supernode install requires distribution notices, not an audit inventory"
+        inventory["product"] == "supernode",
+        "Notices beside the binary are for {}, not the supernode",
+        inventory["product"]
     );
     let mut result = Vec::new();
     walk(&directory, &directory, &mut result)?;

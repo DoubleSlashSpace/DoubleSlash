@@ -16,10 +16,9 @@
       * signtool.exe in PATH for code signing (optional)
       * 7z.exe for archiving (required — install via winget/choco if absent)
 
-    Packaging for distribution requires a reviewed license supplement in
-    DOUBLESLASH_LICENSE_SUPPLEMENT (see docs/LICENSING.md). For a local build you
-    only intend to run, set DOUBLESLASH_DEV_BUILD=1 — that produces a runnable
-    but explicitly non-distributable bundle and no archive.
+    For a local build you only intend to run, set DOUBLESLASH_DEV_BUILD=1 — it
+    skips the 7z archive, which is the slow part. Notices are identical either
+    way; the generator finds them under packaging\licenses\ (docs/LICENSING.md).
 
     The bundle is assembled in dist\.DoubleSlash.staging\ and swapped into
     dist\DoubleSlash\ only once every gate passes, so a failed build leaves the
@@ -27,8 +26,7 @@
 
     Environment variables (all optional):
       QT_DIR                  — override Qt MSVC root, e.g. C:\Qt\6.8.3\msvc2022_64
-      DOUBLESLASH_DEV_BUILD      — set to "1" for a local, non-distributable build
-      DOUBLESLASH_LICENSE_SUPPLEMENT — reviewed supplement dir (required to package)
+      DOUBLESLASH_DEV_BUILD      — set to "1" to skip the 7z archive
       DOUBLESLASH_DEBUG          — set to "1" to do a debug build instead of release
       DOUBLESLASH_SIGN_THUMBPRINT  — SHA-1 cert thumbprint in Windows store
       DOUBLESLASH_SIGN_PFX         — path to .pfx file
@@ -79,37 +77,16 @@ if (-not $_vLine) { Write-Error "Could not parse version from $_cargoToml" }
 $VERSION = $_vLine.Matches.Groups[1].Value
 Write-Host "==> DoubleSlash v$VERSION  (profile: $PROFILE_NAME)"
 
-# ── Licensing preflight ──────────────────────────────────────────────────────
-# Runs before anything expensive or destructive. Packaging for distribution
-# needs a reviewed native/runtime/asset supplement (docs/LICENSING.md); the
-# generator fails closed without one. Checking it here — rather than letting
-# node fail midway — keeps a failed gate from costing a cargo build, and keeps
-# it from touching the existing bundle at all.
-#
-#   DOUBLESLASH_DEV_BUILD=1  -- local, non-distributable build. Client notices
-#                               are Rust-only, the bundle is marked
-#                               NOT-FOR-DISTRIBUTION, and no archive is made.
+# ── Dev build ────────────────────────────────────────────────────────────────
+# DOUBLESLASH_DEV_BUILD=1 skips the 7z archive for a local build you only mean
+# to run. Notices are identical either way: the generator finds them under
+# packaging\licenses\<target>\<product>\ without being told where to look.
 $DEV_BUILD = $env:DOUBLESLASH_DEV_BUILD -eq "1"
 if ($DEV_BUILD) {
     if ($env:DOUBLESLASH_BUILD_ID) {
         Write-Error "DOUBLESLASH_DEV_BUILD is a local-only escape hatch and cannot be used for CI/release builds."
     }
-    Write-Host "    [licenses] DEV BUILD — Rust-only notices, not distributable" -ForegroundColor Yellow
-} else {
-    $_supplement = $env:DOUBLESLASH_LICENSE_SUPPLEMENT
-    if (-not $_supplement) {
-        Write-Error @"
-Set DOUBLESLASH_LICENSE_SUPPLEMENT to the reviewed supplement directory; see docs/LICENSING.md.
-Release workflows use packaging\licenses\x86_64-pc-windows-msvc\client\.
-
-For a local build you just want to run (not ship), use the dev escape hatch instead:
-  `$env:DOUBLESLASH_DEV_BUILD="1"; .\build_win64.ps1
-"@
-    }
-    if (-not (Test-Path (Join-Path $_supplement "review.json"))) {
-        Write-Error "No review.json under DOUBLESLASH_LICENSE_SUPPLEMENT ($_supplement); see docs/LICENSING.md."
-    }
-    Write-Host "    [licenses] Supplement: $_supplement"
+    Write-Host "    [build] DEV BUILD — no archive will be produced" -ForegroundColor Yellow
 }
 
 # ── Locate Qt ─────────────────────────────────────────────────────────────────
@@ -361,37 +338,12 @@ $licenseArgs = @(
     "--product", "client", "--target", "x86_64-pc-windows-msvc",
     "--features", $_features, "--output", (Join-Path $BUNDLE "licenses\client")
 )
-if ($DEV_BUILD) {
-    # Audit-scope notices only: they do not cover Qt, Chromium, FFmpeg or the
-    # bundled assets, which is why this bundle is not distributable.
-    $licenseArgs += "--rust-only"
-} else {
-    $licenseArgs += @("--supplement", $env:DOUBLESLASH_LICENSE_SUPPLEMENT)
-}
 & node @licenseArgs
 if ($LASTEXITCODE -ne 0) { Write-Error "Client license generation failed; see docs/LICENSING.md" }
 & node (Join-Path $ROOT "scripts\generate_licenses.mjs") --product installer --target x86_64-pc-windows-msvc --output (Join-Path $BUNDLE "licenses\installer")
 if ($LASTEXITCODE -ne 0) { Write-Error "Installer license generation failed" }
 Copy-Item (Join-Path $BUNDLE "licenses\installer\rust-licenses.html") (Join-Path $DIST "doubleslash-installer-win64-licenses.html")
 Copy-Item (Join-Path $ROOT "LICENSE") (Join-Path $BUNDLE "LICENSE.txt")
-
-if ($DEV_BUILD) {
-    @"
-NOT FOR DISTRIBUTION
-
-Built with DOUBLESLASH_DEV_BUILD=1 for local development and testing only.
-
-licenses\client\ holds Rust dependency notices only. This bundle does NOT
-carry the reviewed native/runtime/asset notices required to redistribute it
-(Qt LGPL, Chromium, FFmpeg, and bundled assets are all uncovered).
-
-Do not publish, ship, or share this folder or any archive of it. To produce a
-distributable build, set DOUBLESLASH_LICENSE_SUPPLEMENT to a reviewed
-supplement directory; see docs/LICENSING.md.
-
-Built: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | Version: $VERSION
-"@ | Set-Content (Join-Path $BUNDLE "NOT-FOR-DISTRIBUTION.txt") -Encoding utf8
-}
 
 # ── windeployqt6 ─────────────────────────────────────────────────────────────
 Write-Host "`n==> Running windeployqt6..."
@@ -538,7 +490,7 @@ $archiveName = "DoubleSlash-${VERSION}-win64.7z"
 $archivePath = Join-Path $DIST $archiveName
 
 if ($DEV_BUILD) {
-    Write-Host "`n==> Skipping 7z archive (dev build is not distributable)"
+    Write-Host "`n==> Skipping 7z archive (dev build)"
 } else {
 
 $sevenZip = Get-Command "7z" -ErrorAction SilentlyContinue
@@ -603,9 +555,7 @@ if (-not $DEV_BUILD -and (Test-Path $archivePath)) {
 
 if ($DEV_BUILD) {
     Write-Host ""
-    Write-Host "    *** DEV BUILD - NOT FOR DISTRIBUTION ***" -ForegroundColor Yellow
-    Write-Host "    Rust dependency notices only; Qt/Chromium/FFmpeg notices are absent." -ForegroundColor Yellow
-    Write-Host "    No archive was produced. See NOT-FOR-DISTRIBUTION.txt in the bundle." -ForegroundColor Yellow
+    Write-Host "    *** DEV BUILD - no archive was produced ***" -ForegroundColor Yellow
 }
 
 Write-Host ""

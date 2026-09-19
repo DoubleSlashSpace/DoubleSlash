@@ -105,8 +105,7 @@ chmod +x "$APPDIR/usr/bin/doubleslash" "$APPDIR/usr/bin/doubleslash-installer"
 
 TARGET="$(rustc -vV | sed -n 's/^host: //p')"
 node "$ROOT/scripts/generate_licenses.mjs" --product client --target "$TARGET" \
-    --features qt-ui --output "$APPDIR/usr/share/doubleslash/licenses/client" \
-    --supplement "${DOUBLESLASH_LICENSE_SUPPLEMENT:?Set DOUBLESLASH_LICENSE_SUPPLEMENT; see docs/LICENSING.md}"
+    --features qt-ui --output "$APPDIR/usr/share/doubleslash/licenses/client"
 node "$ROOT/scripts/generate_licenses.mjs" --product installer --target "$TARGET" \
     --output "$APPDIR/usr/share/doubleslash/licenses/installer"
 cp "$ROOT/LICENSE" "$APPDIR/usr/share/doubleslash/LICENSE.txt"
