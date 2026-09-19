@@ -227,7 +227,7 @@ These are selected **desktop** defaults from [SettingsModel](rust/doubleslash-cl
 | `ptt_key` | `space` | Push-to-talk binding |
 | `noise_suppression` / `noise_strength` | `true` / `moderate` | Microphone noise suppression |
 | `jitter_buffer_depth` | `3` | Configured voice buffer depth, in frames |
-| `audio_input_device` / `audio_output_device` | empty | System default audio devices |
+| `audio_input_device` / `audio_output_device` | empty | Follow the OS default devices, including when they change during a call |
 | `video_enabled` / `video_input_device` | `false` / empty | Sharing off; no saved source |
 | `video_quality` / `video_codec` | `balanced` / `auto` | Quality preset and codec preference |
 | `video_adaptive_bitrate` | `true` | Lower bitrate in response to loss |

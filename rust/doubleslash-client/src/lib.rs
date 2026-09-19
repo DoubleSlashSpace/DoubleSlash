@@ -5,6 +5,7 @@
 //! library through Cargo features.
 
 pub mod aec;
+pub mod audio_devices;
 pub mod avatar_config;
 pub mod backup;
 pub mod call_controller;

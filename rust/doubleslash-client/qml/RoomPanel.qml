@@ -553,9 +553,13 @@ Item {
             // back to it cannot disagree about where it is - see
             // JumpToCurrentButton.distanceFromLatest.
             function _restPosition() {
+                // `jumpToCurrent` is a child, so it is still undefined for
+                // the layout passes that run while this view is being built.
+                // An empty list reads as pinned there, which is where a room
+                // should open anyway.
                 pinnedToLatest = contentHeight <= height
                     || atYEnd
-                    || jumpToCurrent.distanceFromLatest <= 24
+                    || (jumpToCurrent && jumpToCurrent.distanceFromLatest <= 24)
             }
 
             // A delegate settling to its real height moves the end away from a

@@ -154,6 +154,10 @@ struct AudioPipeline {
     ring_fill_ema: f32,
     /// V10: PRNG seed for comfort-noise generation; advanced per CNG sample.
     cng_seed: u32,
+    /// Console-default endpoint ids recorded when this pipeline opened, for
+    /// the sides that were following the OS default. Compared on a default
+    /// change so a no-op notification does not tear the streams down.
+    opened_defaults: crate::audio_devices::DefaultEndpointIds,
 }
 
 /// Capture-side echo-cancellation state, owned by the capture callback closure.
@@ -180,7 +184,7 @@ fn resolve_cpal_device(
     name: Option<&str>,
     kind: &str,
 ) -> anyhow::Result<cpal::Device> {
-    let trimmed = name.map(str::trim).filter(|s| !s.is_empty());
+    let trimmed = crate::audio_devices::owned_device_selection(name.map(|s| s.to_string()));
     if let Some(target) = trimmed {
         let iter_res = if kind == "input" {
             host.input_devices().map(|it| it.collect::<Vec<_>>())
@@ -276,6 +280,18 @@ impl AudioPipeline {
         tokio::sync::mpsc::UnboundedReceiver<f32>,
     )> {
         let host = cpal::default_host();
+
+        let follow_input =
+            crate::audio_devices::owned_device_selection(input_device_name.map(|s| s.to_string()))
+                .is_none();
+        let follow_output =
+            crate::audio_devices::owned_device_selection(output_device_name.map(|s| s.to_string()))
+                .is_none();
+        let defaults = crate::audio_devices::query_default_endpoint_ids();
+        let opened_defaults = crate::audio_devices::DefaultEndpointIds {
+            input: if follow_input { defaults.input } else { None },
+            output: if follow_output { defaults.output } else { None },
+        };
 
         let input_dev = resolve_cpal_device(&host, input_device_name, "input")?;
         let output_dev = resolve_cpal_device(&host, output_device_name, "output")?;
@@ -644,6 +660,7 @@ impl AudioPipeline {
                 fec_loss_pct: fec_loss_arc,
                 ring_fill_ema: 0.0,
                 cng_seed: 0xDEAD_BEEF,
+                opened_defaults,
             },
             encoded_rx,
             speaking_rx,
@@ -1093,11 +1110,15 @@ pub enum CallCommand {
     /// Leave SFU room audio mode; revert to direct peer audio.
     ClearRoomMode,
     /// Update the preferred capture / playback device names. Empty string
-    /// means "use system default". Takes effect on the next audio start.
+    /// (or `"Default"`) means follow the OS default. Applied immediately when
+    /// a pipeline is already running.
     SetAudioDevices {
         input: Option<String>,
         output: Option<String>,
     },
+    /// The OS console default input and/or output device changed. Reopens a
+    /// live pipeline only for the sides that are following the default.
+    OsDefaultDeviceChanged { input: bool, output: bool },
     /// Start a microphone test (capture + level events, no peer sending).
     StartMicTest,
     /// Stop the microphone test.
@@ -1129,6 +1150,12 @@ pub enum CallEvent {
     RemoteLevelChanged {
         peer_id: String,
         level: f32,
+    },
+    /// Console-default endpoints changed. The UI reopens system loopback when
+    /// the output default moved; voice follow is handled inside the controller.
+    OsDefaultDeviceChanged {
+        input: bool,
+        output: bool,
     },
 }
 
@@ -1192,6 +1219,10 @@ pub struct CallController {
     input_device: Option<String>,
     /// User-selected playback device name (empty = system default).
     output_device: Option<String>,
+    /// Last observed OS console-default endpoint ids. `None` until the
+    /// controller's first query so a startup snapshot is not mistaken for a
+    /// change.
+    last_os_defaults: Option<crate::audio_devices::DefaultEndpointIds>,
 
     /// Timestamp of the last audio frame received from each remote room peer.
     /// Used to derive speaking state: peer is "speaking" while frames arrive
@@ -1309,6 +1340,7 @@ impl CallController {
             local_speaking: false,
             input_device: None,
             output_device: None,
+            last_os_defaults: None,
             room_peer_last_audio: HashMap::new(),
             room_peer_last_level: HashMap::new(),
             peer_jitter_queues: HashMap::new(),
@@ -1366,8 +1398,19 @@ impl CallController {
         // Transition first so UI updates immediately.
         self.set_state(CallState::Connecting);
 
+        if self.install_pipeline(self.muted) {
+            let mode = if voice_activation { "VAD" } else { "PTT" };
+            info!("Audio pipeline started (mode={mode})");
+        }
+    }
+
+    /// Open capture/playback, replaying listener mix preferences.
+    ///
+    /// On failure the call stays up (remote playback / relay-only) and a
+    /// `CaptureError` is emitted. Returns whether streams are live.
+    fn install_pipeline(&mut self, start_muted: bool) -> bool {
         match AudioPipeline::start(
-            self.muted,
+            start_muted,
             self.input_device.as_deref(),
             self.output_device.as_deref(),
             self.input_vol,
@@ -1392,21 +1435,79 @@ impl CallController {
                 // watching.
                 let viewers: Vec<String> = self.content_viewers.iter().cloned().collect();
                 pipeline.set_content_viewers(&viewers);
+                self.last_os_defaults = Some(crate::audio_devices::query_default_endpoint_ids());
                 self.audio = Some(pipeline);
                 self.encoded_rx = Some(encoded_rx);
                 self.speaking_rx = Some(speaking_rx);
                 self.level_rx = Some(level_rx);
-                let mode = if voice_activation { "VAD" } else { "PTT" };
-                info!("Audio pipeline started (mode={mode})");
+                true
             }
             Err(e) => {
                 error!("Failed to start audio pipeline: {e}");
+                self.audio = None;
+                self.encoded_rx = None;
+                self.speaking_rx = None;
+                self.level_rx = None;
                 // Emit error advisory; call continues (relay-only / remote playback).
                 let _ = self
                     .event_tx
                     .try_send(CallEvent::CaptureError(e.to_string()));
+                false
             }
         }
+    }
+
+    /// Tear down and reopen live streams without leaving the call.
+    ///
+    /// Used when the user picks a different device or the OS default moves
+    /// while Settings is still "Default". Jitter queues and peer sessions stay.
+    fn restart_live_pipeline(&mut self) {
+        if self.audio.is_none() {
+            return;
+        }
+        self.audio = None;
+        self.encoded_rx = None;
+        self.speaking_rx = None;
+        self.level_rx = None;
+        if self.install_pipeline(self.muted) {
+            info!(
+                "Audio pipeline reopened (input={:?}, output={:?})",
+                self.input_device, self.output_device
+            );
+        }
+    }
+
+    fn handle_os_default_change(&mut self, input: bool, output: bool) {
+        let now = crate::audio_devices::query_default_endpoint_ids();
+        let prev = self.last_os_defaults.clone().unwrap_or_else(|| now.clone());
+        let input_changed = input && now.input != prev.input;
+        let output_changed = output && now.output != prev.output;
+        self.last_os_defaults = Some(now.clone());
+        if !input_changed && !output_changed {
+            return;
+        }
+        let follow_input = self.input_device.is_none();
+        let follow_output = self.output_device.is_none();
+        let should_reopen = self.audio.as_ref().is_some_and(|p| {
+            let input_moved = follow_input && now.input != p.opened_defaults.input;
+            let output_moved = follow_output && now.output != p.opened_defaults.output;
+            crate::audio_devices::should_reopen_for_os_default(
+                follow_input,
+                follow_output,
+                input_moved,
+                output_moved,
+            )
+        });
+        if should_reopen {
+            info!(
+                "OS default audio device changed (input={input_changed}, output={output_changed}); reopening followed sides"
+            );
+            self.restart_live_pipeline();
+        }
+        let _ = self.event_tx.try_send(CallEvent::OsDefaultDeviceChanged {
+            input: input_changed,
+            output: output_changed,
+        });
     }
 
     fn handle_stop_audio(&mut self) {
@@ -1815,29 +1916,10 @@ impl CallController {
             return;
         }
         self.set_state(CallState::MicTest);
-        match AudioPipeline::start(
-            false,
-            self.input_device.as_deref(),
-            self.output_device.as_deref(),
-            self.input_vol,
-            self.output_vol,
-            self.noise_strength_idx,
-            self.outgoing_bitrate_bps,
-        ) {
-            Ok((pipeline, encoded_rx, speaking_rx, level_rx)) => {
-                self.audio = Some(pipeline);
-                self.encoded_rx = Some(encoded_rx);
-                self.speaking_rx = Some(speaking_rx);
-                self.level_rx = Some(level_rx);
-                info!("Mic test started");
-            }
-            Err(e) => {
-                error!("Failed to start audio for mic test: {e}");
-                let _ = self
-                    .event_tx
-                    .try_send(CallEvent::CaptureError(e.to_string()));
-                self.set_state(CallState::Idle);
-            }
+        if self.install_pipeline(false) {
+            info!("Mic test started");
+        } else {
+            self.set_state(CallState::Idle);
         }
     }
 
@@ -1868,15 +1950,32 @@ impl CallController {
         let mut speaking_tick = tokio::time::interval(Duration::from_millis(600));
         // 20 ms playout tick — one Opus frame per peer per tick.
         let mut playout_tick = tokio::time::interval(Duration::from_millis(20));
+        // Backup for hosts without a default-device callback, and a safety net
+        // if the Windows notification is missed. Skipped while idle.
+        let mut default_tick = tokio::time::interval(Duration::from_secs(1));
         // Discard the first (immediate) tick so silence-detection only fires
         // after real intervals.
         speaking_tick.reset();
         playout_tick.reset();
+        default_tick.reset();
+        self.last_os_defaults = Some(crate::audio_devices::query_default_endpoint_ids());
+        let (watch_tx, mut watch_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _default_watch = crate::audio_devices::spawn_default_device_watch(watch_tx);
 
         loop {
             tokio::select! {
                 _ = playout_tick.tick() => {
                     self.tick_playout();
+                }
+                Some(change) = watch_rx.recv() => {
+                    self.handle_os_default_change(change.input, change.output);
+                }
+                _ = default_tick.tick() => {
+                    if self.audio.is_some()
+                        && (self.input_device.is_none() || self.output_device.is_none())
+                    {
+                        self.handle_os_default_change(true, true);
+                    }
                 }
                 _ = speaking_tick.tick() => {
                     // Expire speaking state for room peers that have gone silent.
@@ -2169,18 +2268,24 @@ impl CallController {
                             debug!("Call controller: cleared room audio mode");
                         }
                         CallCommand::SetAudioDevices { input, output } => {
-                            self.input_device = input.and_then(|s| {
-                                let t = s.trim().to_string();
-                                if t.is_empty() { None } else { Some(t) }
-                            });
-                            self.output_device = output.and_then(|s| {
-                                let t = s.trim().to_string();
-                                if t.is_empty() { None } else { Some(t) }
-                            });
+                            let input =
+                                crate::audio_devices::owned_device_selection(input);
+                            let output =
+                                crate::audio_devices::owned_device_selection(output);
+                            let changed = input != self.input_device
+                                || output != self.output_device;
+                            self.input_device = input;
+                            self.output_device = output;
                             debug!(
                                 "Audio devices updated: input={:?}, output={:?}",
                                 self.input_device, self.output_device
                             );
+                            if changed && self.audio.is_some() {
+                                self.restart_live_pipeline();
+                            }
+                        }
+                        CallCommand::OsDefaultDeviceChanged { input, output } => {
+                            self.handle_os_default_change(input, output);
                         }
                         CallCommand::StartMicTest => {
                             self.handle_start_mic_test();
@@ -3098,6 +3203,76 @@ mod tests {
             .unwrap();
         // Drain until Connecting (skips CaptureError if no audio device)
         assert_eq!(next_state(&mut event_rx).await, CallState::Connecting);
+
+        cmd_tx.send(CallCommand::Shutdown).await.unwrap();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn os_default_change_while_idle_does_not_start_audio() {
+        let (cmd_tx, mut event_rx, fut) = CallController::split(None);
+        let handle = tokio::spawn(fut);
+
+        cmd_tx
+            .send(CallCommand::OsDefaultDeviceChanged {
+                input: true,
+                output: true,
+            })
+            .await
+            .unwrap();
+        // Nothing should start: no StateChanged, and the only possible event is
+        // the default-change advisory itself (or nothing if ids did not move).
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        while let Ok(ev) = event_rx.try_recv() {
+            assert!(
+                !matches!(ev, CallEvent::StateChanged(_)),
+                "idle default-device notification must not start a call"
+            );
+        }
+
+        cmd_tx.send(CallCommand::Shutdown).await.unwrap();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn default_sentinel_is_stored_as_follow_os() {
+        let (cmd_tx, mut event_rx, fut) = CallController::split(None);
+        let handle = tokio::spawn(fut);
+
+        cmd_tx
+            .send(CallCommand::SetAudioDevices {
+                input: Some("Default".into()),
+                output: Some("default".into()),
+            })
+            .await
+            .unwrap();
+        cmd_tx
+            .send(CallCommand::StartAudio {
+                voice_activation: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(next_state(&mut event_rx).await, CallState::Connecting);
+
+        // A no-op OS notification must not kick us out of the call.
+        cmd_tx
+            .send(CallCommand::OsDefaultDeviceChanged {
+                input: true,
+                output: true,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        while let Ok(ev) = event_rx.try_recv() {
+            assert!(
+                !matches!(
+                    ev,
+                    CallEvent::StateChanged(CallState::Idle)
+                        | CallEvent::StateChanged(CallState::Disconnecting)
+                ),
+                "following the OS default must not end the call on a no-op notification"
+            );
+        }
 
         cmd_tx.send(CallCommand::Shutdown).await.unwrap();
         handle.await.unwrap();

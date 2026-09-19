@@ -110,6 +110,8 @@ windows = { version = "0.58", features = [
     # BeginGetEvent + a callback, so without this there is no way to drive them.
     "implement",
     "Win32_UI_Shell",
+    # IMMNotificationClient::OnPropertyValueChanged takes a PROPERTYKEY.
+    "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Foundation",

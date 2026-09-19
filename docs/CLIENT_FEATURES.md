@@ -390,7 +390,9 @@ notification channels for unread state.
 The desktop persists roughly sixty settings (`ui/settings_model.rs`) covering
 audio devices and tuning, video codec/resolution/fps/bitrate, relay and UPnP,
 theme, notifications, tray and window geometry, Ollama, attestation policy,
-update checks, and onboarding state.
+update checks, and onboarding state. Empty `audio_input_device` /
+`audio_output_device` follow the OS default, including when it changes during
+a call; a named device stays pinned.
 
 **Android persists a deliberate handful.** `AppSettings` (SharedPreferences)
 holds camera facing, voice activation and theme; the display name is *not*

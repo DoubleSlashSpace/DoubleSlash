@@ -279,9 +279,13 @@ Item {
             // newest message and the button offering a way back to it can
             // never disagree about where it is.
             function _restPosition() {
+                // `jumpToCurrent` is a child, so it is still undefined for
+                // the layout passes that run while this view is being built.
+                // An empty list reads as pinned there, which is where a
+                // conversation should open anyway.
                 root._pinnedToLatest = contentHeight <= height
                     || atYEnd
-                    || jumpToCurrent.distanceFromLatest <= 24
+                    || (jumpToCurrent && jumpToCurrent.distanceFromLatest <= 24)
                 if (root._loadingHistory || !root._hasMoreHistory || root.selectedPeerId === "")
                     return
                 if (contentHeight > height && (atYBeginning || contentY - originY <= 48))

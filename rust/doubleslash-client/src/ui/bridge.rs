@@ -826,10 +826,9 @@ pub mod ffi {
         fn thirdPartyNoticesPath(self: Pin<&mut AppBridge>) -> QString;
 
         /// Enumerate available CPAL audio devices.
-        /// Returns a JSON object: `{"inputs": ["Default", ...], "outputs": ["Default", ...]}`.
-        /// The string "Default" (index 0) means use the OS default; all other entries
-        /// are device names that can be written to `SettingsModel::audio_input_device` /
-        /// `audio_output_device`.
+        /// Returns a JSON object: `{"inputs": [...], "outputs": [...]}` of real
+        /// device names only. QML prepends the "Default" sentinel (empty setting
+        /// = follow the OS default).
         #[qinvokable]
         #[rust_name = "list_audio_devices"]
         fn listAudioDevices(self: Pin<&mut AppBridge>) -> QString;
@@ -1273,6 +1272,11 @@ pub struct AppBridgeRust {
     /// must happen: leaving it open holds a WASAPI client against the render
     /// device for the life of the process.
     content_audio_sender: Option<crate::content_sender::ContentAudioSender>,
+    /// Video source id last passed to `setContentAudioEnabled`, used to reopen
+    /// whole-system loopback when the Windows default output device changes.
+    content_audio_source_id: String,
+    /// Persisted content-audio mode last passed to `setContentAudioEnabled`.
+    content_audio_mode: String,
     /// Capture thread behind the settings preview, `None` when it is off.
     ///
     /// Separate from `video_sender` so a preview can never be mistaken for a
@@ -1658,6 +1662,8 @@ impl Default for AppBridgeRust {
             media_clock: None,
             content_audio_active: false,
             content_audio_sender: None,
+            content_audio_source_id: String::new(),
+            content_audio_mode: String::new(),
             video_receiver: None,
             video_sender: None,
             video_preview_active: false,
@@ -2924,25 +2930,7 @@ impl ffi::AppBridge {
     }
 
     fn list_audio_devices(self: Pin<&mut Self>) -> QString {
-        use cpal::traits::{DeviceTrait, HostTrait};
-        let host = cpal::default_host();
-
-        let inputs: Vec<String> = std::iter::once("Default".to_string())
-            .chain(
-                host.input_devices()
-                    .map(|it| it.filter_map(|d| d.name().ok()).collect::<Vec<_>>())
-                    .unwrap_or_default(),
-            )
-            .collect();
-
-        let outputs: Vec<String> = std::iter::once("Default".to_string())
-            .chain(
-                host.output_devices()
-                    .map(|it| it.filter_map(|d| d.name().ok()).collect::<Vec<_>>())
-                    .unwrap_or_default(),
-            )
-            .collect();
-
+        let (inputs, outputs) = crate::audio_devices::list_host_device_names();
         let json = serde_json::json!({ "inputs": inputs, "outputs": outputs });
         QString::from(json.to_string().as_str())
     }
@@ -2959,6 +2947,8 @@ impl ffi::AppBridge {
             sender.stop();
         }
         if !on {
+            self.as_mut().rust_mut().content_audio_source_id.clear();
+            self.as_mut().rust_mut().content_audio_mode.clear();
             self.as_mut().set_content_audio_active(false);
             return true;
         }
@@ -2979,7 +2969,8 @@ impl ffi::AppBridge {
         // shares that app's audio rather than the whole desktop. The user's
         // mode setting can override the derivation entirely.
         let device_id = device_id.to_string();
-        let mode = crate::content_capture::ContentAudioMode::from_setting(&mode.to_string());
+        let mode_raw = mode.to_string();
+        let mode = crate::content_capture::ContentAudioMode::from_setting(&mode_raw);
         let spec = crate::content_capture::resolve_audio_spec(
             mode,
             crate::video::sender::source_is_screen(&device_id),
@@ -3020,6 +3011,8 @@ impl ffi::AppBridge {
                 conn_tx.try_send(cmd).is_ok()
             });
         self.as_mut().rust_mut().content_audio_sender = Some(sender);
+        self.as_mut().rust_mut().content_audio_source_id = device_id;
+        self.as_mut().rust_mut().content_audio_mode = mode_raw;
         self.as_mut().set_content_audio_active(true);
         info!("[content-audio] sharing system audio");
         true
@@ -3355,6 +3348,8 @@ impl ffi::AppBridge {
         if let Some(sender) = self.as_mut().rust_mut().content_audio_sender.take() {
             sender.stop();
         }
+        self.as_mut().rust_mut().content_audio_source_id.clear();
+        self.as_mut().rust_mut().content_audio_mode.clear();
         self.as_mut().set_content_audio_active(false);
 
         // Drop the media clock with the session that owned it. A clock must
@@ -5790,16 +5785,16 @@ fn read_audio_device_settings() -> (Option<String>, Option<String>) {
     let mut output: Option<String> = None;
     if let Ok(txt) = std::fs::read_to_string(&path) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
-            input = v
-                .get("audio_input_device")
-                .and_then(|x| x.as_str())
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty());
-            output = v
-                .get("audio_output_device")
-                .and_then(|x| x.as_str())
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty());
+            input = crate::audio_devices::owned_device_selection(
+                v.get("audio_input_device")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_owned()),
+            );
+            output = crate::audio_devices::owned_device_selection(
+                v.get("audio_output_device")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_owned()),
+            );
         }
     }
     (input, output)
@@ -9857,8 +9852,43 @@ fn dispatch_call_event(
                     .peer_level_changed(QString::from(peer_id.as_str()), level);
             });
         }
+        CallEvent::OsDefaultDeviceChanged { output: true, .. } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                restart_system_loopback_for_default_output(bridge.as_mut());
+            });
+        }
         _ => {}
     }
+}
+
+/// Reopen whole-system loopback on the new default render endpoint.
+///
+/// Per-application loopback is not bound to the default device, so it is left
+/// alone. Voice follow is handled inside the call controller.
+fn restart_system_loopback_for_default_output(mut bridge: Pin<&mut ffi::AppBridge>) {
+    if !bridge.rust().content_audio_active {
+        return;
+    }
+    let device_id = bridge.rust().content_audio_source_id.clone();
+    let mode = bridge.rust().content_audio_mode.clone();
+    if device_id.is_empty() && mode.is_empty() {
+        return;
+    }
+    let parsed = crate::content_capture::ContentAudioMode::from_setting(&mode);
+    let spec = crate::content_capture::resolve_audio_spec(
+        parsed,
+        crate::video::sender::source_is_screen(&device_id),
+        crate::video::sender::source_process_id(&device_id),
+    );
+    if spec != crate::content_capture::ContentAudioSpec::System {
+        return;
+    }
+    info!("[content-audio] default output changed; reopening system loopback");
+    let _ = bridge.as_mut().set_content_audio_enabled(
+        true,
+        &QString::from(device_id.as_str()),
+        &QString::from(mode.as_str()),
+    );
 }
 
 #[cfg(test)]

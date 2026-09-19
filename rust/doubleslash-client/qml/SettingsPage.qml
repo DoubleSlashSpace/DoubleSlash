@@ -473,8 +473,17 @@ Item {
                         if (!backend) return
                         try {
                             var devices = JSON.parse(backend.listAudioDevices())
-                            inputDeviceCombo.model = ["Default"].concat(devices.inputs || [])
-                            outputDeviceCombo.model = ["Default"].concat(devices.outputs || [])
+                            // Index 0 is the "follow OS default" sentinel. The
+                            // JSON is real device names only; strip a leading
+                            // "Default" if an older helper still included it.
+                            var inputs = devices.inputs || []
+                            var outputs = devices.outputs || []
+                            if (inputs.length && inputs[0] === "Default")
+                                inputs = inputs.slice(1)
+                            if (outputs.length && outputs[0] === "Default")
+                                outputs = outputs.slice(1)
+                            inputDeviceCombo.model = ["Default"].concat(inputs)
+                            outputDeviceCombo.model = ["Default"].concat(outputs)
                         } catch (e) {}
                         if (root.settings) {
                             var inputIndex = inputDeviceCombo.find(root.settings.audio_input_device)
