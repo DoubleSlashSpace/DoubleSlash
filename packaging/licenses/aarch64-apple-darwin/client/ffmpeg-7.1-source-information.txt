@@ -1,0 +1,39 @@
+FFmpeg 7.1 — source and license information (macOS app bundle)
+=============================================
+
+What is shipped
+---------------
+Qt Multimedia uses the FFmpeg backend, so the FFmpeg 7.1 shared libraries
+(libavcodec, libavformat, libavutil, libswresample, libswscale) are deployed
+alongside Qt in Contents/Frameworks inside the .app bundle.
+
+Licence
+-------
+These libraries are used under the GNU Lesser General Public License version
+2.1 or later (LGPL-2.1-or-later). The full licence text ships beside this file
+as ffmpeg-7.1-LGPL-2.1.txt and is reproduced in the application's third-party
+notices. The libraries are built in an LGPL configuration; no GPL-only FFmpeg
+component (--enable-gpl) is present.
+
+Provenance — unmodified upstream
+--------------------------------
+FFmpeg is used as supplied with the Qt 6.8.3 distribution for this platform.
+DoubleSlash does not build, patch, or modify FFmpeg, so there are no
+modifications to disclose.
+
+Corresponding source
+--------------------
+  https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz
+  https://github.com/FFmpeg/FFmpeg  (tag n7.1)
+
+How the LGPL-2.1 obligations are met
+------------------------------------
+* Notice — the application's Settings > About > Third-Party Notices screen
+  states that DoubleSlash uses FFmpeg under the LGPL-2.1-or-later and displays
+  this text and the full licence.
+* Licence text — ffmpeg-7.1-LGPL-2.1.txt accompanies the distribution.
+* Source availability — the upstream locations above are published in the
+  notices screen and in this file.
+* Relinking — FFmpeg is dynamically linked as separate shared libraries and may
+  be replaced; see relinking-instructions.txt.
+* No modifications — as recorded above, FFmpeg is shipped unmodified.
