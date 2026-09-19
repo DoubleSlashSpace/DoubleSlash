@@ -292,6 +292,50 @@ Item {
                     root.loadOlderHistory()
             }
 
+            /*!
+                The row at the top of the viewport, and how far above the fold
+                it starts - what the reader is actually looking at.
+
+                `indexAt` answers -1 in the `spacing` gap between two rows, so
+                this probes a few points down the viewport rather than trusting
+                one; successive probes sit further apart than `spacing`, so no
+                two can land in the same gap. A `row` of -1 means there was
+                nothing to anchor on and the caller has nothing to restore.
+            */
+            function captureAnchor() {
+                var step = Math.max(4, spacing + 1)
+                for (var n = 0; n < 8; ++n) {
+                    var row = indexAt(4, contentY + 1 + n * step)
+                    if (row >= 0) {
+                        var item = itemAtIndex(row)
+                        return { row: row, offset: item ? item.y - contentY : 0 }
+                    }
+                }
+                return { row: -1, offset: 0 }
+            }
+
+            /*!
+                Puts the reader back on  anchor after  inserted rows have
+                been added at the front.
+
+                By index rather than by pixels, because how Qt absorbs an
+                insert at row 0 depends on whether row 0 was realized: with the
+                first row on screen it holds `originY` still and pushes the
+                rows below down, and with the first row scrolled off it moves
+                `originY` instead and leaves the reader already where they
+                were. A pixel correction is right for one of those and a whole
+                page of history out for the other - and a `contentHeight` delta
+                is only an estimate anyway while variable-height delegates are
+                still being built. The row is the same message under either.
+            */
+            function restoreAnchor(anchor, inserted) {
+                if (anchor.row < 0)
+                    return
+                forceLayout()
+                positionViewAtIndex(anchor.row + inserted, ListView.Beginning)
+                contentY -= anchor.offset
+            }
+
             // Scrolling is not the only thing that moves the end away: a
             // delegate settling to its real height, an inline preview loading,
             // and the prepend itself all change the geometry underneath a
@@ -575,13 +619,15 @@ Item {
             root._loadingHistory = false
             return
         }
-        var oldHeight = msgList.contentHeight
-        if (root.chatModel)
+        // Captured before the insert renumbers everything, and restored
+        // while `_loadingHistory` is still set so that landing near the top
+        // again cannot immediately ask for another page.
+        var anchor = msgList.captureAnchor()
+        if (root.chatModel) {
             root.chatModel.prependMessages(json)
+            msgList.restoreAnchor(anchor, rows.length)
+        }
         root._hasMoreHistory = rows.length >= 50
         root._loadingHistory = false
-        Qt.callLater(function() {
-            msgList.contentY += msgList.contentHeight - oldHeight
-        })
     }
 }
