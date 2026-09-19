@@ -237,7 +237,15 @@ pub enum ConnectionEvent {
     /// A peer sent a presence update.
     PresenceUpdated { peer_id: String, status: String },
     /// Inbound SFU_AUDIO relayed from the supernode (Opus bytes from a room peer).
-    SfuAudioReceived { peer_id: String, opus_data: Vec<u8> },
+    ///
+    /// `seq` is the sender's frame sequence from the signature-authenticated
+    /// envelope, carried through so the playout side can drop the duplicate
+    /// copies multi-homing produces. `None` when the sender omitted it.
+    SfuAudioReceived {
+        peer_id: String,
+        seq: Option<u64>,
+        opus_data: Vec<u8>,
+    },
     /// Inbound direct-peer audio (Opus bytes from a 1:1 QUIC session).
     DirectAudioReceived { peer_id: String, opus_data: Vec<u8> },
     /// A room member's camera turned on or off.

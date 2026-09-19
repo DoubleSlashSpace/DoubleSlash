@@ -1048,6 +1048,8 @@ impl ConnectionManager {
                 }
                 self.emit_event(ConnectionEvent::SfuAudioReceived {
                     peer_id: msg.sender.clone(),
+                    // `u64::MAX` is the "absent" sentinel used above.
+                    seq: (seq != u64::MAX).then_some(seq),
                     opus_data,
                 });
             }

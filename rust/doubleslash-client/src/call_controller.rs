@@ -58,6 +58,12 @@ const JITTER_SHRINK_STREAK: u32 = 5;
 /// never recovered while the conversation went on. A gap the deepest buffer
 /// could have covered is late audio; anything longer is a speaker who stopped.
 const MAX_UNDERRUN_GAP_FRAMES: u32 = MAX_JITTER_DEPTH as u32;
+/// How many recent sender seqs to remember per room peer when suppressing the
+/// duplicate frames multi-homing delivers. 256 frames is ~5 s at 50 fps —
+/// comfortably longer than the deepest jitter queue, so a late duplicate is
+/// still recognised after its original has been played out.
+const ROOM_AUDIO_SEQ_WINDOW: usize = 256;
+
 /// One playout tick of voice: each peer with its next frame, or `None` where
 /// Opus should conceal.
 type VoiceSlots = Vec<(String, Option<Vec<u8>>)>;
@@ -1053,7 +1059,11 @@ pub enum CallCommand {
     /// Switch PTT ↔ voice-activation.
     SetVoiceActivation(bool),
     /// Inbound room audio frame (Opus bytes from a room member).
-    RoomAudioInbound { peer_id: String, opus_data: Vec<u8> },
+    RoomAudioInbound {
+        peer_id: String,
+        seq: Option<u64>,
+        opus_data: Vec<u8>,
+    },
     /// A verified, unsealed content-audio frame: system or application audio
     /// that accompanies a peer's video.
     ///
@@ -1203,6 +1213,11 @@ pub struct CallController {
     /// underruns. Settled when the peer's audio resumes, discarded when the peer
     /// went quiet instead (see [`MAX_UNDERRUN_GAP_FRAMES`]).
     peer_dry_slots: HashMap<String, u32>,
+    /// Recent frame seqs per room peer, for dropping the duplicate copies
+    /// multi-homing delivers. See `handle_room_audio`.
+    peer_recent_seqs: HashMap<String, VecDeque<u64>>,
+    /// Duplicates suppressed since the last report, for the periodic log.
+    room_audio_dupes: u64,
     /// Jitter buffer depth in Opus frames (1 frame = 20 ms). Adapts to network
     /// conditions (see [`Self::adapt_jitter_buffer`]) unless overridden by
     /// `CallCommand::SetJitterDepth`.
@@ -1299,6 +1314,8 @@ impl CallController {
             peer_jitter_queues: HashMap::new(),
             peer_playout_started: HashMap::new(),
             peer_dry_slots: HashMap::new(),
+            peer_recent_seqs: HashMap::new(),
+            room_audio_dupes: 0,
             jitter_depth: 3,
             content_playout: crate::content_playout::ContentPlayout::new(),
             video_playout: None,
@@ -1457,6 +1474,7 @@ impl CallController {
         self.room_peer_last_level.remove(peer_id);
         self.room_peer_last_audio.remove(peer_id);
         self.peer_dry_slots.remove(peer_id);
+        self.peer_recent_seqs.remove(peer_id);
         // Including their content timeline: a peer who rejoins starts a new
         // session clock, and the old one would steer their video against it.
         self.content_playout.forget(peer_id);
@@ -1479,9 +1497,41 @@ impl CallController {
         }
     }
 
-    fn handle_room_audio(&mut self, peer_id: String, opus_data: Vec<u8>) {
+    fn handle_room_audio(&mut self, peer_id: String, seq: Option<u64>, opus_data: Vec<u8>) {
         use std::time::{Duration, Instant};
         const PEER_SILENCE_TIMEOUT: Duration = Duration::from_millis(600);
+
+        // A client joins the room on *every* supernode it is multi-homed to,
+        // and each of those members delivers the room's audio to its own local
+        // participants. The same frame therefore arrives once per attached
+        // member. Room audio is deliberately exempt from the signaling replay
+        // guard, so nothing upstream removes those copies, and queueing them
+        // all plays each 20 ms of speech several times over and pushes real
+        // frames out of the jitter queue when it hits its cap — audible as
+        // garbled audio while the network reports no loss at all.
+        //
+        // Drop repeats by sender sequence. Frames without a seq cannot be
+        // checked, so they pass through as before.
+        if let Some(seq) = seq {
+            let seen = self.peer_recent_seqs.entry(peer_id.clone()).or_default();
+            if seen.contains(&seq) {
+                self.room_audio_dupes += 1;
+                // One line per ~10 s of duplicates at 50 fps, not per frame.
+                if self.room_audio_dupes.is_multiple_of(500) {
+                    debug!(
+                        "[room.audio] suppressed {} duplicate frames (multi-home fan-out)",
+                        self.room_audio_dupes
+                    );
+                }
+                return;
+            }
+            seen.push_back(seq);
+            // Deeper than the jitter queue can hold, so a duplicate is still
+            // recognised after the original has been played out and dropped.
+            while seen.len() > ROOM_AUDIO_SEQ_WINDOW {
+                seen.pop_front();
+            }
+        }
 
         let now = Instant::now();
         let was_silent = self
@@ -1595,6 +1645,7 @@ impl CallController {
             self.room_peer_last_level.remove(peer_id);
             // It went quiet, so what ran dry before that was the pause.
             self.peer_dry_slots.remove(peer_id);
+            self.peer_recent_seqs.remove(peer_id);
         }
         (to_decode, to_remove)
     }
@@ -2060,7 +2111,9 @@ impl CallController {
                         CallCommand::DirectAudioInbound { peer_id, opus_data } => {
                             // Treat direct 1:1 audio through the same jitter-buffered
                             // path as room audio so it benefits from playout smoothing.
-                            self.handle_room_audio(peer_id, opus_data);
+                            // No seq: a direct QUIC session has exactly one delivery
+                            // path, so there are no multi-home duplicates to suppress.
+                            self.handle_room_audio(peer_id, None, opus_data);
                         }
                         CallCommand::SetVoiceActivation(enabled) => {
                             self.voice_activation = enabled;
@@ -2072,8 +2125,12 @@ impl CallController {
                             }
                             debug!("Voice-activation mode: {}", enabled);
                         }
-                        CallCommand::RoomAudioInbound { peer_id, opus_data } => {
-                            self.handle_room_audio(peer_id, opus_data);
+                        CallCommand::RoomAudioInbound {
+                            peer_id,
+                            seq,
+                            opus_data,
+                        } => {
+                            self.handle_room_audio(peer_id, seq, opus_data);
                         }
                         CallCommand::SetVideoPlayout(playout) => {
                             self.video_playout = Some(playout);
@@ -3230,12 +3287,61 @@ mod tests {
         let (mut ctrl, _cmd_tx, _event_rx) = CallController::new(None);
         let t0 = std::time::Instant::now();
         for _ in 0..ctrl.jitter_depth {
-            ctrl.handle_room_audio(peer.to_owned(), vec![0xF8]);
+            ctrl.handle_room_audio(peer.to_owned(), None, vec![0xF8]);
         }
         for slot in 1..=ctrl.jitter_depth as u32 {
             ctrl.advance_voice_queues(t0 + SLOT * slot);
         }
         (ctrl, t0)
+    }
+
+    /// The bug this dedup exists for. A client joins the room on every
+    /// supernode it is multi-homed to and each member delivers the room's
+    /// audio to its own participants, so the same frame arrives once per
+    /// member. Queueing every copy replayed each 20 ms of speech and pushed
+    /// real frames out of the jitter queue — garbled audio with no packet loss.
+    #[test]
+    fn multi_home_duplicate_frames_are_dropped() {
+        let (mut ctrl, _cmd_tx, _event_rx) = CallController::new(None);
+        // Same frame delivered by four members, then the next frame.
+        for _ in 0..4 {
+            ctrl.handle_room_audio("alice".to_owned(), Some(7), vec![0xF8]);
+        }
+        ctrl.handle_room_audio("alice".to_owned(), Some(8), vec![0xF9]);
+        let queued = ctrl.peer_jitter_queues.get("alice").map(|q| q.len());
+        assert_eq!(queued, Some(2), "one frame per distinct seq");
+        assert_eq!(ctrl.room_audio_dupes, 3);
+    }
+
+    /// Frames without a seq cannot be checked, so they must still play. Direct
+    /// 1:1 audio takes this path and has no duplicates to suppress anyway.
+    #[test]
+    fn frames_without_a_seq_are_not_deduped() {
+        let (mut ctrl, _cmd_tx, _event_rx) = CallController::new(None);
+        for _ in 0..3 {
+            ctrl.handle_room_audio("alice".to_owned(), None, vec![0xF8]);
+        }
+        assert_eq!(
+            ctrl.peer_jitter_queues.get("alice").map(|q| q.len()),
+            Some(3)
+        );
+        assert_eq!(ctrl.room_audio_dupes, 0);
+    }
+
+    /// A seq older than the window is no longer remembered — it must not be
+    /// mistaken for a duplicate if it legitimately recurs after a wrap.
+    #[test]
+    fn the_seq_window_is_bounded() {
+        let (mut ctrl, _cmd_tx, _event_rx) = CallController::new(None);
+        for seq in 0..(ROOM_AUDIO_SEQ_WINDOW as u64 + 10) {
+            ctrl.handle_room_audio("alice".to_owned(), Some(seq), vec![0xF8]);
+        }
+        let seen = ctrl.peer_recent_seqs.get("alice").expect("window");
+        assert_eq!(seen.len(), ROOM_AUDIO_SEQ_WINDOW);
+        assert_eq!(
+            ctrl.room_audio_dupes, 0,
+            "distinct seqs are never duplicates"
+        );
     }
 
     /// The bug this accounting exists for. A speaker releasing push-to-talk
@@ -3271,7 +3377,7 @@ mod tests {
             "not known to be late until the audio is back"
         );
 
-        ctrl.handle_room_audio("alice".to_owned(), vec![0xF8]);
+        ctrl.handle_room_audio("alice".to_owned(), None, vec![0xF8]);
         assert_eq!(ctrl.playout_underruns, 3);
         assert_eq!(ctrl.playout_frames, u64::from(depth) + 3);
     }
@@ -3290,7 +3396,7 @@ mod tests {
             "precondition: not yet timed out as silent"
         );
 
-        ctrl.handle_room_audio("alice".to_owned(), vec![0xF8]);
+        ctrl.handle_room_audio("alice".to_owned(), None, vec![0xF8]);
         assert_eq!(ctrl.playout_underruns, 0);
     }
 
