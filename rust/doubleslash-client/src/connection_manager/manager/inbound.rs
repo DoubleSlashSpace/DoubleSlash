@@ -533,6 +533,8 @@ impl ConnectionManager {
                             let mut key = [0u8; 32];
                             key.copy_from_slice(&bytes);
                             self.group_keys.install(room_id, epoch_u8, key);
+                            // Whatever we were asking for, we have it now.
+                            self.group_key_requests.remove(room_id);
                             info!(
                                 "[group-key] installed epoch {} for room {} from {}",
                                 epoch_u8,
@@ -549,6 +551,23 @@ impl ConnectionManager {
                         ),
                     }
                 }
+            }
+            MessageType::SfuGroupKeyRequest => {
+                // Keyer side: a member says it holds no key for this room. The
+                // outer EncryptedSignal already proved possession of
+                // msg.sender's identity; `serve_group_key_request` additionally
+                // requires them to be in the room's authoritative membership and
+                // us to be its elected keyer.
+                let room_id = msg
+                    .payload
+                    .get("room_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
+                if room_id.is_empty() {
+                    return;
+                }
+                self.serve_group_key_request(&room_id, &msg.sender).await;
             }
             MessageType::SfuGroupKeyAck => {
                 // Keyer side: member confirmed install of `(room_id, epoch)`.

@@ -75,6 +75,20 @@ pub(super) const PRESENCE_TTL_S: u64 = 95;
 pub(super) const GROUP_KEY_RETRY_INTERVAL_MS: u64 = 750;
 /// Stop resealing to a member after this many send attempts (incl. first).
 pub(super) const GROUP_KEY_MAX_ATTEMPTS: u8 = 16;
+/// First gap between `SfuGroupKeyRequest`s for one room.
+///
+/// A member notices it is unkeyed once per `SfuMembers`, and under clustering
+/// that is one per node — so a single join produces a burst. This collapses the
+/// burst to one request.
+pub(super) const GROUP_KEY_REQUEST_BASE_MS: u64 = 3_000;
+/// Ceiling on the `SfuGroupKeyRequest` backoff.
+///
+/// The request is unbounded in attempts on purpose: capping it would restore
+/// exactly the failure it exists to fix, a member that gives up and stays
+/// stranded for the life of the room. Backing off to a slow beat instead keeps
+/// recovery quick in the normal case (the keyer is simply busy or restarting)
+/// while costing nothing measurable when no keyer ever answers.
+pub(super) const GROUP_KEY_REQUEST_MAX_MS: u64 = 60_000;
 /// How often we scan for due direct-QUIC peer reconnects.
 pub(super) const PEER_RECONNECT_TICK_S: u64 = 1;
 /// Cap on exponential backoff between direct-QUIC peer reconnect attempts.
@@ -122,10 +136,11 @@ pub(super) fn unix_now_f64() -> f64 {
 pub use invite::{build_room_invite_url, parse_room_invite, RoomInvitePayload, ROOM_INVITE_SCHEMA};
 pub use peer_session::{parse_quic_lan_hint, peer_quic_endpoint, peer_reconnect_backoff};
 pub use room_session::{
-    accept_group_key_epoch, is_elected_keyer, may_send_room_e2e_content, normalize_room_type,
-    plan_cluster_failover, room_scope_key, should_auto_join_on_room_created,
-    should_mint_first_room_key, should_reseal_to_lagging_member, should_track_pending_materialize,
-    should_use_private_room_invite, union_members_for_room, FailoverPlan, MAX_EPOCH_ADVANCE,
+    accept_group_key_epoch, elected_keyer_for, group_key_request_backoff, is_elected_keyer,
+    may_send_room_e2e_content, normalize_room_type, plan_cluster_failover, room_scope_key,
+    should_auto_join_on_room_created, should_mint_first_room_key, should_reseal_to_lagging_member,
+    should_track_pending_materialize, should_use_private_room_invite, union_members_for_room,
+    FailoverPlan, MAX_EPOCH_ADVANCE,
 };
 pub use routing::should_fanout_peer_relay;
 
@@ -326,6 +341,13 @@ pub struct ConnectionManager {
     /// member. Keyed by `(room_id, member_public_id)`. Cleared on ACK, leave,
     /// or max attempts. The elected keyer reseals on a short timer until ACK.
     pending_group_key_acks: HashMap<(String, String), PendingGroupKeyAck>,
+    /// Rooms we are a member of but hold no key for, with the backoff state of
+    /// our outstanding `SfuGroupKeyRequest`. Keyed by `room_id`. Dropped once a
+    /// key is installed or we stop being a member of the room.
+    ///
+    /// This is the member half of the strand recovery: see
+    /// [`MessageType::SfuGroupKeyRequest`](crate::protocol::MessageType::SfuGroupKeyRequest).
+    group_key_requests: HashMap<String, GroupKeyRequest>,
     /// Trusted peers we will re-dial over direct QUIC after a disconnect.
     /// Keyed by peer_id (or provisional transport id until relabel).
     pending_peer_reconnects: HashMap<String, peer_session::PendingPeerReconnect>,
@@ -372,6 +394,13 @@ pub(super) struct PendingGroupKeyAck {
     pub(super) epoch: u8,
     pub(super) last_sent: std::time::Instant,
     pub(super) attempts: u8,
+}
+
+/// Backoff state for one room's outstanding `SfuGroupKeyRequest`.
+#[derive(Debug, Clone)]
+pub(super) struct GroupKeyRequest {
+    pub(super) last_sent: std::time::Instant,
+    pub(super) attempts: u32,
 }
 
 /// A `SfuJoin` awaiting retry after a transient `room_absent` denial.
@@ -554,6 +583,7 @@ impl ConnectionManager {
             local_video_active: false,
             pending_join_space_creds: HashMap::new(),
             pending_group_key_acks: HashMap::new(),
+            group_key_requests: HashMap::new(),
             pending_peer_reconnects: HashMap::new(),
             direct_fallback: DirectFallbackCoordinator::new(),
             public_quic_hint: None,
@@ -1506,6 +1536,7 @@ impl ConnectionManager {
                 }
                 _ = group_key_retry.tick() => {
                     self.retry_pending_group_keys().await;
+                    self.retry_group_key_requests().await;
                     self.retry_own_room_key_sync().await;
                     self.expire_device_calls();
                     self.retry_device_call_selections().await;

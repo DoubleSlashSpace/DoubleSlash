@@ -142,6 +142,17 @@ pub enum MessageType {
     SfuGroupKey,
     /// Member → keyer: confirmed install of `(room_id, epoch)` (also EncryptedSignal-sealed).
     SfuGroupKeyAck,
+    /// Member → keyer: "I am in this room and hold no key for it" (also
+    /// EncryptedSignal-sealed).
+    ///
+    /// The recovery path for a member that loses its in-memory epochs — a
+    /// restart — without ever leaving the room's cluster-wide membership union.
+    /// No join/leave edge fires for it, so the keyer's diff-driven reseal in
+    /// `sync_room_membership` never runs, and it cannot reveal itself by
+    /// sending either: an unkeyed member fails closed on every room send, so it
+    /// emits no frame for `reseal_to_lagging_member` to notice. Without an
+    /// explicit request it stays silent for the life of the room.
+    SfuGroupKeyRequest,
     /// Sealed, challenge-bound room-key handoff between devices of one identity.
     SfuDeviceKeySync,
 
@@ -261,6 +272,7 @@ impl MessageType {
             Self::SfuVideoSubscribe => "sfu_video_subscribe",
             Self::SfuGroupKey => "sfu_group_key",
             Self::SfuGroupKeyAck => "sfu_group_key_ack",
+            Self::SfuGroupKeyRequest => "sfu_group_key_request",
             Self::SfuDeviceKeySync => "sfu_device_key_sync",
             Self::SpaceRootAnnounce => "space_root_announce",
             Self::SfuRoomCreate => "sfu_room_create",

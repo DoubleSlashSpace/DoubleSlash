@@ -15,9 +15,9 @@ use super::ConnectionManager;
 use crate::connection_fallback::{DirectFallbackCoordinator, PendingFallback};
 
 use super::{
-    PendingGroupKeyAck, GROUP_KEY_MAX_ATTEMPTS, GROUP_KEY_RETRY_INTERVAL_MS,
-    ROOM_JOIN_MAX_ATTEMPTS, ROOM_JOIN_RETRY_BASE_MS, ROOM_JOIN_RETRY_MAX_MS,
-    VIDEO_KEYFRAME_REQUEST_INTERVAL,
+    GroupKeyRequest, PendingGroupKeyAck, GROUP_KEY_MAX_ATTEMPTS, GROUP_KEY_REQUEST_BASE_MS,
+    GROUP_KEY_REQUEST_MAX_MS, GROUP_KEY_RETRY_INTERVAL_MS, ROOM_JOIN_MAX_ATTEMPTS,
+    ROOM_JOIN_RETRY_BASE_MS, ROOM_JOIN_RETRY_MAX_MS, VIDEO_KEYFRAME_REQUEST_INTERVAL,
 };
 
 /// The room group-key "elected keyer" tie-break: `me` acts iff it is present
@@ -47,6 +47,29 @@ pub fn is_elected_keyer(members: &[String], me: &str) -> bool {
     }
     let me_bare = bare(me);
     members.iter().any(|m| bare(m) == me_bare) && !members.iter().any(|m| bare(m) < me_bare)
+}
+
+/// Who [`is_elected_keyer`] would elect out of `members`, in the spelling
+/// `members` used.
+///
+/// The boolean form answers "is it me", which is all the distribution paths
+/// need. Asking for a key needs the winner's id to address the request to, and
+/// it has to be the *membership* spelling: padded and un-padded are the same
+/// identity but not the same routing key. Returns `None` for an empty set.
+pub fn elected_keyer_for(members: &[String]) -> Option<&String> {
+    members
+        .iter()
+        .min_by(|a, b| a.trim_end_matches('=').cmp(b.trim_end_matches('=')))
+}
+
+/// Delay before the next `SfuGroupKeyRequest` for a room, given how many have
+/// already gone unanswered.
+///
+/// Doubles from [`GROUP_KEY_REQUEST_BASE_MS`] and saturates at
+/// [`GROUP_KEY_REQUEST_MAX_MS`].
+pub fn group_key_request_backoff(attempts: u32) -> Duration {
+    let shifted = GROUP_KEY_REQUEST_BASE_MS.saturating_mul(1u64 << attempts.min(16));
+    Duration::from_millis(shifted.min(GROUP_KEY_REQUEST_MAX_MS))
 }
 
 /// How far ahead of our epoch an elected keyer's offer may be.
@@ -622,6 +645,190 @@ impl ConnectionManager {
         }
     }
 
+    /// Member → keyer: ask for the current epoch of `room_id`'s key.
+    ///
+    /// Sent when we are in a room's membership but hold no real key for it. The
+    /// keyer distributes on join/leave *edges* and on seeing a frame sealed
+    /// under an old epoch, and a member that restarts produces neither: it never
+    /// left the cluster-wide union, so no edge fires, and it cannot send a frame
+    /// because every room send fails closed without a key. Asking is the only
+    /// move it has left.
+    ///
+    /// Addressed to the elected keyer *identity*, not a device — device routing
+    /// fans it to all of that identity's endpoints and the one that is the
+    /// elected device answers, exactly as `SfuGroupKeyAck` already behaves.
+    pub(super) async fn request_group_key(&mut self, room_id: &str) {
+        // Holding a key is the whole point; stop asking the moment we do.
+        if self.group_keys.has_real_key(room_id) {
+            self.group_key_requests.remove(room_id);
+            return;
+        }
+        let me = self.identity.public_id();
+        let union = union_members_for_room(&self.room_group_members, room_id);
+        if union.is_empty() {
+            // Nobody to ask. Alone in the room is not a strand: whoever else
+            // shows up will trigger an ordinary join-edge distribution.
+            self.group_key_requests.remove(room_id);
+            return;
+        }
+        let mut present: Vec<String> = union.into_iter().collect();
+        present.push(me.clone());
+        let Some(keyer) = elected_keyer_for(&present) else {
+            return;
+        };
+        if keyer.trim_end_matches('=') == me.trim_end_matches('=') {
+            // We are the keyer. Minting is `sync_room_membership`'s job (it
+            // waits for a second member first); asking ourselves is not a path.
+            self.group_key_requests.remove(room_id);
+            return;
+        }
+        let keyer = keyer.clone();
+
+        let now = Instant::now();
+        let attempts = match self.group_key_requests.get(room_id) {
+            Some(req)
+                if now.duration_since(req.last_sent) < group_key_request_backoff(req.attempts) =>
+            {
+                return;
+            }
+            Some(req) => req.attempts.saturating_add(1),
+            None => 0,
+        };
+
+        let mut inner =
+            SignalingMessage::new(MessageType::SfuGroupKeyRequest, self.identity.public_id());
+        inner.source_device = self.device_id;
+        inner
+            .payload
+            .insert("room_id".to_owned(), Value::String(room_id.to_owned()));
+        let Ok(canonical) = inner.canonical_bytes() else {
+            warn!(
+                "[group-key] could not canonicalize SfuGroupKeyRequest for room {}",
+                &room_id[..8.min(room_id.len())]
+            );
+            return;
+        };
+        let sig = self.identity.sign(&canonical);
+        use base64::Engine;
+        inner.signature = Some(base64::engine::general_purpose::URL_SAFE.encode(sig));
+        let Some(env) = self.seal_signal_to_member(&inner, &keyer) else {
+            warn!(
+                "[group-key] could not seal SfuGroupKeyRequest to {}",
+                &keyer[..8.min(keyer.len())]
+            );
+            return;
+        };
+        info!(
+            "[group-key] no key for room {}; asking keyer {} (attempt {})",
+            &room_id[..8.min(room_id.len())],
+            &keyer[..8.min(keyer.len())],
+            attempts + 1
+        );
+        self.dispatch_outbound(env).await;
+        self.group_key_requests.insert(
+            room_id.to_owned(),
+            GroupKeyRequest {
+                last_sent: now,
+                attempts,
+            },
+        );
+    }
+
+    /// Re-ask for every room we are in but hold no key for. Called on the same
+    /// short timer as [`Self::retry_pending_group_keys`].
+    ///
+    /// Membership updates alone are not enough to drive this: a member that
+    /// restarts into a quiet room gets its `SfuMembers` burst at join and then
+    /// nothing, so a keyer that was briefly unable to answer would never be
+    /// asked again. The timer is what makes the recovery eventual rather than
+    /// dependent on someone else moving.
+    pub(super) async fn retry_group_key_requests(&mut self) {
+        if self.group_key_requests.is_empty() && self.room_group_members.is_empty() {
+            return;
+        }
+        // Snapshots are keyed `"{supernode_id}:{room_id}"`; supernode ids are
+        // base64url and room ids hex, so the first ':' is the only separator.
+        let mut rooms: Vec<String> = self
+            .room_group_members
+            .keys()
+            .filter_map(|key| key.split_once(':').map(|(_, room)| room.to_owned()))
+            .collect();
+        rooms.sort_unstable();
+        rooms.dedup();
+        // Rooms we have asked about but no longer have any snapshot for: drop
+        // the backoff state rather than leave it to age forever.
+        self.group_key_requests
+            .retain(|room, _| rooms.contains(room));
+        for room in rooms {
+            self.request_group_key(&room).await;
+        }
+    }
+
+    /// Keyer → member: serve an `SfuGroupKeyRequest` for `room_id`.
+    ///
+    /// Hands out the current epoch and nothing older, to a peer the room's
+    /// authoritative membership already contains — so it reveals nothing the
+    /// requester could not receive by rejoining, and a non-member gets nothing
+    /// at all. The outer `EncryptedSignal` has already proved `sender` holds the
+    /// identity it claims.
+    pub(super) async fn serve_group_key_request(&mut self, room_id: &str, sender: &str) {
+        let union = union_members_for_room(&self.room_group_members, room_id);
+        // Membership can spell one id padded or not. Seal and track under the
+        // spelling membership uses, as every other distribution does.
+        let Some(member) = union
+            .iter()
+            .find(|m| m.trim_end_matches('=') == sender.trim_end_matches('='))
+            .cloned()
+        else {
+            debug!(
+                "[group-key] key request from {} for room {}: not a member — ignoring",
+                &sender[..8.min(sender.len())],
+                &room_id[..8.min(room_id.len())]
+            );
+            return;
+        };
+        let me = self.identity.public_id();
+        let mut present: Vec<String> = union.into_iter().collect();
+        present.push(me.clone());
+        if !is_elected_keyer(&present, &me)
+            || !self.elected_room_device(room_id, &me, self.device_id)
+            || !self.own_room_key_ready(room_id)
+        {
+            // Not ours to answer. The elected device got the same request —
+            // device routing fanned it to every endpoint of this identity.
+            return;
+        }
+        if !self.group_keys.has_real_key(room_id) {
+            // We are elected but hold nothing yet. `sync_room_membership` mints
+            // once a second member is visible, and the requester is that member,
+            // so this resolves itself on the next snapshot.
+            return;
+        }
+        let epoch = self.group_keys.current_epoch(room_id);
+        let pending = (room_id.to_owned(), member.clone());
+        if self
+            .pending_group_key_acks
+            .get(&pending)
+            .is_some_and(|p| p.epoch == epoch)
+        {
+            // Already on its way; the retry timer owns it.
+            return;
+        }
+        let Some(key) = self.group_keys.epoch_key(room_id, epoch) else {
+            return;
+        };
+        info!(
+            "[group-key] {} asked for room {}'s key; sealing epoch {}",
+            &member[..8.min(member.len())],
+            &room_id[..8.min(room_id.len())],
+            epoch
+        );
+        // A fresh distribution, not one more attempt at a stale one.
+        self.pending_group_key_acks.remove(&pending);
+        self.distribute_group_key(room_id, epoch, &key, &[member])
+            .await;
+    }
+
     /// Reseal any un-acked group keys (lost EncryptedSignal / offline peer).
     /// Called on a short timer from the connection manager run loop.
     pub(super) async fn retry_pending_group_keys(&mut self) {
@@ -825,6 +1032,11 @@ impl ConnectionManager {
             // thought we were (solo bootstrap race). Keep installed key material
             // until a legitimate keyer's SfuGroupKey overwrites it.
             self.pending_group_key_acks.retain(|(r, _), _| r != room_id);
+            // If we are in this room holding no key, say so. The keyer only
+            // distributes on membership edges and on frames sealed under an old
+            // epoch, and a member that restarted produces neither — it never
+            // left the union, and it cannot send while unkeyed.
+            self.request_group_key(room_id).await;
             return;
         }
 
@@ -1905,5 +2117,289 @@ impl ConnectionManager {
         let mut msg = SignalingMessage::new(MessageType::SupernodeInfoRequest, sender);
         msg.target = Some(supernode_id.to_owned());
         self.dispatch_outbound(msg).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The unkeyed-member strand and its way out.
+    //!
+    //! A member that restarts loses its in-memory epochs while never leaving the
+    //! room's cluster-wide membership union. The keyer distributes on join/leave
+    //! *edges* and on frames sealed under an old epoch, and a restarted member
+    //! produces neither — it cannot even send, because every room send fails
+    //! closed without a key. These tests pin the request that breaks the
+    //! deadlock, and the authorization that keeps it from being a key oracle.
+
+    use super::*;
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+    use tokio_tungstenite::tungstenite::Message;
+
+    use crate::identity::Identity;
+
+    const ROOM: &str = "room";
+    const HOST: &str = "host";
+    const EPOCH: u8 = 3;
+    const KEY: [u8; 32] = [7; 32];
+
+    struct Client {
+        manager: ConnectionManager,
+        outgoing: mpsc::Receiver<Message>,
+        _events: mpsc::Receiver<ConnectionEvent>,
+        _profile: tempfile::TempDir,
+    }
+
+    fn client(identity: Arc<Identity>) -> Client {
+        let profile = tempfile::tempdir().unwrap();
+        let store =
+            crate::peer_store::PeerStore::open(&identity, Some(&profile.path().join("peers.dat")))
+                .unwrap();
+        let (mut manager, events) =
+            ConnectionManager::new_for_test(identity, Arc::new(RwLock::new(store)));
+        let outgoing = manager.test_add_supernode_session(HOST);
+        Client {
+            manager,
+            outgoing,
+            _events: events,
+            _profile: profile,
+        }
+    }
+
+    /// Two identities whose ids order deterministically, so the first is always
+    /// the one `is_elected_keyer` picks.
+    fn ordered_pair() -> (Arc<Identity>, Arc<Identity>) {
+        loop {
+            let a = Arc::new(Identity::generate());
+            let b = Arc::new(Identity::generate());
+            let (ap, bp) = (a.public_id(), b.public_id());
+            match ap.trim_end_matches('=').cmp(bp.trim_end_matches('=')) {
+                std::cmp::Ordering::Less => return (a, b),
+                std::cmp::Ordering::Greater => return (b, a),
+                std::cmp::Ordering::Equal => continue,
+            }
+        }
+    }
+
+    /// Hand everything `source` queued to `target`. Returns how many sealed
+    /// envelopes moved.
+    async fn forward(source: &mut Client, target: &mut Client) -> usize {
+        let mut moved = 0;
+        while let Ok(Message::Text(raw)) = source.outgoing.try_recv() {
+            let message = SignalingMessage::from_json(&raw).unwrap();
+            if message.msg_type != MessageType::EncryptedSignal {
+                continue;
+            }
+            // The key itself must never cross in the clear.
+            assert!(!raw.contains(&crate::crypto::b64url_encode(&KEY)));
+            moved += 1;
+            target
+                .manager
+                .handle_inbound_from_supernode(HOST.to_owned(), message)
+                .await;
+        }
+        moved
+    }
+
+    /// The strand as it occurs in the field: both sides already list each other,
+    /// the keyer holds an epoch, and the member holds nothing. Membership is
+    /// installed directly so that *no* join edge exists for either side — that
+    /// absence is the whole point.
+    fn stranded() -> (Client, Client) {
+        let (keyer_id, member_id) = ordered_pair();
+        let (keyer_pub, member_pub) = (keyer_id.public_id(), member_id.public_id());
+        let mut keyer = client(keyer_id);
+        let mut member = client(member_id);
+
+        keyer.manager.group_keys.install(ROOM, EPOCH, KEY);
+        let room_key = format!("{HOST}:{ROOM}");
+        keyer
+            .manager
+            .room_group_members
+            .insert(room_key.clone(), HashSet::from([member_pub]));
+        member
+            .manager
+            .room_group_members
+            .insert(room_key, HashSet::from([keyer_pub]));
+
+        assert!(keyer.manager.group_keys.has_real_key(ROOM));
+        assert!(
+            !member.manager.group_keys.has_real_key(ROOM),
+            "the member restarted: it holds nothing"
+        );
+        (keyer, member)
+    }
+
+    #[tokio::test]
+    async fn an_unkeyed_member_asks_the_keyer_and_is_given_the_current_epoch() {
+        let (mut keyer, mut member) = stranded();
+
+        member.manager.request_group_key(ROOM).await;
+        assert_eq!(forward(&mut member, &mut keyer).await, 1, "request sent");
+        assert_eq!(forward(&mut keyer, &mut member).await, 1, "key sealed back");
+
+        assert!(member.manager.group_keys.has_real_key(ROOM));
+        assert_eq!(member.manager.group_keys.current_epoch(ROOM), EPOCH);
+        assert_eq!(
+            member.manager.group_keys.epoch_key(ROOM, EPOCH),
+            Some(KEY),
+            "member ends up on the same key as the keyer"
+        );
+        // And having it, it stops asking.
+        assert!(!member.manager.group_key_requests.contains_key(ROOM));
+    }
+
+    /// Until the key lands the member is silent in both directions, which is why
+    /// nothing else can rescue it.
+    #[tokio::test]
+    async fn a_stranded_member_cannot_send_and_so_cannot_be_noticed() {
+        let (_keyer, member) = stranded();
+        assert!(
+            !may_send_room_e2e_content(member.manager.group_keys.has_real_key(ROOM)),
+            "an unkeyed member emits no frame for reseal_to_lagging_member to see"
+        );
+    }
+
+    /// Membership — not peer trust, and not merely knowing the room id — is what
+    /// authorizes the answer.
+    #[tokio::test]
+    async fn a_key_request_from_a_non_member_is_refused() {
+        let (mut keyer, mut member) = stranded();
+        // The keyer forgets the member: it is no longer in the room.
+        keyer
+            .manager
+            .room_group_members
+            .insert(format!("{HOST}:{ROOM}"), HashSet::new());
+
+        member.manager.request_group_key(ROOM).await;
+        assert_eq!(forward(&mut member, &mut keyer).await, 1);
+        assert_eq!(
+            forward(&mut keyer, &mut member).await,
+            0,
+            "a non-member gets nothing back"
+        );
+        assert!(!member.manager.group_keys.has_real_key(ROOM));
+    }
+
+    /// A peer that is not the elected keyer must not answer, or two members
+    /// would hand out competing epochs.
+    #[tokio::test]
+    async fn a_peer_that_is_not_the_elected_keyer_does_not_answer() {
+        let (mut keyer, mut member) = stranded();
+        // Flip the election: put a third id that sorts before the keyer into the
+        // room, so the keyer is no longer the one elected to distribute.
+        //
+        // '-' is the lowest character in the base64url alphabet, so a string of
+        // them is below every real id. "A"s are not: an id may begin "A-" or
+        // "A0", which sorts earlier and would leave the keyer still elected
+        // about one run in three hundred.
+        let earlier = "-".repeat(43);
+        assert!(
+            earlier < keyer.manager.identity.public_id(),
+            "the third member must really outrank the keyer"
+        );
+        keyer.manager.room_group_members.insert(
+            format!("{HOST}:{ROOM}"),
+            HashSet::from([member.manager.identity.public_id(), earlier]),
+        );
+
+        member.manager.request_group_key(ROOM).await;
+        assert_eq!(forward(&mut member, &mut keyer).await, 1);
+        assert_eq!(
+            forward(&mut keyer, &mut member).await,
+            0,
+            "only the elected keyer distributes"
+        );
+        assert!(!member.manager.group_keys.has_real_key(ROOM));
+    }
+
+    /// The burst of `SfuMembers` a join produces — one per cluster node — must
+    /// collapse to a single request.
+    #[tokio::test]
+    async fn repeated_notices_collapse_into_one_request() {
+        let (mut keyer, mut member) = stranded();
+        for _ in 0..5 {
+            member.manager.request_group_key(ROOM).await;
+        }
+        assert_eq!(
+            forward(&mut member, &mut keyer).await,
+            1,
+            "backoff holds the rest"
+        );
+    }
+
+    /// The keyer already has a seal in flight for this member; a request must
+    /// not start a second one alongside it.
+    #[tokio::test]
+    async fn a_request_does_not_duplicate_an_in_flight_distribution() {
+        let (mut keyer, mut member) = stranded();
+        keyer.manager.pending_group_key_acks.insert(
+            (ROOM.to_owned(), member.manager.identity.public_id()),
+            PendingGroupKeyAck {
+                epoch: EPOCH,
+                last_sent: Instant::now(),
+                attempts: 1,
+            },
+        );
+
+        member.manager.request_group_key(ROOM).await;
+        assert_eq!(forward(&mut member, &mut keyer).await, 1);
+        assert_eq!(
+            forward(&mut keyer, &mut member).await,
+            0,
+            "the retry timer owns the in-flight seal"
+        );
+    }
+
+    /// Asking is for members who cannot mint. The elected keyer minting for
+    /// itself is `sync_room_membership`'s job.
+    #[tokio::test]
+    async fn the_elected_keyer_does_not_ask_itself() {
+        let (mut keyer, mut member) = stranded();
+        keyer.manager.group_keys.forget(ROOM);
+        assert!(!keyer.manager.group_keys.has_real_key(ROOM));
+
+        keyer.manager.request_group_key(ROOM).await;
+        assert_eq!(forward(&mut keyer, &mut member).await, 0);
+        assert!(!keyer.manager.group_key_requests.contains_key(ROOM));
+    }
+
+    /// Alone in a room is not a strand — whoever arrives next brings an ordinary
+    /// join edge with them.
+    #[tokio::test]
+    async fn a_member_alone_in_a_room_does_not_ask() {
+        let (_keyer, mut member) = stranded();
+        member
+            .manager
+            .room_group_members
+            .insert(format!("{HOST}:{ROOM}"), HashSet::new());
+
+        member.manager.request_group_key(ROOM).await;
+        assert!(member.outgoing.try_recv().is_err(), "nobody to ask");
+        assert!(!member.manager.group_key_requests.contains_key(ROOM));
+    }
+
+    /// The timer is what makes recovery eventual: a member that restarts into a
+    /// quiet room gets no further membership updates to prompt it.
+    #[tokio::test]
+    async fn the_retry_timer_asks_for_rooms_we_hold_no_key_for() {
+        let (mut keyer, mut member) = stranded();
+
+        member.manager.retry_group_key_requests().await;
+        assert_eq!(forward(&mut member, &mut keyer).await, 1);
+        assert_eq!(forward(&mut keyer, &mut member).await, 1);
+        assert!(member.manager.group_keys.has_real_key(ROOM));
+
+        // Installing acks, so drain that before asking about requests.
+        assert_eq!(
+            forward(&mut member, &mut keyer).await,
+            1,
+            "the install is acked back to the keyer"
+        );
+
+        // Keyed now, so the timer stops asking for this room.
+        member.manager.retry_group_key_requests().await;
+        assert_eq!(forward(&mut member, &mut keyer).await, 0);
     }
 }
