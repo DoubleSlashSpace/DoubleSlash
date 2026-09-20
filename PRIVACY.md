@@ -220,7 +220,8 @@ launches your system browser.
 ### Ollama AI assistant (optional plugin)
 
 **What:** When *Enable AI assistant* is on, DoubleSlash sends HTTP requests to the
-Ollama base URL you configure (default `http://localhost:11434`) to list models
+Ollama base URL you configure (default `http://localhost:11434`) to list
+installed models (`/api/tags`), see which are currently loaded (`/api/ps`),
 and stream completions. Chat text you route to the assistant is included in
 those local requests.
 

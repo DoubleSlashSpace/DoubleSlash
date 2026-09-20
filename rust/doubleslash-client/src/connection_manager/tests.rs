@@ -1,11 +1,11 @@
 use super::events::ConnectionEvent;
 use super::internal::{host_from_url, is_loopback_or_wildcard};
 use super::manager::{
-    accept_group_key_epoch, build_room_invite_url, is_elected_keyer, may_send_room_e2e_content,
-    normalize_room_type, parse_quic_lan_hint, parse_room_invite, peer_quic_endpoint,
-    peer_reconnect_backoff, plan_cluster_failover, room_scope_key,
-    should_auto_join_on_room_created, should_fanout_peer_relay, should_mint_first_room_key,
-    should_reseal_to_lagging_member, should_track_pending_materialize,
+    accept_group_key_epoch, build_room_invite_url, elected_keyer_for, group_key_request_backoff,
+    is_elected_keyer, may_send_room_e2e_content, normalize_room_type, parse_quic_lan_hint,
+    parse_room_invite, peer_quic_endpoint, peer_reconnect_backoff, plan_cluster_failover,
+    room_scope_key, should_auto_join_on_room_created, should_fanout_peer_relay,
+    should_mint_first_room_key, should_reseal_to_lagging_member, should_track_pending_materialize,
     should_use_private_room_invite, union_members_for_room, FailoverPlan, RoomInvitePayload,
     MAX_EPOCH_ADVANCE, ROOM_INVITE_SCHEMA,
 };
@@ -1011,6 +1011,134 @@ fn should_mint_first_room_key_defers_when_solo_or_not_elected() {
 fn may_send_room_e2e_content_requires_real_key() {
     assert!(!may_send_room_e2e_content(false));
     assert!(may_send_room_e2e_content(true));
+}
+
+// ── Group-key request: the unkeyed-member strand ───────────────────────────
+//
+// A member that restarts loses its in-memory epochs while staying in the room's
+// cluster-wide union. No join/leave edge fires, so the keyer's diff-driven
+// reseal never runs; and it cannot reveal itself by sending, because every room
+// send fails closed without a key. `SfuGroupKeyRequest` is the only way out.
+
+/// The request has to be addressed to the same peer everyone else elects, in
+/// the spelling membership uses — a padded and an un-padded id are one identity
+/// but not one routing key.
+#[test]
+fn elected_keyer_for_agrees_with_is_elected_keyer() {
+    let members = vec![
+        "VkR20VqcIw23".to_owned(),
+        "GHy8U9mJvdrk".to_owned(),
+        "Zzz".to_owned(),
+    ];
+    let winner = elected_keyer_for(&members).expect("non-empty set elects someone");
+    assert_eq!(winner, "GHy8U9mJvdrk");
+    assert!(is_elected_keyer(&members, winner));
+    for m in &members {
+        assert_eq!(is_elected_keyer(&members, m), m == winner);
+    }
+}
+
+/// Padding must not decide the election, and the winner must come back spelled
+/// the way membership spelled it so the envelope routes.
+#[test]
+fn elected_keyer_for_ignores_padding_but_preserves_spelling() {
+    // Un-padded "AAA" sorts before padded "AAA=" compared raw, so a naive min
+    // would pick whichever copy of the *same* identity happened to be present.
+    let members = vec!["BBB".to_owned(), "AAA=".to_owned()];
+    let winner = elected_keyer_for(&members).expect("elects someone");
+    assert_eq!(
+        winner, "AAA=",
+        "returns the membership spelling, not a trim"
+    );
+    assert!(is_elected_keyer(&members, winner));
+}
+
+#[test]
+fn elected_keyer_for_is_none_when_nobody_is_present() {
+    assert!(elected_keyer_for(&[]).is_none());
+}
+
+/// Backoff doubles and then holds. It must never stop: giving up is exactly the
+/// failure the request exists to fix.
+#[test]
+fn group_key_request_backoff_grows_then_saturates() {
+    let first = group_key_request_backoff(0);
+    assert_eq!(first, Duration::from_millis(3_000));
+    assert_eq!(group_key_request_backoff(1), Duration::from_millis(6_000));
+    assert_eq!(group_key_request_backoff(2), Duration::from_millis(12_000));
+
+    let ceiling = Duration::from_millis(60_000);
+    assert_eq!(group_key_request_backoff(5), ceiling);
+    // Far past the ceiling: still a finite, sane delay — no overflow, no zero
+    // (a zero would turn the retry tick into a request flood).
+    for attempts in [16u32, 64, 1_000, u32::MAX] {
+        let d = group_key_request_backoff(attempts);
+        assert_eq!(d, ceiling, "attempt {attempts} must clamp, not wrap");
+    }
+    assert!(group_key_request_backoff(u32::MAX) >= first);
+}
+
+/// The strand itself: a member is in the union, holds no key, and the keyer sees
+/// no edge. Nothing in the diff-driven paths fires, which is why the request
+/// exists.
+#[test]
+fn a_restarted_member_produces_no_membership_edge_to_rekey_it() {
+    let member = "VkR20VqcIw23".to_owned();
+    let keyer = "GHy8U9mJvdrk".to_owned();
+
+    // The keyer's view before and after the member restarts. It is multi-homed
+    // to several cluster nodes, so a restart never clears every node's snapshot
+    // at once — the member stays in the union throughout.
+    let before = snap(&[
+        ("A:default", &[member.as_str()]),
+        ("B:default", &[member.as_str()]),
+    ]);
+    let after = snap(&[
+        ("A:default", &[member.as_str()]),
+        ("B:default", &[member.as_str()]),
+    ]);
+
+    let union_old = union_members_for_room(&before, "default");
+    let union_new = union_members_for_room(&after, "default");
+    let added: Vec<&String> = union_new.difference(&union_old).collect();
+    let removed = union_old.difference(&union_new).count();
+
+    assert!(
+        added.is_empty(),
+        "no join edge: nothing reseals to the member"
+    );
+    assert_eq!(removed, 0, "no leave edge: nothing rotates either");
+
+    // And the keyer is still the keyer, so the member cannot mint for itself.
+    let mut present: Vec<String> = union_new.into_iter().collect();
+    present.push(keyer.clone());
+    assert!(is_elected_keyer(&present, &keyer));
+    assert!(!is_elected_keyer(&present, &member));
+
+    // So the member's only move is to ask, and it must ask the elected keyer.
+    assert_eq!(
+        elected_keyer_for(&present).expect("someone is elected"),
+        &keyer
+    );
+}
+
+/// The request rides the same sealed envelope as the key and the ack, so the
+/// supernode forwards it blind and needs no redeploy.
+#[test]
+fn group_key_request_wire_string_is_stable() {
+    assert_eq!(
+        MessageType::SfuGroupKeyRequest.as_wire_str(),
+        "sfu_group_key_request"
+    );
+    // Distinct from the other two legs of the exchange.
+    assert_ne!(
+        MessageType::SfuGroupKeyRequest.as_wire_str(),
+        MessageType::SfuGroupKeyAck.as_wire_str()
+    );
+    assert_ne!(
+        MessageType::SfuGroupKeyRequest.as_wire_str(),
+        MessageType::SfuGroupKey.as_wire_str()
+    );
 }
 
 /// Wire reason strings the client rolls back on (`SfuJoinResult` / create deny)

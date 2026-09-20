@@ -67,9 +67,10 @@ pub mod ffi {
         #[qproperty(i32, missed_calls)]
         /// True when the x.ollama.v1 plugin is enabled and its task is running.
         #[qproperty(bool, ollama_available)]
-        /// Latest Ollama model-list JSON array (e.g. `["llama3.2:latest"]`).
-        /// Updated by `fetchOllamaModels`; QML should watch this property (more
-        /// reliable than the signal alone with cxx-qt Connections).
+        /// Latest Ollama model catalog JSON array of objects (`name`, size,
+        /// context, capabilities, recommended_for, …). Updated by
+        /// `fetchOllamaModels`; QML should watch this property (more reliable
+        /// than the signal alone with cxx-qt Connections).
         #[qproperty(QString, ollama_models_json)]
         /// Last model-list error (empty on success). Pair with `ollama_models_json`.
         #[qproperty(QString, ollama_models_error)]
@@ -5348,11 +5349,11 @@ impl ffi::AppBridge {
             .unwrap_or_else(|_| reqwest::Client::new());
         handle.spawn(async move {
             let (models_json, error) =
-                match crate::ollama_module::fetch_model_list(&client, &url).await {
-                    Ok(names) => {
-                        info!("[ollama] ListModels ok: {} model(s)", names.len());
+                match crate::ollama_module::fetch_model_catalog(&client, &url).await {
+                    Ok(models) => {
+                        info!("[ollama] ListModels ok: {} model(s)", models.len());
                         (
-                            serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_owned()),
+                            serde_json::to_string(&models).unwrap_or_else(|_| "[]".to_owned()),
                             String::new(),
                         )
                     }

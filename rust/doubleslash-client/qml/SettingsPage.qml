@@ -1819,6 +1819,52 @@ Item {
                         backend.fetchOllamaModels(url || "")
                     }
 
+                    function emptyModelRow(name) {
+                        return {
+                            name: name || "",
+                            family: "",
+                            parameter_size: "",
+                            quantization: "",
+                            size_label: "",
+                            ctx_label: "",
+                            num_ctx: 0,
+                            capabilities: "",
+                            recommended_for: "general",
+                            recommended_label: "",
+                            tier: "unknown",
+                            group: "General",
+                            detail: ""
+                        }
+                    }
+
+                    function normalizeModelRow(entry) {
+                        if (typeof entry === "string")
+                            return emptyModelRow(entry)
+                        var caps = entry.capabilities
+                        if (Array.isArray(caps))
+                            caps = caps.join(",")
+                        else
+                            caps = caps ? ("" + caps) : ""
+                        var rec = entry.recommended_for || "general"
+                        var recLabel = entry.recommended_label || ""
+                        var group = entry.group || recLabel || "General"
+                        return {
+                            name: entry.name || "",
+                            family: entry.family || "",
+                            parameter_size: entry.parameter_size || "",
+                            quantization: entry.quantization || "",
+                            size_label: entry.size_label || "",
+                            ctx_label: entry.ctx_label || "",
+                            num_ctx: entry.num_ctx || 0,
+                            capabilities: caps,
+                            recommended_for: rec,
+                            recommended_label: recLabel,
+                            tier: entry.tier || "unknown",
+                            group: group,
+                            detail: entry.detail || ""
+                        }
+                    }
+
                     function applyOllamaModels(modelsJson, errorText) {
                         var err = (errorText === undefined || errorText === null) ? "" : ("" + errorText)
                         if (err !== "") {
@@ -1826,36 +1872,87 @@ Item {
                             ollamaModelStatus.color = Theme.danger
                             return
                         }
-                        var names = []
+                        var parsed = []
                         try {
-                            names = JSON.parse("" + modelsJson)
+                            parsed = JSON.parse("" + modelsJson)
                         } catch (e) {
                             ollamaModelStatus.text = "Error: bad model list from backend"
                             ollamaModelStatus.color = Theme.danger
                             return
                         }
-                        if (!names || names.length === 0) {
+                        if (!parsed || parsed.length === 0) {
                             ollamaModelStatus.text = "No models found — is Ollama running? Try: ollama list"
                             ollamaModelStatus.color = Theme.muted
+                            ollamaModelDetails.text = ""
                             return
                         }
 
                         var saved = root.settings ? root.settings.ollama_model : ollamaModelCombo.editText
                         ollamaModelList.clear()
                         var idx = -1
-                        for (var i = 0; i < names.length; i++) {
-                            ollamaModelList.append({ name: names[i] })
-                            if (names[i] === saved)
-                                idx = i
+                        for (var i = 0; i < parsed.length; i++) {
+                            var row = normalizeModelRow(parsed[i])
+                            if (!row.name)
+                                continue
+                            ollamaModelList.append(row)
+                            if (row.name === saved)
+                                idx = ollamaModelList.count - 1
+                        }
+                        if (ollamaModelList.count === 0) {
+                            ollamaModelStatus.text = "No models found — is Ollama running? Try: ollama list"
+                            ollamaModelStatus.color = Theme.muted
+                            ollamaModelDetails.text = ""
+                            return
                         }
                         if (idx >= 0) {
                             ollamaModelCombo.currentIndex = idx
                         } else {
                             // Keep a custom / previously-saved name even if not installed.
-                            ollamaModelCombo.editText = saved || names[0]
+                            ollamaModelCombo.editText = saved || ollamaModelList.get(0).name
                         }
-                        ollamaModelStatus.text = "Found " + names.length + (names.length === 1 ? " model" : " models")
+                        ollamaModelStatus.text = "Found " + ollamaModelList.count
+                                + (ollamaModelList.count === 1 ? " model" : " models")
                         ollamaModelStatus.color = Theme.muted
+                        updateOllamaModelDetails()
+                    }
+
+                    function modelRowByName(name) {
+                        for (var i = 0; i < ollamaModelList.count; i++) {
+                            var row = ollamaModelList.get(i)
+                            if (row.name === name)
+                                return row
+                        }
+                        return null
+                    }
+
+                    function updateOllamaModelDetails() {
+                        var name = ollamaModelCombo.editText
+                        var info = modelRowByName(name)
+                        if (!info || !info.name) {
+                            ollamaModelDetails.text = ""
+                            return
+                        }
+                        var bits = []
+                        if (info.recommended_label)
+                            bits.push(info.recommended_label)
+                        if (info.parameter_size)
+                            bits.push(info.parameter_size)
+                        if (info.quantization)
+                            bits.push(info.quantization)
+                        if (info.ctx_label)
+                            bits.push(info.ctx_label + " context")
+                        if (info.size_label)
+                            bits.push(info.size_label)
+                        var caps = (info.capabilities || "").split(",").filter(function (c) {
+                            return c && c !== "completion"
+                        })
+                        if (caps.length)
+                            bits.push(caps.join(", "))
+                        if (info.tier === "full_gpu")
+                            bits.push("running on GPU")
+                        else if (info.tier === "cpu_split")
+                            bits.push("CPU + GPU split")
+                        ollamaModelDetails.text = bits.join("  ·  ")
                     }
 
                     SettingSwitch {
@@ -1908,7 +2005,7 @@ Item {
                                 Component.onCompleted: {
                                     var initial = root.settings ? root.settings.ollama_model : "llama3"
                                     if (ollamaModelList.count === 0)
-                                        ollamaModelList.append({ name: initial })
+                                        ollamaModelList.append(ollamaCard.emptyModelRow(initial))
                                     editText = initial
                                 }
                                 onActivated: {
@@ -1916,11 +2013,95 @@ Item {
                                     var name = ollamaModelList.get(currentIndex).name
                                     if (root.settings.ollama_model !== name)
                                         root.settings.ollama_model = name
+                                    ollamaCard.updateOllamaModelDetails()
                                 }
                                 onEditTextChanged: {
-                                    if (!root.settings) return
-                                    if (root.settings.ollama_model === editText) return
-                                    root.settings.ollama_model = editText
+                                    if (root.settings && root.settings.ollama_model !== editText)
+                                        root.settings.ollama_model = editText
+                                    ollamaCard.updateOllamaModelDetails()
+                                }
+
+                                background: Rectangle {
+                                    color: Theme.bg3
+                                    radius: Theme.radiusMd
+                                    border.color: ollamaModelCombo.activeFocus ? Theme.accent : Theme.bg3
+                                    border.width: 1
+                                }
+
+                                delegate: ItemDelegate {
+                                    id: modelDelegate
+                                    required property int index
+                                    required property string name
+                                    required property string detail
+                                    required property string group
+                                    width: ollamaModelCombo.width
+                                    padding: 0
+                                    highlighted: ollamaModelCombo.highlightedIndex === index
+                                    implicitHeight: groupHeader.visible ? 68 : 48
+
+                                    contentItem: ColumnLayout {
+                                        spacing: 0
+                                        Label {
+                                            id: groupHeader
+                                            visible: {
+                                                if (index <= 0)
+                                                    return true
+                                                return ollamaModelList.get(index - 1).group !== group
+                                            }
+                                            text: group
+                                            color: Theme.muted
+                                            font.pixelSize: Theme.fontSizeMicro
+                                            font.bold: true
+                                            leftPadding: 8
+                                            topPadding: 6
+                                            bottomPadding: 2
+                                        }
+                                        Label {
+                                            text: name
+                                            color: modelDelegate.highlighted ? Theme.textInv : Theme.text
+                                            font.pixelSize: Theme.fontSizeBody
+                                            leftPadding: 8
+                                            rightPadding: 8
+                                            elide: Text.ElideRight
+                                            Layout.fillWidth: true
+                                        }
+                                        Label {
+                                            visible: detail.length > 0
+                                            text: detail
+                                            color: modelDelegate.highlighted ? Theme.textInv : Theme.muted
+                                            font.pixelSize: Theme.fontSizeCaption
+                                            leftPadding: 8
+                                            rightPadding: 8
+                                            bottomPadding: 6
+                                            elide: Text.ElideRight
+                                            Layout.fillWidth: true
+                                        }
+                                    }
+                                    background: Rectangle {
+                                        color: modelDelegate.highlighted ? Theme.accent : Theme.bg2
+                                    }
+                                }
+
+                                popup: Popup {
+                                    y: ollamaModelCombo.height + 2
+                                    width: ollamaModelCombo.width
+                                    padding: 0
+                                    implicitHeight: Math.min(contentItem.implicitHeight, 320)
+
+                                    contentItem: ListView {
+                                        clip: true
+                                        implicitHeight: contentHeight
+                                        model: ollamaModelCombo.delegateModel
+                                        boundsBehavior: Flickable.StopAtBounds
+                                        ScrollBar.vertical: ScrollBar {}
+                                    }
+
+                                    background: Rectangle {
+                                        color: Theme.bg2
+                                        radius: Theme.radiusMd
+                                        border.color: Theme.bg3
+                                        border.width: 1
+                                    }
                                 }
                             }
                             ToolButton {
@@ -1941,13 +2122,26 @@ Item {
                         }
 
                         Item {}
-                        Label {
-                            id: ollamaModelStatus
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            text: "Use refresh to load available models"
-                            color: Theme.muted
-                            font.pixelSize: Theme.fontSizeCaption
-                            wrapMode: Text.WordWrap
+                            spacing: Theme.spacingXs
+                            Label {
+                                id: ollamaModelDetails
+                                Layout.fillWidth: true
+                                visible: text.length > 0
+                                text: ""
+                                color: Theme.text
+                                font.pixelSize: Theme.fontSizeCaption
+                                wrapMode: Text.WordWrap
+                            }
+                            Label {
+                                id: ollamaModelStatus
+                                Layout.fillWidth: true
+                                text: "Use refresh to load available models"
+                                color: Theme.muted
+                                font.pixelSize: Theme.fontSizeCaption
+                                wrapMode: Text.WordWrap
+                            }
                         }
 
                         Label { text: "System prompt"; color: Theme.muted; Layout.alignment: Qt.AlignRight | Qt.AlignTop }

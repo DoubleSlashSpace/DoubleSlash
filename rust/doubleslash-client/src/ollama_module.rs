@@ -148,8 +148,11 @@ pub enum OllamaEvent {
     /// HTTP or stream error.
     Error { request_id: String, message: String },
     /// Result of a `ListModels` command.
-    /// `models` is sorted; `error` is empty on success.
-    Models { models: Vec<String>, error: String },
+    /// `models` is the catalog (grouped/sorted); `error` is empty on success.
+    Models {
+        models: Vec<OllamaModelInfo>,
+        error: String,
+    },
 }
 
 /// One turn in a multi-message Ollama chat (`/api/chat`).
@@ -434,7 +437,7 @@ impl OllamaModule {
                     let client = self.client.clone();
                     let event_tx = self.event_tx.clone();
                     tokio::spawn(async move {
-                        let ev = match fetch_model_list(&client, &base_url).await {
+                        let ev = match fetch_model_catalog(&client, &base_url).await {
                             Ok(models) => OllamaEvent::Models {
                                 models,
                                 error: String::new(),
@@ -490,44 +493,353 @@ struct GenerateChunk {
     done: bool,
 }
 
+/// One installed Ollama model, enriched for the settings picker.
+///
+/// Built from `GET /api/tags` (name, size, family, params, quant, context,
+/// capabilities) plus `GET /api/ps` when the model is currently loaded
+/// (`tier` is GPU vs CPU-split only for loaded models).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OllamaModelInfo {
+    pub name: String,
+    #[serde(default)]
+    pub size_bytes: u64,
+    #[serde(default)]
+    pub size_label: String,
+    #[serde(default)]
+    pub family: String,
+    #[serde(default)]
+    pub parameter_size: String,
+    #[serde(default)]
+    pub quantization: String,
+    #[serde(default)]
+    pub num_ctx: u64,
+    #[serde(default)]
+    pub ctx_label: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// `"both"` | `"chat"` | `"vision"` | `"general"`
+    pub recommended_for: String,
+    pub recommended_label: String,
+    /// `"full_gpu"` | `"cpu_split"` | `"unknown"` — unknown unless `/api/ps`
+    /// reports the model loaded.
+    pub tier: String,
+    pub group: String,
+    pub detail: String,
+}
+
 #[derive(Deserialize)]
 struct TagsResponse {
     #[serde(default)]
     models: Vec<TagsModel>,
 }
 
+#[derive(Deserialize, Default)]
+struct TagsDetails {
+    #[serde(default)]
+    family: String,
+    #[serde(default)]
+    parameter_size: String,
+    #[serde(default)]
+    quantization_level: String,
+    #[serde(default)]
+    context_length: u64,
+}
+
 #[derive(Deserialize)]
 struct TagsModel {
     name: String,
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    details: TagsDetails,
+    #[serde(default)]
+    capabilities: Vec<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct PsResponse {
+    #[serde(default)]
+    models: Vec<PsModel>,
+}
+
+#[derive(Deserialize)]
+struct PsModel {
+    name: String,
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    size_vram: u64,
 }
 
 /// Fetch sorted model names from `GET <base_url>/api/tags` (8 s timeout).
 pub async fn fetch_model_list(client: &Client, base_url: &str) -> Result<Vec<String>, String> {
-    // Prefer a concrete loopback host: some Windows setups resolve `localhost`
-    // to `::1` while Ollama only listens on 127.0.0.1.
+    let mut names: Vec<String> = fetch_model_catalog(client, base_url)
+        .await?
+        .into_iter()
+        .map(|m| m.name)
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+/// Fetch installed models with size, context, capabilities, and live GPU tier.
+pub async fn fetch_model_catalog(
+    client: &Client,
+    base_url: &str,
+) -> Result<Vec<OllamaModelInfo>, String> {
     let base = normalize_ollama_base_url(base_url);
-    let url = format!("{base}/api/tags");
+    let tags_url = format!("{base}/api/tags");
     let resp = client
-        .get(&url)
+        .get(&tags_url)
         .timeout(Duration::from_secs(8))
         .send()
         .await
-        .map_err(|e| format!("HTTP error talking to {url}: {e}"))?;
+        .map_err(|e| format!("HTTP error talking to {tags_url}: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("Ollama returned {} for {url}", resp.status()));
+        return Err(format!("Ollama returned {} for {tags_url}", resp.status()));
     }
     let body: TagsResponse = resp
         .json()
         .await
-        .map_err(|e| format!("Parse error from {url}: {e}"))?;
-    let mut names: Vec<String> = body
+        .map_err(|e| format!("Parse error from {tags_url}: {e}"))?;
+
+    let ps = fetch_loaded_models(client, &base).await;
+    let mut models: Vec<OllamaModelInfo> = body
         .models
         .into_iter()
-        .map(|m| m.name)
-        .filter(|n| !n.is_empty())
+        .filter(|m| !m.name.is_empty())
+        .map(|m| model_info_from_tags(m, &ps))
         .collect();
-    names.sort();
-    Ok(names)
+    sort_model_catalog(&mut models);
+    Ok(models)
+}
+
+async fn fetch_loaded_models(client: &Client, base: &str) -> Vec<PsModel> {
+    let url = format!("{base}/api/ps");
+    let Ok(resp) = client
+        .get(&url)
+        .timeout(Duration::from_secs(4))
+        .send()
+        .await
+    else {
+        return Vec::new();
+    };
+    if !resp.status().is_success() {
+        return Vec::new();
+    }
+    resp.json::<PsResponse>()
+        .await
+        .map(|body| body.models)
+        .unwrap_or_default()
+}
+
+fn model_info_from_tags(model: TagsModel, loaded: &[PsModel]) -> OllamaModelInfo {
+    let capabilities = if model.capabilities.is_empty() {
+        heuristic_capabilities(&model.name)
+    } else {
+        model.capabilities
+    };
+    let recommended_for = recommend_for(&capabilities);
+    let recommended_label = recommended_label(recommended_for);
+    let tier = gpu_tier(&model.name, model.size, loaded);
+    let group = group_for(tier, recommended_for);
+    let num_ctx = model.details.context_length;
+    let size_label = format_bytes(model.size);
+    let ctx_label = format_ctx(num_ctx);
+    let family = model.details.family;
+    let parameter_size = model.details.parameter_size;
+    let quantization = model.details.quantization_level;
+    let detail = format_detail(
+        &family,
+        &parameter_size,
+        &quantization,
+        &ctx_label,
+        &size_label,
+        &capabilities,
+    );
+    OllamaModelInfo {
+        name: model.name,
+        size_bytes: model.size,
+        size_label,
+        family,
+        parameter_size,
+        quantization,
+        num_ctx,
+        ctx_label,
+        capabilities,
+        recommended_for: recommended_for.to_owned(),
+        recommended_label: recommended_label.to_owned(),
+        tier: tier.to_owned(),
+        group: group.to_owned(),
+        detail,
+    }
+}
+
+fn heuristic_capabilities(name: &str) -> Vec<String> {
+    let nl = name.to_ascii_lowercase();
+    let mut caps = vec!["completion".to_owned()];
+    if [
+        "vision",
+        "-vl",
+        ":vl",
+        "llava",
+        "moondream",
+        "bakllava",
+        "minicpm-v",
+    ]
+    .iter()
+    .any(|k| nl.contains(k))
+    {
+        caps.push("vision".to_owned());
+    }
+    if ["qwen", "mistral", "llama", "gemma", "phi", "gpt-oss"]
+        .iter()
+        .any(|k| nl.contains(k))
+    {
+        caps.push("tools".to_owned());
+    }
+    if nl.contains("think") || nl.contains("reason") {
+        caps.push("thinking".to_owned());
+    }
+    caps
+}
+
+fn recommend_for(capabilities: &[String]) -> &'static str {
+    let has = |cap: &str| capabilities.iter().any(|c| c == cap);
+    let vision = has("vision");
+    let tools = has("tools");
+    if vision && tools {
+        "both"
+    } else if tools {
+        "chat"
+    } else if vision {
+        "vision"
+    } else {
+        "general"
+    }
+}
+
+fn recommended_label(recommended_for: &str) -> &'static str {
+    match recommended_for {
+        "both" => "All features",
+        "chat" => "Best for chat",
+        "vision" => "Vision",
+        _ => "General",
+    }
+}
+
+fn gpu_tier(name: &str, tags_size: u64, loaded: &[PsModel]) -> &'static str {
+    let Some(ps) = loaded.iter().find(|m| m.name == name) else {
+        return "unknown";
+    };
+    let total = if ps.size > 0 { ps.size } else { tags_size };
+    if total > 0 && ps.size_vram >= total.saturating_mul(9) / 10 {
+        "full_gpu"
+    } else if ps.size_vram > 0 {
+        "cpu_split"
+    } else {
+        "unknown"
+    }
+}
+
+fn group_for(tier: &str, recommended_for: &str) -> &'static str {
+    if tier == "cpu_split" {
+        return "CPU split (slower)";
+    }
+    recommended_label(recommended_for)
+}
+
+fn sort_model_catalog(models: &mut [OllamaModelInfo]) {
+    fn rec_rank(s: &str) -> u8 {
+        match s {
+            "both" => 0,
+            "chat" => 1,
+            "vision" => 2,
+            _ => 3,
+        }
+    }
+    fn tier_rank(s: &str) -> u8 {
+        match s {
+            "full_gpu" => 0,
+            "unknown" => 1,
+            "cpu_split" => 2,
+            _ => 3,
+        }
+    }
+    models.sort_by(|a, b| {
+        tier_rank(&a.tier)
+            .cmp(&tier_rank(&b.tier))
+            .then_with(|| rec_rank(&a.recommended_for).cmp(&rec_rank(&b.recommended_for)))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes == 0 {
+        return String::new();
+    }
+    const GB: f64 = 1_000_000_000.0;
+    const MB: f64 = 1_000_000.0;
+    let n = bytes as f64;
+    if n >= GB {
+        format!("{:.1} GB", n / GB)
+    } else {
+        format!("{:.0} MB", n / MB)
+    }
+}
+
+fn format_ctx(tokens: u64) -> String {
+    if tokens == 0 {
+        return String::new();
+    }
+    if tokens.is_multiple_of(1024) {
+        format!("{}k", tokens / 1024)
+    } else if tokens >= 1000 {
+        format!("{}k", (tokens + 500) / 1000)
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn format_detail(
+    family: &str,
+    parameter_size: &str,
+    quantization: &str,
+    ctx_label: &str,
+    size_label: &str,
+    capabilities: &[String],
+) -> String {
+    let ctx_part = if ctx_label.is_empty() {
+        String::new()
+    } else {
+        format!("{ctx_label} ctx")
+    };
+    let extra_joined = capabilities
+        .iter()
+        .filter(|c| c.as_str() != "completion")
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut parts: Vec<&str> = Vec::new();
+    if !family.is_empty() {
+        parts.push(family);
+    }
+    if !parameter_size.is_empty() {
+        parts.push(parameter_size);
+    }
+    if !quantization.is_empty() {
+        parts.push(quantization);
+    }
+    if !ctx_part.is_empty() {
+        parts.push(&ctx_part);
+    }
+    if !size_label.is_empty() {
+        parts.push(size_label);
+    }
+    if !extra_joined.is_empty() {
+        parts.push(&extra_joined);
+    }
+    parts.join(" · ")
 }
 
 /// Normalize an Ollama base URL for local use.
@@ -859,6 +1171,151 @@ mod tests {
             names,
             vec!["llama3.2:latest".to_owned(), "mistral:7b".to_owned()]
         );
+    }
+
+    #[test]
+    fn tags_response_parses_capabilities_and_context() {
+        let json = r#"{
+            "models": [{
+                "name": "qwen3-vl:2b",
+                "size": 1889519687,
+                "details": {
+                    "family": "qwen3vl",
+                    "parameter_size": "2.1B",
+                    "quantization_level": "Q4_K_M",
+                    "context_length": 262144
+                },
+                "capabilities": ["completion", "vision", "tools", "thinking"]
+            }]
+        }"#;
+        let body: TagsResponse = serde_json::from_str(json).expect("parse tags");
+        let info = model_info_from_tags(body.models.into_iter().next().unwrap(), &[]);
+        assert_eq!(info.name, "qwen3-vl:2b");
+        assert_eq!(info.num_ctx, 262144);
+        assert_eq!(info.ctx_label, "256k");
+        assert_eq!(info.size_label, "1.9 GB");
+        assert_eq!(info.parameter_size, "2.1B");
+        assert_eq!(info.quantization, "Q4_K_M");
+        assert_eq!(info.recommended_for, "both");
+        assert_eq!(info.recommended_label, "All features");
+        assert_eq!(info.group, "All features");
+        assert_eq!(info.tier, "unknown");
+        assert!(info.detail.contains("vision"));
+        assert!(info.detail.contains("tools"));
+        assert!(info.detail.contains("thinking"));
+        assert!(info.detail.contains("256k"));
+    }
+
+    #[test]
+    fn completion_only_model_is_general() {
+        let model = TagsModel {
+            name: "phi4:latest".into(),
+            size: 9053116391,
+            details: TagsDetails {
+                family: "phi3".into(),
+                parameter_size: "14.7B".into(),
+                quantization_level: "Q4_K_M".into(),
+                context_length: 16384,
+            },
+            capabilities: vec!["completion".into()],
+        };
+        let info = model_info_from_tags(model, &[]);
+        assert_eq!(info.recommended_for, "general");
+        assert_eq!(info.ctx_label, "16k");
+        assert_eq!(info.size_label, "9.1 GB");
+        assert!(!info.detail.contains("tools"));
+    }
+
+    #[test]
+    fn tools_without_vision_is_best_for_chat() {
+        assert_eq!(
+            recommend_for(&["completion".into(), "tools".into()]),
+            "chat"
+        );
+        assert_eq!(
+            recommend_for(&["completion".into(), "vision".into()]),
+            "vision"
+        );
+    }
+
+    #[test]
+    fn heuristic_capabilities_cover_vision_and_tools() {
+        let caps = heuristic_capabilities("qwen3-vl:2b");
+        assert!(caps.contains(&"vision".to_owned()));
+        assert!(caps.contains(&"tools".to_owned()));
+        let phi = heuristic_capabilities("phi4:latest");
+        assert!(phi.contains(&"tools".to_owned()));
+        assert!(!phi.contains(&"vision".to_owned()));
+    }
+
+    #[test]
+    fn gpu_tier_from_loaded_process_list() {
+        let loaded = vec![
+            PsModel {
+                name: "phi4:latest".into(),
+                size: 9_000_000_000,
+                size_vram: 9_000_000_000,
+            },
+            PsModel {
+                name: "gemma2:latest".into(),
+                size: 5_000_000_000,
+                size_vram: 1_000_000_000,
+            },
+        ];
+        assert_eq!(gpu_tier("phi4:latest", 9_000_000_000, &loaded), "full_gpu");
+        assert_eq!(
+            gpu_tier("gemma2:latest", 5_000_000_000, &loaded),
+            "cpu_split"
+        );
+        assert_eq!(gpu_tier("mistral:7b", 4_000_000_000, &loaded), "unknown");
+        let split = model_info_from_tags(
+            TagsModel {
+                name: "gemma2:latest".into(),
+                size: 5_000_000_000,
+                details: TagsDetails::default(),
+                capabilities: vec!["completion".into(), "tools".into()],
+            },
+            &loaded,
+        );
+        assert_eq!(split.tier, "cpu_split");
+        assert_eq!(split.group, "CPU split (slower)");
+    }
+
+    #[test]
+    fn catalog_sorts_chat_models_ahead_of_general() {
+        let mut models = vec![
+            model_info_from_tags(
+                TagsModel {
+                    name: "phi4:latest".into(),
+                    size: 1,
+                    details: TagsDetails::default(),
+                    capabilities: vec!["completion".into()],
+                },
+                &[],
+            ),
+            model_info_from_tags(
+                TagsModel {
+                    name: "qwen2.5:7b".into(),
+                    size: 1,
+                    details: TagsDetails::default(),
+                    capabilities: vec!["completion".into(), "tools".into()],
+                },
+                &[],
+            ),
+            model_info_from_tags(
+                TagsModel {
+                    name: "qwen3-vl:8b".into(),
+                    size: 1,
+                    details: TagsDetails::default(),
+                    capabilities: vec!["completion".into(), "vision".into(), "tools".into()],
+                },
+                &[],
+            ),
+        ];
+        sort_model_catalog(&mut models);
+        assert_eq!(models[0].name, "qwen3-vl:8b");
+        assert_eq!(models[1].name, "qwen2.5:7b");
+        assert_eq!(models[2].name, "phi4:latest");
     }
 
     #[tokio::test]

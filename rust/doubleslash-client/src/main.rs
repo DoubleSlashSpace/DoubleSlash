@@ -1487,7 +1487,8 @@ async fn handle_ollama_event(
         }
         OllamaEvent::Models { models, error } => {
             if error.is_empty() {
-                info!("[ollama] models: {models:?}");
+                let names: Vec<&str> = models.iter().map(|m| m.name.as_str()).collect();
+                info!("[ollama] models: {names:?}");
             } else {
                 warn!("[ollama] models error: {error}");
             }
