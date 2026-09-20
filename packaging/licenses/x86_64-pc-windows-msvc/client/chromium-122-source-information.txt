@@ -58,15 +58,21 @@ How the obligations are met
 * No modifications — DoubleSlash uses the official Qt 6.8.3 Qt WebEngine
   binaries unmodified.
 
-OPEN ITEM — full Chromium third-party credits
----------------------------------------------
-chromium-122-LICENSE.txt is Chromium's own top-level BSD-3-Clause licence. It
-is NOT the complete third-party credits set for the many components bundled
-inside the Chromium snapshot — the list a Chrome build exposes at
-chrome://credits. Producing that list requires a checkout of the matching
-122-based qtwebengine-chromium tree and running Chromium's credits generator
-(tools/licenses/licenses.py) against it.
+Full Chromium third-party credits
+---------------------------------
+chromium-122-LICENSE.txt is Chromium's own top-level BSD-3-Clause licence. The
+credits set for the components bundled inside the Chromium snapshot - the list
+a Chrome build exposes at chrome://credits - ships beside it as
+chromium-122-third-party-credits.txt.
 
-Until that generated credits file is produced and added to this supplement,
-this component's notice set is incomplete. Treat this as an open item rather
-than a satisfied obligation.
+That file was generated from the qtwebengine-chromium tree Qt 6.8.3 pins,
+revision 55749ed0af5869215b88007df0cba430746583ae, read from
+qtwebengine v6.8.3's src/3rdparty submodule. It carries 237 components with
+their full licence texts, names the 12 directories that are Chromium's own
+code under the licence above, and lists 55 further components whose licence
+file is absent from Qt's snapshot because Qt strips those subtrees - code that
+is therefore not compiled into Qt WebEngine at all. Components marked
+"Shipped: no" upstream are excluded, as Chromium's own generator excludes them.
+
+Regenerate it whenever the bundled Qt version changes: the component set and
+the Chromium revision both move with it.

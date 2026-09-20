@@ -1,0 +1,157 @@
+Android JVM dependencies — license information
+==============================================
+
+What is shipped
+---------------
+The APK bundles the Java/Kotlin libraries below: AndroidX, Jetpack Compose,
+CameraX, the Kotlin standard library and coroutines, and their transitive
+dependencies. They are packaged as classes inside the APK's dex, not as
+separate files, so this file is where their notices live.
+
+Why this file exists
+--------------------
+The Android Gradle Plugin's default packaging rules exclude META-INF license
+and notice files from the APK. A build of this app was inspected to confirm
+it: of 58 META-INF entries, every one was a `.version` marker and none was a
+LICENSE or NOTICE. The `merges` rule in android/app/build.gradle.kts only
+applies to paths that survive those excludes, so it does not put upstream
+notices in the package. Without this supplement the JVM dependencies would
+ship with no license text at all.
+
+Licenses
+--------
+Every artifact below is Apache-2.0 except where the table says otherwise.
+The full text ships beside this file as apache-2.0.txt.
+
+androidx.camera:camera-core additionally declares a BSD license: it embeds
+libyuv for frame conversion. That text ships as libyuv-LICENSE.txt, which
+carries the copyright notice and disclaimer its terms require to be
+reproduced in binary redistributions.
+
+Two artifacts declare no <licenses> block in their POM,
+com.google.auto.value:auto-value-annotations and
+com.google.guava:listenablefuture. Both are Apache-2.0 upstream; they are
+listed as "not declared in POM" below rather than silently relabelled.
+
+How this list was produced
+--------------------------
+Resolved with
+
+  ./gradlew :app:dependencies --configuration releaseRuntimeClasspath
+
+and each artifact's declared license read from its POM in the Gradle module
+cache. The list is pinned to the versions in gradle/libs.versions.toml at the
+revision recorded in inventory.json. Changing a dependency version, or adding
+one, means regenerating this file — nothing detects a stale entry.
+
+Corresponding source
+--------------------
+  AndroidX / Jetpack    https://android.googlesource.com/platform/frameworks/support/
+  Kotlin                https://github.com/JetBrains/kotlin
+  kotlinx.coroutines    https://github.com/Kotlin/kotlinx.coroutines
+  Guava                 https://github.com/google/guava
+  AutoValue             https://github.com/google/auto
+  libyuv                https://chromium.googlesource.com/libyuv/libyuv/
+
+Neither Apache-2.0 nor the libyuv BSD terms oblige source delivery with a
+binary distribution; these are published for reference.
+
+Artifacts
+---------
+  androidx.activity:activity                              1.9.3         Apache-2.0
+  androidx.activity:activity-compose                      1.9.3         Apache-2.0
+  androidx.activity:activity-ktx                          1.9.3         Apache-2.0
+  androidx.annotation:annotation                          1.8.1         Apache-2.0
+  androidx.annotation:annotation-experimental             1.4.1         Apache-2.0
+  androidx.annotation:annotation-jvm                      1.8.1         Apache-2.0
+  androidx.arch.core:core-common                          2.2.0         Apache-2.0
+  androidx.arch.core:core-runtime                         2.2.0         Apache-2.0
+  androidx.autofill:autofill                              1.0.0         Apache-2.0
+  androidx.camera:camera-camera2                          1.4.2         Apache-2.0
+  androidx.camera:camera-core                             1.4.2         Apache-2.0, BSD License
+  androidx.camera:camera-lifecycle                        1.4.2         Apache-2.0
+  androidx.collection:collection                          1.4.4         Apache-2.0
+  androidx.collection:collection-jvm                      1.4.4         Apache-2.0
+  androidx.collection:collection-ktx                      1.4.4         Apache-2.0
+  androidx.compose.animation:animation                    1.7.5         Apache-2.0
+  androidx.compose.animation:animation-android            1.7.5         Apache-2.0
+  androidx.compose.animation:animation-core               1.7.5         Apache-2.0
+  androidx.compose.animation:animation-core-android       1.7.5         Apache-2.0
+  androidx.compose.foundation:foundation                  1.7.5         Apache-2.0
+  androidx.compose.foundation:foundation-android          1.7.5         Apache-2.0
+  androidx.compose.foundation:foundation-layout           1.7.5         Apache-2.0
+  androidx.compose.foundation:foundation-layout-android   1.7.5         Apache-2.0
+  androidx.compose.material3:material3                    1.3.1         Apache-2.0
+  androidx.compose.material3:material3-android            1.3.1         Apache-2.0
+  androidx.compose.material:material-icons-core           1.7.5         Apache-2.0
+  androidx.compose.material:material-icons-core-android   1.7.5         Apache-2.0
+  androidx.compose.material:material-ripple               1.7.5         Apache-2.0
+  androidx.compose.material:material-ripple-android       1.7.5         Apache-2.0
+  androidx.compose.runtime:runtime                        1.7.5         Apache-2.0
+  androidx.compose.runtime:runtime-android                1.7.5         Apache-2.0
+  androidx.compose.runtime:runtime-saveable               1.7.5         Apache-2.0
+  androidx.compose.runtime:runtime-saveable-android       1.7.5         Apache-2.0
+  androidx.compose.ui:ui                                  1.7.5         Apache-2.0
+  androidx.compose.ui:ui-android                          1.7.5         Apache-2.0
+  androidx.compose.ui:ui-geometry                         1.7.5         Apache-2.0
+  androidx.compose.ui:ui-geometry-android                 1.7.5         Apache-2.0
+  androidx.compose.ui:ui-graphics                         1.7.5         Apache-2.0
+  androidx.compose.ui:ui-graphics-android                 1.7.5         Apache-2.0
+  androidx.compose.ui:ui-text                             1.7.5         Apache-2.0
+  androidx.compose.ui:ui-text-android                     1.7.5         Apache-2.0
+  androidx.compose.ui:ui-tooling-preview                  1.7.5         Apache-2.0
+  androidx.compose.ui:ui-tooling-preview-android          1.7.5         Apache-2.0
+  androidx.compose.ui:ui-unit                             1.7.5         Apache-2.0
+  androidx.compose.ui:ui-unit-android                     1.7.5         Apache-2.0
+  androidx.compose.ui:ui-util                             1.7.5         Apache-2.0
+  androidx.compose.ui:ui-util-android                     1.7.5         Apache-2.0
+  androidx.compose:compose-bom                            2024.10.01    Apache-2.0
+  androidx.concurrent:concurrent-futures                  1.1.0         Apache-2.0
+  androidx.concurrent:concurrent-futures-ktx              1.1.0         Apache-2.0
+  androidx.core:core                                      1.7.0         Apache-2.0
+  androidx.core:core-ktx                                  1.5.0         Apache-2.0
+  androidx.customview:customview-poolingcontainer         1.0.0         Apache-2.0
+  androidx.emoji2:emoji2                                  1.3.0         Apache-2.0
+  androidx.exifinterface:exifinterface                    1.3.2         Apache-2.0
+  androidx.graphics:graphics-path                         1.0.1         Apache-2.0
+  androidx.interpolator:interpolator                      1.0.0         Apache-2.0
+  androidx.lifecycle:lifecycle-common                     2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-common-java8               2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-common-jvm                 2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-livedata                   2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-livedata-core              2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-livedata-core-ktx          2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-process                    2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-runtime                    2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-runtime-android            2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-runtime-compose            2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-runtime-compose-android    2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-runtime-ktx                2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-runtime-ktx-android        2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-viewmodel                  2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-viewmodel-android          2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-viewmodel-compose          2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-viewmodel-compose-android  2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-viewmodel-ktx              2.8.7         Apache-2.0
+  androidx.lifecycle:lifecycle-viewmodel-savedstate       2.8.7         Apache-2.0
+  androidx.profileinstaller:profileinstaller              1.3.1         Apache-2.0
+  androidx.savedstate:savedstate                          1.2.1         Apache-2.0
+  androidx.savedstate:savedstate-ktx                      1.2.1         Apache-2.0
+  androidx.startup:startup-runtime                        1.1.1         Apache-2.0
+  androidx.tracing:tracing                                1.2.0         Apache-2.0
+  androidx.tracing:tracing-ktx                            1.2.0         Apache-2.0
+  androidx.versionedparcelable:versionedparcelable        1.1.1         Apache-2.0
+  com.google.auto.value:auto-value-annotations            1.6.3         not declared in POM
+  com.google.guava:listenablefuture                       1.0           not declared in POM
+  org.jetbrains.kotlin:kotlin-stdlib                      2.0.21        Apache-2.0
+  org.jetbrains.kotlin:kotlin-stdlib-common               2.0.21        Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-coroutines-android        1.9.0         Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-coroutines-bom            1.9.0         Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-coroutines-core           1.9.0         Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm       1.9.0         Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-serialization-bom         1.7.3         Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-serialization-core        1.7.3         Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-serialization-core-jvm    1.7.3         Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-serialization-json        1.7.3         Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-serialization-json-jvm    1.7.3         Apache-2.0
+  org.jetbrains:annotations                               23.0.0        Apache-2.0
