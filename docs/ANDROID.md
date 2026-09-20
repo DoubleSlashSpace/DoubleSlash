@@ -122,9 +122,17 @@ library `dlopen` refuses on older devices with no useful diagnostic.
 
 ## Tests
 
+Host checks (fmt, clippy, `cargo test` of the JNI crate) run as part of
+[scripts/ci_local.ps1](../scripts/ci_local.ps1) / [ci_local.sh](../scripts/ci_local.sh).
+When an Android SDK is configured they also run `gradlew testDebugUnitTest`;
+when the pinned NDK, `cargo-ndk`, and `aarch64-linux-android` are present they
+clippy the JNI cdylib through cargo-ndk. Pass `-IncludeAndroidApk` /
+`--include-android-apk` for `assembleDebug`. Skip the NDK clippy with
+`-SkipAndroidNdk` / `--skip-android-ndk`.
+
 ```powershell
-cd rust/doubleslash-android && cargo test        # 23, host - no device needed
-cd android && ./gradlew testDebugUnitTest     # 13, JVM
+cd rust/doubleslash-android && cargo test        # host - no device needed
+cd android && ./gradlew testDebugUnitTest     # JVM
 ```
 
 Both run on any machine: the Rust tests cover the pure halves of the JNI layer

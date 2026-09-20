@@ -362,12 +362,13 @@ There are separate Cargo workspaces for the outer crates, client, Android bridge
 ```sh
 cargo test --manifest-path rust/Cargo.toml --workspace
 cargo test --manifest-path rust/doubleslash-client/Cargo.toml --no-default-features
+cargo test --manifest-path rust/doubleslash-android/Cargo.toml
 cargo test --manifest-path rust/doubleslash-supernode-manager/Cargo.toml --workspace
 ```
 
-Use `cargo test … -- --list` for current test inventories. Android validation commands are in its [guide](docs/ANDROID.md). Automated tests do not replace two-client and physical-device media checks.
+Use `cargo test … -- --list` for current test inventories. [scripts/ci_local.ps1](scripts/ci_local.ps1) and [scripts/ci_local.sh](scripts/ci_local.sh) run host checks for all four workspaces, plus Gradle unit tests and an NDK clippy when those tools are installed. Device/APK steps remain in the [Android guide](docs/ANDROID.md). Automated tests do not replace two-client and physical-device media checks.
 
-Run `cargo fmt --all -- --check` and targeted `cargo clippy … -- -D warnings` in affected workspaces. [scripts/ci_local.ps1](scripts/ci_local.ps1) and [scripts/ci_local.sh](scripts/ci_local.sh) provide broader checks. [Coverage scripts](scripts/coverage.ps1) produce LLVM line/region reports; the shell counterpart is [coverage.sh](scripts/coverage.sh).
+Run `cargo fmt --all -- --check` and targeted `cargo clippy … -- -D warnings` in affected workspaces. [Coverage scripts](scripts/coverage.ps1) produce LLVM line/region reports; the shell counterpart is [coverage.sh](scripts/coverage.sh).
 
 ## Code Signing Policy
 

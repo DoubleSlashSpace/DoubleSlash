@@ -14,6 +14,9 @@
 //! signature on both sides of the boundary.
 
 mod backup;
+// Host-lib builds do not feed CameraX; packing stays compiled for `cargo test`
+// and for the Android JNI entry that submits frames.
+#[cfg(any(target_os = "android", test))]
 mod camera;
 mod command;
 mod event;
