@@ -771,7 +771,8 @@ ApplicationWindow {
     // Remote peer for an active direct P2P voice call.
     property string activeCallPeerId: ""
 
-    // Settings section index (0=Audio … 7=Diagnostics). Drives SettingsPage.currentTab.
+    // Settings section index (0=Audio … 9=About), in the order SettingsSidebar
+    // lists them. Drives SettingsPage.currentTab; the names are on SettingsPage.
     property int settingsTab: 0
 
     // ── Video expand / popout state ──────────────────────────────────────────

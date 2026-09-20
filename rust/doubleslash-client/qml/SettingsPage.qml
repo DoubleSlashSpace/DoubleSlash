@@ -37,6 +37,7 @@ Item {
     readonly property int tabSecurity: 6
     readonly property int tabPrivacy: 7
     readonly property int tabDiagnostics: 8
+    readonly property int tabAbout: 9
 
     readonly property var avatarGridSizes: [8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]
     readonly property var avatarDualHueModes: ["topbot", "checker", "quad"]
@@ -173,7 +174,7 @@ Item {
 
     StackLayout {
         anchors.fill: parent
-        currentIndex: Math.max(0, Math.min(root.currentTab, root.tabDiagnostics))
+        currentIndex: Math.max(0, Math.min(root.currentTab, root.tabAbout))
 
         ScrollView {
             contentWidth: availableWidth
@@ -2506,6 +2507,20 @@ Item {
                         sourceComponent: galleryComponent
                     }
                 }
+            }
+        }
+
+        ScrollView {
+            contentWidth: availableWidth
+            clip: true
+
+            ColumnLayout {
+                width: Math.max(0, root.width - Theme.spacingXl * 2)
+                x: Theme.spacingXl
+                y: Theme.spacingLg
+                spacing: Theme.spacingLg
+
+                SettingsSectionHeader { title: "About" }
 
                 SettingsCard {
                     title: "About"
@@ -2566,7 +2581,9 @@ Item {
                         color: Theme.muted
                         font.pixelSize: Theme.fontSizeCaption
                         text: "Full licence texts, source locations and replacement instructions "
-                            + "for every bundled component are included with this installation."
+                            + "for every bundled component are included with this installation, "
+                            + "including the third-party credits for the Chromium snapshot inside "
+                            + "Qt WebEngine."
                     }
 
                     RowLayout {

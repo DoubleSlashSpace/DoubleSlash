@@ -22,6 +22,7 @@
         <file alias="icons/gear.svg">qml/icons/gear.svg</file>
         <file alias="icons/lightning.svg">qml/icons/lightning.svg</file>
         <file alias="icons/logs.svg">qml/icons/logs.svg</file>
+        <file alias="icons/info.svg">qml/icons/info.svg</file>
         <file alias="icons/wm-minimize.svg">qml/icons/wm-minimize.svg</file>
         <file alias="icons/wm-maximize.svg">qml/icons/wm-maximize.svg</file>
         <file alias="icons/wm-restore.svg">qml/icons/wm-restore.svg</file>
