@@ -63,16 +63,20 @@ Full Chromium third-party credits
 chromium-122-LICENSE.txt is Chromium's own top-level BSD-3-Clause licence. The
 credits set for the components bundled inside the Chromium snapshot - the list
 a Chrome build exposes at chrome://credits - ships beside it as
-chromium-122-third-party-credits.txt.
+chromium-third-party-credits.txt.
 
-That file was generated from the qtwebengine-chromium tree Qt 6.8.3 pins,
-revision 55749ed0af5869215b88007df0cba430746583ae, read from
-qtwebengine v6.8.3's src/3rdparty submodule. It carries 237 components with
+That file is generated at package time by
+scripts/licenses/chromium_credits.py rather than kept in the repository: it
+is about 23,000 lines of licence text, and it is regenerated whenever the
+bundled Qt version changes. For Qt 6.8.3 it comes from the
+qtwebengine-chromium tree that qtwebengine v6.8.3's src/3rdparty submodule
+pins, revision 55749ed0af5869215b88007df0cba430746583ae. It carries 237
+components with
 their full licence texts, names the 12 directories that are Chromium's own
 code under the licence above, and lists 55 further components whose licence
 file is absent from Qt's snapshot because Qt strips those subtrees - code that
 is therefore not compiled into Qt WebEngine at all. Components marked
 "Shipped: no" upstream are excluded, as Chromium's own generator excludes them.
 
-Regenerate it whenever the bundled Qt version changes: the component set and
-the Chromium revision both move with it.
+The Windows build regenerates it when the Qt version changes and reuses the
+cached file otherwise, so a release archive cannot ship without it.

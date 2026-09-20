@@ -15,12 +15,14 @@ in packaging/licenses/<target>/client/.
 
 Usage:
     python scripts/licenses/chromium_credits.py --qt-tag v6.8.3 \
-        --output packaging/licenses/x86_64-pc-windows-msvc/client/chromium-122-third-party-credits.txt
+        --output packaging/licenses/x86_64-pc-windows-msvc/client/chromium-third-party-credits.txt
 
-Re-run it whenever the bundled Qt version changes: both the component set and
-the Chromium revision move with it.
+The output is ~23,000 lines of licence text, so it is generated rather than
+kept in the repository. build_win64.ps1 runs this before it generates the
+package notices, and caches the result, regenerating only when the bundled Qt
+version changes: both the component set and the Chromium revision move with it.
 """
-import argparse, hashlib, io, json, os, posixpath, re, subprocess, sys, tempfile, urllib.request
+import argparse, hashlib, io, json, os, posixpath, re, shutil, subprocess, sys, tempfile, urllib.request
 
 CHROMIUM_REPO = "https://github.com/qt/qtwebengine-chromium.git"
 KEYS = ("name", "short name", "url", "version", "revision", "license",
@@ -208,6 +210,12 @@ def main():
     ap.add_argument("--work", help="reuse this clone directory instead of a temporary one")
     args = ap.parse_args()
 
+    # Windows consoles default to a legacy codepage, and a path this cannot
+    # encode would otherwise kill the build on a progress message.
+    for stream in (sys.stdout, sys.stderr):
+        try: stream.reconfigure(encoding="utf-8", errors="replace")
+        except AttributeError: pass
+
     revision = args.revision or pinned_revision(args.qt_tag)
     print(f"qtwebengine {args.qt_tag} pins chromium {revision}")
 
@@ -240,7 +248,7 @@ def main():
     print(f"  part 1 {n1} with text, part 2 {n2} chromium-owned, part 3 {n3} absent")
     print(f"  {blocks} distinct licence texts")
     if not keep:
-        print(f"  (clone left at {work}; delete when done)")
+        shutil.rmtree(work, ignore_errors=True)
 
 
 if __name__ == "__main__":

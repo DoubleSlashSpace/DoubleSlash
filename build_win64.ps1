@@ -333,6 +333,37 @@ Copy-Item $CLIENT_EXE    $BUNDLE_EXE
 Copy-Item $INSTALLER_EXE $BUNDLE_INSTALLER
 Write-Host "    Copied binaries"
 
+# ── Chromium third-party credits ─────────────────────────────────────────────
+# Qt compiles Chromium into Qt WebEngine Core but does not ship its credits
+# resource, so the notices for the components inside that snapshot have to be
+# generated from the qtwebengine-chromium revision this Qt pins. That is about
+# 23,000 lines of licence text, so it is generated into packaging/licenses/
+# rather than committed, and cached: only a Qt version change re-fetches it.
+# This has to run before the notices below, which copy the supplement in.
+if ($_features -like "*webengine*") {
+    $_qtVersion   = (& (Join-Path $QT_ROOT "bin\qmake6.exe") -query QT_VERSION | Out-String).Trim()
+    $_creditsFile = Join-Path $ROOT "packaging\licenses\x86_64-pc-windows-msvc\client\chromium-third-party-credits.txt"
+    $_cached = (Test-Path -LiteralPath $_creditsFile) -and
+        (Select-String -LiteralPath $_creditsFile -SimpleMatch "qtwebengine v$_qtVersion," -Quiet)
+    if ($_cached) {
+        Write-Host "    Chromium credits cached for Qt $_qtVersion"
+    } else {
+        Write-Host "    Generating Chromium third-party credits for Qt $_qtVersion (fetches ~20 MB)..."
+        & python (Join-Path $ROOT "scripts\licenses\chromium_credits.py") `
+            --qt-tag "v$_qtVersion" --output $_creditsFile
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error @"
+Chromium credits generation failed.
+
+Qt WebEngine bundles Chromium, so the package owes its third-party notices and
+cannot be shipped without them. This step needs Python and network access to
+github.com. Build with DOUBLESLASH_NO_WEBENGINE=1 to drop Qt WebEngine instead.
+See docs/LICENSING.md.
+"@
+        }
+    }
+}
+
 $licenseArgs = @(
     (Join-Path $ROOT "scripts\generate_licenses.mjs"),
     "--product", "client", "--target", "x86_64-pc-windows-msvc",
