@@ -335,7 +335,10 @@ rooms.
 
 * **Core** — `ollama_module.rs` (`x.ollama.v1`).
 * **Desktop** — `askOllama`, `cancelOllama`, `fetchOllamaModels`, with base URL,
-  model, system prompt and auto-respond toggles in settings.
+  model, system prompt and auto-respond toggles in settings. The model picker
+  lists installed models with size, context, capabilities (tools / vision /
+  thinking), and a chat vs vision grouping; GPU vs CPU-split is shown when
+  Ollama currently has the model loaded.
 * **Android** — **nothing**.
 
 ### 17. Avatars and handles
