@@ -50,6 +50,7 @@ Rectangle {
                 ListElement { label: "Security"; icon: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg" }
                 ListElement { label: "Privacy"; icon: "qrc:/qt/qml/DoubleSlash/Client/icons/key.svg" }
                 ListElement { label: "Diagnostics"; icon: "qrc:/qt/qml/DoubleSlash/Client/icons/logs.svg" }
+                ListElement { label: "About"; icon: "qrc:/qt/qml/DoubleSlash/Client/icons/info.svg" }
             }
 
             delegate: Item {

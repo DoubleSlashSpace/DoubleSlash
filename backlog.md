@@ -12,7 +12,6 @@ a home here.
 
 | Public claim | Phase |
 |---|---|
-| Dependency license / distribution blockers | 0 |
 | Linux/macOS camera hardware validation | 1 |
 | Two-client / room media acceptance | 1 |
 | Incoming video (and shared-audio playout) on Android | 2 |
@@ -20,77 +19,6 @@ a home here.
 | Screen and shared-audio capture outside Windows | 3 |
 | WASM plugin sandbox | 7 |
 | Space Layer 2 cryptography | 7 |
-
----
-
-<a id="dependency-license-release-acceptance"></a>
-
-## Phase 0 — Release licensing
-
-On 2026-09-19 the review apparatus was removed: the build-input hashes, the
-Android runtime inventory, `review.json` and the gate that refused to package
-without one. None of it was a licence obligation, and it cost more than it
-caught. What remains is notices - generated from the resolved graph, copied
-from `packaging/licenses/<target>/<product>/`, and checked after packaging to
-confirm they actually shipped. Nothing fails closed any more. Details:
-[licensing guide](docs/LICENSING.md#remaining-release-approval-findings).
-
-Implemented and locally checked on 2026-09-16 (not acceptance):
-
-- Explained all 98 matched Qt SBOM checksum differences by reconstructing
-  pre-Authenticode PE images; retained evidence in
-  [the evidence directory](packaging/licenses/evidence/windows-qt-6.8.3/README.md).
-- Added final-archive notice validation: an archive that lost a notice between
-  staging and packaging fails. The packaged working-tree source snapshot was
-  dropped on 2026-09-19 - nothing in any product's graph obliges source
-  delivery, and it was 48 MB of a 140 MB APK.
-- Fixed launcher self-copy and supernode-manager extraction/upload to retain
-  notices. Fixed SignPath's artifact ID input and restore the standalone notice
-  from the unsigned artifact before signed publication.
-- Added the Android offline notice reader under Settings > Legal. Device
-  acceptance remains open.
-- Windows supernode release ZIP notices/source/inventory passed the archive
-  validator. That does not accept the other distribution targets.
-
-### Still blocking
-
-1. **Runtime notices.** Desktop Settings > About has no license, About Qt, or
-   Chromium credits UI. Archive `licenses/` files are not a prominent in-app
-   notice. Qt LGPL requires the license text plus a prominent notice that an
-   LGPL library is used. Android's Legal reader exists but has not been accepted
-   on a device.
-2. **Chromium and corresponding source.** The Qt WebEngine 6.8.3 SBOM lists
-   wrapper DLLs only; it does not list Chromium, V8, Skia, Blink, FFmpeg, or
-   `QtWebEngineProcess.exe`. Matching `Qt6WebEngineCore.dll` by reconstructed
-   pre-signing checksum is not Chromium notice or source evidence. LGPL
-   replacement/relinking instructions are unrecorded.
-3. **Checksum and provenance.** All 98 Qt SBOM matches are reconstructed
-   pre-signing PE hashes, not raw shipped-file checksums. Twelve files including
-   QtWebEngineProcess and FFmpeg remain unmatched. 93 SBOM packages remain
-   `NOASSERTION`. The collector inventories DLL/EXE only, so embedded components
-   are outside that provenance.
-4. **Supplement coverage.** The Windows supplement covers Qt, Chromium/WebEngine,
-   FFmpeg, Mesa and the MSVC redistributables. Still unchecked: Android
-   JVM/Oboe/NDK, fonts, game/portal dependencies, and Opus model data. Nothing
-   enforces this - adding a bundled component without adding its notice is now
-   a silent omission. The owner confirmed original project artwork; remaining
-   review is dependency-supplied assets, not that artwork.
-5. **Final artifacts.** Build and inspect Windows archives, macOS
-   applications/DMGs, Linux AppImages, supernode archives, and Android APKs/AABs.
-   Staging-directory checks alone are not acceptance.
-6. **Publication paths.** Verify stable, nightly, signed, and unsigned paths
-   retain the standalone-installer companion notice, including SignPath. Exercise
-   installer-update and supernode deployment on actual installations.
-7. **Android device acceptance** of the Legal reader, including supplement
-   notices and external source links.
-8. **GitHub enforcement.** Run the license and release workflows in GitHub
-   Actions, including scheduled advisory/ban/source checks. Configure branch
-   protection to require `License checks required`. Workflow wiring alone does
-   not enforce merges. No authenticated GitHub credential was available when
-   this was recorded; the license workflow was not yet published.
-9. **Ownership.** Someone has to re-check source and replacement arrangements
-   when Qt, Gradle/NDK, assets, model data, or packaging change. No tool will
-   raise it.
 
 ---
 

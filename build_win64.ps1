@@ -517,6 +517,13 @@ Release archives must be non-solid (-ms=off) so the installer's embedded sevenz-
 "@
 }
 Write-Host "`n==> Creating 7z archive with 7-Zip (non-solid, installer-compatible)..."
+# `7z a` adds to an archive that already exists: same-path files are replaced,
+# but anything the bundle no longer contains is kept. Without this delete a
+# release archive accumulates every file any previous build ever put in it - a
+# dropped DLL, a renamed executable, a notice set that was deliberately
+# removed - and `verify_artifact.mjs` cannot catch it, because it proves that
+# the promised notices are present, never that nothing else is.
+Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
 & $sevenZip.Source a -t7z -mx=9 -ms=off $archivePath "$BUNDLE\*" | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Error "7z failed to create archive" }
 & node (Join-Path $ROOT 'scripts/licenses/verify_artifact.mjs') $archivePath client installer

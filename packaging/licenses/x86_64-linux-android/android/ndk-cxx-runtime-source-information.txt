@@ -1,0 +1,67 @@
+Android NDK C++ runtime — source and license information
+========================================================
+
+What is shipped
+---------------
+The DoubleSlash APK contains one native library, libdoubleslash.so. The LLVM
+C++ runtime is linked into it statically:
+
+  libc++_static.a    the C++ standard library
+  libc++abi.a        the C++ ABI support library (typeinfo, the
+                     std::runtime_error family, unwinding glue)
+
+Both come from the Android NDK's prebuilt LLVM toolchain. No separate
+libc++_shared.so is packaged: exactly one library in this APK uses the C++
+runtime, so linking it statically is smaller than shipping a second .so.
+See rust/doubleslash-android/build.rs.
+
+The Android platform libraries the APK links against (libc, libm, libdl,
+liblog, libandroid, libaaudio) are part of the device's operating system.
+They are not bundled here and carry no notice obligation from this package.
+
+NDK version
+-----------
+  Android NDK r28.2.13676358
+
+The exact revision a build used is recorded by the Gradle configuration
+(doubleslash.ndkApi / the resolved NDK path), not by this file.
+
+License
+-------
+libc++ and libc++abi are part of the LLVM Project, licensed under the
+Apache License 2.0 with LLVM Exceptions, and additionally available under
+the legacy University of Illinois/NCSA and MIT terms. The full text ships
+beside this file as llvm-libcxx-NOTICE.txt, copied unmodified from the NDK's
+own toolchain notice.
+
+That notice is the LLVM-only one from
+toolchains/llvm/prebuilt/<host>/NOTICE. The NDK's top-level NOTICE.toolchain
+is deliberately NOT used: it covers the whole toolchain including GNU tools
+and opens with the GPL, none of which is linked into or distributed with this
+APK.
+
+The LLVM Exception is what makes static linking straightforward here: it
+waives Apache-2.0 sections 4(a), 4(b) and 4(d) for portions embedded into an
+object form as a result of compilation. The notice is shipped regardless.
+
+Corresponding source
+--------------------
+  LLVM / libc++    https://github.com/llvm/llvm-project
+                   (libcxx/ and libcxxabi/)
+  Android NDK      https://github.com/android/ndk
+  Prebuilt NDK     https://developer.android.com/ndk/downloads
+
+Neither licence obliges source delivery with a binary distribution; the
+upstream locations above are published for reference.
+
+Other Android components
+------------------------
+Oboe, the NDK crates, cpal and jni are Rust dependencies and already appear in
+the generated Rust notices with their own licence texts. They do not need an
+entry here.
+
+JVM dependencies (AndroidX, Kotlin, Compose and the rest of the runtime
+classpath) are Apache-2.0. Their upstream NOTICE and LICENSE files are merged
+into the APK at META-INF by the Gradle packaging rule in
+android/app/build.gradle.kts, which is where Apache-2.0 section 4(d) asks for
+them.
