@@ -1998,6 +1998,14 @@ Item {
                             ComboBox {
                                 id: ollamaModelCombo
                                 Layout.fillWidth: true
+                                Layout.preferredHeight: 72
+                                Layout.minimumHeight: 72
+                                implicitHeight: 72
+                                padding: 0
+                                topPadding: 0
+                                bottomPadding: 0
+                                leftPadding: 0
+                                rightPadding: 28
                                 editable: true
                                 model: ollamaModelList
                                 textRole: "name"
@@ -2028,6 +2036,50 @@ Item {
                                     border.width: 1
                                 }
 
+                                contentItem: Item {
+                                    implicitHeight: 72
+                                    TextField {
+                                        id: modelNameField
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        height: selectedDetailLabel.visible ? 38 : 72
+                                        text: ollamaModelCombo.editText
+                                        color: Theme.text
+                                        font.pixelSize: Theme.fontSizeBody
+                                        leftPadding: 12
+                                        rightPadding: 8
+                                        topPadding: selectedDetailLabel.visible ? 12 : 0
+                                        bottomPadding: 0
+                                        verticalAlignment: Text.AlignVCenter
+                                        selectByMouse: true
+                                        background: Item {}
+                                        onTextChanged: {
+                                            if (ollamaModelCombo.editText !== text)
+                                                ollamaModelCombo.editText = text
+                                        }
+                                    }
+                                    Label {
+                                        id: selectedDetailLabel
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: modelNameField.bottom
+                                        anchors.bottom: parent.bottom
+                                        text: {
+                                            var row = ollamaCard.modelRowByName(ollamaModelCombo.editText)
+                                            return row && row.detail ? row.detail : ""
+                                        }
+                                        visible: text.length > 0
+                                        color: Theme.muted
+                                        font.pixelSize: Theme.fontSizeCaption
+                                        leftPadding: 12
+                                        rightPadding: 8
+                                        bottomPadding: 10
+                                        elide: Text.ElideRight
+                                        verticalAlignment: Text.AlignTop
+                                    }
+                                }
+
                                 delegate: ItemDelegate {
                                     id: modelDelegate
                                     required property int index
@@ -2037,10 +2089,10 @@ Item {
                                     width: ollamaModelCombo.width
                                     padding: 0
                                     highlighted: ollamaModelCombo.highlightedIndex === index
-                                    implicitHeight: groupHeader.visible ? 68 : 48
+                                    implicitHeight: groupHeader.visible ? 96 : 72
 
                                     contentItem: ColumnLayout {
-                                        spacing: 0
+                                        spacing: 3
                                         Label {
                                             id: groupHeader
                                             visible: {
@@ -2050,18 +2102,19 @@ Item {
                                             }
                                             text: group
                                             color: Theme.muted
-                                            font.pixelSize: Theme.fontSizeMicro
+                                            font.pixelSize: Theme.fontSizeCaption
                                             font.bold: true
-                                            leftPadding: 8
-                                            topPadding: 6
-                                            bottomPadding: 2
+                                            leftPadding: 12
+                                            topPadding: 10
+                                            bottomPadding: 4
                                         }
                                         Label {
                                             text: name
                                             color: modelDelegate.highlighted ? Theme.textInv : Theme.text
                                             font.pixelSize: Theme.fontSizeBody
-                                            leftPadding: 8
-                                            rightPadding: 8
+                                            leftPadding: 12
+                                            rightPadding: 12
+                                            topPadding: groupHeader.visible ? 2 : 10
                                             elide: Text.ElideRight
                                             Layout.fillWidth: true
                                         }
@@ -2070,9 +2123,9 @@ Item {
                                             text: detail
                                             color: modelDelegate.highlighted ? Theme.textInv : Theme.muted
                                             font.pixelSize: Theme.fontSizeCaption
-                                            leftPadding: 8
-                                            rightPadding: 8
-                                            bottomPadding: 6
+                                            leftPadding: 12
+                                            rightPadding: 12
+                                            bottomPadding: 10
                                             elide: Text.ElideRight
                                             Layout.fillWidth: true
                                         }
@@ -2086,11 +2139,12 @@ Item {
                                     y: ollamaModelCombo.height + 2
                                     width: ollamaModelCombo.width
                                     padding: 0
-                                    implicitHeight: Math.min(contentItem.implicitHeight, 320)
+                                    implicitHeight: Math.min(contentItem.implicitHeight, 560)
 
                                     contentItem: ListView {
                                         clip: true
                                         implicitHeight: contentHeight
+                                        spacing: 2
                                         model: ollamaModelCombo.delegateModel
                                         boundsBehavior: Flickable.StopAtBounds
                                         ScrollBar.vertical: ScrollBar {}
@@ -2105,6 +2159,7 @@ Item {
                                 }
                             }
                             ToolButton {
+                                Layout.alignment: Qt.AlignVCenter
                                 implicitWidth: Theme.controlHeight
                                 implicitHeight: Theme.controlHeight
                                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
