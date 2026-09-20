@@ -124,3 +124,7 @@ rust/sz2.html
 *.jks
 *.keystore
 *.hprof
+
+# Generated at package time by scripts/licenses/chromium_credits.py: ~23k lines
+# of Chromium licence text that ships in the archive but need not live here.
+packaging/licenses/*/client/chromium-third-party-credits.txt
