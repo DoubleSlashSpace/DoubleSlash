@@ -77,7 +77,7 @@ doubleslash-vpx = { path = "../doubleslash-vpx" }
 rodio = { version = "0.19", default-features = false, features = ["vorbis"] }
 
 # HTTP client (GitHub updater, ollama)
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 
 # UPnP port mapping (optional — graceful fallback when no gateway)
 rupnp = { version = "1", default-features = false }
@@ -148,6 +148,10 @@ windows = { version = "0.58", features = [
     "Win32_System_WinRT_Graphics_Capture",
     "Win32_System_WinRT_Direct3D11",
     "Win32_UI_HiDpi",
+    # Local TTS for the Ollama assistant (SpeechSynthesizer → 48 kHz PCM).
+    "Media_SpeechSynthesis",
+    "Foundation",
+    "Storage_Streams",
     # DwmGetWindowAttribute, to skip "cloaked" windows — suspended UWP apps sit
     # in the window list but capture as solid black.
     "Win32_Graphics_Dwm",

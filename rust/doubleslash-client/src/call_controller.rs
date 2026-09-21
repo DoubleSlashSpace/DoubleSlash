@@ -160,6 +160,13 @@ struct AudioPipeline {
     opened_defaults: crate::audio_devices::DefaultEndpointIds,
 }
 
+/// TTS inject ring, owned by the capture callback.
+struct SpeakCapture {
+    cons: ringbuf::HeapCons<i16>,
+    agent_voice: Arc<AtomicBool>,
+    agent_speaking: Arc<AtomicBool>,
+}
+
 /// Capture-side echo-cancellation state, owned by the capture callback closure.
 /// Present only when the `aec` feature is active.
 struct AecState {
@@ -264,7 +271,7 @@ impl AudioPipeline {
     /// Returns `(pipeline, encoded_rx, speaking_rx)` where `encoded_rx` yields
     /// outbound Opus frames and `speaking_rx` yields speaking-state booleans
     /// derived from an inline RMS energy VAD on each 20 ms capture frame.
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     fn start(
         start_muted: bool,
         input_device_name: Option<&str>,
@@ -273,11 +280,14 @@ impl AudioPipeline {
         initial_output_vol: u32,
         initial_noise_idx: u32,
         outgoing_bitrate_bps: u32,
+        agent_voice: Arc<AtomicBool>,
+        agent_speaking: Arc<AtomicBool>,
     ) -> anyhow::Result<(
         Self,
         mpsc::Receiver<Vec<u8>>,
         tokio::sync::mpsc::UnboundedReceiver<bool>,
         tokio::sync::mpsc::UnboundedReceiver<f32>,
+        ringbuf::HeapProd<i16>,
     )> {
         let host = cpal::default_host();
 
@@ -366,6 +376,13 @@ impl AudioPipeline {
         let (speaking_tx, speaking_rx) = tokio::sync::mpsc::unbounded_channel::<bool>();
         let (level_tx, level_rx) = tokio::sync::mpsc::unbounded_channel::<f32>();
         let mut capture_accum: Vec<i16> = Vec::with_capacity(SAMPLES_PER_FRAME * 2);
+        let speak_rb = HeapRb::<i16>::new(SAMPLE_RATE as usize * 12);
+        let (speak_prod, speak_cons) = speak_rb.split();
+        let mut speak = SpeakCapture {
+            cons: speak_cons,
+            agent_voice,
+            agent_speaking,
+        };
 
         // Inline VAD parameters (RMS on i16 PCM)
         const VAD_THRESHOLD: f32 = 500.0; // ~-36 dBFS relative to 32767
@@ -448,6 +465,7 @@ impl AudioPipeline {
                                 ns,
                                 ig,
                                 aec_state.as_mut(),
+                                &mut speak,
                             );
                         },
                         |err| warn!("Capture stream error: {err}"),
@@ -498,6 +516,7 @@ impl AudioPipeline {
                                 ns,
                                 ig,
                                 aec_state.as_mut(),
+                                &mut speak,
                             );
                         },
                         |err| warn!("Capture stream error: {err}"),
@@ -548,6 +567,7 @@ impl AudioPipeline {
                                 ns,
                                 ig,
                                 aec_state.as_mut(),
+                                &mut speak,
                             );
                         },
                         |err| warn!("Capture stream error: {err}"),
@@ -665,6 +685,7 @@ impl AudioPipeline {
             encoded_rx,
             speaking_rx,
             level_rx,
+            speak_prod,
         ))
     }
 
@@ -766,13 +787,26 @@ impl AudioPipeline {
     /// final clamp. (A soft limiter would be gentler than the hard clamp when
     /// many loud speakers overlap; clamp matches the prior single-source
     /// behaviour and is a safe first step.)
-    fn mix_and_play(&mut self, frames: &[(String, Option<Vec<u8>>)]) -> Vec<(String, f32)> {
+    #[allow(clippy::type_complexity)]
+    fn mix_and_play(
+        &mut self,
+        frames: &[(String, Option<Vec<u8>>)],
+        mut listen: Option<&mut crate::agent_voice::UtteranceCollector>,
+    ) -> (Vec<(String, f32)>, Vec<(String, Vec<i16>)>) {
         let mut decoded: Vec<(usize, [i16; SAMPLES_PER_FRAME])> = Vec::with_capacity(frames.len());
         let mut levels = Vec::with_capacity(frames.len());
+        let mut finished = Vec::new();
         for (peer_id, opus) in frames {
             let Some((pcm, n, level)) = self.decode_peer(peer_id, opus.as_deref()) else {
                 continue;
             };
+            if let Some(col) = listen.as_deref_mut() {
+                if opus.is_some() && !is_content_decoder_key(peer_id) {
+                    if let Some(utt) = col.push(peer_id, &pcm[..n]) {
+                        finished.push((peer_id.clone(), utt));
+                    }
+                }
+            }
             decoded.push((n, pcm));
             levels.push((peer_id.clone(), level));
         }
@@ -801,7 +835,7 @@ impl AudioPipeline {
                     "Playout drift: ring EMA {:.0}% full — skipping push",
                     self.ring_fill_ema * 100.0
                 );
-                return levels;
+                return (levels, finished);
             }
 
             // Tee the far-end (what's about to play) into the echo canceller's
@@ -825,7 +859,7 @@ impl AudioPipeline {
                 );
             }
         }
-        levels
+        (levels, finished)
     }
 
     /// Free a peer's Opus decoder when they leave the call/room. Without this
@@ -1116,6 +1150,13 @@ pub enum CallCommand {
         input: Option<String>,
         output: Option<String>,
     },
+    /// Prefer injected TTS over the microphone (agent / test-bot voice).
+    SetAgentVoice(bool),
+    /// 48 kHz mono PCM to play through the live capture encoder (TTS).
+    EnqueueSpeakPcm { pcm: Vec<i16> },
+    /// When true, emit [`CallEvent::RemoteUtterance`] after a remote speaker
+    /// finishes a turn (for Ollama STT).
+    SetListenUtterances(bool),
     /// The OS console default input and/or output device changed. Reopens a
     /// live pipeline only for the sides that are following the default.
     OsDefaultDeviceChanged { input: bool, output: bool },
@@ -1156,6 +1197,11 @@ pub enum CallEvent {
     OsDefaultDeviceChanged {
         input: bool,
         output: bool,
+    },
+    /// A remote speaker finished a voiced turn (decoded 48 kHz mono).
+    RemoteUtterance {
+        peer_id: String,
+        pcm_48k: Vec<i16>,
     },
 }
 
@@ -1300,6 +1346,15 @@ pub struct CallController {
     /// genuine congestion signals; suppressing ABR for the first few ticks
     /// prevents the bitrate from spiraling down during call setup.
     abr_warmup_ticks: u8,
+    /// Producer half of the TTS inject ring (consumer lives in capture).
+    speak_prod: Option<ringbuf::HeapProd<i16>>,
+    /// Capture prefers the TTS ring over the microphone when true.
+    agent_voice: Arc<AtomicBool>,
+    /// True while the capture callback is currently reading TTS samples.
+    agent_speaking: Arc<AtomicBool>,
+    /// Collect remote turns for Ollama STT.
+    listen_utterances: bool,
+    utterances: crate::agent_voice::UtteranceCollector,
 }
 
 impl CallController {
@@ -1365,6 +1420,11 @@ impl CallController {
             bitrate_ceiling_bps: DEFAULT_OUTGOING_BITRATE_BPS,
             net_loss_ema: 0.0,
             abr_warmup_ticks: 0,
+            speak_prod: None,
+            agent_voice: Arc::new(AtomicBool::new(false)),
+            agent_speaking: Arc::new(AtomicBool::new(false)),
+            listen_utterances: false,
+            utterances: crate::agent_voice::UtteranceCollector::new(),
         };
         (ctrl, cmd_tx, event_rx)
     }
@@ -1417,8 +1477,10 @@ impl CallController {
             self.output_vol,
             self.noise_strength_idx,
             self.outgoing_bitrate_bps,
+            Arc::clone(&self.agent_voice),
+            Arc::clone(&self.agent_speaking),
         ) {
-            Ok((mut pipeline, encoded_rx, speaking_rx, level_rx)) => {
+            Ok((mut pipeline, encoded_rx, speaking_rx, level_rx, speak_prod)) => {
                 // Replay listener preferences into the fresh pipeline, or a
                 // peer muted before this call would come back audible.
                 for (peer_id, prefs) in &self.peer_prefs {
@@ -1440,6 +1502,7 @@ impl CallController {
                 self.encoded_rx = Some(encoded_rx);
                 self.speaking_rx = Some(speaking_rx);
                 self.level_rx = Some(level_rx);
+                self.speak_prod = Some(speak_prod);
                 true
             }
             Err(e) => {
@@ -1448,6 +1511,7 @@ impl CallController {
                 self.encoded_rx = None;
                 self.speaking_rx = None;
                 self.level_rx = None;
+                self.speak_prod = None;
                 // Emit error advisory; call continues (relay-only / remote playback).
                 let _ = self
                     .event_tx
@@ -1526,6 +1590,7 @@ impl CallController {
         self.encoded_rx = None;
         self.speaking_rx = None;
         self.level_rx = None;
+        self.speak_prod = None;
         if self.local_speaking {
             self.local_speaking = false;
             let _ = self
@@ -1806,11 +1871,21 @@ impl CallController {
         // Decode + mix every active peer's frame into a single playback frame.
         // Summing (not concatenating) is what lets simultaneous speakers be
         // heard overlaid without overrunning the ring.
-        let levels = if let Some(ref mut pipeline) = self.audio {
-            pipeline.mix_and_play(&to_decode)
+        let listen = if self.listen_utterances && !self.agent_speaking.load(Ordering::Relaxed) {
+            Some(&mut self.utterances)
+        } else {
+            None
+        };
+        let (levels, finished) = if let Some(ref mut pipeline) = self.audio {
+            pipeline.mix_and_play(&to_decode, listen)
         } else {
             return;
         };
+        for (peer_id, pcm_48k) in finished {
+            let _ = self
+                .event_tx
+                .try_send(CallEvent::RemoteUtterance { peer_id, pcm_48k });
+        }
 
         // Content entries are an internal mixing detail; surfacing them would
         // put a phantom participant in the UI's level display.
@@ -2284,6 +2359,30 @@ impl CallController {
                                 self.restart_live_pipeline();
                             }
                         }
+                        CallCommand::SetAgentVoice(on) => {
+                            self.agent_voice.store(on, Ordering::Relaxed);
+                            info!("Agent voice inject {}", if on { "on" } else { "off" });
+                        }
+                        CallCommand::EnqueueSpeakPcm { pcm } => {
+                            let Some(prod) = self.speak_prod.as_mut() else {
+                                warn!("EnqueueSpeakPcm: audio pipeline is not running");
+                                continue;
+                            };
+                            let mut n = 0usize;
+                            for s in pcm {
+                                if prod.try_push(s).is_err() {
+                                    break;
+                                }
+                                n += 1;
+                            }
+                            debug!("Queued {n} TTS samples for capture inject");
+                        }
+                        CallCommand::SetListenUtterances(on) => {
+                            self.listen_utterances = on;
+                            if !on {
+                                self.utterances = crate::agent_voice::UtteranceCollector::new();
+                            }
+                        }
                         CallCommand::OsDefaultDeviceChanged { input, output } => {
                             self.handle_os_default_change(input, output);
                         }
@@ -2540,6 +2639,7 @@ fn process_capture_mono_f32(
     noise_strength_idx: u32,
     input_gain: f32,
     mut aec: Option<&mut AecState>,
+    speak: &mut SpeakCapture,
 ) {
     // Linear-interpolation resampler: input rate → 48 kHz.
     for &src in mono_in {
@@ -2569,8 +2669,14 @@ fn process_capture_mono_f32(
             a.canceller.process_frame(&mut frame, &a.ref_buf);
         }
 
-        // Noise gate before VAD/encode so the gate doesn't trip on background noise.
-        apply_noise_gate(&mut frame, noise_floor, noise_strength_idx);
+        let agent = speak.agent_voice.load(Ordering::Relaxed);
+        if agent {
+            overlay_speak_frame(&mut frame, speak);
+        } else {
+            // Noise gate before VAD/encode so the gate doesn't trip on background noise.
+            apply_noise_gate(&mut frame, noise_floor, noise_strength_idx);
+            overlay_speak_frame(&mut frame, speak);
+        }
 
         // RMS energy → VAD + level meter.
         let rms_sq: f64 =
@@ -2632,8 +2738,10 @@ fn capture_callback_f32(
     noise_strength_idx: u32,
     input_gain: f32,
     aec: Option<&mut AecState>,
+    speak: &mut SpeakCapture,
 ) {
-    if muted.load(Ordering::Relaxed) {
+    let agent = speak.agent_voice.load(Ordering::Relaxed);
+    if muted.load(Ordering::Relaxed) && !agent {
         capture_accum.clear();
         *vad_above_count = 0;
         return;
@@ -2641,7 +2749,9 @@ fn capture_callback_f32(
     // Downmix to mono by averaging interleaved channels.
     let frames = data.len() / in_ch.max(1);
     let mut mono = Vec::with_capacity(frames);
-    if in_ch <= 1 {
+    if agent {
+        mono.resize(frames, 0.0);
+    } else if in_ch <= 1 {
         mono.extend_from_slice(data);
     } else {
         let inv = 1.0 / in_ch as f32;
@@ -2671,7 +2781,24 @@ fn capture_callback_f32(
         noise_strength_idx,
         input_gain,
         aec,
+        speak,
     );
+}
+
+fn overlay_speak_frame(frame: &mut [i16], speak: &mut SpeakCapture) {
+    let agent = speak.agent_voice.load(Ordering::Relaxed);
+    let mut any = false;
+    for s in frame.iter_mut() {
+        match speak.cons.try_pop() {
+            Some(v) => {
+                *s = v;
+                any = true;
+            }
+            None if agent => *s = 0,
+            None => break,
+        }
+    }
+    speak.agent_speaking.store(any, Ordering::Relaxed);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2697,6 +2824,7 @@ fn capture_callback_i16(
     noise_strength_idx: u32,
     input_gain: f32,
     aec: Option<&mut AecState>,
+    speak: &mut SpeakCapture,
 ) {
     let buf: Vec<f32> = data.iter().map(|&s| s as f32 / 32_768.0).collect();
     capture_callback_f32(
@@ -2721,6 +2849,7 @@ fn capture_callback_i16(
         noise_strength_idx,
         input_gain,
         aec,
+        speak,
     );
 }
 
@@ -2747,6 +2876,7 @@ fn capture_callback_u16(
     noise_strength_idx: u32,
     input_gain: f32,
     aec: Option<&mut AecState>,
+    speak: &mut SpeakCapture,
 ) {
     let buf: Vec<f32> = data
         .iter()
@@ -2774,6 +2904,7 @@ fn capture_callback_u16(
         noise_strength_idx,
         input_gain,
         aec,
+        speak,
     );
 }
 

@@ -28,12 +28,13 @@ use std::sync::Arc;
 
 #[cfg(not(feature = "qt-ui"))]
 use doubleslash_client::{
+    agent_voice,
     call_controller::{self, CallController},
     chat_store::{self, ChatStore},
     connection_manager::{ConnectionCommand, ConnectionEvent, ConnectionManager},
-    crypto, error, github_updater,
+    crypto, error, file_transfer, github_updater,
     identity::{self, Identity},
-    ollama_module,
+    ollama_module, ollama_tools,
     peer_store::PeerStore,
     protocol,
     room_store::RoomStore,
@@ -342,11 +343,12 @@ async fn headless_main() {
     // ------------------------------------------------------------------
     let ollama_settings = ollama_module::read_assistant_settings();
     info!(
-        "Ollama settings: enabled={} model={} auto_direct={} auto_room={}",
+        "Ollama settings: enabled={} model={} auto_direct={} auto_room={} tools={}",
         ollama_settings.enabled,
         ollama_settings.model,
         ollama_settings.auto_respond_direct,
-        ollama_settings.auto_respond_room
+        ollama_settings.auto_respond_room,
+        ollama_settings.tools_enabled
     );
     let (ollama_cmd_tx, ollama_event_rx, ollama_fut) =
         ollama_module::OllamaModule::split(ollama_settings.to_config());
@@ -360,7 +362,7 @@ async fn headless_main() {
     // ------------------------------------------------------------------
     // Call controller (audio + Opus pipeline)
     // ------------------------------------------------------------------
-    let (call_cmd_tx, _call_event_rx, call_fut) = CallController::split(Some(cmd_tx.clone()));
+    let (call_cmd_tx, call_event_rx, call_fut) = CallController::split(Some(cmd_tx.clone()));
     tokio::spawn(call_fut);
 
     // ------------------------------------------------------------------
@@ -383,6 +385,7 @@ async fn headless_main() {
         ollama_cmd_tx,
         ollama_event_rx,
         call_cmd_tx,
+        call_event_rx,
     )
     .await;
 }
@@ -589,6 +592,7 @@ async fn run_headless(
     ollama_cmd_tx: mpsc::Sender<ollama_module::OllamaCommand>,
     mut ollama_event_rx: mpsc::Receiver<ollama_module::OllamaEvent>,
     call_cmd_tx: mpsc::Sender<call_controller::CallCommand>,
+    mut call_event_rx: mpsc::Receiver<call_controller::CallEvent>,
 ) {
     use tokio::signal;
 
@@ -666,6 +670,40 @@ async fn run_headless(
     let sim_exit_on_done = std::env::var("DOUBLESLASH_SIMULATE_INBOUND_CHAT").is_ok()
         && std::env::var("DOUBLESLASH_SIMULATE_EXIT").unwrap_or_else(|_| "1".into()) == "1";
     let local_handle = read_local_handle_setting();
+    let ollama_tools = ollama_tools::OllamaToolHost::new(
+        Arc::clone(&identity),
+        Arc::clone(&peer_store),
+        Arc::clone(&room_store),
+        Arc::clone(&chat_store),
+        cmd_tx.clone(),
+        call_cmd_tx.clone(),
+        local_handle.clone(),
+    );
+    let _ = ollama_cmd_tx.try_send(ollama_module::OllamaCommand::SetToolHost(Some(Arc::clone(
+        &ollama_tools,
+    ))));
+    info!(
+        "[ollama] client-control tools installed (ollama_tools_enabled={})",
+        ollama_module::read_assistant_settings().tools_enabled
+    );
+    {
+        let s = ollama_module::read_assistant_settings();
+        if s.voice_enabled {
+            let _ = call_cmd_tx.try_send(call_controller::CallCommand::SetAgentVoice(true));
+            if !s.stt_model.trim().is_empty() {
+                let _ =
+                    call_cmd_tx.try_send(call_controller::CallCommand::SetListenUtterances(true));
+            }
+            info!(
+                "[voice] assistant voice on (stt_model={})",
+                if s.stt_model.is_empty() {
+                    "(none)"
+                } else {
+                    s.stt_model.as_str()
+                }
+            );
+        }
+    }
 
     loop {
         tokio::select! {
@@ -677,6 +715,7 @@ async fn run_headless(
                 break;
             }
             Some(ev) = event_rx.recv() => {
+                ollama_tools.observe(&ev);
                 handle_event(
                     ev,
                     &chat_store,
@@ -692,6 +731,19 @@ async fn run_headless(
                     &mut cluster_siblings,
                     &local_handle,
                 ).await;
+            }
+            Some(ev) = call_event_rx.recv() => {
+                if let call_controller::CallEvent::RemoteUtterance { peer_id, pcm_48k } = ev {
+                    headless_on_utterance(
+                        peer_id,
+                        pcm_48k,
+                        &peer_store,
+                        &ollama_tools,
+                        &ollama_cmd_tx,
+                        &mut auto_pending,
+                        &mut auto_buf,
+                    ).await;
+                }
             }
             Some(ev) = ollama_event_rx.recv() => {
                 let done = handle_ollama_event(
@@ -712,6 +764,23 @@ async fn run_headless(
             }
         }
     }
+}
+
+#[cfg(not(feature = "qt-ui"))]
+fn pub_id_eq_headless(peer_id: &str, identity: &Identity) -> bool {
+    peer_id == identity.public_id() || peer_id == identity.peer_id()
+}
+
+#[cfg(not(feature = "qt-ui"))]
+fn headless_save_file(rel_path: &str, data: &[u8]) -> Option<String> {
+    let downloads = file_transfer::download_dir();
+    if std::fs::create_dir_all(&downloads).is_err() {
+        return None;
+    }
+    let dest =
+        file_transfer::unique_dest_path(&downloads, &file_transfer::safe_file_name(rel_path));
+    std::fs::write(&dest, data).ok()?;
+    Some(dest.to_string_lossy().into_owned())
 }
 
 #[cfg(not(feature = "qt-ui"))]
@@ -1196,6 +1265,75 @@ async fn handle_event(
             });
             info!("[headless] re-subscribed room chat after materialize: {room_name} ({room_id})");
         }
+        ConnectionEvent::FileOffered {
+            transfer_id,
+            rel_path,
+            is_self,
+            supernode_id,
+            size,
+            ..
+        } => {
+            if !is_self
+                && ollama_module::is_vision_filename(&rel_path)
+                && ollama_module::read_assistant_settings().enabled
+                && (size as u64) <= ollama_module::MAX_VISION_BYTES
+            {
+                info!("[ollama] auto-accepting image offer {rel_path}");
+                if supernode_id.is_empty() {
+                    let _ = cmd_tx.try_send(ConnectionCommand::AcceptFile { transfer_id });
+                } else {
+                    let _ = cmd_tx.try_send(ConnectionCommand::AcceptRoomFile { transfer_id });
+                }
+            }
+        }
+        ConnectionEvent::FileComplete {
+            transfer_id,
+            peer_id,
+            room_id,
+            supernode_id,
+            payload,
+            rel_path,
+            ..
+        } => {
+            if pub_id_eq_headless(&peer_id, identity) {
+                return;
+            }
+            let saved = match payload {
+                file_transfer::TransferPayload::Bytes(bytes) => {
+                    headless_save_file(&rel_path, &bytes)
+                }
+                file_transfer::TransferPayload::SavedAt { path, .. } => Some(path),
+            };
+            let Some(path) = saved else {
+                return;
+            };
+            let images = ollama_module::encode_vision_attachment(&path, &rel_path);
+            if images.is_empty() {
+                return;
+            }
+            let body = format!(
+                "The user sent an image named {rel_path}. It is attached to this message — look at the image and describe what you see."
+            );
+            let mid = format!("xfer-{transfer_id}");
+            let target = if room_id.is_empty() {
+                HeadlessAutoTarget::Direct { peer_id }
+            } else {
+                HeadlessAutoTarget::Room {
+                    supernode_id,
+                    room_id,
+                }
+            };
+            headless_maybe_auto_reply_with_images(
+                ollama_cmd_tx,
+                auto_pending,
+                auto_buf,
+                target,
+                &mid,
+                &body,
+                images,
+            )
+            .await;
+        }
         ConnectionEvent::SignalingMessage(msg) => {
             info!("Unhandled signaling message: {:?}", msg.msg_type);
         }
@@ -1216,9 +1354,7 @@ async fn handle_event(
         | ConnectionEvent::PresenceUpdated { .. }
         | ConnectionEvent::InviteAccepted { .. }
         | ConnectionEvent::InviteFailed { .. }
-        | ConnectionEvent::FileOffered { .. }
         | ConnectionEvent::FileProgress { .. }
-        | ConnectionEvent::FileComplete { .. }
         | ConnectionEvent::FileFailed { .. }
         | ConnectionEvent::SupernodeInfoReceived { .. }
         | ConnectionEvent::RelayPaymentRequired { .. }
@@ -1238,6 +1374,42 @@ async fn handle_event(
     let _ = local_handle;
 }
 
+/// Transcribe a remote voice turn and, if it looks like speech, auto-reply.
+#[cfg(not(feature = "qt-ui"))]
+async fn headless_on_utterance(
+    peer_id: String,
+    pcm: Vec<i16>,
+    peer_store: &RwLock<PeerStore>,
+    tools: &std::sync::Arc<ollama_tools::OllamaToolHost>,
+    ollama_cmd_tx: &mpsc::Sender<ollama_module::OllamaCommand>,
+    auto_pending: &mut HashMap<String, HeadlessAutoTarget>,
+    auto_buf: &mut HashMap<String, String>,
+) {
+    let handle = peer_store
+        .read()
+        .get(&peer_id)
+        .map(|p| p.display_name())
+        .unwrap_or_else(|| peer_id.clone());
+    match agent_voice::transcribe_utterance(&pcm).await {
+        Ok(text) if agent_voice::should_auto_reply_transcript(&text) => {
+            info!("[voice] transcript from {handle}: {text}");
+            let body = format!("[voice from {handle}] {text}");
+            let target = match tools.current_voice_room() {
+                Some((supernode_id, room_id)) => HeadlessAutoTarget::Room {
+                    supernode_id,
+                    room_id,
+                },
+                None => HeadlessAutoTarget::Direct { peer_id },
+            };
+            let mid = format!("voice-{}", uuid::Uuid::new_v4());
+            headless_maybe_auto_reply(ollama_cmd_tx, auto_pending, auto_buf, target, &mid, &body)
+                .await;
+        }
+        Ok(text) => info!("[voice] ignored short transcript: {text}"),
+        Err(e) => warn!("[voice] STT failed: {e}"),
+    }
+}
+
 /// Start an auto-reply when settings allow it (direct or room).
 #[cfg(not(feature = "qt-ui"))]
 async fn headless_maybe_auto_reply(
@@ -1248,8 +1420,31 @@ async fn headless_maybe_auto_reply(
     message_id: &str,
     body: &str,
 ) {
+    headless_maybe_auto_reply_with_images(
+        ollama_cmd_tx,
+        auto_pending,
+        auto_buf,
+        target,
+        message_id,
+        body,
+        Vec::new(),
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(not(feature = "qt-ui"))]
+async fn headless_maybe_auto_reply_with_images(
+    ollama_cmd_tx: &mpsc::Sender<ollama_module::OllamaCommand>,
+    auto_pending: &mut HashMap<String, HeadlessAutoTarget>,
+    auto_buf: &mut HashMap<String, String>,
+    target: HeadlessAutoTarget,
+    message_id: &str,
+    body: &str,
+    images: Vec<String>,
+) {
     let body = body.trim();
-    if body.is_empty() {
+    if body.is_empty() && images.is_empty() {
         return;
     }
     let settings = ollama_module::read_assistant_settings();
@@ -1303,20 +1498,10 @@ async fn headless_maybe_auto_reply(
         HeadlessAutoTarget::Direct { peer_id } => ollama_module::conversation_id_direct(peer_id),
         HeadlessAutoTarget::Room { room_id, .. } => ollama_module::conversation_id_room(room_id),
     };
-    let sys = if settings.system_prompt.trim().is_empty() {
-        "You are a helpful assistant in a private peer-to-peer chat. \
-         Remember earlier turns in this conversation and reply with continuity. \
-         Keep replies concise."
-            .to_owned()
-    } else {
-        format!(
-            "{}\n\n(You are in a multi-turn chat; use prior messages in this conversation for context.)",
-            settings.system_prompt.trim()
-        )
-    };
+    let sys = ollama_module::auto_reply_system_prompt(&settings);
     info!(
-        "[ollama] auto-reply start rid={request_id} model={} conv={conversation_id} target={target:?}",
-        settings.model
+        "[ollama] auto-reply start rid={request_id} model={} conv={conversation_id} tools={} target={target:?}",
+        settings.model, settings.tools_enabled
     );
     let _ = ollama_cmd_tx
         .send(ollama_module::OllamaCommand::SetConfig(
@@ -1327,8 +1512,14 @@ async fn headless_maybe_auto_reply(
         .send(ollama_module::OllamaCommand::Chat {
             request_id: request_id.clone(),
             conversation_id,
-            user_message: body.to_owned(),
+            user_message: if body.is_empty() {
+                "sent an image".to_owned()
+            } else {
+                body.to_owned()
+            },
             system_prompt: sys,
+            use_tools: settings.tools_enabled,
+            images,
         })
         .await
         .is_err()
@@ -1342,6 +1533,7 @@ async fn headless_maybe_auto_reply(
 
 /// Handle Ollama stream events in headless mode.
 /// Returns `true` when a simulation auto-reply finishes (for exit hook).
+#[allow(clippy::too_many_arguments)]
 #[cfg(not(feature = "qt-ui"))]
 async fn handle_ollama_event(
     ev: ollama_module::OllamaEvent,

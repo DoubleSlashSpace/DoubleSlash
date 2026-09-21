@@ -83,10 +83,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "if (-not $j.PSObject.Properties['ollama_enabled'] -or -not $j.ollama_enabled) { $j.ollama_enabled = $true; $changed = $true };" ^
   "if (-not $j.PSObject.Properties['ollama_auto_respond_direct'] -or -not $j.ollama_auto_respond_direct) { $j.ollama_auto_respond_direct = $true; $changed = $true };" ^
   "if (-not $j.PSObject.Properties['ollama_auto_respond_room'] -or -not $j.ollama_auto_respond_room) { $j.ollama_auto_respond_room = $true; $changed = $true };" ^
+  "if (-not $j.PSObject.Properties['ollama_tools_enabled'] -or -not $j.ollama_tools_enabled) { $j.ollama_tools_enabled = $true; $changed = $true };" ^
+  "if (-not $j.PSObject.Properties['ollama_voice_enabled'] -or -not $j.ollama_voice_enabled) { $j.ollama_voice_enabled = $true; $changed = $true };" ^
   "if (-not $j.ollama_base_url) { $j.ollama_base_url = 'http://127.0.0.1:11434'; $changed = $true };" ^
   "if (-not $j.ollama_model) { $j.ollama_model = 'gemma3:latest'; $changed = $true };" ^
   "if ($changed) { ($j | ConvertTo-Json -Depth 8) | Set-Content -Encoding utf8 $p; Write-Host 'Updated Ollama flags in settings.json' };" ^
-  "Write-Host ('Ollama: enabled=' + $j.ollama_enabled + ' model=' + $j.ollama_model + ' auto_direct=' + $j.ollama_auto_respond_direct + ' auto_room=' + $j.ollama_auto_respond_room)"
+  "Write-Host ('Ollama: enabled=' + $j.ollama_enabled + ' model=' + $j.ollama_model + ' auto_direct=' + $j.ollama_auto_respond_direct + ' auto_room=' + $j.ollama_auto_respond_room + ' tools=' + $j.ollama_tools_enabled + ' voice=' + $j.ollama_voice_enabled)"
 
 if not defined BINARY (
     echo.
@@ -111,6 +113,8 @@ if defined DOUBLESLASH_PASSPHRASE (
 )
 echo.
 echo Chat from your other peer. Multi-turn chat memory is per room/DM until restart.
+echo Client-control tools are on ^(ollama_tools_enabled^): ask Bobert to list peers, join a room, start a call, etc.
+echo Voice is on ^(ollama_voice_enabled^): auto-replies are spoken in a call. Optional STT: set ollama_stt_model.
 echo.
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^

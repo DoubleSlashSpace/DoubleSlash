@@ -237,6 +237,9 @@ These are selected **desktop** defaults from [SettingsModel](rust/doubleslash-cl
 | `attestation_policy` | `warn` | Peer build-attestation policy (`off`, `warn`, `strict`) |
 | `ollama_enabled` | `false` | Optional AI assistant |
 | `ollama_base_url` | `http://127.0.0.1:11434` | Ollama endpoint |
+| `ollama_tools_enabled` | `false` | Let the assistant call client-control tools (test automation) |
+| `ollama_voice_enabled` | `false` | Speak auto-replies in an active voice session (Windows TTS) |
+| `ollama_stt_model` | empty | Optional Ollama model for transcribing remote speakers |
 | `youtube_preview_enabled` | `true` | Local link-preview cards; playback contacts the host |
 | `debug_logging` | `false` | Verbose diagnostics |
 

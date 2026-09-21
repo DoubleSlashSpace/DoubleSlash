@@ -5,6 +5,7 @@
 //! library through Cargo features.
 
 pub mod aec;
+pub mod agent_voice;
 pub mod audio_devices;
 pub mod avatar_config;
 pub mod backup;
@@ -29,6 +30,7 @@ pub mod logging;
 pub mod media_clock;
 pub mod media_sync;
 pub mod ollama_module;
+pub mod ollama_tools;
 pub mod peer_store;
 pub mod platform;
 #[cfg(feature = "qt-ui")]

@@ -438,6 +438,9 @@ pub fn call_event_to_json(event: &doubleslash_client::call_controller::CallEvent
         // Android has no loopback capture, and following the default for voice
         // is handled inside the controller, so the UI has nothing to act on.
         E::OsDefaultDeviceChanged { .. } => return None,
+        // Decoded PCM for the desktop Ollama STT path. Never JSON: it is
+        // per-utterance audio, and Android has no assistant transcription.
+        E::RemoteUtterance { .. } => return None,
     };
 
     Some(value)

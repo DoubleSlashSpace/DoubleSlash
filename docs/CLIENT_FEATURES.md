@@ -335,10 +335,24 @@ rooms.
 
 * **Core** — `ollama_module.rs` (`x.ollama.v1`).
 * **Desktop** — `askOllama`, `cancelOllama`, `fetchOllamaModels`, with base URL,
-  model, system prompt and auto-respond toggles in settings. The model picker
-  lists installed models with size, context, capabilities (tools / vision /
-  thinking), and a chat vs vision grouping; GPU vs CPU-split is shown when
-  Ollama currently has the model loaded.
+  model, system prompt, auto-respond, and `ollama_tools_enabled` toggles in
+  settings. When tools are on, auto-reply chat advertises client-control
+  functions (list peers/rooms, send chat, join/leave voice, start/end/accept
+  calls, accept invites, speak, view_image) and runs them through the same
+  connection/call commands as the UI. Inbound raster images are auto-accepted
+  when the assistant is on and attached to the auto-reply turn (or via
+  `view_image`). Voice audio is spoken only when the model calls `speak`,
+  not on every text reply. Off by default; the Bobert headless launcher turns tools
+  and voice on. Prefer a tools-capable model. `ollama_voice_enabled` speaks
+  auto-replies and `speak` tool lines into the live capture path via Windows
+  SpeechSynthesizer (48 kHz PCM injected into Opus). Optional
+  `ollama_stt_model` transcribes remote speakers through local Ollama
+  `/v1/audio/transcriptions` and feeds that text into auto-reply. The model
+  picker lists installed models
+  with size, context, capabilities (tools / vision / thinking), and a chat vs
+  vision grouping; GPU vs CPU-split is shown when Ollama currently has the
+  model loaded. The in-app `askOllama` single-shot query path does not run
+  tools.
 * **Android** — **nothing**.
 
 ### 17. Avatars and handles

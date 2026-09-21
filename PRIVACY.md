@@ -230,10 +230,22 @@ own machine. No DoubleSlash cloud service is involved.
 
 **Peer visibility:** The `x.ollama.v1` capability may be advertised to
 connected peers as a presence signal; message content is not sent to peers
-through the plugin.
+through the plugin. If *Allow assistant to control this client* is on
+(`ollama_tools_enabled`), the local model can drive this client (send chat,
+join rooms, start or answer calls). Those actions are ordinary client
+traffic and are visible to the peers they target. Tool results stay local
+to Ollama. If *Speak in voice sessions* is on (`ollama_voice_enabled`),
+auto-replies are synthesised with the Windows speech engine and sent as
+ordinary call audio. If `ollama_stt_model` is set, decoded remote voice is
+sent to your local Ollama URL for transcription — not to any other host.
+Inbound chat image attachments may be base64-encoded and sent to that same
+local Ollama instance when auto-reply or `view_image` runs, so a vision
+model can see them.
 
 **How to disable:** Turn off *Enable AI assistant* in Settings
-(`ollama_enabled` in `settings.json`).
+(`ollama_enabled` in `settings.json`). Turn off *Allow assistant to control
+this client* to keep auto-reply text-only. Restored backups strip both
+auto-respond and tools flags.
 
 ### Supernode portal and gated relay pages
 

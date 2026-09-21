@@ -678,6 +678,46 @@ impl ChatStore {
         ))
     }
 
+    /// Newest saved image attachments, optionally limited to one conversation key.
+    ///
+    /// Returns `(attachment_path, attachment_name)` newest-first. Used by the
+    /// Ollama `view_image` tool when the model does not pass a message id.
+    pub fn latest_image_attachments(
+        &self,
+        conversation: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock();
+        let sql = if conversation.is_some() {
+            r#"SELECT attachment_path, attachment_name FROM messages
+               WHERE peer_id = ?1 AND attachment_path != '' AND kind = 'image'
+               ORDER BY rowid DESC LIMIT ?2"#
+        } else {
+            r#"SELECT attachment_path, attachment_name FROM messages
+               WHERE attachment_path != '' AND kind = 'image'
+               ORDER BY rowid DESC LIMIT ?1"#
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let limit = limit.clamp(1, 20) as i64;
+        let mut out = Vec::new();
+        if let Some(key) = conversation {
+            let rows = stmt.query_map(params![key, limit], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                out.push(row?);
+            }
+        } else {
+            let rows = stmt.query_map(params![limit], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+        Ok(out)
+    }
+
     /// Count unread messages (inbound, not yet read) for a peer.
     pub fn unread_count(&self, peer_id: &str) -> Result<usize> {
         let conn = self.conn.lock();

@@ -2199,6 +2199,19 @@ Item {
                             }
                         }
 
+                        Label { text: "Speech-to-text model"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        TextField {
+                            Layout.fillWidth: true
+                            text: root.settings ? root.settings.ollama_stt_model : ""
+                            placeholderText: "optional — e.g. whisper or an audio-capable model"
+                            color: Theme.text
+                            placeholderTextColor: Theme.muted
+                            background: Rectangle { color: Theme.bg3; radius: Theme.radiusMd; border.color: activeFocus ? Theme.accent : Theme.bg3; border.width: 1 }
+                            onEditingFinished: {
+                                if (root.settings) root.settings.ollama_stt_model = text
+                            }
+                        }
+
                         Label { text: "System prompt"; color: Theme.muted; Layout.alignment: Qt.AlignRight | Qt.AlignTop }
                         TextArea {
                             Layout.fillWidth: true
@@ -2231,6 +2244,24 @@ Item {
                                 onChanged: {
                                     if (!root.settings) return
                                     root.settings.ollama_auto_respond_room = checked
+                                }
+                            }
+                            SettingSwitch {
+                                title: "Allow assistant to control this client"
+                                description: "Lets the local model use tools: list peers/rooms, send chat, join voice, start and end calls. For test automation. Off by default. Prefer a tools-capable model (shown as tools in the picker)."
+                                checked: root.settings ? root.settings.ollama_tools_enabled : false
+                                onChanged: {
+                                    if (!root.settings) return
+                                    root.settings.ollama_tools_enabled = checked
+                                }
+                            }
+                            SettingSwitch {
+                                title: "Speak in voice sessions"
+                                description: "When this client is in a call or voice room, auto-replies are spoken with Windows text-to-speech (and the speak tool). Optional STT of others uses ollama_stt_model."
+                                checked: root.settings ? root.settings.ollama_voice_enabled : false
+                                onChanged: {
+                                    if (!root.settings) return
+                                    root.settings.ollama_voice_enabled = checked
                                 }
                             }
                         }

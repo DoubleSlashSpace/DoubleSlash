@@ -625,6 +625,9 @@ fn sanitize_settings(directory: &Path) -> Result<()> {
             && !key.contains("source")
             && !key.contains("plugin")
             && !key.contains("auto_respond")
+            && !key.contains("ollama_tools")
+            && !key.contains("ollama_voice")
+            && !key.contains("ollama_stt")
             && !key.contains("auto_start")
     });
     map.insert("onboarding_complete".into(), false.into());

@@ -94,6 +94,12 @@ pub mod ffi {
         #[qproperty(QString, ollama_system_prompt)]
         #[qproperty(bool, ollama_auto_respond_direct)]
         #[qproperty(bool, ollama_auto_respond_room)]
+        /// Let the local assistant call client-control tools (test automation).
+        #[qproperty(bool, ollama_tools_enabled)]
+        /// Speak auto-replies into an active voice session (Windows TTS).
+        #[qproperty(bool, ollama_voice_enabled)]
+        /// Ollama model for speech-to-text of remote speakers. Empty = off.
+        #[qproperty(QString, ollama_stt_model)]
         /// Show a click-to-open preview card for YouTube links in chat.
         /// Privacy-safe: no thumbnail requests are made.
         #[qproperty(bool, youtube_preview_enabled)]
@@ -283,6 +289,12 @@ struct SettingsSnapshot {
     ollama_auto_respond_direct: bool,
     #[serde(default)]
     ollama_auto_respond_room: bool,
+    #[serde(default)]
+    ollama_tools_enabled: bool,
+    #[serde(default)]
+    ollama_voice_enabled: bool,
+    #[serde(default)]
+    ollama_stt_model: String,
     #[serde(default = "default_noise_strength")]
     noise_strength: String,
     #[serde(default = "default_theme")]
@@ -440,6 +452,9 @@ impl Default for SettingsSnapshot {
             ollama_system_prompt: default_ollama_system_prompt(),
             ollama_auto_respond_direct: false,
             ollama_auto_respond_room: false,
+            ollama_tools_enabled: false,
+            ollama_voice_enabled: false,
+            ollama_stt_model: String::new(),
             noise_strength: default_noise_strength(),
             theme: default_theme(),
             relay_allow_gated: true,
@@ -511,6 +526,9 @@ pub struct SettingsModelRust {
     ollama_system_prompt: QString,
     ollama_auto_respond_direct: bool,
     ollama_auto_respond_room: bool,
+    ollama_tools_enabled: bool,
+    ollama_voice_enabled: bool,
+    ollama_stt_model: QString,
     youtube_preview_enabled: bool,
     youtube_inline_ack: bool,
     onboarding_complete: bool,
@@ -582,6 +600,9 @@ impl Default for SettingsModelRust {
             ollama_system_prompt: QString::from(s.ollama_system_prompt.as_str()),
             ollama_auto_respond_direct: s.ollama_auto_respond_direct,
             ollama_auto_respond_room: s.ollama_auto_respond_room,
+            ollama_tools_enabled: s.ollama_tools_enabled,
+            ollama_voice_enabled: s.ollama_voice_enabled,
+            ollama_stt_model: QString::from(s.ollama_stt_model.as_str()),
             youtube_preview_enabled: s.youtube_preview_enabled,
             youtube_inline_ack: s.youtube_inline_ack,
             onboarding_complete: s.onboarding_complete,
@@ -745,6 +766,9 @@ impl ffi::SettingsModel {
             ollama_system_prompt: r.ollama_system_prompt.to_string(),
             ollama_auto_respond_direct: r.ollama_auto_respond_direct,
             ollama_auto_respond_room: r.ollama_auto_respond_room,
+            ollama_tools_enabled: r.ollama_tools_enabled,
+            ollama_voice_enabled: r.ollama_voice_enabled,
+            ollama_stt_model: r.ollama_stt_model.to_string(),
             youtube_preview_enabled: r.youtube_preview_enabled,
             youtube_inline_ack: r.youtube_inline_ack,
             onboarding_complete: r.onboarding_complete,
@@ -964,6 +988,12 @@ impl ffi::SettingsModel {
             .set_ollama_auto_respond_direct(snap.ollama_auto_respond_direct);
         self.as_mut()
             .set_ollama_auto_respond_room(snap.ollama_auto_respond_room);
+        self.as_mut()
+            .set_ollama_tools_enabled(snap.ollama_tools_enabled);
+        self.as_mut()
+            .set_ollama_voice_enabled(snap.ollama_voice_enabled);
+        self.as_mut()
+            .set_ollama_stt_model(QString::from(snap.ollama_stt_model.as_str()));
         self.as_mut()
             .set_youtube_preview_enabled(snap.youtube_preview_enabled);
         self.as_mut()

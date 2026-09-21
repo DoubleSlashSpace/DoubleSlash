@@ -2264,6 +2264,34 @@ impl ffi::AppBridge {
             None => (None, None, None),
         };
         let ollama_is_available = maybe_ollama_cmd.is_some();
+        let local_handle = peer_store
+            .read()
+            .get(&identity.peer_id())
+            .map(|r| r.handle.clone())
+            .unwrap_or_default();
+        let ollama_tools = crate::ollama_tools::OllamaToolHost::new(
+            Arc::clone(&identity),
+            Arc::clone(&peer_store),
+            Arc::clone(&room_store),
+            Arc::clone(&chat_store),
+            conn_cmd_tx.clone(),
+            call_cmd_tx.clone(),
+            local_handle,
+        );
+        if let Some(ref tx) = maybe_ollama_cmd {
+            let _ = tx.try_send(crate::ollama_module::OllamaCommand::SetToolHost(Some(
+                Arc::clone(&ollama_tools),
+            )));
+        }
+        {
+            let s = crate::ollama_module::read_assistant_settings();
+            if s.voice_enabled {
+                let _ = call_cmd_tx.try_send(CallCommand::SetAgentVoice(true));
+                if !s.stt_model.trim().is_empty() {
+                    let _ = call_cmd_tx.try_send(CallCommand::SetListenUtterances(true));
+                }
+            }
+        }
 
         {
             let mut r = self.as_mut().rust_mut();
@@ -2388,6 +2416,7 @@ impl ffi::AppBridge {
                     loop {
                         tokio::select! {
                             Some(ev) = ev_rx.recv() => {
+                                ollama_tools.observe(&ev);
                                 dispatch_event(&qt_thread, ev, &chat_store, &mut call_timer_stop);
                             }
                             Some(ev) = up_rx.recv() => {
@@ -2402,7 +2431,16 @@ impl ffi::AppBridge {
                                 dispatch_ollama_event(&qt_thread, ev);
                             }
                             Some(ev) = call_rx.recv() => {
-                                dispatch_call_event(&qt_thread, ev);
+                                match ev {
+                                    crate::call_controller::CallEvent::RemoteUtterance { peer_id, pcm_48k } => {
+                                        let tools = ollama_tools.clone();
+                                        let qt = qt_thread.clone();
+                                        tokio::spawn(async move {
+                                            handle_qt_utterance(qt, tools, peer_id, pcm_48k).await;
+                                        });
+                                    }
+                                    other => dispatch_call_event(&qt_thread, other),
+                                }
                             }
                             else => break,
                         }
@@ -5425,14 +5463,76 @@ enum AutoReplyTarget {
 ///
 /// No-op when the plugin is disabled, the matching auto-respond flag is off,
 /// the inbound body is empty, or the Ollama command channel is unavailable.
+#[allow(clippy::too_many_arguments)]
+fn maybe_auto_reply_saved_image(
+    bridge: Pin<&mut ffi::AppBridge>,
+    is_room: bool,
+    supernode_id: &str,
+    room_id: &str,
+    peer_id: &str,
+    message_id: &str,
+    rel_path: &str,
+    attachment_path: &str,
+) {
+    {
+        let r = bridge.rust();
+        if pub_id_eq(peer_id, &r.my_public_id) || pub_id_eq(peer_id, &r.my_peer_id) {
+            return;
+        }
+    }
+    let images = crate::ollama_module::encode_vision_attachment(attachment_path, rel_path);
+    if images.is_empty() {
+        return;
+    }
+    let target = if is_room && !room_id.is_empty() {
+        let sn = bridge
+            .rust()
+            .resolve_supernode_node_id_str(supernode_id)
+            .unwrap_or_else(|| supernode_id.to_owned());
+        AutoReplyTarget::Room {
+            supernode_id: sn,
+            room_id: room_id.to_owned(),
+        }
+    } else {
+        AutoReplyTarget::Direct {
+            peer_id: peer_id.to_owned(),
+        }
+    };
+    maybe_start_auto_reply_with_images(
+        bridge,
+        target,
+        &format!(
+            "The user sent an image named {rel_path}. It is attached to this message — look at the image and describe what you see."
+        ),
+        message_id,
+        images,
+    );
+}
+
 fn maybe_start_auto_reply(
-    mut bridge: Pin<&mut ffi::AppBridge>,
+    bridge: Pin<&mut ffi::AppBridge>,
     target: AutoReplyTarget,
     inbound_body: &str,
     inbound_message_id: &str,
 ) {
+    maybe_start_auto_reply_with_images(
+        bridge,
+        target,
+        inbound_body,
+        inbound_message_id,
+        Vec::new(),
+    );
+}
+
+fn maybe_start_auto_reply_with_images(
+    mut bridge: Pin<&mut ffi::AppBridge>,
+    target: AutoReplyTarget,
+    inbound_body: &str,
+    inbound_message_id: &str,
+    images: Vec<String>,
+) {
     let body = inbound_body.trim();
-    if body.is_empty() {
+    if body.is_empty() && images.is_empty() {
         return;
     }
     let settings = crate::ollama_module::read_assistant_settings();
@@ -5492,18 +5592,7 @@ fn maybe_start_auto_reply(
         bridge.as_mut().rust_mut().auto_reply_buf.remove(&old_id);
     }
 
-    let sys = if settings.system_prompt.trim().is_empty() {
-        "You are a helpful assistant in a private peer-to-peer chat. \
-         Remember earlier turns in this conversation and reply with continuity. \
-         Keep replies concise."
-            .to_owned()
-    } else {
-        // Multi-turn hint layered on the user's system prompt.
-        format!(
-            "{}\n\n(You are in a multi-turn chat; use prior messages in this conversation for context.)",
-            settings.system_prompt.trim()
-        )
-    };
+    let sys = crate::ollama_module::auto_reply_system_prompt(&settings);
 
     let conversation_id = match &target {
         AutoReplyTarget::Direct { peer_id } => {
@@ -5515,8 +5604,8 @@ fn maybe_start_auto_reply(
     };
 
     info!(
-        "[ollama] auto-reply start rid={request_id} model={} conv={conversation_id} target={target:?}",
-        settings.model
+        "[ollama] auto-reply start rid={request_id} model={} conv={conversation_id} tools={} target={target:?}",
+        settings.model, settings.tools_enabled
     );
     let _ = tx.try_send(crate::ollama_module::OllamaCommand::SetConfig(
         settings.to_config(),
@@ -5525,8 +5614,14 @@ fn maybe_start_auto_reply(
         .try_send(crate::ollama_module::OllamaCommand::Chat {
             request_id: request_id.clone(),
             conversation_id,
-            user_message: body.to_owned(),
+            user_message: if body.is_empty() {
+                "sent an image".to_owned()
+            } else {
+                body.to_owned()
+            },
             system_prompt: sys,
+            use_tools: settings.tools_enabled,
+            images,
         })
         .is_err()
     {
@@ -9448,6 +9543,25 @@ fn dispatch_event(
                     },
                 );
                 bridge.as_mut().file_offered(QString::from(json.as_str()));
+                let settings = crate::ollama_module::read_assistant_settings();
+                if !is_self
+                    && settings.enabled
+                    && crate::ollama_module::is_vision_filename(&rel_path)
+                    && (size as u64) <= crate::ollama_module::MAX_VISION_BYTES
+                {
+                    if let Some(ref tx) = bridge.rust().conn_cmd_tx {
+                        if supernode_id.is_empty() {
+                            let _ = tx.try_send(ConnectionCommand::AcceptFile {
+                                transfer_id: transfer_id.clone(),
+                            });
+                        } else {
+                            let _ = tx.try_send(ConnectionCommand::AcceptRoomFile {
+                                transfer_id: transfer_id.clone(),
+                            });
+                        }
+                        info!("[ollama] auto-accepting image offer {rel_path}");
+                    }
+                }
             });
         }
         ConnectionEvent::FileProgress {
@@ -9516,6 +9630,16 @@ fn dispatch_event(
                                 warn!("chat_store update_attachment error: {e}");
                             }
                         }
+                        maybe_auto_reply_saved_image(
+                            bridge.as_mut(),
+                            is_room,
+                            &supernode_id,
+                            &room_id,
+                            &peer_id,
+                            &message_id,
+                            &rel_path,
+                            &attachment_path,
+                        );
                         bridge.as_mut().file_complete(QString::from(json.as_str()));
                         return;
                     }
@@ -9601,6 +9725,18 @@ fn dispatch_event(
                         bridge
                             .as_mut()
                             .room_chat_received(QString::from(msg_json.as_str()));
+                        if !mine {
+                            maybe_auto_reply_saved_image(
+                                bridge.as_mut(),
+                                true,
+                                &sn,
+                                &rid,
+                                &peer_id,
+                                &message_id,
+                                &rel_path,
+                                &attachment_path,
+                            );
+                        }
                     }
                 } else if !attachment_path.is_empty() {
                     let handle = {
@@ -9656,6 +9792,16 @@ fn dispatch_event(
                     bridge
                         .as_mut()
                         .chat_message_received(QString::from(msg_json.as_str()));
+                    maybe_auto_reply_saved_image(
+                        bridge.as_mut(),
+                        false,
+                        "",
+                        "",
+                        &peer_id,
+                        &message_id,
+                        &rel_path,
+                        &attachment_path,
+                    );
                 }
 
                 bridge.as_mut().file_complete(QString::from(json.as_str()));
@@ -9811,6 +9957,33 @@ fn dispatch_ollama_event(
                 publish_ollama_models(bridge, &models_json, &error);
             });
         }
+    }
+}
+
+async fn handle_qt_utterance(
+    qt: cxx_qt::CxxQtThread<ffi::AppBridge>,
+    tools: Arc<crate::ollama_tools::OllamaToolHost>,
+    peer_id: String,
+    pcm: Vec<i16>,
+) {
+    match crate::agent_voice::transcribe_utterance(&pcm).await {
+        Ok(text) if crate::agent_voice::should_auto_reply_transcript(&text) => {
+            info!("[voice] transcript from {peer_id}: {text}");
+            let body = format!("[voice from {peer_id}] {text}");
+            let target = match tools.current_voice_room() {
+                Some((supernode_id, room_id)) => AutoReplyTarget::Room {
+                    supernode_id,
+                    room_id,
+                },
+                None => AutoReplyTarget::Direct { peer_id },
+            };
+            let mid = format!("voice-{}", uuid::Uuid::new_v4());
+            let _ = qt.queue(move |bridge| {
+                maybe_start_auto_reply(bridge, target, &body, &mid);
+            });
+        }
+        Ok(text) => info!("[voice] ignored short transcript: {text}"),
+        Err(e) => warn!("[voice] STT failed: {e}"),
     }
 }
 

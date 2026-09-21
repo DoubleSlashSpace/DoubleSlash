@@ -34,6 +34,12 @@ pub struct OllamaAssistantSettings {
     pub system_prompt: String,
     pub auto_respond_direct: bool,
     pub auto_respond_room: bool,
+    /// When true, auto-reply `/api/chat` requests include client-control tools.
+    pub tools_enabled: bool,
+    /// Speak auto-replies into the live voice path (Windows TTS).
+    pub voice_enabled: bool,
+    /// Ollama model for `/v1/audio/transcriptions` (empty = do not listen).
+    pub stt_model: String,
 }
 
 impl Default for OllamaAssistantSettings {
@@ -45,6 +51,9 @@ impl Default for OllamaAssistantSettings {
             system_prompt: "You are a helpful assistant.".to_owned(),
             auto_respond_direct: false,
             auto_respond_room: false,
+            tools_enabled: false,
+            voice_enabled: false,
+            stt_model: String::new(),
         }
     }
 }
@@ -96,7 +105,69 @@ pub fn read_assistant_settings() -> OllamaAssistantSettings {
             .get("ollama_auto_respond_room")
             .and_then(|x| x.as_bool())
             .unwrap_or(false),
+        tools_enabled: v
+            .get("ollama_tools_enabled")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
+        voice_enabled: v
+            .get("ollama_voice_enabled")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
+        stt_model: v
+            .get("ollama_stt_model")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_owned(),
     }
+}
+
+const VOICE_TOOLS_ADDON: &str =
+    "Text you write is NOT spoken. To talk on voice you must call join_voice \
+(or start_call / accept_call) and then speak. Keep spoken lines short. \
+When a user message has an attached image, you can see that image. Do not claim to be text-only. \
+Call view_image only if no image is already attached.";
+
+/// Rewrite in-flight messages after Ollama rejects tools so the model does
+/// not hallucinate tool results.
+fn rewrite_messages_tools_unavailable(messages: &mut [ChatTurn]) {
+    use crate::ollama_tools::{TOOLS_SYSTEM_ADDON, TOOLS_UNAVAILABLE_NOTICE};
+    for m in messages.iter_mut() {
+        if m.role != "system" {
+            continue;
+        }
+        m.content = m
+            .content
+            .replace(TOOLS_SYSTEM_ADDON, TOOLS_UNAVAILABLE_NOTICE);
+        m.content = m.content.replace(VOICE_TOOLS_ADDON, "");
+        if !m.content.contains(TOOLS_UNAVAILABLE_NOTICE) {
+            m.content.push_str("\n\n");
+            m.content.push_str(TOOLS_UNAVAILABLE_NOTICE);
+        }
+    }
+}
+
+/// System prompt used for auto-reply `Chat` requests.
+pub fn auto_reply_system_prompt(settings: &OllamaAssistantSettings) -> String {
+    let mut sys = if settings.system_prompt.trim().is_empty() {
+        "You are a helpful assistant in a private peer-to-peer chat. \
+         Remember earlier turns in this conversation and reply with continuity. \
+         Keep replies concise."
+            .to_owned()
+    } else {
+        format!(
+            "{}\n\n(You are in a multi-turn chat; use prior messages in this conversation for context.)",
+            settings.system_prompt.trim()
+        )
+    };
+    if settings.tools_enabled {
+        sys.push_str("\n\n");
+        sys.push_str(crate::ollama_tools::TOOLS_SYSTEM_ADDON);
+    }
+    if settings.voice_enabled {
+        sys.push_str("\n\n");
+        sys.push_str(VOICE_TOOLS_ADDON);
+    }
+    sys
 }
 
 /// Build the `x.ollama.v1` capability descriptor.
@@ -159,7 +230,33 @@ pub enum OllamaEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatTurn {
     pub role: String,
+    #[serde(default)]
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<OllamaApiToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// Base64 image payloads for vision models (`/api/chat` `images`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+}
+
+/// One Ollama `/api/chat` tool call (OpenAI-shaped).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaApiToolCall {
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "type")]
+    pub type_: Option<String>,
+    pub function: OllamaApiFunction,
+}
+
+/// Function name + arguments inside [`OllamaApiToolCall`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OllamaApiFunction {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
 }
 
 impl ChatTurn {
@@ -167,18 +264,89 @@ impl ChatTurn {
         Self {
             role: "user".to_owned(),
             content: content.into(),
+            tool_calls: Vec::new(),
+            tool_name: None,
+            images: Vec::new(),
         }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             role: "assistant".to_owned(),
             content: content.into(),
+            tool_calls: Vec::new(),
+            tool_name: None,
+            images: Vec::new(),
         }
     }
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: "system".to_owned(),
             content: content.into(),
+            tool_calls: Vec::new(),
+            tool_name: None,
+            images: Vec::new(),
+        }
+    }
+    fn assistant_tools(content: String, tool_calls: Vec<OllamaApiToolCall>) -> Self {
+        Self {
+            role: "assistant".to_owned(),
+            content,
+            tool_calls,
+            tool_name: None,
+            images: Vec::new(),
+        }
+    }
+    fn tool_result(name: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: "tool".to_owned(),
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_name: Some(name.into()),
+            images: Vec::new(),
+        }
+    }
+}
+
+/// Soft cap for images sent to Ollama (bytes on disk).
+pub const MAX_VISION_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Raster image attachments vision models can consume (not SVG/ICO).
+pub fn is_vision_filename(name: &str) -> bool {
+    if crate::chat_store::message_kind_for_path(name) != crate::chat_store::MessageKind::Image {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    !lower.ends_with(".svg") && !lower.ends_with(".ico")
+}
+
+/// Read a local image and return standard-base64 for Ollama `images`.
+pub fn encode_image_file(path: &std::path::Path) -> Result<String, String> {
+    let meta =
+        std::fs::metadata(path).map_err(|e| format!("read image {}: {e}", path.display()))?;
+    if meta.len() == 0 {
+        return Err("image file is empty".into());
+    }
+    if meta.len() > MAX_VISION_BYTES {
+        return Err(format!(
+            "image is {} bytes; max for vision is {MAX_VISION_BYTES}",
+            meta.len()
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("read image {}: {e}", path.display()))?;
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// Encode a saved chat attachment for vision, or empty if it is not usable.
+pub fn encode_vision_attachment(path: &str, name: &str) -> Vec<String> {
+    if path.is_empty() || !is_vision_filename(name) {
+        return Vec::new();
+    }
+    match encode_image_file(std::path::Path::new(path)) {
+        Ok(b64) => vec![b64],
+        Err(e) => {
+            tracing::warn!("[ollama] skip image {name}: {e}");
+            Vec::new()
         }
     }
 }
@@ -202,6 +370,8 @@ pub fn conversation_id_room(room_id: &str) -> String {
 pub const MAX_HISTORY_TURNS: usize = 12;
 /// Soft cap per stored message body (chars) to bound memory / context size.
 pub const MAX_TURN_CHARS: usize = 4_000;
+/// Bound the tool-call loop so a confused model cannot run forever.
+pub const MAX_TOOL_ROUNDS: usize = 6;
 
 /// Commands sent to the Ollama module task.
 #[derive(Debug)]
@@ -220,7 +390,13 @@ pub enum OllamaCommand {
         conversation_id: String,
         user_message: String,
         system_prompt: String,
+        /// Advertise client-control tools and run the tool-call loop.
+        use_tools: bool,
+        /// Base64 images attached to this user turn (not stored in history).
+        images: Vec<String>,
     },
+    /// Install (or clear) the local client-control tool host.
+    SetToolHost(Option<std::sync::Arc<crate::ollama_tools::OllamaToolHost>>),
     /// Drop history for one conversation (or all if empty).
     ClearConversation {
         conversation_id: String,
@@ -251,6 +427,7 @@ pub struct OllamaModule {
     in_flight: HashMap<String, oneshot::Sender<()>>,
     /// Per-conversation multi-turn history (user/assistant only).
     conversations: Arc<std::sync::Mutex<HashMap<String, Vec<ChatTurn>>>>,
+    tool_host: Option<Arc<crate::ollama_tools::OllamaToolHost>>,
     event_tx: mpsc::Sender<OllamaEvent>,
     cmd_rx: mpsc::Receiver<OllamaCommand>,
 }
@@ -277,6 +454,7 @@ impl OllamaModule {
             client,
             in_flight: HashMap::new(),
             conversations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            tool_host: None,
             event_tx,
             cmd_rx,
         };
@@ -326,6 +504,8 @@ impl OllamaModule {
         conversation_id: String,
         user_message: String,
         system_prompt: String,
+        use_tools: bool,
+        images: Vec<String>,
     ) {
         if let Some(tx) = self.in_flight.remove(&request_id) {
             let _ = tx.send(());
@@ -338,8 +518,13 @@ impl OllamaModule {
         let history_snapshot = {
             let mut guard = self.conversations.lock().unwrap_or_else(|e| e.into_inner());
             let turns = guard.entry(conversation_id.clone()).or_default();
-            turns.push(ChatTurn::user(user_text));
+            let mut user_turn = ChatTurn::user(user_text);
+            if !images.is_empty() {
+                user_turn.images = images.clone();
+            }
+            turns.push(user_turn);
             trim_history(turns);
+            retain_recent_images(turns, 1);
             turns.clone()
         };
 
@@ -359,17 +544,33 @@ impl OllamaModule {
         let client = self.client.clone();
         let conversations = Arc::clone(&self.conversations);
         let conv_id = conversation_id.clone();
+        let tools = if use_tools {
+            self.tool_host.clone()
+        } else {
+            None
+        };
+        if use_tools && tools.is_none() {
+            tracing::warn!(
+                "[ollama] tools requested but no tool host is installed; chatting without tools"
+            );
+        }
+        if let Some(host) = &self.tool_host {
+            host.set_active_conversation(conv_id.clone());
+        }
+        let image_count = messages.iter().map(|m| m.images.len()).sum::<usize>();
 
-        debug!(
-            "[ollama] chat conv={} model={} history_msgs={}",
+        tracing::info!(
+            "[ollama] chat conv={} model={} history_msgs={} tools={} images={}",
             conv_id,
             model,
-            messages.len()
+            messages.len(),
+            tools.is_some(),
+            image_count
         );
 
         tokio::spawn(async move {
-            let assistant = run_chat_stream(
-                client, url, model, request_id, messages, cancel_rx, event_tx,
+            let assistant = run_chat_loop(
+                client, url, model, request_id, messages, tools, cancel_rx, event_tx,
             )
             .await;
             if let Some(text) = assistant {
@@ -381,6 +582,7 @@ impl OllamaModule {
                     let turns = guard.entry(conv_id).or_default();
                     turns.push(ChatTurn::assistant(text));
                     trim_history(turns);
+                    retain_recent_images(turns, 1);
                 }
             }
         });
@@ -408,6 +610,9 @@ impl OllamaModule {
                 OllamaCommand::SetConfig(cfg) => {
                     self.config = cfg;
                 }
+                OllamaCommand::SetToolHost(host) => {
+                    self.tool_host = host;
+                }
                 OllamaCommand::Query {
                     request_id,
                     prompt,
@@ -420,9 +625,18 @@ impl OllamaModule {
                     conversation_id,
                     user_message,
                     system_prompt,
+                    use_tools,
+                    images,
                 } => {
-                    self.start_chat(request_id, conversation_id, user_message, system_prompt)
-                        .await;
+                    self.start_chat(
+                        request_id,
+                        conversation_id,
+                        user_message,
+                        system_prompt,
+                        use_tools,
+                        images,
+                    )
+                    .await;
                 }
                 OllamaCommand::ClearConversation { conversation_id } => {
                     if let Ok(mut guard) = self.conversations.lock() {
@@ -464,7 +678,22 @@ fn truncate_turn(s: &str) -> String {
     format!("{truncated}…")
 }
 
-/// Keep the last `MAX_HISTORY_TURNS * 2` user/assistant messages.
+/// Keep images on at most `keep` most-recent turns so follow-ups can still
+/// see the last picture without retaining every attachment forever.
+fn retain_recent_images(turns: &mut [ChatTurn], keep: usize) {
+    let mut kept = 0usize;
+    for t in turns.iter_mut().rev() {
+        if t.images.is_empty() {
+            continue;
+        }
+        if kept >= keep {
+            t.images.clear();
+        } else {
+            kept += 1;
+        }
+    }
+}
+
 fn trim_history(turns: &mut Vec<ChatTurn>) {
     let max = MAX_HISTORY_TURNS.saturating_mul(2);
     if turns.len() > max {
@@ -692,7 +921,7 @@ fn heuristic_capabilities(name: &str) -> Vec<String> {
     {
         caps.push("vision".to_owned());
     }
-    if ["qwen", "mistral", "llama", "gemma", "phi", "gpt-oss"]
+    if ["qwen", "mistral", "llama", "gemma", "gpt-oss"]
         .iter()
         .any(|k| nl.contains(k))
     {
@@ -865,6 +1094,8 @@ struct ChatRequest<'a> {
     model: &'a str,
     messages: &'a [ChatTurn],
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<&'a [serde_json::Value]>,
 }
 
 #[derive(Deserialize)]
@@ -878,6 +1109,13 @@ struct ChatStreamChunk {
 struct ChatStreamMessage {
     #[serde(default)]
     content: String,
+    #[serde(default)]
+    tool_calls: Vec<OllamaApiToolCall>,
+}
+
+struct ChatRound {
+    content: String,
+    tool_calls: Vec<OllamaApiToolCall>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -985,8 +1223,144 @@ async fn run_generate_stream(
     }));
 }
 
-/// Stream `/api/chat`. Returns the full assistant text when the stream completes
-/// successfully (for history retention). `None` on cancel/error.
+/// Run `/api/chat`, executing tool calls until the model returns text or the
+/// round cap is hit. Only the final assistant text is streamed to `event_tx`
+/// (tool JSON never reaches auto-reply chat).
+#[allow(clippy::too_many_arguments)]
+async fn run_chat_loop(
+    client: Client,
+    url: String,
+    model: String,
+    request_id: String,
+    mut messages: Vec<ChatTurn>,
+    tools: Option<Arc<crate::ollama_tools::OllamaToolHost>>,
+    mut cancel_rx: oneshot::Receiver<()>,
+    event_tx: mpsc::Sender<OllamaEvent>,
+) -> Option<String> {
+    let mut tool_defs = tools
+        .as_ref()
+        .map(|_| crate::ollama_tools::OllamaToolHost::ollama_tools());
+    let emit_tokens = tools.is_none();
+
+    for round in 0..MAX_TOOL_ROUNDS {
+        let round_out = match run_chat_stream(
+            client.clone(),
+            url.clone(),
+            model.clone(),
+            request_id.clone(),
+            messages.clone(),
+            tool_defs.as_deref(),
+            emit_tokens,
+            &mut cancel_rx,
+            event_tx.clone(),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(ChatStreamError::Cancelled) => return None,
+            Err(ChatStreamError::ToolsUnsupported(msg)) if tool_defs.is_some() => {
+                tracing::warn!("[ollama] {msg}; retrying without tools");
+                tool_defs = None;
+                rewrite_messages_tools_unavailable(&mut messages);
+                continue;
+            }
+            Err(ChatStreamError::Failed(msg) | ChatStreamError::ToolsUnsupported(msg)) => {
+                let _ = event_tx.try_send(OllamaEvent::Error {
+                    request_id,
+                    message: msg,
+                });
+                return None;
+            }
+        };
+
+        if round_out.tool_calls.is_empty() {
+            let text = round_out.content;
+            if tools.is_some() {
+                // Tool rounds suppress token streaming; emit the final body now.
+                if !text.is_empty() {
+                    let _ = event_tx.try_send(OllamaEvent::Chunk(OllamaChunk {
+                        request_id: request_id.clone(),
+                        text: text.clone(),
+                        done: false,
+                    }));
+                }
+                let _ = event_tx.try_send(OllamaEvent::Chunk(OllamaChunk {
+                    request_id: request_id.clone(),
+                    text: String::new(),
+                    done: true,
+                }));
+            }
+            return if text.is_empty() { None } else { Some(text) };
+        }
+
+        let Some(host) = tools.as_ref() else {
+            break;
+        };
+        debug!(
+            "[ollama] tool round {} calls={}",
+            round + 1,
+            round_out.tool_calls.len()
+        );
+        messages.push(ChatTurn::assistant_tools(
+            round_out.content,
+            round_out.tool_calls.clone(),
+        ));
+        for call in round_out.tool_calls {
+            let result = host.invoke(&call.function.name, &call.function.arguments);
+            messages.push(ChatTurn::tool_result(&call.function.name, &result.text));
+            if !result.images.is_empty() {
+                let mut vis =
+                    ChatTurn::user("Look at the attached image from the view_image tool.");
+                vis.images = result.images;
+                messages.push(vis);
+            }
+        }
+    }
+
+    let fallback =
+        "I reached the tool-call limit before finishing. Try a more specific request.".to_owned();
+    let _ = event_tx.try_send(OllamaEvent::Chunk(OllamaChunk {
+        request_id: request_id.clone(),
+        text: fallback.clone(),
+        done: false,
+    }));
+    let _ = event_tx.try_send(OllamaEvent::Chunk(OllamaChunk {
+        request_id,
+        text: String::new(),
+        done: true,
+    }));
+    Some(fallback)
+}
+
+#[derive(Debug)]
+enum ChatStreamError {
+    Cancelled,
+    Failed(String),
+    ToolsUnsupported(String),
+}
+
+fn classify_chat_http_error(status: u16, body: &str, sent_tools: bool) -> ChatStreamError {
+    let detail = body.trim();
+    let message = if detail.is_empty() {
+        format!("Ollama chat API returned {status}")
+    } else {
+        format!("Ollama chat API returned {status}: {detail}")
+    };
+    if sent_tools
+        && status == 400
+        && detail
+            .to_ascii_lowercase()
+            .contains("does not support tools")
+    {
+        ChatStreamError::ToolsUnsupported(message)
+    } else {
+        ChatStreamError::Failed(message)
+    }
+}
+
+/// Stream one `/api/chat` round. Returns content + any tool_calls.
+/// When `emit_tokens` is false, content is collected but not forwarded
+/// (used while the model is still calling tools).
 #[allow(clippy::too_many_arguments)]
 async fn run_chat_stream(
     client: Client,
@@ -994,35 +1368,33 @@ async fn run_chat_stream(
     model: String,
     request_id: String,
     messages: Vec<ChatTurn>,
-    mut cancel_rx: oneshot::Receiver<()>,
+    tools: Option<&[serde_json::Value]>,
+    emit_tokens: bool,
+    cancel_rx: &mut oneshot::Receiver<()>,
     event_tx: mpsc::Sender<OllamaEvent>,
-) -> Option<String> {
+) -> Result<ChatRound, ChatStreamError> {
+    let sent_tools = tools.is_some();
     let body = ChatRequest {
         model: &model,
         messages: &messages,
         stream: true,
+        tools,
     };
 
     let resp = tokio::select! {
         r = client.post(&url).json(&body).send() => r,
-        _ = &mut cancel_rx => return None,
+        _ = &mut *cancel_rx => return Err(ChatStreamError::Cancelled),
     };
 
     let resp = match resp {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
-            let _ = event_tx.try_send(OllamaEvent::Error {
-                request_id,
-                message: format!("Ollama chat API returned {}", r.status()),
-            });
-            return None;
+            let status = r.status().as_u16();
+            let body = r.text().await.unwrap_or_default();
+            return Err(classify_chat_http_error(status, &body, sent_tools));
         }
         Err(e) => {
-            let _ = event_tx.try_send(OllamaEvent::Error {
-                request_id,
-                message: format!("HTTP error: {e}"),
-            });
-            return None;
+            return Err(ChatStreamError::Failed(format!("HTTP error: {e}")));
         }
     };
 
@@ -1030,21 +1402,18 @@ async fn run_chat_stream(
     let mut stream = resp.bytes_stream();
     let mut buf = Vec::<u8>::new();
     let mut assistant = String::new();
+    let mut tool_calls: Vec<OllamaApiToolCall> = Vec::new();
 
     loop {
         let item = tokio::select! {
             item = stream.next() => item,
-            _ = &mut cancel_rx => return None,
+            _ = &mut *cancel_rx => return Err(ChatStreamError::Cancelled),
         };
 
         let chunk = match item {
             Some(Ok(b)) => b,
             Some(Err(e)) => {
-                let _ = event_tx.try_send(OllamaEvent::Error {
-                    request_id,
-                    message: format!("Stream error: {e}"),
-                });
-                return None;
+                return Err(ChatStreamError::Failed(format!("Stream error: {e}")));
             }
             None => break,
         };
@@ -1062,23 +1431,36 @@ async fn run_chat_stream(
             }
             match serde_json::from_str::<ChatStreamChunk>(&s) {
                 Ok(gc) => {
-                    let text = gc.message.map(|m| m.content).unwrap_or_default();
+                    let (text, calls) = match gc.message {
+                        Some(m) => (m.content, m.tool_calls),
+                        None => (String::new(), Vec::new()),
+                    };
+                    if !calls.is_empty() {
+                        merge_tool_calls(&mut tool_calls, calls);
+                    }
                     let done = gc.done;
                     if !text.is_empty() {
                         assistant.push_str(&text);
-                        let _ = event_tx.try_send(OllamaEvent::Chunk(OllamaChunk {
-                            request_id: request_id.clone(),
-                            text,
-                            done: false,
-                        }));
+                        if emit_tokens && tool_calls.is_empty() {
+                            let _ = event_tx.try_send(OllamaEvent::Chunk(OllamaChunk {
+                                request_id: request_id.clone(),
+                                text,
+                                done: false,
+                            }));
+                        }
                     }
                     if done {
-                        let _ = event_tx.try_send(OllamaEvent::Chunk(OllamaChunk {
-                            request_id: request_id.clone(),
-                            text: String::new(),
-                            done: true,
-                        }));
-                        return Some(assistant);
+                        if emit_tokens && tool_calls.is_empty() {
+                            let _ = event_tx.try_send(OllamaEvent::Chunk(OllamaChunk {
+                                request_id: request_id.clone(),
+                                text: String::new(),
+                                done: true,
+                            }));
+                        }
+                        return Ok(ChatRound {
+                            content: assistant,
+                            tool_calls,
+                        });
                     }
                 }
                 Err(e) => {
@@ -1088,15 +1470,47 @@ async fn run_chat_stream(
         }
     }
 
-    let _ = event_tx.try_send(OllamaEvent::Chunk(OllamaChunk {
-        request_id,
-        text: String::new(),
-        done: true,
-    }));
-    if assistant.is_empty() {
-        None
-    } else {
-        Some(assistant)
+    if emit_tokens && tool_calls.is_empty() {
+        let _ = event_tx.try_send(OllamaEvent::Chunk(OllamaChunk {
+            request_id,
+            text: String::new(),
+            done: true,
+        }));
+    }
+    Ok(ChatRound {
+        content: assistant,
+        tool_calls,
+    })
+}
+
+fn merge_tool_calls(dst: &mut Vec<OllamaApiToolCall>, incoming: Vec<OllamaApiToolCall>) {
+    if dst.is_empty() {
+        *dst = incoming;
+        return;
+    }
+    for call in incoming {
+        let idx = call.function.index;
+        if let Some(i) = idx.and_then(|n| usize::try_from(n).ok()) {
+            if i < dst.len() {
+                if dst[i].function.name.is_empty() {
+                    dst[i].function.name = call.function.name;
+                }
+                dst[i].function.arguments =
+                    merge_arg_values(&dst[i].function.arguments, &call.function.arguments);
+                continue;
+            }
+        }
+        dst.push(call);
+    }
+}
+
+fn merge_arg_values(a: &serde_json::Value, b: &serde_json::Value) -> serde_json::Value {
+    match (a, b) {
+        (serde_json::Value::String(sa), serde_json::Value::String(sb)) => {
+            serde_json::Value::String(format!("{sa}{sb}"))
+        }
+        (_, b) if !b.is_null() && b != a => b.clone(),
+        (a, _) => a.clone(),
     }
 }
 
@@ -1125,6 +1539,20 @@ mod tests {
             normalize_ollama_base_url("http://127.0.0.1:11434"),
             "http://127.0.0.1:11434"
         );
+    }
+
+    #[test]
+    fn retain_recent_images_keeps_only_last() {
+        let mut turns = vec![
+            ChatTurn::user("a"),
+            ChatTurn::user("b"),
+            ChatTurn::user("c"),
+        ];
+        turns[0].images = vec!["one".into()];
+        turns[2].images = vec!["two".into()];
+        retain_recent_images(&mut turns, 1);
+        assert!(turns[0].images.is_empty());
+        assert_eq!(turns[2].images, vec!["two".to_owned()]);
     }
 
     #[test]
@@ -1244,7 +1672,10 @@ mod tests {
         assert!(caps.contains(&"vision".to_owned()));
         assert!(caps.contains(&"tools".to_owned()));
         let phi = heuristic_capabilities("phi4:latest");
-        assert!(phi.contains(&"tools".to_owned()));
+        assert!(
+            !phi.contains(&"tools".to_owned()),
+            "phi4 is completion-only in Ollama"
+        );
         assert!(!phi.contains(&"vision".to_owned()));
     }
 
@@ -1343,5 +1774,130 @@ mod tests {
             other => panic!("unexpected event: {other:?}"),
         }
         let _ = cmd_tx.send(OllamaCommand::Shutdown).await;
+    }
+
+    #[test]
+    fn tool_result_turn_serializes_for_ollama() {
+        let turn = ChatTurn::tool_result("list_peers", r#"{"ok":true}"#);
+        let v = serde_json::to_value(&turn).unwrap();
+        assert_eq!(v["role"], "tool");
+        assert_eq!(v["tool_name"], "list_peers");
+        assert_eq!(v["content"], r#"{"ok":true}"#);
+        assert!(v.get("tool_calls").is_none());
+        assert!(v.get("images").is_none());
+    }
+
+    #[test]
+    fn vision_filename_accepts_raster_not_svg_or_video() {
+        assert!(is_vision_filename("shot.PNG"));
+        assert!(is_vision_filename("a.webp"));
+        assert!(!is_vision_filename("icon.svg"));
+        assert!(!is_vision_filename("clip.mp4"));
+    }
+
+    #[test]
+    fn user_turn_serializes_images_only_when_present() {
+        let mut t = ChatTurn::user("see this");
+        t.images.push("aaa".into());
+        let v = serde_json::to_value(&t).unwrap();
+        assert_eq!(v["images"][0], "aaa");
+        let plain = serde_json::to_value(ChatTurn::user("hi")).unwrap();
+        assert!(plain.get("images").is_none());
+    }
+
+    #[test]
+    fn rewrite_messages_strips_tool_instructions() {
+        let mut messages = vec![
+            ChatTurn::system(format!(
+                "You are helpful.\n\n{}\n\n{}",
+                crate::ollama_tools::TOOLS_SYSTEM_ADDON,
+                VOICE_TOOLS_ADDON
+            )),
+            ChatTurn::user("list rooms"),
+        ];
+        rewrite_messages_tools_unavailable(&mut messages);
+        assert!(messages[0]
+            .content
+            .contains(crate::ollama_tools::TOOLS_UNAVAILABLE_NOTICE));
+        assert!(!messages[0]
+            .content
+            .contains("You can operate this DoubleSlash client through tools"));
+        assert!(!messages[0].content.contains("join_voice"));
+        assert_eq!(messages[1].content, "list rooms");
+    }
+
+    #[test]
+    fn classify_tools_unsupported_400() {
+        match classify_chat_http_error(
+            400,
+            r#"{"error":"registry.ollama.ai/library/phi4:latest does not support tools"}"#,
+            true,
+        ) {
+            ChatStreamError::ToolsUnsupported(msg) => {
+                assert!(msg.contains("does not support tools"));
+            }
+            other => panic!("expected ToolsUnsupported, got {other:?}"),
+        }
+        match classify_chat_http_error(400, "bad schema", true) {
+            ChatStreamError::Failed(_) => {}
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        match classify_chat_http_error(400, "does not support tools", false) {
+            ChatStreamError::Failed(_) => {}
+            other => panic!("plain 400 without tools must not retry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn encode_image_file_base64_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.png");
+        std::fs::write(&path, b"not-really-png-but-bytes").unwrap();
+        let b64 = encode_image_file(&path).unwrap();
+        use base64::Engine;
+        let back = base64::engine::general_purpose::STANDARD
+            .decode(&b64)
+            .unwrap();
+        assert_eq!(back, b"not-really-png-but-bytes");
+    }
+
+    #[test]
+    fn chat_stream_chunk_parses_tool_calls() {
+        let json = r#"{
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "type": "function",
+                    "function": {
+                        "index": 0,
+                        "name": "list_peers",
+                        "arguments": {"unused": true}
+                    }
+                }]
+            },
+            "done": true
+        }"#;
+        let chunk: ChatStreamChunk = serde_json::from_str(json).unwrap();
+        assert!(chunk.done);
+        let calls = chunk.message.unwrap().tool_calls;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "list_peers");
+        assert_eq!(calls[0].function.arguments["unused"], true);
+    }
+
+    #[test]
+    fn auto_reply_system_prompt_adds_tools_addon() {
+        let mut s = OllamaAssistantSettings::default();
+        let without = auto_reply_system_prompt(&s);
+        assert!(!without.contains("through tools"));
+        s.tools_enabled = true;
+        let with = auto_reply_system_prompt(&s);
+        assert!(with.contains("through tools"));
+    }
+
+    #[test]
+    fn assistant_settings_default_tools_off() {
+        assert!(!OllamaAssistantSettings::default().tools_enabled);
     }
 }
