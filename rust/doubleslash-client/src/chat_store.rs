@@ -997,6 +997,10 @@ mod tests {
     fn message_kind_for_path_classifies_media() {
         assert_eq!(message_kind_for_path("photo.PNG"), MessageKind::Image);
         assert_eq!(
+            message_kind_for_path("ChatGPT Image Apr 21, 2026, 10_24_40 PM.png"),
+            MessageKind::Image
+        );
+        assert_eq!(
             message_kind_for_path(r"C:\tmp\clip.mp4"),
             MessageKind::Video
         );
@@ -1020,6 +1024,25 @@ mod tests {
         assert_eq!(history[0].attachment_name, "sunset.png");
         assert_eq!(history[0].attachment_path, "/tmp/sunset.png");
         assert_eq!(history[0].size_str, "42 KB");
+    }
+
+    #[test]
+    fn latest_image_attachments_keeps_names_with_spaces() {
+        let dir = tempdir().unwrap();
+        let id = Identity::generate();
+        let store = ChatStore::open(&id, Some(&dir.path().join(CHAT_DB_FILENAME))).unwrap();
+        let mut msg = make_msg("room:default", "🖼 shot", false);
+        msg.kind = MessageKind::Image;
+        msg.attachment_name = "ChatGPT Image Apr 21, 2026, 10_24_40 PM.png".to_owned();
+        msg.attachment_path =
+            r"C:\Users\AWOL\Downloads\ChatGPT Image Apr 21, 2026, 10_24_40 PM.png".to_owned();
+        store.insert(&msg).unwrap();
+        let hits = store
+            .latest_image_attachments(Some("room:default"), 4)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1, msg.attachment_name);
+        assert!(hits[0].0.contains(' '));
     }
 
     #[test]

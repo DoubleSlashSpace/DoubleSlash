@@ -1876,8 +1876,19 @@ impl ConnectionManager {
                     .to_owned();
                 // The offer may be gone — revoked when we deleted the message.
                 // Say so, or the peer waits forever for chunks that will never
-                // come.
+                // come. A sibling device of this identity that never held the
+                // offer must not refuse: device routing fans the accept to
+                // every endpoint, and a "no longer shared" from the empty one
+                // cancelled a live download on Bobert.
                 if !self.file_mgr.has_outbound(&tid) {
+                    if !self.file_mgr.offer_was_withdrawn(&tid) {
+                        debug!(
+                            "[core.file.v1] {} accepted transfer {} we do not hold; ignoring",
+                            &msg.sender[..8.min(msg.sender.len())],
+                            &tid[..8.min(tid.len())]
+                        );
+                        return;
+                    }
                     info!(
                         "[core.file.v1] {} accepted revoked transfer {}; refusing",
                         &msg.sender[..8.min(msg.sender.len())],
@@ -2376,7 +2387,19 @@ impl ConnectionManager {
         // The offer may be gone: revoked when the sender deleted the message,
         // or aged out past OFFER_TTL_SECS. Tell the requester so their chip
         // fails instead of waiting forever for chunks that will never come.
+        // Do not revoke an id we never held — device routing delivers this
+        // request to every endpoint of the identity, and a sibling that
+        // answers "no longer shared" discards the requester's inbound even
+        // while the offering device is streaming.
         if !self.room_file_mgr.has_outbound(&tid) {
+            if !self.room_file_mgr.offer_was_withdrawn(&tid) {
+                debug!(
+                    "[room.file.v1] {} requested transfer {} we do not hold; ignoring",
+                    &msg.sender[..8.min(msg.sender.len())],
+                    &tid[..8.min(tid.len())]
+                );
+                return;
+            }
             info!(
                 "[room.file.v1] {} requested revoked/expired transfer {}; refusing",
                 &msg.sender[..8.min(msg.sender.len())],
@@ -2430,6 +2453,13 @@ impl ConnectionManager {
     ///
     /// Only the peer who advertised it may revoke it — otherwise any room
     /// member could cancel someone else's transfer.
+    ///
+    /// Broadcast (no `to`) is the user deleting the message; targeted is the
+    /// originator refusing one request for an offer it withdrew or let expire.
+    /// Both are honoured. A sibling device of the originator that never held
+    /// the offer stays silent instead of refusing (see
+    /// [`Self::handle_sfu_file_request`]), so a targeted refuse is not a
+    /// stranger's guess; silence is covered by the pull timeout.
     pub(super) async fn handle_sfu_file_revoke(&mut self, msg: &SignalingMessage) {
         let tid = msg
             .payload
@@ -2441,7 +2471,7 @@ impl ConnectionManager {
             return;
         }
         match self.room_file_mgr.inbound_route(&tid) {
-            Some((origin, _, _)) if origin == msg.sender => {}
+            Some((origin, _, _)) if same_supernode_pad(&origin, &msg.sender) => {}
             Some(_) => {
                 warn!(
                     "[room.file.v1] {} tried to revoke a transfer it did not offer; ignoring",

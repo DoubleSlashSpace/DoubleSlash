@@ -625,6 +625,12 @@ impl ConnectionManager {
             .insert(peer_id.to_owned(), Instant::now() - age);
     }
 
+    /// Test-only: the room file manager, to seed inbound offers and pulls.
+    #[cfg(test)]
+    pub(super) fn test_room_file_mgr(&mut self) -> &mut FileTransferManager {
+        &mut self.room_file_mgr
+    }
+
     /// Test-only: whether a peer currently counts as present via the relay.
     #[cfg(test)]
     pub(super) fn test_presence_is_fresh(&self, peer_id: &str) -> bool {
@@ -1544,6 +1550,7 @@ impl ConnectionManager {
                 _ = peer_reconnect_interval.tick() => {
                     self.tick_peer_reconnects().await;
                     self.tick_call_fallback_checks().await;
+                    self.expire_unanswered_room_file_pulls();
                 }
                 _ = room_join_retry_interval.tick() => {
                     self.retry_pending_room_joins().await;
@@ -1600,6 +1607,23 @@ impl ConnectionManager {
                 sn
             };
             self.dispatch_room_transfer_events(evs, &sn, &room_id).await;
+        }
+    }
+
+    /// Fail room pulls whose originator never answered.
+    ///
+    /// Nothing else ends one: the originator's stall timer only covers a
+    /// stream it started, and the requester has no other clock on a request.
+    pub(super) fn expire_unanswered_room_file_pulls(&mut self) {
+        for tid in self.room_file_mgr.take_unanswered_pulls() {
+            info!(
+                "[room.file.v1] no answer to request for {}; failing",
+                &tid[..8.min(tid.len())]
+            );
+            self.emit_event(ConnectionEvent::FileFailed {
+                transfer_id: tid,
+                reason: "sender did not respond".to_owned(),
+            });
         }
     }
 

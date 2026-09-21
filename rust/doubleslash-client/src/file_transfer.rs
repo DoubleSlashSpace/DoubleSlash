@@ -95,6 +95,14 @@ const STALL_GIVE_UP_SECS: f64 = 120.0;
 /// member can accept a file and have it re-streamed from the sender's disk.
 pub const OFFER_TTL_SECS: f64 = 3600.0;
 
+/// How long a room pull may wait for its first chunk before it fails.
+///
+/// Silence is a possible answer: a sibling device of the originator says
+/// nothing about an offer it never held, and an originator that restarted has
+/// lost its offer table. The originator streams as soon as a request lands,
+/// so a healthy pull sees data well inside this window.
+pub const PULL_ANSWER_TIMEOUT_SECS: f64 = 30.0;
+
 // ── Transfer state ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,6 +291,9 @@ pub struct InboundTransfer {
     pub created_at: f64,
     /// Terminal-state timestamp, for eviction. `None` while still active.
     pub finished_at: Option<f64>,
+    /// Room pulls only: when we asked the originator to stream. Only matters
+    /// until the first chunk lands; see [`FileTransferManager::take_unanswered_pulls`].
+    pull_requested_at: Option<f64>,
     /// Where arriving chunks accumulate (memory map, or a sparse `.part` file).
     sink: TransferSink,
     /// COMPLETE arrived before every chunk did. Finish on the last arrival
@@ -328,6 +339,7 @@ impl InboundTransfer {
             base_sha256,
             created_at: unix_now_f64(),
             finished_at: None,
+            pull_requested_at: None,
             sink,
             complete_requested: false,
         }
@@ -499,6 +511,13 @@ pub struct FileTransferManager {
     inbound: HashMap<String, InboundTransfer>,
     /// Old file data keyed by rel_path, for delta application on receive.
     old_data_store: HashMap<String, Vec<u8>>,
+    /// Offers this process withdrew (user deleted the message) or that aged
+    /// past [`OFFER_TTL_SECS`]. A request for one of these should be refused
+    /// with "no longer shared". A request for an id we never held must not —
+    /// device routing delivers `SfuFileRequest` to every endpoint of the
+    /// identity, and a sibling that never had the file must not revoke it
+    /// out from under the device that did.
+    revoked: HashMap<String, f64>,
 }
 
 impl Default for FileTransferManager {
@@ -513,6 +532,7 @@ impl FileTransferManager {
             outbound: HashMap::new(),
             inbound: HashMap::new(),
             old_data_store: HashMap::new(),
+            revoked: HashMap::new(),
         }
     }
 
@@ -554,12 +574,30 @@ impl FileTransferManager {
         }
 
         // Outbound offers stay answerable for OFFER_TTL_SECS so a room member
-        // who accepts late still gets a re-stream; there are no payload bytes
-        // held open, only a path.
-        self.outbound.retain(|_, x| match x.finished_at {
-            Some(t) => now - t < TRANSFER_RETAIN_SECS,
-            None => now - x.created_at < OFFER_TTL_SECS,
+        // who accepts late still gets a re-stream; a path-backed offer holds
+        // no payload bytes, only a path. Completing a stream used to stamp
+        // `finished_at` and then drop the offer after TRANSFER_RETAIN_SECS,
+        // which cut the pull window from an hour to five minutes.
+        //
+        // An inline source *is* the payload (up to INLINE_MAX), and nothing
+        // re-pulls a finished one — room offers are always path-backed, and a
+        // 1:1 transfer only starts from Pending — so it is still freed on the
+        // terminal-record schedule.
+        let mut expired_out: Vec<String> = Vec::new();
+        self.outbound.retain(|id, x| {
+            let keep = match (&x.source, x.finished_at) {
+                (TransferSource::Inline(_), Some(t)) => now - t < TRANSFER_RETAIN_SECS,
+                _ => now - x.created_at < OFFER_TTL_SECS,
+            };
+            if !keep {
+                expired_out.push(id.clone());
+            }
+            keep
         });
+        for id in expired_out {
+            self.revoked.insert(id, now);
+        }
+        self.revoked.retain(|_, t| now - *t < OFFER_TTL_SECS);
 
         // Inbound records own a `.part` file, so dropping one must delete it.
         let mut orphaned = Vec::new();
@@ -660,12 +698,26 @@ impl FileTransferManager {
     ///
     /// Returns `true` if an offer was actually withdrawn.
     pub fn revoke_outbound(&mut self, transfer_id: &str) -> bool {
-        self.outbound.remove(transfer_id).is_some()
+        if self.outbound.remove(transfer_id).is_some() {
+            self.revoked.insert(transfer_id.to_owned(), unix_now_f64());
+            true
+        } else {
+            false
+        }
     }
 
     /// True if we hold a still-serveable outbound offer for `transfer_id`.
     pub fn has_outbound(&self, transfer_id: &str) -> bool {
         self.outbound.contains_key(transfer_id)
+    }
+
+    /// True if *this* process withdrew or expired the offer.
+    ///
+    /// Distinct from [`Self::has_outbound`]: a sibling device of the same
+    /// identity never held the bytes, so a request arriving there is unknown,
+    /// not withdrawn.
+    pub fn offer_was_withdrawn(&self, transfer_id: &str) -> bool {
+        self.revoked.contains_key(transfer_id)
     }
 
     /// True if we have an inbound transfer in flight (offer accepted or pending).
@@ -679,6 +731,39 @@ impl FileTransferManager {
             if let TransferSink::PartFile { path, .. } = &x.sink {
                 let _ = std::fs::remove_file(path);
             }
+        }
+    }
+
+    /// Discard room pulls that heard nothing within [`PULL_ANSWER_TIMEOUT_SECS`].
+    ///
+    /// A pull that has received any chunk, or its COMPLETE, is being answered
+    /// and is left alone. Returns the discarded ids; the caller surfaces each
+    /// as a failure, the same way a revoke is surfaced.
+    pub fn take_unanswered_pulls(&mut self) -> Vec<String> {
+        let now = unix_now_f64();
+        let silent: Vec<String> = self
+            .inbound
+            .iter()
+            .filter(|(_, x)| {
+                x.state == TransferState::Transferring
+                    && !x.complete_requested
+                    && x.chunks_received() == 0
+                    && x.pull_requested_at
+                        .is_some_and(|t| now - t >= PULL_ANSWER_TIMEOUT_SECS)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &silent {
+            self.discard_inbound(id);
+        }
+        silent
+    }
+
+    /// Test-only: pretend the pull for `transfer_id` was requested `secs` ago.
+    #[cfg(test)]
+    pub(crate) fn test_backdate_pull(&mut self, transfer_id: &str, secs: f64) {
+        if let Some(x) = self.inbound.get_mut(transfer_id) {
+            x.pull_requested_at = Some(unix_now_f64() - secs);
         }
     }
 
@@ -1263,6 +1348,7 @@ impl FileTransferManager {
             return vec![];
         }
         xfer.state = TransferState::Transferring;
+        xfer.pull_requested_at = Some(unix_now_f64());
         vec![TransferEvent::StateChanged {
             transfer_id: transfer_id.to_owned(),
             state: "transferring".into(),
@@ -2523,12 +2609,81 @@ mod tests {
         let (transfer_id, _) = mgr
             .offer_file("peer-1", "note.txt", data, "file", None, true)
             .unwrap();
-        // Auto-push ran to completion, so the record is terminal.
+        // Auto-push ran to completion, so the record is terminal. An inline
+        // source is the payload itself, so it must not wait out OFFER_TTL.
         mgr.outbound.get_mut(&transfer_id).unwrap().state = TransferState::Complete;
         mgr.outbound.get_mut(&transfer_id).unwrap().finished_at =
             Some(unix_now_f64() - TRANSFER_RETAIN_SECS - 1.0);
         assert_eq!(mgr.gc(), 1);
         assert!(mgr.outbound.is_empty());
+        assert!(
+            mgr.offer_was_withdrawn(&transfer_id),
+            "a dropped offer must tombstone so a late accept is refused, not ignored"
+        );
+    }
+
+    /// A path-backed room offer holds no payload, and a member who accepts
+    /// after someone else's download finished still needs it answerable.
+    #[test]
+    fn gc_keeps_a_finished_path_offer_until_its_ttl() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("clip.bin");
+        std::fs::write(&src, vec![3u8; 4096]).unwrap();
+        let mut mgr = FileTransferManager::new();
+        let (tid, _) = mgr
+            .offer_file_from_path_with_id("room-1", "clip.bin", &src, "room_file", false, None)
+            .unwrap();
+        mgr.outbound.get_mut(&tid).unwrap().state = TransferState::Complete;
+        mgr.outbound.get_mut(&tid).unwrap().finished_at =
+            Some(unix_now_f64() - TRANSFER_RETAIN_SECS - 1.0);
+        assert_eq!(mgr.gc(), 0);
+        assert!(mgr.has_outbound(&tid), "late pull must still be served");
+
+        mgr.outbound.get_mut(&tid).unwrap().created_at = unix_now_f64() - OFFER_TTL_SECS - 1.0;
+        assert_eq!(mgr.gc(), 1);
+        assert!(!mgr.has_outbound(&tid));
+        assert!(
+            mgr.offer_was_withdrawn(&tid),
+            "TTL drop must tombstone so a late request is refused, not ignored"
+        );
+    }
+
+    /// A requester may get no answer at all — a sibling device of the
+    /// originator stays silent about an offer it never held, and a restarted
+    /// originator has lost its offers — so a silent pull must fail, while one
+    /// that is receiving data (or was never requested) must not.
+    #[test]
+    fn only_a_silent_pull_times_out() {
+        let mut mgr = FileTransferManager::new();
+        for tid in ["tid-silent", "tid-streaming", "tid-fresh", "tid-offered"] {
+            mgr.on_offer_received_with_room(
+                "origin",
+                "room-1",
+                "sn",
+                tid,
+                "a.bin",
+                "00",
+                16,
+                1,
+                "room_file",
+                false,
+                false,
+                "",
+            );
+        }
+        for tid in ["tid-silent", "tid-streaming", "tid-fresh"] {
+            mgr.accept_transfer_locally(tid);
+        }
+        mgr.test_backdate_pull("tid-silent", PULL_ANSWER_TIMEOUT_SECS + 1.0);
+        mgr.test_backdate_pull("tid-streaming", PULL_ANSWER_TIMEOUT_SECS + 1.0);
+        mgr.on_chunk_bytes_received("tid-streaming", 0, vec![0u8; 16]);
+
+        assert_eq!(mgr.take_unanswered_pulls(), vec!["tid-silent".to_owned()]);
+        assert!(!mgr.has_inbound("tid-silent"));
+        for tid in ["tid-streaming", "tid-fresh", "tid-offered"] {
+            assert!(mgr.has_inbound(tid), "{tid} must survive");
+        }
+        assert!(mgr.take_unanswered_pulls().is_empty());
     }
 
     #[test]
@@ -2819,12 +2974,26 @@ mod tests {
 
         assert!(sender.revoke_outbound(&transfer_id));
         assert!(!sender.has_outbound(&transfer_id));
+        assert!(
+            sender.offer_was_withdrawn(&transfer_id),
+            "this device withdrew the share and must refuse later requests"
+        );
         // A later acceptor gets nothing at all.
         assert!(sender
             .start_stream_for(&transfer_id, "late-peer", ROOM_FILE_CHUNK_BUDGET)
             .is_empty());
         // Revoking twice is harmless and reports that nothing was withdrawn.
         assert!(!sender.revoke_outbound(&transfer_id));
+    }
+
+    /// A sibling device never inserted this offer. A request for it is unknown,
+    /// not a withdrawal — refusing would cancel a live pull from the device
+    /// that actually holds the file.
+    #[test]
+    fn unknown_offer_is_not_a_withdrawal() {
+        let mgr = FileTransferManager::new();
+        assert!(!mgr.has_outbound("tid-never"));
+        assert!(!mgr.offer_was_withdrawn("tid-never"));
     }
 
     /// Declining must delete the `.part` file, not leave it in Downloads.

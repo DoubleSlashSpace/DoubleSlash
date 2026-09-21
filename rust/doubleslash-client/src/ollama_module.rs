@@ -1791,6 +1791,12 @@ mod tests {
     fn vision_filename_accepts_raster_not_svg_or_video() {
         assert!(is_vision_filename("shot.PNG"));
         assert!(is_vision_filename("a.webp"));
+        assert!(is_vision_filename(
+            "ChatGPT Image Apr 21, 2026, 10_24_40 PM.png"
+        ));
+        assert!(is_vision_filename(
+            r"C:\Users\AWOL\Downloads\Screenshot 2025-10-08 192118.png"
+        ));
         assert!(!is_vision_filename("icon.svg"));
         assert!(!is_vision_filename("clip.mp4"));
     }

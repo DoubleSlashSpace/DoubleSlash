@@ -1772,6 +1772,187 @@ async fn no_announces_are_sent_while_nothing_can_carry_them() {
     );
 }
 
+/// Seed a small room offer from `origin` and mark it requested, as
+/// `accept_room_file` does before it sends `SfuFileRequest`.
+fn seed_room_pull(t: &mut harness::TestCm, origin: &str, tid: &str) {
+    let mgr = t.cm.test_room_file_mgr();
+    mgr.on_offer_received_with_room(
+        origin,
+        "default",
+        "SN-A",
+        tid,
+        "a.bin",
+        "00",
+        16,
+        1,
+        "room_file",
+        false,
+        false,
+        "",
+    );
+    mgr.accept_transfer_locally(tid);
+}
+
+/// The reason of the first `FileFailed` for `tid` still queued, if any.
+fn file_failed_reason(
+    events: &mut tokio::sync::mpsc::Receiver<ConnectionEvent>,
+    tid: &str,
+) -> Option<String> {
+    while let Ok(ev) = events.try_recv() {
+        if let ConnectionEvent::FileFailed {
+            transfer_id,
+            reason,
+        } = ev
+        {
+            if transfer_id == tid {
+                return Some(reason);
+            }
+        }
+    }
+    None
+}
+
+fn signed_room_file_msg(
+    from: &crate::identity::Identity,
+    msg_type: MessageType,
+    tid: &str,
+    to: &str,
+) -> crate::protocol::SignalingMessage {
+    use serde_json::Value;
+    let mut msg = crate::protocol::SignalingMessage::new(msg_type, from.public_id());
+    for (k, v) in [("room_id", "default"), ("transfer_id", tid), ("to", to)] {
+        msg.payload
+            .insert(k.to_owned(), Value::String(v.to_owned()));
+    }
+    harness::sign(from, &mut msg);
+    msg
+}
+
+/// The originator refusing one request, for an offer it withdrew or let
+/// expire, must fail that pull. Ignoring every targeted refuse left the
+/// requester's chip pending with nothing to end it.
+#[tokio::test]
+async fn a_targeted_refusal_from_the_originator_fails_the_pull() {
+    use crate::identity::Identity;
+    let mut t = harness::test_cm();
+    let me = t.identity.public_id();
+    let origin = Identity::generate();
+    seed_room_pull(&mut t, &origin.public_id(), "tid-gone");
+
+    // Someone who did not offer the file cannot cancel it.
+    let stranger = Identity::generate();
+    t.cm.handle_inbound(signed_room_file_msg(
+        &stranger,
+        MessageType::SfuFileRevoke,
+        "tid-gone",
+        &me,
+    ))
+    .await;
+    assert!(t.cm.test_room_file_mgr().has_inbound("tid-gone"));
+    assert_eq!(file_failed_reason(&mut t.events, "tid-gone"), None);
+
+    t.cm.handle_inbound(signed_room_file_msg(
+        &origin,
+        MessageType::SfuFileRevoke,
+        "tid-gone",
+        &me,
+    ))
+    .await;
+    assert!(!t.cm.test_room_file_mgr().has_inbound("tid-gone"));
+    assert_eq!(
+        file_failed_reason(&mut t.events, "tid-gone").as_deref(),
+        Some("no longer shared")
+    );
+}
+
+/// Device routing delivers a pull request to every endpoint of the offering
+/// identity. The endpoint that withdrew the offer refuses it; one that never
+/// held it must stay silent, or it cancels a live download from its sibling.
+#[tokio::test]
+async fn only_the_device_that_withdrew_an_offer_refuses_a_pull() {
+    use crate::identity::Identity;
+    use serde_json::Value;
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-A");
+    let me = t.identity.public_id();
+    let requester = Identity::generate();
+    let refusals = |sent: Vec<crate::protocol::SignalingMessage>, tid: &str| {
+        sent.into_iter()
+            .filter(|m| {
+                m.msg_type == MessageType::SfuFileRevoke
+                    && m.payload.get("transfer_id").and_then(Value::as_str) == Some(tid)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    t.cm.handle_inbound_from_supernode(
+        "SN-A".into(),
+        signed_room_file_msg(&requester, MessageType::SfuFileRequest, "tid-never", &me),
+    )
+    .await;
+    assert!(
+        refusals(harness::drain_ws(&mut sn), "tid-never").is_empty(),
+        "an endpoint that never held the offer must not refuse it"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("a.bin");
+    std::fs::write(&src, vec![1u8; 64]).unwrap();
+    t.cm.test_room_file_mgr()
+        .offer_file_from_path_with_id(
+            "default",
+            "a.bin",
+            &src,
+            "room_file",
+            false,
+            Some("tid-withdrawn"),
+        )
+        .unwrap();
+    assert!(t.cm.test_room_file_mgr().revoke_outbound("tid-withdrawn"));
+    t.cm.handle_inbound_from_supernode(
+        "SN-A".into(),
+        signed_room_file_msg(
+            &requester,
+            MessageType::SfuFileRequest,
+            "tid-withdrawn",
+            &me,
+        ),
+    )
+    .await;
+    let refused = refusals(harness::drain_ws(&mut sn), "tid-withdrawn");
+    assert_eq!(refused.len(), 1, "the withdrawing endpoint must refuse");
+    assert_eq!(
+        refused[0].payload.get("to").and_then(Value::as_str),
+        Some(requester.public_id().as_str())
+    );
+}
+
+/// A pull nobody answers — the originator restarted, or only a sibling that
+/// never held the offer heard the request — must fail visibly.
+#[tokio::test]
+async fn an_unanswered_room_pull_fails_visibly() {
+    let mut t = harness::test_cm();
+    seed_room_pull(&mut t, "origin", "tid-silent");
+
+    t.cm.expire_unanswered_room_file_pulls();
+    assert_eq!(
+        file_failed_reason(&mut t.events, "tid-silent"),
+        None,
+        "a fresh pull keeps waiting"
+    );
+
+    t.cm.test_room_file_mgr().test_backdate_pull(
+        "tid-silent",
+        crate::file_transfer::PULL_ANSWER_TIMEOUT_SECS + 1.0,
+    );
+    t.cm.expire_unanswered_room_file_pulls();
+    assert_eq!(
+        file_failed_reason(&mut t.events, "tid-silent").as_deref(),
+        Some("sender did not respond")
+    );
+    assert!(!t.cm.test_room_file_mgr().has_inbound("tid-silent"));
+}
+
 mod harness {
     use super::super::events::ConnectionEvent;
     use super::super::ConnectionManager;

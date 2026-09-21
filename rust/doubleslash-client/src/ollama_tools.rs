@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use parking_lot::{Mutex, RwLock};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::call_controller::CallCommand;
 use crate::chat_store::{self, ChatStore};
@@ -34,7 +34,8 @@ Call list_peers or list_rooms to resolve handles and room names to IDs instead o
 join_voice / start_call / accept_call put this client on the voice path; speak says a short line out loud there \
 (text chat replies are silent on voice until you call speak). \
 When a user message has an attached image, you can see it — do not claim to be text-only. \
-Use view_image only if no image is already attached. \
+Use view_image only if no image is already attached. Pass message_id (xfer-…) not the file name; \
+names with spaces are fine as attachment labels but are not chat ids. With no args, the latest image in this conversation is used. \
 After tool calls, always send a short user-facing summary of what you did and what happened. \
 Do not dump raw JSON unless the user asks.";
 
@@ -256,7 +257,10 @@ impl OllamaToolHost {
                     text: truncate_result(&v.to_string()),
                     images,
                 },
-                Err(e) => ToolOutcome::err(e),
+                Err(e) => {
+                    warn!("[ollama] view_image failed: {e}");
+                    ToolOutcome::err(e)
+                }
             };
         }
         let result = match name {
@@ -820,18 +824,66 @@ impl OllamaToolHost {
     }
 
     fn view_image(&self, args: &Value) -> Result<(Value, Vec<String>), String> {
-        let (path, name) = if let Some(id) = arg_str(args, &["message_id", "id"]) {
-            let msg = self
-                .chat_store
-                .get_by_id(&id)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("no message {id}"))?;
-            if msg.attachment_path.is_empty() {
-                return Err("that message has no saved attachment".into());
+        let query = arg_str(
+            args,
+            &[
+                "message_id",
+                "id",
+                "name",
+                "filename",
+                "path",
+                "file",
+                "attachment",
+            ],
+        );
+        // A chat id names its image on its own; the scoped candidate list is
+        // only needed to match a file name or pick the latest image.
+        let mut text_message = false;
+        let by_id = query
+            .as_deref()
+            .and_then(|q| match self.chat_store.get_by_id(q) {
+                Ok(Some(msg)) if !msg.attachment_path.is_empty() => {
+                    Some((msg.attachment_path, msg.attachment_name))
+                }
+                Ok(Some(_)) => {
+                    text_message = true;
+                    None
+                }
+                _ => None,
+            });
+        // Set when nothing matched the query and the latest image stands in.
+        let mut substituted_for = None;
+        let (path, name) = match by_id {
+            Some(hit) => hit,
+            None => {
+                let candidates = self.image_candidates(args)?;
+                match query {
+                    Some(q) => match find_named_image(&candidates, &q) {
+                        Some(hit) => hit,
+                        None if text_message => {
+                            return Err("that message has no saved attachment".into())
+                        }
+                        None => {
+                            // Models often pass the file name (including
+                            // spaces) as message_id. Falling back to the
+                            // latest image is better than failing the turn and
+                            // claiming we are text-only — but say so, or the
+                            // model describes the wrong picture as the one
+                            // the user asked about.
+                            let hit = candidates
+                                .into_iter()
+                                .next()
+                                .ok_or_else(|| format!("no image matching '{q}'"))?;
+                            substituted_for = Some(q);
+                            hit
+                        }
+                    },
+                    None => candidates
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| "no saved image attachment to view".to_string())?,
+                }
             }
-            (msg.attachment_path, msg.attachment_name)
-        } else {
-            self.latest_image_attachment(args)?
         };
         let label = if name.is_empty() {
             std::path::Path::new(&path)
@@ -848,41 +900,61 @@ impl OllamaToolHost {
         }
         let b64 = crate::ollama_module::encode_image_file(std::path::Path::new(&path))?;
         info!("[ollama] view_image loaded {label}");
-        Ok((
-            json!({
+        let result = match substituted_for {
+            Some(q) => json!({
+                "ok": true,
+                "name": label,
+                "requested": q,
+                "note": format!(
+                    "no saved image matched '{q}'; attached the latest image ({label}) \
+                     instead — tell the user if it is not the one they meant"
+                ),
+            }),
+            None => json!({
                 "ok": true,
                 "name": label,
                 "note": "image attached to the next model turn — look at it",
             }),
-            vec![b64],
-        ))
+        };
+        Ok((result, vec![b64]))
     }
 
-    fn latest_image_attachment(&self, args: &Value) -> Result<(String, String), String> {
-        let key = if let Ok(room) = self.resolve_room(args) {
-            Some(chat_store::room_conversation_id(&room.room_id))
-        } else if let Some(peer) = arg_str(args, &["peer", "peer_id", "handle"]) {
-            Some(self.peer_id_for(&peer)?)
-        } else {
-            self.active_conversation
-                .lock()
-                .as_deref()
-                .and_then(store_key_from_conversation)
-        };
+    /// Recent saved images: this conversation first, then any chat.
+    ///
+    /// Does not treat `name` as a room id — gemma4 passes the file name there
+    /// when the name has spaces. A room or peer that does not resolve falls
+    /// through to the next scope instead of failing: the list is only a
+    /// search space, and a mistyped scope must not hide an image the model
+    /// can still find by name or id.
+    fn image_candidates(&self, args: &Value) -> Result<Vec<(String, String)>, String> {
+        let room_key = arg_str(args, &["room", "room_id", "room_name"]).and_then(|q| {
+            let store = self.room_store.read();
+            let sn = arg_str(args, &["supernode_id", "supernode"]);
+            resolve_room(&store, &q, sn.as_deref())
+                .ok()
+                .map(|room| chat_store::room_conversation_id(&room.room_id))
+        });
+        let key = room_key
+            .or_else(|| {
+                arg_str(args, &["peer", "peer_id", "handle"])
+                    .and_then(|peer| self.peer_id_for(&peer).ok())
+            })
+            .or_else(|| {
+                self.active_conversation
+                    .lock()
+                    .as_deref()
+                    .and_then(store_key_from_conversation)
+            });
         let scoped = self
             .chat_store
             .latest_image_attachments(key.as_deref(), 8)
             .map_err(|e| e.to_string())?;
-        if let Some(hit) = scoped.into_iter().next() {
-            return Ok(hit);
+        if !scoped.is_empty() {
+            return Ok(scoped);
         }
-        let any = self
-            .chat_store
+        self.chat_store
             .latest_image_attachments(None, 8)
-            .map_err(|e| e.to_string())?;
-        any.into_iter()
-            .next()
-            .ok_or_else(|| "no saved image attachment to view".into())
+            .map_err(|e| e.to_string())
     }
 
     fn enable_agent_voice_if_configured(&self) {
@@ -1155,11 +1227,13 @@ fn tool_schemas() -> Vec<Value> {
         ),
         fn_tool(
             "view_image",
-            "Load a chat image so you can see it. Optional: message_id from get_recent_chat, or peer/room. With no args, uses the latest image in this conversation.",
+            "Load a saved chat image so you can see it. Prefer no args (latest in this conversation) or message_id from get_recent_chat (xfer-…). File names, including those with spaces, are also accepted as name/filename.",
             json!({
                 "type": "object",
                 "properties": {
-                    "message_id": {"type": "string"},
+                    "message_id": {"type": "string", "description": "Chat message id, usually xfer-…"},
+                    "name": {"type": "string", "description": "Attachment file name; spaces are allowed"},
+                    "filename": {"type": "string"},
                     "peer": {"type": "string"},
                     "room": {"type": "string"}
                 }
@@ -1194,6 +1268,39 @@ fn normalize_args(arguments: &Value) -> Value {
         Value::Null => json!({}),
         other => other.clone(),
     }
+}
+
+/// Match a model-supplied name or id against a saved image.
+///
+/// Gemma4 often puts the file name in `message_id`. Names with spaces/commas
+/// (e.g. ChatGPT exports) must still match the stored attachment_name.
+fn find_named_image(candidates: &[(String, String)], query: &str) -> Option<(String, String)> {
+    let q = image_name_key(query);
+    if q.is_empty() {
+        return None;
+    }
+    candidates
+        .iter()
+        .find(|(path, name)| image_name_key(name) == q || image_name_key(path) == q)
+        .cloned()
+        .or_else(|| {
+            candidates
+                .iter()
+                .find(|(path, name)| {
+                    let n = image_name_key(name);
+                    let p = image_name_key(path);
+                    (!n.is_empty() && n.contains(&q)) || (!p.is_empty() && p.contains(&q))
+                })
+                .cloned()
+        })
+}
+
+fn image_name_key(s: &str) -> String {
+    let base = std::path::Path::new(s)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| s.to_owned());
+    base.trim().to_ascii_lowercase()
 }
 
 fn arg_str(args: &Value, keys: &[&str]) -> Option<String> {
@@ -1435,6 +1542,127 @@ mod tests {
         let args = json!({"handle": "Ada", "body": "hi"});
         assert_eq!(arg_str(&args, &["peer", "handle"]).as_deref(), Some("Ada"));
         assert_eq!(arg_str(&args, &["message", "body"]).as_deref(), Some("hi"));
+    }
+
+    /// A tool host over empty stores in a temp dir that also holds the images.
+    fn host_with_stores() -> (Arc<OllamaToolHost>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let id = Arc::new(Identity::generate());
+        let peers = PeerStore::open(&id, Some(&dir.path().join("peers.dat"))).unwrap();
+        let rooms = RoomStore::open(&id, Some(&dir.path().join("rooms.dat"))).unwrap();
+        let chats = ChatStore::open(&id, Some(&dir.path().join("chat.db"))).unwrap();
+        let (cmd_tx, _) = mpsc::channel(1);
+        let (call_tx, _) = mpsc::channel(1);
+        let host = OllamaToolHost::new(
+            id,
+            Arc::new(RwLock::new(peers)),
+            Arc::new(RwLock::new(rooms)),
+            Arc::new(chats),
+            cmd_tx,
+            call_tx,
+            "me".to_owned(),
+        );
+        (host, dir)
+    }
+
+    /// Save a chat message in `room:default`; `name` non-empty makes it an image.
+    fn save_message(host: &OllamaToolHost, dir: &std::path::Path, id: &str, name: &str) {
+        let (kind, path) = if name.is_empty() {
+            (chat_store::MessageKind::Text, String::new())
+        } else {
+            let path = dir.join(name);
+            std::fs::write(&path, b"\x89PNG not really").unwrap();
+            (
+                chat_store::MessageKind::Image,
+                path.to_string_lossy().into_owned(),
+            )
+        };
+        host.chat_store
+            .insert(&chat_store::ChatMessage {
+                id: id.to_owned(),
+                peer_id: "room:default".to_owned(),
+                sender: "peer".to_owned(),
+                recipient: "me".to_owned(),
+                body: "attachment".to_owned(),
+                timestamp: now_secs(),
+                is_self: false,
+                status: chat_store::MessageStatus::Sent,
+                kind,
+                attachment_name: name.to_owned(),
+                attachment_path: path,
+                size_str: String::new(),
+                status_note: String::new(),
+                sender_handle: "Peer".to_owned(),
+            })
+            .unwrap();
+    }
+
+    /// A room or peer the model got wrong narrows nothing; it must not fail a
+    /// call whose message id or file name already names the image.
+    #[test]
+    fn view_image_survives_an_unresolvable_scope() {
+        let (host, dir) = host_with_stores();
+        save_message(&host, dir.path(), "xfer-1", "shot one.png");
+
+        let (v, images) = host
+            .view_image(&json!({"message_id": "xfer-1", "room": "no such room"}))
+            .unwrap();
+        assert_eq!(v["name"], "shot one.png");
+        assert_eq!(images.len(), 1);
+
+        let (v, _) = host
+            .view_image(&json!({"name": "shot one.png", "peer": "nobody"}))
+            .unwrap();
+        assert_eq!(v["name"], "shot one.png");
+    }
+
+    /// Falling back to the latest image must say so, or the model describes
+    /// it as the picture the user asked about.
+    #[test]
+    fn view_image_reports_a_substituted_image() {
+        let (host, dir) = host_with_stores();
+        save_message(&host, dir.path(), "xfer-a", "older.png");
+        save_message(&host, dir.path(), "xfer-b", "newer.png");
+        save_message(&host, dir.path(), "text-1", "");
+
+        let (v, _) = host.view_image(&json!({"name": "older.png"})).unwrap();
+        assert_eq!(v["name"], "older.png");
+        assert!(v.get("requested").is_none());
+
+        let (v, _) = host.view_image(&json!({"name": "missing.png"})).unwrap();
+        assert_eq!(v["name"], "newer.png");
+        assert_eq!(v["requested"], "missing.png");
+
+        assert_eq!(
+            host.view_image(&json!({"message_id": "text-1"}))
+                .unwrap_err(),
+            "that message has no saved attachment"
+        );
+    }
+
+    #[test]
+    fn named_image_matches_names_with_spaces() {
+        let saved = "C:\\Users\\AWOL\\Downloads\\ChatGPT Image Apr 21, 2026, 10_24_40 PM.png";
+        let name = "ChatGPT Image Apr 21, 2026, 10_24_40 PM.png";
+        let candidates = vec![(saved.to_owned(), name.to_owned())];
+        assert_eq!(
+            find_named_image(&candidates, name).unwrap().1,
+            name,
+            "exact file name"
+        );
+        assert_eq!(
+            find_named_image(&candidates, saved).unwrap().1,
+            name,
+            "full Windows path"
+        );
+        assert_eq!(
+            find_named_image(&candidates, "ChatGPT Image Apr 21")
+                .unwrap()
+                .1,
+            name,
+            "truncated at comma still matches"
+        );
+        assert!(find_named_image(&candidates, "xfer-nope").is_none());
     }
 
     #[test]

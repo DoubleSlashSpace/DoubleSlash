@@ -107,6 +107,7 @@ Supernodes may use peer/device IDs, room/session IDs, membership, indices, signa
 
 - Room offers are advertise-then-pull: chunks target the requesting member; late requests are served from the originator's disk, not a supernode cache.
 - Preserve `xfer-{transfer_id}` chat IDs, offer withdrawal on deletion, and sender-authenticated `SfuFileRevoke`. Missing offers should fail visibly. Revocation cannot remove already downloaded copies.
+- Device routing delivers requests/accepts to every endpoint of the offering identity. Only an endpoint that withdrew or expired the offer (`offer_was_withdrawn`) refuses; one that never held it stays silent, or it cancels its sibling's live stream. Silence is covered by the requester's `PULL_ANSWER_TIMEOUT_SECS`; do not drop that timeout or ignore targeted refusals.
 - Files above `INLINE_MAX` (8 MiB) stream uncompressed and without delta encoding. Sparse receiver offsets depend on `payload_len == size`; changing encoding requires changing that framing/offset contract. Maximum transfer size is 250 MiB.
 - Keep sender pacing, bounded queues, retries, stalled-transfer detection, and completion/hash checks. Never trade missing ordered chunks for silent success.
 
