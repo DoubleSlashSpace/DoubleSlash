@@ -68,6 +68,15 @@ pub fn message_kind_for_path(path: &str) -> MessageKind {
     }
 }
 
+/// Chat body for an attachment message: an emoji for the kind, then the name.
+pub fn attachment_body_label(kind: &MessageKind, name: &str) -> String {
+    match kind {
+        MessageKind::Image => format!("🖼 {name}"),
+        MessageKind::Video => format!("🎬 {name}"),
+        _ => format!("📎 {name}"),
+    }
+}
+
 /// Human-readable size for attachment chips (e.g. "1.2 MB").
 pub fn format_byte_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
@@ -154,6 +163,17 @@ pub struct ChatMessage {
     pub size_str: String,
     pub status_note: String,
     pub sender_handle: String,
+}
+
+/// A history message's saved attachment, from [`ChatStore::recent_attachments`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedAttachment {
+    pub message_id: String,
+    /// ChatStore conversation key (`peer_id` column).
+    pub conversation: String,
+    pub path: String,
+    pub name: String,
+    pub mine: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -712,6 +732,50 @@ impl ChatStore {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?;
             for row in rows {
+                out.push(row?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Newest messages of any kind that carry a saved attachment.
+    ///
+    /// Newest first, optionally limited to one conversation key. Used by the
+    /// Ollama `send_file` / `list_shareable_files` tools to re-share files
+    /// that are already in this profile's history.
+    pub fn recent_attachments(
+        &self,
+        conversation: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SavedAttachment>> {
+        let conn = self.conn.lock();
+        let limit = limit.clamp(1, 100) as i64;
+        let map = |row: &rusqlite::Row<'_>| {
+            Ok(SavedAttachment {
+                message_id: row.get(0)?,
+                conversation: row.get(1)?,
+                path: row.get(2)?,
+                name: row.get(3)?,
+                mine: row.get::<_, i64>(4)? != 0,
+            })
+        };
+        let mut out = Vec::new();
+        if let Some(key) = conversation {
+            let mut stmt = conn.prepare(
+                r#"SELECT id, peer_id, attachment_path, attachment_name, is_self FROM messages
+                   WHERE peer_id = ?1 AND attachment_path != ''
+                   ORDER BY rowid DESC LIMIT ?2"#,
+            )?;
+            for row in stmt.query_map(params![key, limit], map)? {
+                out.push(row?);
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                r#"SELECT id, peer_id, attachment_path, attachment_name, is_self FROM messages
+                   WHERE attachment_path != ''
+                   ORDER BY rowid DESC LIMIT ?1"#,
+            )?;
+            for row in stmt.query_map(params![limit], map)? {
                 out.push(row?);
             }
         }

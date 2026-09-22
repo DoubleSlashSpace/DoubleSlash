@@ -100,6 +100,11 @@ pub mod ffi {
         #[qproperty(bool, ollama_voice_enabled)]
         /// Ollama model for speech-to-text of remote speakers. Empty = off.
         #[qproperty(QString, ollama_stt_model)]
+        /// Offer the assistant `send_file`: re-share chat attachments, plus
+        /// files in `ollama_share_folder`. Only with `ollama_tools_enabled`.
+        #[qproperty(bool, ollama_file_sharing_enabled)]
+        /// Folder whose files the assistant may send. Empty = attachments only.
+        #[qproperty(QString, ollama_share_folder)]
         /// Show a click-to-open preview card for YouTube links in chat.
         /// Privacy-safe: no thumbnail requests are made.
         #[qproperty(bool, youtube_preview_enabled)]
@@ -189,6 +194,13 @@ pub mod ffi {
         #[qinvokable]
         #[rust_name = "effective_video_quality_json"]
         fn effectiveVideoQualityJson(self: Pin<&mut Self>) -> QString;
+
+        /// Why `path` cannot be the assistant's shared folder, or empty if
+        /// it can. The same check the `send_file` tool applies, shown up
+        /// front so a bad pick is not discovered by the model.
+        #[qinvokable]
+        #[rust_name = "share_folder_problem"]
+        fn shareFolderProblem(self: Pin<&mut Self>, path: &QString) -> QString;
     }
 }
 
@@ -295,6 +307,10 @@ struct SettingsSnapshot {
     ollama_voice_enabled: bool,
     #[serde(default)]
     ollama_stt_model: String,
+    #[serde(default)]
+    ollama_file_sharing_enabled: bool,
+    #[serde(default)]
+    ollama_share_folder: String,
     #[serde(default = "default_noise_strength")]
     noise_strength: String,
     #[serde(default = "default_theme")]
@@ -455,6 +471,8 @@ impl Default for SettingsSnapshot {
             ollama_tools_enabled: false,
             ollama_voice_enabled: false,
             ollama_stt_model: String::new(),
+            ollama_file_sharing_enabled: false,
+            ollama_share_folder: String::new(),
             noise_strength: default_noise_strength(),
             theme: default_theme(),
             relay_allow_gated: true,
@@ -529,6 +547,8 @@ pub struct SettingsModelRust {
     ollama_tools_enabled: bool,
     ollama_voice_enabled: bool,
     ollama_stt_model: QString,
+    ollama_file_sharing_enabled: bool,
+    ollama_share_folder: QString,
     youtube_preview_enabled: bool,
     youtube_inline_ack: bool,
     onboarding_complete: bool,
@@ -603,6 +623,8 @@ impl Default for SettingsModelRust {
             ollama_tools_enabled: s.ollama_tools_enabled,
             ollama_voice_enabled: s.ollama_voice_enabled,
             ollama_stt_model: QString::from(s.ollama_stt_model.as_str()),
+            ollama_file_sharing_enabled: s.ollama_file_sharing_enabled,
+            ollama_share_folder: QString::from(s.ollama_share_folder.as_str()),
             youtube_preview_enabled: s.youtube_preview_enabled,
             youtube_inline_ack: s.youtube_inline_ack,
             onboarding_complete: s.onboarding_complete,
@@ -769,6 +791,8 @@ impl ffi::SettingsModel {
             ollama_tools_enabled: r.ollama_tools_enabled,
             ollama_voice_enabled: r.ollama_voice_enabled,
             ollama_stt_model: r.ollama_stt_model.to_string(),
+            ollama_file_sharing_enabled: r.ollama_file_sharing_enabled,
+            ollama_share_folder: r.ollama_share_folder.to_string(),
             youtube_preview_enabled: r.youtube_preview_enabled,
             youtube_inline_ack: r.youtube_inline_ack,
             onboarding_complete: r.onboarding_complete,
@@ -876,6 +900,19 @@ impl ffi::SettingsModel {
             "keyframe_secs": q.keyframe_interval_secs,
         });
         QString::from(json.to_string().as_str())
+    }
+
+    fn share_folder_problem(self: Pin<&mut Self>, path: &QString) -> QString {
+        // The profile these settings belong to, as well as the default ones:
+        // they are the same folder unless this model was loaded elsewhere.
+        let mut protected = crate::ollama_share::ShareFolder::protected_dirs();
+        if let Some(dir) = self.rust().profile_settings_file.parent() {
+            protected.push(dir.to_path_buf());
+        }
+        match crate::ollama_share::ShareFolder::open(&path.to_string(), &protected) {
+            Ok(_) => QString::default(),
+            Err(e) => QString::from(e.as_str()),
+        }
     }
 
     fn refresh_dirty(mut self: Pin<&mut Self>) {
@@ -994,6 +1031,10 @@ impl ffi::SettingsModel {
             .set_ollama_voice_enabled(snap.ollama_voice_enabled);
         self.as_mut()
             .set_ollama_stt_model(QString::from(snap.ollama_stt_model.as_str()));
+        self.as_mut()
+            .set_ollama_file_sharing_enabled(snap.ollama_file_sharing_enabled);
+        self.as_mut()
+            .set_ollama_share_folder(QString::from(snap.ollama_share_folder.as_str()));
         self.as_mut()
             .set_youtube_preview_enabled(snap.youtube_preview_enabled);
         self.as_mut()

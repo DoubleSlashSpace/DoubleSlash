@@ -628,6 +628,8 @@ fn sanitize_settings(directory: &Path) -> Result<()> {
             && !key.contains("ollama_tools")
             && !key.contains("ollama_voice")
             && !key.contains("ollama_stt")
+            && !key.contains("ollama_file_sharing")
+            && !key.contains("ollama_share_folder")
             && !key.contains("auto_start")
     });
     map.insert("onboarding_complete".into(), false.into());

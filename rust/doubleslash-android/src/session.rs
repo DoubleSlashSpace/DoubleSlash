@@ -368,6 +368,7 @@ fn spawn_event_pump(
                 route_media(&call_tx, &ev);
                 persist_if_chat(&chat_store, &ev);
                 persist_if_room_chat(&chat_store, &my_public_id, &ev);
+                persist_if_room_file_offer(&chat_store, &my_public_id, &ev);
                 persist_if_room_created(
                     &room_store,
                     &pending_sub_room_parent,
@@ -390,7 +391,8 @@ fn spawn_event_pump(
 
                 queue_portal_datagram(&portal_datagrams, &ev);
 
-                let saved_file = persist_if_file_complete(&chat_store, &home_dir, &ev);
+                let saved_file =
+                    persist_if_file_complete(&chat_store, &home_dir, &my_public_id, &ev);
 
                 let Some(mut payload) = event::to_json(&ev) else {
                     continue;
@@ -580,6 +582,7 @@ pub(crate) fn attachment_label(
 fn persist_if_file_complete(
     chat_store: &ChatStore,
     home_dir: &Path,
+    my_public_id: &str,
     event: &ConnectionEvent,
 ) -> Option<String> {
     use doubleslash_client::chat_store::{ChatMessage, MessageStatus};
@@ -621,14 +624,31 @@ fn persist_if_file_complete(
     let kind = doubleslash_client::chat_store::message_kind_for_path(rel_path);
 
     // Room files belong to the room conversation, 1:1 files to the peer's.
+    // The room key is `room_conversation_id`, the one `room.history` reads;
+    // the bare room id filed downloads where no screen ever looks.
     let conversation = if room_id.is_empty() {
         peer_id.clone()
     } else {
-        room_id.clone()
+        doubleslash_client::chat_store::room_conversation_id(room_id)
     };
 
+    let message_id = format!("xfer-{transfer_id}");
+    let size_str = doubleslash_client::chat_store::format_byte_size(byte_len);
+    // A room offer already put its bubble in history, without a path because
+    // the bytes had not arrived. Fill the path in where the offer left it.
+    // A row that has one is our own send, which must keep pointing at the
+    // file we sent.
+    if let Ok(Some(existing)) = chat_store.get_by_id(&message_id) {
+        if existing.attachment_path.is_empty() {
+            if let Err(e) = chat_store.update_attachment(&message_id, &saved_path, &size_str) {
+                warn!("could not record the received file in history: {e}");
+            }
+        }
+        return Some(saved_path);
+    }
+
     let record = ChatMessage {
-        id: format!("xfer-{transfer_id}"),
+        id: message_id,
         peer_id: conversation.clone(),
         sender: peer_id.clone(),
         recipient: String::new(),
@@ -637,12 +657,13 @@ fn persist_if_file_complete(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs_f64())
             .unwrap_or(0.0),
-        is_self: false,
+        // Our other device's file is still ours.
+        is_self: same_identity(peer_id, my_public_id),
         status: MessageStatus::Delivered,
         kind,
         attachment_name: rel_path.clone(),
         attachment_path: saved_path.clone(),
-        size_str: doubleslash_client::chat_store::format_byte_size(byte_len),
+        size_str,
         status_note: String::new(),
         sender_handle: String::new(),
     };
@@ -653,6 +674,64 @@ fn persist_if_file_complete(
     }
 
     Some(saved_path)
+}
+
+/// Pad-insensitive identity compare (URL-safe base64 with or without `=`).
+fn same_identity(a: &str, b: &str) -> bool {
+    !a.is_empty() && a.trim_end_matches('=') == b.trim_end_matches('=')
+}
+
+/// Put an inbound room file offer in the room's history, as the desktop does.
+///
+/// Room files are advertised and pulled, so this bubble is the only sign in
+/// the room that a file exists until someone downloads it. Without it, a file
+/// posted from the desktop — even by this identity — only ever showed as the
+/// accept prompt. The row has no path yet; [`persist_if_file_complete`] fills
+/// it in when the download lands.
+fn persist_if_room_file_offer(chat_store: &ChatStore, my_public_id: &str, event: &ConnectionEvent) {
+    use doubleslash_client::chat_store::{ChatMessage, MessageStatus};
+
+    let ConnectionEvent::FileOffered {
+        transfer_id,
+        peer_id: room_id,
+        rel_path,
+        size,
+        is_self,
+        origin_id,
+        supernode_id,
+        ..
+    } = event
+    else {
+        return;
+    };
+    // This device's own offer already has its row from `file.send_room`, and
+    // an offer with no hosting supernode is a 1:1 one.
+    if *is_self || supernode_id.is_empty() || room_id.is_empty() {
+        return;
+    }
+    let kind = doubleslash_client::chat_store::message_kind_for_path(rel_path);
+    let record = ChatMessage {
+        id: format!("xfer-{transfer_id}"),
+        peer_id: doubleslash_client::chat_store::room_conversation_id(room_id),
+        sender: origin_id.clone(),
+        recipient: room_id.clone(),
+        body: attachment_label(&kind, rel_path),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0),
+        is_self: same_identity(origin_id, my_public_id),
+        status: MessageStatus::Delivered,
+        kind,
+        attachment_name: rel_path.clone(),
+        attachment_path: String::new(),
+        size_str: doubleslash_client::chat_store::format_byte_size(*size as u64),
+        status_note: String::new(),
+        sender_handle: String::new(),
+    };
+    if let Err(e) = chat_store.insert_new(&record) {
+        warn!("could not record the room file offer in history: {e}");
+    }
 }
 
 /// Persist a room the supernode just created for us.
@@ -815,6 +894,98 @@ fn persist_if_chat(chat_store: &ChatStore, event: &ConnectionEvent) {
 mod tests {
     use super::*;
     use doubleslash_client::call_controller::CallCommand;
+
+    /// A downloaded room file has to land under the key `room.history` reads.
+    /// The bare room id filed it in a conversation no screen loads, so the
+    /// file arrived and never got a bubble.
+    #[test]
+    fn a_received_room_file_is_filed_in_the_room_history() {
+        let dir = std::env::temp_dir().join(format!(
+            "doubleslash-android-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let identity = Identity::generate();
+        let store = ChatStore::open(&identity, Some(&dir.join("chat.db"))).unwrap();
+        let event = ConnectionEvent::FileComplete {
+            transfer_id: "t1".to_owned(),
+            peer_id: "origin".to_owned(),
+            room_id: "r1".to_owned(),
+            supernode_id: "sn".to_owned(),
+            purpose: "room_file".to_owned(),
+            payload: doubleslash_client::file_transfer::TransferPayload::Bytes(b"hi".to_vec()),
+            rel_path: "a.txt".to_owned(),
+        };
+
+        let saved = persist_if_file_complete(&store, &dir, "me", &event).expect("saved");
+        let history = store
+            .get_history(
+                &doubleslash_client::chat_store::room_conversation_id("r1"),
+                0,
+            )
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, "xfer-t1");
+        assert_eq!(history[0].attachment_path, saved);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file our desktop posts to a room gets its bubble here as soon as it is
+    /// offered — ours, with nothing on disk yet — and the download then fills
+    /// in that same bubble rather than adding another.
+    #[test]
+    fn our_other_devices_room_file_is_a_bubble_before_and_after_download() {
+        let dir = std::env::temp_dir().join(format!(
+            "doubleslash-android-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let identity = Identity::generate();
+        let store = ChatStore::open(&identity, Some(&dir.join("chat.db"))).unwrap();
+        let me = "our-id=";
+        let key = doubleslash_client::chat_store::room_conversation_id("r1");
+
+        persist_if_room_file_offer(
+            &store,
+            me,
+            &ConnectionEvent::FileOffered {
+                transfer_id: "t2".to_owned(),
+                peer_id: "r1".to_owned(),
+                rel_path: "photo.jpg".to_owned(),
+                size: 2,
+                purpose: "room_file".to_owned(),
+                is_self: false,
+                origin_id: "our-id".to_owned(),
+                supernode_id: "sn".to_owned(),
+            },
+        );
+        let offered = store.get_history(&key, 0).unwrap();
+        assert_eq!(offered.len(), 1);
+        assert!(offered[0].is_self, "our other device's file is ours");
+        assert!(offered[0].attachment_path.is_empty());
+
+        let saved = persist_if_file_complete(
+            &store,
+            &dir,
+            me,
+            &ConnectionEvent::FileComplete {
+                transfer_id: "t2".to_owned(),
+                peer_id: "our-id".to_owned(),
+                room_id: "r1".to_owned(),
+                supernode_id: "sn".to_owned(),
+                purpose: "room_file".to_owned(),
+                payload: doubleslash_client::file_transfer::TransferPayload::Bytes(b"hi".to_vec()),
+                rel_path: "photo.jpg".to_owned(),
+            },
+        )
+        .expect("saved");
+        let done = store.get_history(&key, 0).unwrap();
+        assert_eq!(done.len(), 1, "the download fills in the offer's bubble");
+        assert_eq!(done[0].attachment_path, saved);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The regression this exists for: filtering media out of the event JSON
     /// without routing it here made calls connect, signal correctly, and stay

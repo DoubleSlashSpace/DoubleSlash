@@ -2212,6 +2212,12 @@ impl ConnectionManager {
                 return;
             }
         };
+        // Our own offer, handed back. Room frames now reach the author's other
+        // devices, so one that loops back to this device must not become an
+        // inbound transfer of the file we are serving.
+        if self.room_file_mgr.has_outbound(&tid) {
+            return;
+        }
         let sha = match msg.payload.get("sha256").and_then(Value::as_str) {
             Some(s) if !s.is_empty() => s.to_owned(),
             _ => {
@@ -2867,8 +2873,13 @@ impl ConnectionManager {
                     } else {
                         room_id.to_owned()
                     };
-                    let me = self.identity.public_id();
-                    let is_self = same_supernode_pad(&offered_peer, &me);
+                    // This device's offer, not this identity's: an offer from
+                    // our own phone or desktop is inbound here and needs a
+                    // download, exactly like anyone else's. Keying it on the
+                    // identity made both clients treat it as an echo of a
+                    // local send, so a file posted from the other device
+                    // never showed as something to fetch.
+                    let is_self = self.room_file_mgr.has_outbound(&transfer_id);
                     self.emit_event(ConnectionEvent::FileOffered {
                         transfer_id,
                         peer_id: ui_peer,

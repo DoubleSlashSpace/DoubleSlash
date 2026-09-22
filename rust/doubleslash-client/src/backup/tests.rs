@@ -75,7 +75,7 @@ fn fixture(root: &Path, include_attachments: bool) -> Result<BackupSnapshot> {
         status_note: String::new(),
         sender_handle: "My friend".into(),
     })?;
-    fs::write(root.join("settings.json"), br#"{"local_handle":"My name","avatar_config_json":"{}","input_device":"old microphone","ollama_auto_respond_direct":true,"ollama_tools_enabled":true,"ollama_voice_enabled":true,"plugin_path":"old.dll"}"#)?;
+    fs::write(root.join("settings.json"), br#"{"local_handle":"My name","avatar_config_json":"{}","input_device":"old microphone","ollama_auto_respond_direct":true,"ollama_tools_enabled":true,"ollama_voice_enabled":true,"ollama_file_sharing_enabled":true,"ollama_share_folder":"C:\\Users\\old\\Share","plugin_path":"old.dll"}"#)?;
     BackupSnapshot::capture(
         BackupSource {
             identity: &identity,
@@ -155,6 +155,10 @@ fn backup_restores_identity_wal_history_hidden_rooms_and_attachments() -> anyhow
     assert!(settings.get("ollama_auto_respond_direct").is_none());
     assert!(settings.get("ollama_tools_enabled").is_none());
     assert!(settings.get("ollama_voice_enabled").is_none());
+    // A restored profile must not start handing out files from a folder on
+    // the machine it came from.
+    assert!(settings.get("ollama_file_sharing_enabled").is_none());
+    assert!(settings.get("ollama_share_folder").is_none());
     assert!(settings.get("plugin_path").is_none());
     assert_eq!(settings["video_enabled"], false);
     assert_eq!(settings["video_overlays_json"], "[]");

@@ -30,6 +30,7 @@ pub mod logging;
 pub mod media_clock;
 pub mod media_sync;
 pub mod ollama_module;
+pub mod ollama_share;
 pub mod ollama_tools;
 pub mod peer_store;
 pub mod platform;

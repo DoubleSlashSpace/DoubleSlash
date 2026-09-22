@@ -2,6 +2,7 @@
 
 import QtQuick
 import QtQuick.Controls.Material
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import DoubleSlash.Client 1.0
 
@@ -2253,6 +2254,82 @@ Item {
                                 onChanged: {
                                     if (!root.settings) return
                                     root.settings.ollama_tools_enabled = checked
+                                }
+                            }
+                            SettingSwitch {
+                                title: "Let the assistant send files"
+                                description: "Lets it re-share attachments already in your chat history, plus files in the shared folder below. Anyone who can chat with the assistant can ask it for these files. Needs client control on."
+                                enabledState: root.settings ? root.settings.ollama_tools_enabled : false
+                                checked: root.settings ? root.settings.ollama_file_sharing_enabled : false
+                                onChanged: {
+                                    if (!root.settings) return
+                                    root.settings.ollama_file_sharing_enabled = checked
+                                }
+                            }
+                            ColumnLayout {
+                                id: shareFolderRow
+                                Layout.fillWidth: true
+                                spacing: Theme.spacingXs
+                                readonly property string folder: root.settings ? root.settings.ollama_share_folder : ""
+                                // Same check the send_file tool runs, so a folder
+                                // that overlaps the profile is flagged here, not
+                                // discovered by the model.
+                                readonly property string problem: root.settings && folder !== ""
+                                                                  ? root.settings.shareFolderProblem(folder) : ""
+                                enabled: root.settings ? root.settings.ollama_tools_enabled
+                                                         && root.settings.ollama_file_sharing_enabled : false
+                                opacity: enabled ? 1.0 : 0.5
+
+                                Label {
+                                    text: "Shared folder"
+                                    color: Theme.text
+                                    font.pixelSize: Theme.fontSizeBody
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.spacingSm
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: shareFolderRow.folder !== "" ? shareFolderRow.folder
+                                                                           : "None — only chat attachments can be sent"
+                                        color: shareFolderRow.folder !== "" ? Theme.text : Theme.muted
+                                        font.pixelSize: Theme.fontSizeCaption
+                                        elide: Text.ElideMiddle
+                                    }
+                                    StyledButton {
+                                        text: "Choose…"
+                                        onClicked: shareFolderDialog.open()
+                                    }
+                                    StyledButton {
+                                        text: "Clear"
+                                        visible: shareFolderRow.folder !== ""
+                                        onClicked: if (root.settings) root.settings.ollama_share_folder = ""
+                                    }
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    visible: shareFolderRow.problem !== ""
+                                    text: shareFolderRow.problem
+                                    color: Theme.danger
+                                    font.pixelSize: Theme.fontSizeCaption
+                                    wrapMode: Text.WordWrap
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: "Any file in this folder, or up to four subfolders down, can be sent. Hidden files and links are skipped."
+                                    color: Theme.muted
+                                    font.pixelSize: Theme.fontSizeCaption
+                                    wrapMode: Text.WordWrap
+                                }
+                            }
+                            FolderDialog {
+                                id: shareFolderDialog
+                                title: "Folder the assistant may share"
+                                onAccepted: {
+                                    if (!root.settings) return
+                                    var text = selectedFolder.toString()
+                                    root.settings.ollama_share_folder = decodeURIComponent(
+                                        Qt.platform.os === "windows" ? text.slice(8) : text.slice(7))
                                 }
                             }
                             SettingSwitch {

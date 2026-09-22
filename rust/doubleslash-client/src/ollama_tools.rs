@@ -22,6 +22,7 @@ use crate::call_controller::CallCommand;
 use crate::chat_store::{self, ChatStore};
 use crate::connection_manager::{ConnectionCommand, ConnectionEvent};
 use crate::identity::Identity;
+use crate::ollama_share::ShareFolder;
 use crate::peer_store::{PeerRecord, PeerStore};
 use crate::protocol::{MessageType, SignalingMessage};
 use crate::room_store::{RoomEntry, RoomStore};
@@ -38,6 +39,12 @@ Use view_image only if no image is already attached. Pass message_id (xfer-…) 
 names with spaces are fine as attachment labels but are not chat ids. With no args, the latest image in this conversation is used. \
 After tool calls, always send a short user-facing summary of what you did and what happened. \
 Do not dump raw JSON unless the user asks.";
+
+/// Appended when the user has also allowed the assistant to send files.
+pub const FILE_TOOLS_ADDON: &str = "send_file puts a file into a chat: pass message_id (xfer-…) to re-share an \
+attachment already in chat history, or name for a file in the shared folder; list_shareable_files shows both. \
+With no peer or room it goes to this conversation. Send only the file that was asked for — if nothing matches \
+exactly, say so instead of sending something else.";
 
 /// Injected when Ollama rejects tools for the selected model (e.g. phi4).
 pub const TOOLS_UNAVAILABLE_NOTICE: &str = "This model cannot call client tools. \
@@ -244,8 +251,11 @@ impl OllamaToolHost {
     }
 
     /// JSON Schema tool list for `POST /api/chat`.
+    ///
+    /// The file tools are listed only while the user allows them, so a model
+    /// is never offered a tool that would refuse every call.
     pub fn ollama_tools() -> Vec<Value> {
-        tool_schemas()
+        tool_schemas(crate::ollama_module::read_assistant_settings().file_tools_active())
     }
 
     pub fn invoke(&self, name: &str, arguments: &Value) -> ToolOutcome {
@@ -283,6 +293,10 @@ impl OllamaToolHost {
             "accept_invite" => self.accept_invite(&args),
             "refresh_rooms" => self.refresh_rooms(&args),
             "speak" => self.speak(&args),
+            "list_shareable_files" => file_tool_settings()
+                .and_then(|s| self.list_shareable_files(&s, &ShareFolder::protected_dirs())),
+            "send_file" => file_tool_settings()
+                .and_then(|s| self.send_file(&args, &s, &ShareFolder::protected_dirs())),
             other => Err(format!("unknown tool '{other}'")),
         };
         match result {
@@ -957,6 +971,230 @@ impl OllamaToolHost {
             .map_err(|e| e.to_string())
     }
 
+    /// What `send_file` can reach: the shared folder and recent attachments.
+    fn list_shareable_files(
+        &self,
+        settings: &crate::ollama_module::OllamaAssistantSettings,
+        protected: &[std::path::PathBuf],
+    ) -> Result<Value, String> {
+        let folder = match ShareFolder::open(&settings.share_folder, protected) {
+            Ok(Some(folder)) => {
+                let (files, truncated) = folder.list();
+                json!({
+                    "configured": true,
+                    "truncated": truncated,
+                    "files": files.iter().map(|f| json!({
+                        "name": f.rel,
+                        "size": chat_store::format_byte_size(f.size),
+                    })).collect::<Vec<_>>(),
+                })
+            }
+            Ok(None) => json!({ "configured": false, "files": [] }),
+            Err(e) => json!({ "configured": true, "error": e, "files": [] }),
+        };
+        let attachments: Vec<Value> = self
+            .chat_store
+            .recent_attachments(None, 20)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|a| std::path::Path::new(&a.path).is_file())
+            .map(|a| {
+                json!({
+                    "message_id": a.message_id,
+                    "name": a.name,
+                    "conversation": a.conversation,
+                    "mine": a.mine,
+                })
+            })
+            .collect();
+        Ok(json!({ "ok": true, "shared_folder": folder, "attachments": attachments }))
+    }
+
+    /// Send a history attachment or a shared-folder file into a chat.
+    ///
+    /// Records the `xfer-{id}` row the same way the desktop's own send does,
+    /// so the message shows in history and deleting it revokes the offer.
+    fn send_file(
+        &self,
+        args: &Value,
+        settings: &crate::ollama_module::OllamaAssistantSettings,
+        protected: &[std::path::PathBuf],
+    ) -> Result<Value, String> {
+        let (path, name) = self.shareable_source(args, settings, protected)?;
+        let target = self.file_target(args)?;
+        let size = std::fs::metadata(&path)
+            .map_err(|e| format!("cannot read {name}: {e}"))?
+            .len();
+        if size > crate::file_transfer::MAX_TRANSFER_SIZE as u64 {
+            return Err(format!("{name} is over the transfer size limit"));
+        }
+        let kind = chat_store::message_kind_for_path(&name);
+        let body = chat_store::attachment_body_label(&kind, &name);
+        let size_str = chat_store::format_byte_size(size);
+        let handle = settings_handle();
+        let transfer_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_owned();
+        let message_id = format!("xfer-{transfer_id}");
+        let (conversation, sender, recipient, cmd, to) = match target {
+            FileTarget::Direct { peer_id } => (
+                peer_id.clone(),
+                handle.clone(),
+                peer_id.clone(),
+                ConnectionCommand::SendFile {
+                    peer_id: peer_id.clone(),
+                    rel_path: name.clone(),
+                    path: path.clone(),
+                    transfer_id: transfer_id.clone(),
+                    purpose: "file".to_owned(),
+                },
+                json!({ "peer_id": peer_id }),
+            ),
+            FileTarget::Room {
+                supernode_id,
+                room_id,
+            } => (
+                chat_store::room_conversation_id(&room_id),
+                self.identity.public_id(),
+                room_id.clone(),
+                ConnectionCommand::SendSfuFile {
+                    supernode_id: supernode_id.clone(),
+                    room_id: room_id.clone(),
+                    rel_path: name.clone(),
+                    path: path.clone(),
+                    transfer_id: transfer_id.clone(),
+                    purpose: "room_file".to_owned(),
+                },
+                json!({ "room_id": room_id, "supernode_id": supernode_id }),
+            ),
+        };
+        // Record before queueing. The manager echoes our offer back as
+        // `FileOffered`, and the desktop skips an id it already has a row for;
+        // without one it would file a 1:1 send as *received*.
+        self.chat_store
+            .insert(&chat_store::ChatMessage {
+                id: message_id.clone(),
+                peer_id: conversation,
+                sender,
+                recipient,
+                body,
+                timestamp: now_secs(),
+                is_self: true,
+                status: chat_store::MessageStatus::Sent,
+                kind,
+                attachment_name: name.clone(),
+                attachment_path: path,
+                size_str: size_str.clone(),
+                status_note: String::new(),
+                sender_handle: handle,
+            })
+            .map_err(|e| e.to_string())?;
+        if let Err(e) = self.try_conn(cmd) {
+            let _ = self
+                .chat_store
+                .update_status(&message_id, chat_store::MessageStatus::Failed);
+            return Err(e);
+        }
+        info!("[ollama] send_file queued {name} ({size_str})");
+        Ok(json!({
+            "ok": true,
+            "queued": true,
+            "message_id": message_id,
+            "name": name,
+            "size": size_str,
+            "to": to,
+        }))
+    }
+
+    /// Resolve what to send — never anything but a history attachment or a
+    /// file inside the shared folder.
+    ///
+    /// Order: a message id, then a path or name in the shared folder, then an
+    /// attachment whose file name matches exactly. No fuzzy match and no
+    /// "latest" fallback: sending the wrong file cannot be taken back.
+    fn shareable_source(
+        &self,
+        args: &Value,
+        settings: &crate::ollama_module::OllamaAssistantSettings,
+        protected: &[std::path::PathBuf],
+    ) -> Result<(String, String), String> {
+        let query = arg_str(
+            args,
+            &["message_id", "id", "name", "file", "filename", "path"],
+        )
+        .ok_or_else(|| "say which file: message_id (xfer-…) or name".to_string())?;
+        if let Ok(Some(msg)) = self.chat_store.get_by_id(&query) {
+            if msg.attachment_path.is_empty() {
+                return Err("that message has no saved attachment".into());
+            }
+            return saved_attachment(msg.attachment_path, msg.attachment_name);
+        }
+        let folder_err = match ShareFolder::open(&settings.share_folder, protected) {
+            Ok(Some(folder)) => match folder.resolve(&query) {
+                Ok(path) => {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    return Ok((path.to_string_lossy().into_owned(), name));
+                }
+                Err(e) => Some(e),
+            },
+            Ok(None) => None,
+            Err(e) => Some(e),
+        };
+        // A bare name may be an attachment's; a path never matches one by
+        // its last component, so an outside path cannot slip through here.
+        if std::path::Path::new(&query).components().count() == 1 {
+            let key = query.to_lowercase();
+            let hit = self
+                .chat_store
+                .recent_attachments(None, 100)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|a| a.name.to_lowercase() == key && std::path::Path::new(&a.path).is_file());
+            if let Some(a) = hit {
+                return saved_attachment(a.path, a.name);
+            }
+        }
+        Err(match folder_err {
+            Some(e) => format!("{e}; no recent attachment is named '{query}' either"),
+            None => format!("no recent attachment is named '{query}' and no shared folder is set"),
+        })
+    }
+
+    /// Where `send_file` goes: a named room or peer, else this conversation.
+    fn file_target(&self, args: &Value) -> Result<FileTarget, String> {
+        let room_in = |q: &str, sn: Option<&str>| -> Result<FileTarget, String> {
+            let store = self.room_store.read();
+            let room = resolve_room(&store, q, sn)?;
+            Ok(FileTarget::Room {
+                supernode_id: room.supernode_id,
+                room_id: room.room_id,
+            })
+        };
+        let peer = |q: &str| -> Result<FileTarget, String> {
+            let store = self.peer_store.read();
+            let p = resolve_peer(&store, q)?;
+            if p.blocked || p.is_supernode {
+                return Err(format!("cannot send files to '{q}'"));
+            }
+            Ok(FileTarget::Direct {
+                peer_id: p.peer_id.clone(),
+            })
+        };
+        if let Some(q) = arg_str(args, &["room", "room_id", "room_name"]) {
+            return room_in(&q, arg_str(args, &["supernode_id", "supernode"]).as_deref());
+        }
+        if let Some(q) = arg_str(args, &["peer", "peer_id", "handle"]) {
+            return peer(&q);
+        }
+        let active = self.active_conversation.lock().clone();
+        match active.as_deref() {
+            Some(c) if c.starts_with("room:") => room_in(&c["room:".len()..], None),
+            Some(c) if c.starts_with("direct:") => peer(&c["direct:".len()..]),
+            _ => Err("say which peer or room to send the file to".into()),
+        }
+    }
+
     fn enable_agent_voice_if_configured(&self) {
         let s = crate::ollama_module::read_assistant_settings();
         if !s.voice_enabled {
@@ -1037,7 +1275,33 @@ impl OllamaToolHost {
     }
 }
 
-fn tool_schemas() -> Vec<Value> {
+fn tool_schemas(file_tools: bool) -> Vec<Value> {
+    let mut tools = base_tool_schemas();
+    if file_tools {
+        tools.push(fn_tool(
+            "list_shareable_files",
+            "List what send_file can send: files in the shared folder and recent chat attachments (with message_id).",
+            json!({ "type": "object", "properties": {} }),
+        ));
+        tools.push(fn_tool(
+            "send_file",
+            "Send a file into a chat. Pass message_id (xfer-…) to re-share a chat attachment, or name for a file in the shared folder. Omit peer and room to send to this conversation.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "message_id": {"type": "string", "description": "Attachment message id, usually xfer-…"},
+                    "name": {"type": "string", "description": "File name or path inside the shared folder; spaces are allowed"},
+                    "peer": {"type": "string", "description": "Peer handle, peer_id, or public_id"},
+                    "room": {"type": "string", "description": "Room name or room_id"},
+                    "supernode_id": {"type": "string"}
+                }
+            }),
+        ));
+    }
+    tools
+}
+
+fn base_tool_schemas() -> Vec<Value> {
     vec![
         fn_tool(
             "get_status",
@@ -1240,6 +1504,49 @@ fn tool_schemas() -> Vec<Value> {
             }),
         ),
     ]
+}
+
+/// The file tools' settings, or why they are unavailable.
+///
+/// Checked on every call, not only when listing tools: a model can still
+/// call a tool it saw earlier in the conversation after the user turned it off.
+fn file_tool_settings() -> Result<crate::ollama_module::OllamaAssistantSettings, String> {
+    let settings = crate::ollama_module::read_assistant_settings();
+    if settings.file_tools_active() {
+        Ok(settings)
+    } else {
+        Err(
+            "sending files is off — turn on \"Let the assistant send files\" in Settings > AI"
+                .into(),
+        )
+    }
+}
+
+/// Where a `send_file` goes.
+enum FileTarget {
+    Direct {
+        peer_id: String,
+    },
+    Room {
+        supernode_id: String,
+        room_id: String,
+    },
+}
+
+/// A history attachment that still exists on disk, as `(path, name)`.
+fn saved_attachment(path: String, name: String) -> Result<(String, String), String> {
+    if !std::path::Path::new(&path).is_file() {
+        return Err("that attachment is no longer on disk".into());
+    }
+    let name = if name.is_empty() {
+        std::path::Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".to_owned())
+    } else {
+        name
+    };
+    Ok((path, name))
 }
 
 /// Map an Ollama conversation id (`direct:` / `room:`) to a ChatStore key.
@@ -1491,9 +1798,28 @@ mod tests {
         assert!(store_key_from_conversation("other").is_none());
     }
 
+    fn tool_names(tools: &[Value]) -> Vec<&str> {
+        tools
+            .iter()
+            .map(|t| t["function"]["name"].as_str().expect("name"))
+            .collect()
+    }
+
+    /// The file tools exist only while the user allows them.
+    #[test]
+    fn file_tools_are_listed_only_when_allowed() {
+        let off = tool_schemas(false);
+        let on = tool_schemas(true);
+        assert!(!tool_names(&off).contains(&"send_file"));
+        assert!(!tool_names(&off).contains(&"list_shareable_files"));
+        assert!(tool_names(&on).contains(&"send_file"));
+        assert!(tool_names(&on).contains(&"list_shareable_files"));
+        assert_eq!(on.len(), off.len() + 2);
+    }
+
     #[test]
     fn tool_names_are_unique_and_nonempty() {
-        let tools = tool_schemas();
+        let tools = tool_schemas(true);
         assert!(tools.len() >= 10);
         let mut names = Vec::new();
         for t in &tools {
@@ -1546,12 +1872,22 @@ mod tests {
 
     /// A tool host over empty stores in a temp dir that also holds the images.
     fn host_with_stores() -> (Arc<OllamaToolHost>, tempfile::TempDir) {
+        let (host, dir, _cmds) = host_with_commands();
+        (host, dir)
+    }
+
+    /// [`host_with_stores`], keeping the connection-command receiver.
+    fn host_with_commands() -> (
+        Arc<OllamaToolHost>,
+        tempfile::TempDir,
+        mpsc::Receiver<ConnectionCommand>,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let id = Arc::new(Identity::generate());
         let peers = PeerStore::open(&id, Some(&dir.path().join("peers.dat"))).unwrap();
         let rooms = RoomStore::open(&id, Some(&dir.path().join("rooms.dat"))).unwrap();
         let chats = ChatStore::open(&id, Some(&dir.path().join("chat.db"))).unwrap();
-        let (cmd_tx, _) = mpsc::channel(1);
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
         let (call_tx, _) = mpsc::channel(1);
         let host = OllamaToolHost::new(
             id,
@@ -1562,7 +1898,7 @@ mod tests {
             call_tx,
             "me".to_owned(),
         );
-        (host, dir)
+        (host, dir, cmd_rx)
     }
 
     /// Save a chat message in `room:default`; `name` non-empty makes it an image.
@@ -1638,6 +1974,192 @@ mod tests {
                 .unwrap_err(),
             "that message has no saved attachment"
         );
+    }
+
+    fn sharing_settings(share_folder: &str) -> crate::ollama_module::OllamaAssistantSettings {
+        crate::ollama_module::OllamaAssistantSettings {
+            tools_enabled: true,
+            file_sharing_enabled: true,
+            share_folder: share_folder.to_owned(),
+            ..Default::default()
+        }
+    }
+
+    fn add_peer(host: &OllamaToolHost, peer_id: &str, handle: &str) {
+        host.peer_store.write().upsert(PeerRecord {
+            peer_id: peer_id.to_owned(),
+            identity_pub: format!("pub-{peer_id}"),
+            handle: handle.to_owned(),
+            ..Default::default()
+        });
+    }
+
+    /// Re-sharing an attachment records the same `xfer-` row a desktop send
+    /// does, and queues the send to the conversation the assistant is in.
+    #[test]
+    fn send_file_reshares_an_attachment_into_this_conversation() {
+        let (host, dir, mut cmds) = host_with_commands();
+        add_peer(&host, "hexbob", "Bob");
+        host.set_active_conversation("direct:hexbob".to_owned());
+        save_message(&host, dir.path(), "xfer-1", "shot one.png");
+        let profile = [dir.path().join("profile")];
+
+        let v = host
+            .send_file(
+                &json!({"message_id": "xfer-1"}),
+                &sharing_settings(""),
+                &profile,
+            )
+            .unwrap();
+        let Ok(ConnectionCommand::SendFile {
+            peer_id,
+            rel_path,
+            path,
+            transfer_id,
+            purpose,
+        }) = cmds.try_recv()
+        else {
+            panic!("expected SendFile");
+        };
+        assert_eq!(peer_id, "hexbob");
+        assert_eq!(rel_path, "shot one.png");
+        assert_eq!(purpose, "file");
+        assert_eq!(v["message_id"], format!("xfer-{transfer_id}"));
+
+        let row = host
+            .chat_store
+            .get_by_id(&format!("xfer-{transfer_id}"))
+            .unwrap()
+            .expect("the send is recorded before it is queued");
+        assert!(row.is_self);
+        assert_eq!(row.peer_id, "hexbob");
+        assert_eq!(row.attachment_path, path);
+        assert_eq!(row.kind, chat_store::MessageKind::Image);
+    }
+
+    /// Whoever chats with the assistant steers it, so nothing but the shared
+    /// folder and history attachments may be reachable — and no guess.
+    #[test]
+    fn send_file_reaches_only_the_shared_folder_and_attachments() {
+        let (host, dir, mut cmds) = host_with_commands();
+        add_peer(&host, "hexbob", "Bob");
+        let share = dir.path().join("share");
+        std::fs::create_dir_all(&share).unwrap();
+        std::fs::write(share.join("report.pdf"), b"pdf").unwrap();
+        std::fs::write(dir.path().join("secret.txt"), b"keys").unwrap();
+        let settings = sharing_settings(share.to_str().unwrap());
+        let profile = [dir.path().join("profile")];
+
+        host.send_file(
+            &json!({"name": "report.pdf", "peer": "Bob"}),
+            &settings,
+            &profile,
+        )
+        .unwrap();
+        assert!(matches!(
+            cmds.try_recv(),
+            Ok(ConnectionCommand::SendFile { rel_path, .. }) if rel_path == "report.pdf"
+        ));
+
+        let outside = dir.path().join("secret.txt");
+        for name in [
+            "../secret.txt",
+            outside.to_str().unwrap(),
+            "secret.txt",
+            "report",
+        ] {
+            let err = host
+                .send_file(&json!({"name": name, "peer": "Bob"}), &settings, &profile)
+                .unwrap_err();
+            assert!(!err.is_empty(), "{name}");
+        }
+        assert!(
+            cmds.try_recv().is_err(),
+            "a refused file must queue nothing"
+        );
+    }
+
+    #[test]
+    fn send_file_needs_a_target_and_refuses_supernodes() {
+        let (host, dir, mut cmds) = host_with_commands();
+        save_message(&host, dir.path(), "xfer-1", "a.png");
+        host.peer_store.write().upsert(PeerRecord {
+            peer_id: "hexsn".to_owned(),
+            identity_pub: "pub-sn".to_owned(),
+            handle: "Node".to_owned(),
+            is_supernode: true,
+            ..Default::default()
+        });
+        let settings = sharing_settings("");
+        let profile = [dir.path().join("profile")];
+        assert!(host
+            .send_file(&json!({"message_id": "xfer-1"}), &settings, &profile)
+            .unwrap_err()
+            .contains("which peer or room"));
+        assert!(host
+            .send_file(
+                &json!({"message_id": "xfer-1", "peer": "Node"}),
+                &settings,
+                &profile
+            )
+            .is_err());
+        assert!(cmds.try_recv().is_err());
+    }
+
+    #[test]
+    fn send_file_to_a_room_uses_the_room_history_key() {
+        let (host, dir, mut cmds) = host_with_commands();
+        host.room_store
+            .write()
+            .upsert(RoomEntry {
+                room_id: "r1".to_owned(),
+                room_name: "Lounge".to_owned(),
+                room_type: "public".to_owned(),
+                supernode_id: "SN-A".to_owned(),
+                creator_id: String::new(),
+                invite_token: String::new(),
+                is_creator: false,
+                space_id: String::new(),
+                parent_id: String::new(),
+                invite_policy: String::new(),
+            })
+            .unwrap();
+        save_message(&host, dir.path(), "xfer-1", "a.png");
+        let v = host
+            .send_file(
+                &json!({"message_id": "xfer-1", "room": "Lounge"}),
+                &sharing_settings(""),
+                &[dir.path().join("profile")],
+            )
+            .unwrap();
+        assert!(matches!(
+            cmds.try_recv(),
+            Ok(ConnectionCommand::SendSfuFile { supernode_id, room_id, purpose, .. })
+                if supernode_id == "SN-A" && room_id == "r1" && purpose == "room_file"
+        ));
+        let row = host
+            .chat_store
+            .get_by_id(v["message_id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.peer_id, chat_store::room_conversation_id("r1"));
+    }
+
+    #[test]
+    fn list_shareable_files_shows_folder_and_attachments() {
+        let (host, dir) = host_with_stores();
+        let share = dir.path().join("share");
+        std::fs::create_dir_all(&share).unwrap();
+        std::fs::write(share.join("notes.txt"), b"hi").unwrap();
+        save_message(&host, dir.path(), "xfer-1", "a.png");
+        let v = host
+            .list_shareable_files(
+                &sharing_settings(share.to_str().unwrap()),
+                &[dir.path().join("profile")],
+            )
+            .unwrap();
+        assert_eq!(v["shared_folder"]["files"][0]["name"], "notes.txt");
+        assert_eq!(v["attachments"][0]["message_id"], "xfer-1");
     }
 
     #[test]

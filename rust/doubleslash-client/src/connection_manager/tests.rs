@@ -1953,6 +1953,133 @@ async fn an_unanswered_room_pull_fails_visibly() {
     assert!(!t.cm.test_room_file_mgr().has_inbound("tid-silent"));
 }
 
+fn signed_room_offer(
+    from: &crate::identity::Identity,
+    tid: &str,
+) -> crate::protocol::SignalingMessage {
+    use serde_json::Value;
+    let mut msg =
+        crate::protocol::SignalingMessage::new(MessageType::SfuFileOffer, from.public_id());
+    for (k, v) in [
+        ("room_id", "default"),
+        ("transfer_id", tid),
+        ("sha256", "00"),
+        ("rel_path", "a.png"),
+        ("purpose", "room_file"),
+    ] {
+        msg.payload
+            .insert(k.to_owned(), Value::String(v.to_owned()));
+    }
+    msg.payload
+        .insert("origin_id".to_owned(), Value::String(from.public_id()));
+    msg.payload.insert("size".to_owned(), Value::from(16u64));
+    msg.payload
+        .insert("total_chunks".to_owned(), Value::from(1u64));
+    harness::sign(from, &mut msg);
+    msg
+}
+
+/// A room file posted from our other device must arrive here as something to
+/// download, like anyone else's — not as an echo of a send this device made.
+#[tokio::test]
+async fn an_offer_from_our_other_device_is_inbound_here() {
+    let mut t = harness::test_cm();
+    let _sn = t.cm.test_add_supernode_session("SN-A");
+    let me = t.identity.public_id();
+
+    t.cm.handle_inbound_from_supernode("SN-A".into(), signed_room_offer(&t.identity, "tid-sib"))
+        .await;
+    assert!(t.cm.test_room_file_mgr().has_inbound("tid-sib"));
+    let mut offered = None;
+    while let Ok(ev) = t.events.try_recv() {
+        if let ConnectionEvent::FileOffered {
+            transfer_id,
+            is_self,
+            origin_id,
+            ..
+        } = ev
+        {
+            offered = Some((transfer_id, is_self, origin_id));
+        }
+    }
+    let (tid, is_self, origin) = offered.expect("FileOffered");
+    assert_eq!(tid, "tid-sib");
+    assert!(!is_self, "another device's offer is not this device's echo");
+    assert_eq!(origin, me, "but it is still ours");
+}
+
+/// An offer this device is serving can come back to it; it must not turn
+/// into an inbound copy of our own file.
+#[tokio::test]
+async fn our_own_offer_coming_back_is_ignored() {
+    let mut t = harness::test_cm();
+    let _sn = t.cm.test_add_supernode_session("SN-A");
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("a.png");
+    std::fs::write(&src, vec![1u8; 16]).unwrap();
+    t.cm.test_room_file_mgr()
+        .offer_file_from_path_with_id(
+            "default",
+            "a.png",
+            &src,
+            "room_file",
+            false,
+            Some("tid-own"),
+        )
+        .unwrap();
+
+    t.cm.handle_inbound_from_supernode("SN-A".into(), signed_room_offer(&t.identity, "tid-own"))
+        .await;
+    assert!(!t.cm.test_room_file_mgr().has_inbound("tid-own"));
+    while let Ok(ev) = t.events.try_recv() {
+        assert!(
+            !matches!(ev, ConnectionEvent::FileOffered { .. }),
+            "no offer event for our own file"
+        );
+    }
+}
+
+/// Our other device pulls a file this one posted by naming our own identity
+/// as `to`; this device must serve it, addressed back to that identity.
+#[tokio::test]
+async fn our_other_device_can_pull_a_file_we_posted() {
+    use serde_json::Value;
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-A");
+    let me = t.identity.public_id();
+    t.cm.test_mint_group_key("default");
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("a.bin");
+    std::fs::write(&src, vec![1u8; 64]).unwrap();
+    t.cm.test_room_file_mgr()
+        .offer_file_from_path_with_id(
+            "default",
+            "a.bin",
+            &src,
+            "room_file",
+            false,
+            Some("tid-mine"),
+        )
+        .unwrap();
+
+    t.cm.handle_inbound_from_supernode(
+        "SN-A".into(),
+        signed_room_file_msg(&t.identity, MessageType::SfuFileRequest, "tid-mine", &me),
+    )
+    .await;
+    let chunks: Vec<_> = harness::drain_ws(&mut sn)
+        .into_iter()
+        .filter(|m| m.msg_type == MessageType::SfuFileChunk)
+        .collect();
+    assert!(
+        !chunks.is_empty(),
+        "the request from our own identity must be served"
+    );
+    assert!(chunks
+        .iter()
+        .all(|m| m.payload.get("to").and_then(Value::as_str) == Some(me.as_str())));
+}
+
 mod harness {
     use super::super::events::ConnectionEvent;
     use super::super::ConnectionManager;

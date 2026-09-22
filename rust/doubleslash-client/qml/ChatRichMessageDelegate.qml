@@ -46,6 +46,13 @@ Item {
     property string xferState: ""
     property real xferProgress: 0
     readonly property bool xferLive: root.xferState === "pending" || root.xferState === "active"
+    /// Ours, but sent from our other device: a send made here always records
+    /// the local path, so no path means the bytes are still on that device and
+    /// this one downloads them like anyone else's.
+    readonly property bool fromOtherDevice: root.mine && root.transferId !== ""
+                                            && root.attachmentPath === ""
+    readonly property bool canDownload: (!root.mine || root.fromOtherDevice)
+                                        && root.xferState === "pending"
     readonly property bool mediaPreviewReady: (root.kind === "image" || root.kind === "video")
         && root.attachmentPath !== ""
         && !root.xferLive
@@ -536,7 +543,7 @@ Item {
                                 implicitWidth: 28
                                 implicitHeight: 24
                                 flat: true
-                                visible: !root.mine && root.xferState === "pending"
+                                visible: root.canDownload
                                 ToolTip.text: root.isRoom ? qsTr("Download") : qsTr("Accept")
                                 ToolTip.visible: hovered
                                 onClicked: {
@@ -555,7 +562,8 @@ Item {
                                 flat: true
                                 visible: root.xferState === "pending"
                                          || (root.xferState === "active" && !root.isRoom)
-                                ToolTip.text: root.mine ? qsTr("Cancel") : qsTr("Decline")
+                                ToolTip.text: root.mine && !root.fromOtherDevice ? qsTr("Cancel")
+                                                                                  : qsTr("Decline")
                                 ToolTip.visible: hovered
                                 onClicked: root.transferRejectRequested(root.transferId)
                             }
@@ -597,7 +605,7 @@ Item {
 
                     readonly property string statusLine: {
                         if (root.xferState === "pending")
-                            return root.mine
+                            return root.mine && !root.fromOtherDevice
                                    ? qsTr("Waiting for them to accept")
                                    : (root.sizeStr !== ""
                                       ? root.sizeStr + " · " + qsTr("Offered")

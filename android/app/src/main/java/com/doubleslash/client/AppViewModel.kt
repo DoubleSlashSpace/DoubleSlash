@@ -782,11 +782,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 put("path", staged.path)
                 put("rel_path", staged.displayName)
             }
-            if (!reply.ok) {
-                _state.update { it.copy(error = reply.errorText) }
-                return@launch
-            }
+            // A send the core could not queue is still recorded, as failed,
+            // so reload either way and show the bubble in its true state.
             loadHistory(peer.peerId)
+            if (!reply.ok) _state.update { it.copy(error = reply.errorText) }
         }
     }
 
@@ -814,11 +813,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 put("path", staged.path)
                 put("rel_path", staged.displayName)
             }
-            if (!reply.ok) {
-                _state.update { it.copy(error = reply.errorText) }
-                return@launch
-            }
-            _state.update { it.copy(notice = "Shared ${staged.displayName} with the room.") }
+            // Same contract as sendRoomChat: the core records our own offer in
+            // the room history, and the supernode never echoes it back to us,
+            // so reloading is what puts the bubble on screen.
+            loadRoomHistory(room)
+            if (!reply.ok) _state.update { it.copy(error = reply.errorText) }
         }
     }
 
@@ -1624,6 +1623,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             ),
                         )
                     }
+                    // The core has already put the offer in the room's history
+                    // (including one from our own desktop), so the open room
+                    // picks up its bubble here. `peer_id` is the room id on a
+                    // room offer.
+                    val room = (_state.value.screen as? Screen.RoomChat)?.room
+                    if (room != null &&
+                        event.stringOrEmpty("supernode_id").isNotBlank() &&
+                        event.stringOrEmpty("peer_id") == room.roomId
+                    ) {
+                        viewModelScope.launch { loadRoomHistory(room) }
+                    }
                 }
             }
 
@@ -1647,6 +1657,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 (_state.value.screen as? Screen.Chat)?.let { chat ->
                     viewModelScope.launch { loadHistory(chat.peer.peerId) }
+                }
+                // A room download is recorded in the room's history too.
+                (_state.value.screen as? Screen.RoomChat)?.let { roomScreen ->
+                    viewModelScope.launch { loadRoomHistory(roomScreen.room) }
                 }
             }
 

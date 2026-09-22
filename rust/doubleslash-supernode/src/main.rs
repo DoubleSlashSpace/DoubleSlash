@@ -39,6 +39,7 @@ use crate::relay::QUICRelayServer;
 use crate::sfu::SFURoomManager;
 use crate::signaling::{SignalingHandler, SignalingServer};
 use crate::ticket::RelayTicket;
+use doubleslash_features::device::DeviceId;
 use doubleslash_features::wellknown;
 use doubleslash_features::FeatureRegistry;
 use doubleslash_features::{NativeModuleLoader, TrustedKeyStore};
@@ -1876,33 +1877,32 @@ fn sfu_chat_byte_count(msg: &SignalingMessage) -> usize {
 /// any offer larger than the remaining tokens (typically anything over a
 /// few MB once the bucket was warm), so the recipient never saw the
 /// transfer. Chunks still bill the opaque `data` length.
-/// Who a `SfuFile*` frame goes to, given the room roster and an optional `to`.
+/// Which room endpoints a `SfuFile*` frame goes to, given an optional `to`.
 ///
-/// `to` present → exactly that member (room files are pulled, so the chunks
-/// answering one requester go only to them). `to` absent → the whole room minus
-/// the author, which is what offers and older clients rely on.
+/// Per device, as room chat is: every endpoint except the one that sent the
+/// frame. Excluding the author's whole identity meant a file posted from a
+/// phone never reached the same identity's desktop, and a desktop pulling that
+/// file from its own phone — `to` naming its own identity — reached nobody.
 ///
-/// Returning an empty vec for a `to` that names a non-member is deliberate: an
-/// unknown recipient must drop, never fall back to broadcasting the file to
-/// everyone.
-fn file_frame_recipients<'a>(
-    recipients: &'a [String],
+/// `to` present → only that identity's endpoints (room files are pulled, so
+/// the chunks answering one requester go only to them). `to` absent → the
+/// whole room, which is what offers and older clients rely on. Returning
+/// nothing for a `to` that names a non-member is deliberate: an unknown
+/// recipient must drop, never fall back to broadcasting the file to everyone.
+fn file_frame_endpoints(
+    endpoints: &[(String, Option<DeviceId>)],
     sender: &str,
+    source_device: Option<DeviceId>,
     to: Option<&str>,
-) -> Vec<&'a String> {
-    match to {
-        Some(to) => recipients
-            .iter()
-            .filter(|p| is_room_frame_author(p, to) && !is_room_frame_author(p, sender))
-            .take(1)
-            .collect(),
+) -> Vec<(String, Option<DeviceId>)> {
+    endpoints
+        .iter()
         // Pad-normalizing, like chat and audio: a multi-homed sender whose wire
         // id is unpadded used to receive its own file frames back.
-        None => recipients
-            .iter()
-            .filter(|p| !is_room_frame_author(p, sender))
-            .collect(),
-    }
+        .filter(|(peer, device)| !(is_room_frame_author(peer, sender) && *device == source_device))
+        .filter(|(peer, _)| to.is_none_or(|to| is_room_frame_author(peer, to)))
+        .cloned()
+        .collect()
 }
 
 /// File payload frames must never be *dropped* by a byte quota.
@@ -2837,11 +2837,15 @@ impl SupernodeHandler {
             return;
         }
 
-        let recipients = sfu.read().get_chat_recipients(room_id);
+        let endpoints = sfu
+            .read()
+            .get_room(room_id)
+            .map(|room| room.chat_endpoints())
+            .unwrap_or_default();
         let wire_bytes = raw.len();
 
         let to = msg.payload.get("to").and_then(|v| v.as_str());
-        let targets = file_frame_recipients(&recipients, &msg.sender, to);
+        let targets = file_frame_endpoints(&endpoints, &msg.sender, msg.source_device, to);
         if targets.is_empty() && to.is_some() {
             tracing::debug!(
                 "[room.file.v1] `to` target is not a member of room {} — dropping",
@@ -2855,7 +2859,7 @@ impl SupernodeHandler {
         // burns tokens faster than inbound and used to drop the rest of a
         // large file after the first burst — sender at 100%, receiver stuck.
         let file_data = file_payload_bypasses_quota(mt);
-        for peer in targets {
+        for (peer, device) in &targets {
             // Short-circuits for payload, so a chunk fan-out never drains the
             // bucket the offers and revokes to this peer depend on.
             let allowed = file_data
@@ -2866,7 +2870,7 @@ impl SupernodeHandler {
             if !allowed {
                 continue;
             }
-            if !self.state.signaling.send_to_peer(peer, raw) {
+            if !self.state.signaling.send_to_endpoint(peer, *device, raw) {
                 tracing::debug!(
                     "[room.file.v1] {} is gone or too far behind for {:?}",
                     &peer[..12.min(peer.len())],
@@ -4305,40 +4309,65 @@ mod access_invite_tests {
 mod sfu_file_routing_tests {
     use super::*;
 
-    fn roster() -> Vec<String> {
-        vec!["alice".to_owned(), "bob".to_owned(), "carol".to_owned()]
+    const PHONE: Option<DeviceId> = Some(DeviceId([1; 32]));
+    const DESKTOP: Option<DeviceId> = Some(DeviceId([2; 32]));
+
+    /// alice on a phone and a desktop; bob and carol on one legacy endpoint.
+    fn roster() -> Vec<(String, Option<DeviceId>)> {
+        vec![
+            ("alice".to_owned(), PHONE),
+            ("alice".to_owned(), DESKTOP),
+            ("bob".to_owned(), None),
+            ("carol".to_owned(), None),
+        ]
+    }
+
+    fn ids(endpoints: &[(String, Option<DeviceId>)]) -> Vec<(&str, Option<DeviceId>)> {
+        endpoints.iter().map(|(p, d)| (p.as_str(), *d)).collect()
     }
 
     /// Chunks answering one requester must reach only them — the whole point of
     /// advertise-then-pull is that a 250 MB file is not pushed at the room.
     #[test]
     fn to_narrows_delivery_to_one_member() {
-        let r = roster();
-        let got = file_frame_recipients(&r, "alice", Some("bob"));
-        assert_eq!(got, vec![&"bob".to_owned()]);
+        let got = file_frame_endpoints(&roster(), "alice", PHONE, Some("bob"));
+        assert_eq!(ids(&got), vec![("bob", None)]);
     }
 
-    /// Offers (and older clients) carry no `to` and must still broadcast.
+    /// Offers (and older clients) carry no `to` and must still broadcast —
+    /// including to the author's other devices, as room chat does.
     #[test]
-    fn absent_to_broadcasts_to_room_minus_author() {
-        let r = roster();
-        let got = file_frame_recipients(&r, "alice", None);
-        assert_eq!(got, vec![&"bob".to_owned(), &"carol".to_owned()]);
+    fn absent_to_broadcasts_to_every_other_endpoint() {
+        let got = file_frame_endpoints(&roster(), "alice", PHONE, None);
+        assert_eq!(
+            ids(&got),
+            vec![("alice", DESKTOP), ("bob", None), ("carol", None)]
+        );
+    }
+
+    /// A desktop pulling a file its own phone posted names its own identity as
+    /// `to`; that must reach the phone, and only the phone.
+    #[test]
+    fn a_sibling_can_pull_from_its_own_device() {
+        let request = file_frame_endpoints(&roster(), "alice", DESKTOP, Some("alice"));
+        assert_eq!(ids(&request), vec![("alice", PHONE)]);
+        let chunk = file_frame_endpoints(&roster(), "alice", PHONE, Some("alice"));
+        assert_eq!(ids(&chunk), vec![("alice", DESKTOP)]);
     }
 
     /// An unknown recipient drops — it must never fall back to a broadcast.
     #[test]
     fn to_naming_a_non_member_delivers_to_nobody() {
-        let r = roster();
-        assert!(file_frame_recipients(&r, "alice", Some("mallory")).is_empty());
+        assert!(file_frame_endpoints(&roster(), "alice", PHONE, Some("mallory")).is_empty());
     }
 
-    /// A sender must not be handed its own frame back, even addressed to self.
+    /// The sending endpoint must not be handed its own frame back, even
+    /// addressed to itself.
     #[test]
-    fn author_is_never_a_recipient() {
-        let r = roster();
-        assert!(file_frame_recipients(&r, "bob", Some("bob")).is_empty());
-        assert!(!file_frame_recipients(&r, "bob", None).contains(&&"bob".to_owned()));
+    fn sending_endpoint_is_never_a_recipient() {
+        assert!(file_frame_endpoints(&roster(), "bob", None, Some("bob")).is_empty());
+        let got = file_frame_endpoints(&roster(), "bob", None, None);
+        assert!(!ids(&got).contains(&("bob", None)));
     }
 
     /// Ids differing only by base64 padding are the same peer; the file path
@@ -4352,13 +4381,13 @@ mod sfu_file_routing_tests {
         let padded = base64::engine::general_purpose::URL_SAFE.encode(key);
         assert_ne!(bare, padded);
 
-        let r = vec![padded.clone(), "bob".to_owned()];
+        let r = vec![(padded.clone(), None), ("bob".to_owned(), None)];
         assert_eq!(
-            file_frame_recipients(&r, &bare, None),
-            vec![&"bob".to_owned()],
+            ids(&file_frame_endpoints(&r, &bare, None, None)),
+            vec![("bob", None)],
             "the padded roster entry is the unpadded sender"
         );
-        assert!(file_frame_recipients(&r, &bare, Some(&padded)).is_empty());
+        assert!(file_frame_endpoints(&r, &bare, None, Some(&padded)).is_empty());
     }
 
     /// Revoke is control-plane like offer/complete — it must not debit the

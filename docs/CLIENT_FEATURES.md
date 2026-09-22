@@ -343,7 +343,12 @@ rooms.
   calls, accept invites, speak, view_image) and runs them through the same
   connection/call commands as the UI. Inbound raster images are auto-accepted
   when the assistant is on and attached to the auto-reply turn (or via
-  `view_image`). Voice audio is spoken only when the model calls `speak`,
+  `view_image`). With `ollama_file_sharing_enabled` (off by default, needs
+  tools) it also gets `send_file` and `list_shareable_files`: these re-share
+  chat attachments by `xfer-…` id, or send a file from `ollama_share_folder`,
+  which `ollama_share.rs` enforces on each file's real path. The sent message
+  is recorded under its `xfer-…` id, like a desktop send. Voice audio is
+  spoken only when the model calls `speak`,
   not on every text reply. Off by default; the Bobert headless launcher turns tools
   and voice on. Prefer a tools-capable model. `ollama_voice_enabled` speaks
   auto-replies and `speak` tool lines into the live capture path via Windows

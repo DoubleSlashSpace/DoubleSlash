@@ -240,12 +240,22 @@ ordinary call audio. If `ollama_stt_model` is set, decoded remote voice is
 sent to your local Ollama URL for transcription — not to any other host.
 Inbound chat image attachments may be base64-encoded and sent to that same
 local Ollama instance when auto-reply or `view_image` runs, so a vision
-model can see them.
+model can see them. If *Let the assistant send files* is on
+(`ollama_file_sharing_enabled`, off by default), the model can send peers and
+rooms any attachment already in this profile's chat history, from any
+conversation, and any file in the folder you pick (`ollama_share_folder`,
+including up to four levels of subfolders). Anyone who can chat with the
+assistant can ask it for those files, so share a folder that holds only what
+you are willing to give them. The file names in that folder are sent to your
+local Ollama instance when the model lists them. Paths that lead outside the
+folder are refused, and so is a folder that contains, or sits inside, the
+DoubleSlash profile.
 
 **How to disable:** Turn off *Enable AI assistant* in Settings
 (`ollama_enabled` in `settings.json`). Turn off *Allow assistant to control
-this client* to keep auto-reply text-only. Restored backups strip both
-auto-respond and tools flags.
+this client* to keep auto-reply text-only, or just *Let the assistant send
+files* to stop it sending files. Restored backups strip the auto-respond,
+tools, and file-sharing settings, including the shared folder.
 
 ### Supernode portal and gated relay pages
 

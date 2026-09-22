@@ -240,6 +240,8 @@ These are selected **desktop** defaults from [SettingsModel](rust/doubleslash-cl
 | `ollama_tools_enabled` | `false` | Let the assistant call client-control tools (test automation) |
 | `ollama_voice_enabled` | `false` | Speak auto-replies in an active voice session (Windows TTS) |
 | `ollama_stt_model` | empty | Optional Ollama model for transcribing remote speakers |
+| `ollama_file_sharing_enabled` | `false` | Let the assistant send files: chat attachments, plus the shared folder (needs tools) |
+| `ollama_share_folder` | empty | Folder the assistant may send files from; empty means attachments only |
 | `youtube_preview_enabled` | `true` | Local link-preview cards; playback contacts the host |
 | `debug_logging` | `false` | Verbose diagnostics |
 

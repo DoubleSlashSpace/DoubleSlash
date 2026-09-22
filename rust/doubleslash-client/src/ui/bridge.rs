@@ -5146,7 +5146,7 @@ impl ffi::AppBridge {
                 })
                 .unwrap_or_default()
         };
-        let body = attachment_body_label(&kind, &rel_path);
+        let body = crate::chat_store::attachment_body_label(&kind, &rel_path);
         let status = if sent {
             crate::chat_store::MessageStatus::Sent
         } else {
@@ -5263,7 +5263,7 @@ impl ffi::AppBridge {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs_f64())
             .unwrap_or(0.0);
-        let body = attachment_body_label(&kind, &rel_path);
+        let body = crate::chat_store::attachment_body_label(&kind, &rel_path);
         let status = if sent {
             crate::chat_store::MessageStatus::Sent
         } else {
@@ -6120,14 +6120,6 @@ fn parse_room_chat_store_key(store_key: &str) -> String {
     }
 }
 
-fn attachment_body_label(kind: &crate::chat_store::MessageKind, name: &str) -> String {
-    match kind {
-        crate::chat_store::MessageKind::Image => format!("🖼 {name}"),
-        crate::chat_store::MessageKind::Video => format!("🎬 {name}"),
-        _ => format!("📎 {name}"),
-    }
-}
-
 /// Put an inbound file offer into the chat stream so progress lives in the
 /// bubble, not a detached status strip. The sender already echoed their own
 /// `xfer-{id}` row from `send_file` / `send_room_file`.
@@ -6163,7 +6155,7 @@ fn insert_inbound_file_offer(mut bridge: Pin<&mut ffi::AppBridge>, offer: Inboun
     }
     let kind = crate::chat_store::message_kind_for_path(rel_path);
     let size_str = crate::chat_store::format_byte_size(size as u64);
-    let body = attachment_body_label(&kind, rel_path);
+    let body = crate::chat_store::attachment_body_label(&kind, rel_path);
     let now_ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
@@ -6181,10 +6173,7 @@ fn insert_inbound_file_offer(mut bridge: Pin<&mut ffi::AppBridge>, offer: Inboun
         } else {
             peer_id.to_owned()
         };
-        let sn = bridge
-            .rust()
-            .resolve_supernode_node_id_str(&sn_raw)
-            .unwrap_or(sn_raw);
+        let sn = room_file_node(bridge.rust(), &sn_raw);
         if sn.is_empty() || rid.is_empty() {
             return;
         }
@@ -6193,7 +6182,11 @@ fn insert_inbound_file_offer(mut bridge: Pin<&mut ffi::AppBridge>, offer: Inboun
         // Room id and supernode id must never become the author. That is what
         // made every offer in a room look like the same "other" peer on both
         // sides, whoever actually sent it.
-        let author = if origin_id.is_empty() || origin_id == rid || pub_id_eq(origin_id, &sn) {
+        let author = if origin_id.is_empty()
+            || origin_id == rid
+            || pub_id_eq(origin_id, &sn)
+            || pub_id_eq(origin_id, &sn_raw)
+        {
             String::new()
         } else {
             origin_id.to_owned()
@@ -6766,6 +6759,17 @@ fn sidebar_supernode_id(bridge: &AppBridgeRust, event_supernode_id: &str) -> Opt
     let rep = bridge.cluster_representative(&key);
     // Prefer a known-supernode form of the representative when present.
     Some(bridge.resolve_supernode_node_id_str(&rep).unwrap_or(rep))
+}
+
+/// Room key for a file offer or completion that `delivering` handed us.
+///
+/// Folded onto the room's sidebar node, as room chat is. The frame rides
+/// whichever multi-homed cluster session wins the race, so the delivering node
+/// is often a sibling; keyed by it, the bubble went into a history the open
+/// room never shows. A phone homed on another cluster member posted
+/// attachments that nobody saw until the room was reopened.
+fn room_file_node(bridge: &AppBridgeRust, delivering: &str) -> String {
+    sidebar_supernode_id(bridge, delivering).unwrap_or_else(|| delivering.to_owned())
 }
 
 /// Cluster-wide chat-member count per room id, unioned across every node.
@@ -9544,7 +9548,11 @@ fn dispatch_event(
                 );
                 bridge.as_mut().file_offered(QString::from(json.as_str()));
                 let settings = crate::ollama_module::read_assistant_settings();
+                // `is_self` is per device now; a file from our own other
+                // device is not something for the assistant to look at.
+                let from_us = pub_id_eq(&origin_id, &bridge.rust().my_public_id);
                 if !is_self
+                    && !from_us
                     && settings.enabled
                     && crate::ollama_module::is_vision_filename(&rel_path)
                     && (size as u64) <= crate::ollama_module::MAX_VISION_BYTES
@@ -9594,7 +9602,7 @@ fn dispatch_event(
             };
             let kind = crate::chat_store::message_kind_for_path(&rel_path);
             let size_str = crate::chat_store::format_byte_size(byte_len);
-            let body = attachment_body_label(&kind, &rel_path);
+            let body = crate::chat_store::attachment_body_label(&kind, &rel_path);
             let message_id = format!("xfer-{transfer_id}");
             let now_ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -9655,19 +9663,19 @@ fn dispatch_event(
                     } else {
                         room_id.clone()
                     };
-                    let sn = bridge
-                        .rust()
-                        .resolve_supernode_node_id_str(&sn_raw)
-                        .unwrap_or(sn_raw);
+                    let sn = room_file_node(bridge.rust(), &sn_raw);
                     if !sn.is_empty() && !rid.is_empty() && !attachment_path.is_empty() {
                         let my_pub = bridge.rust().my_public_id.clone();
                         let my_peer = bridge.rust().my_peer_id.clone();
-                        let author =
-                            if peer_id.is_empty() || peer_id == rid || pub_id_eq(&peer_id, &sn) {
-                                String::new()
-                            } else {
-                                peer_id.clone()
-                            };
+                        let author = if peer_id.is_empty()
+                            || peer_id == rid
+                            || pub_id_eq(&peer_id, &sn)
+                            || pub_id_eq(&peer_id, &sn_raw)
+                        {
+                            String::new()
+                        } else {
+                            peer_id.clone()
+                        };
                         let mine = !author.is_empty()
                             && (pub_id_eq(&author, &my_pub) || pub_id_eq(&author, &my_peer));
                         let display_sender = if author.is_empty() {
@@ -10351,6 +10359,29 @@ mod cluster_grouping_tests {
         assert_eq!(rows[2]["connected"], false);
         assert!(rows[2]["stats"].is_null());
         assert!(rows[2]["room_members"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod room_file_node_tests {
+    use super::{room_file_node, AppBridgeRust};
+
+    /// A room file offer delivered by a cluster sibling must be filed under
+    /// the room's node, or the open room never shows its bubble.
+    #[test]
+    fn a_sibling_delivered_offer_folds_onto_the_cluster_node() {
+        let mut bridge = AppBridgeRust::default();
+        bridge
+            .cluster_siblings
+            .insert("A".into(), vec!["B".into(), "C".into()]);
+        assert_eq!(room_file_node(&bridge, "B"), "A");
+        assert_eq!(room_file_node(&bridge, "C"), "A");
+        assert_eq!(room_file_node(&bridge, "A"), "A");
+        assert_eq!(
+            room_file_node(&bridge, "Z"),
+            "Z",
+            "a node outside any cluster is kept as delivered"
+        );
     }
 }
 

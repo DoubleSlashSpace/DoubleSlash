@@ -1323,14 +1323,25 @@ fn send_room_file(session: &Session, parsed: &Value) -> Value {
         rel_path: rel_path.clone(),
         path: path.to_owned(),
         transfer_id: transfer_id.clone(),
-        purpose: "file".to_owned(),
+        // "room_file", as the desktop sends. The purpose rides the offer, and
+        // a desktop receiver files anything else as a 1:1 file from the
+        // sender — the attachment showed up in their DM, not in the room.
+        purpose: "room_file".to_owned(),
     });
 
+    let sender_handle = session
+        .peer_store
+        .read()
+        .get(&session.identity.peer_id())
+        .map(|rec| rec.display_name())
+        .unwrap_or_default();
     let kind = doubleslash_client::chat_store::message_kind_for_path(&rel_path);
     let record = ChatMessage {
         id: format!("xfer-{transfer_id}"),
-        // Room history is keyed by room id, the same as room chat.
-        peer_id: room_id.to_owned(),
+        // The room conversation key, as `room.history` reads it and room chat
+        // writes it. The bare room id put our own attachment in a
+        // conversation nothing ever loads, so it never got a bubble.
+        peer_id: doubleslash_client::chat_store::room_conversation_id(room_id),
         sender: session.my_public_id.clone(),
         recipient: room_id.to_owned(),
         body: attachment_label(&kind, &rel_path),
@@ -1346,7 +1357,7 @@ fn send_room_file(session: &Session, parsed: &Value) -> Value {
         attachment_path: path.to_owned(),
         size_str: doubleslash_client::chat_store::format_byte_size(byte_len),
         status_note: String::new(),
-        sender_handle: String::new(),
+        sender_handle,
     };
     if let Err(e) = session.chat_store.upsert(&record) {
         warn!("could not echo the room file offer into history: {e}");

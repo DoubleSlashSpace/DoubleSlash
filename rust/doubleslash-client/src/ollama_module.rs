@@ -40,6 +40,18 @@ pub struct OllamaAssistantSettings {
     pub voice_enabled: bool,
     /// Ollama model for `/v1/audio/transcriptions` (empty = do not listen).
     pub stt_model: String,
+    /// Offer `send_file` / `list_shareable_files`: re-share chat attachments,
+    /// plus files in [`Self::share_folder`]. Needs `tools_enabled`.
+    pub file_sharing_enabled: bool,
+    /// Folder whose files the assistant may send (empty = attachments only).
+    pub share_folder: String,
+}
+
+impl OllamaAssistantSettings {
+    /// Whether the file tools are offered to the model at all.
+    pub fn file_tools_active(&self) -> bool {
+        self.tools_enabled && self.file_sharing_enabled
+    }
 }
 
 impl Default for OllamaAssistantSettings {
@@ -54,6 +66,8 @@ impl Default for OllamaAssistantSettings {
             tools_enabled: false,
             voice_enabled: false,
             stt_model: String::new(),
+            file_sharing_enabled: false,
+            share_folder: String::new(),
         }
     }
 }
@@ -118,6 +132,15 @@ pub fn read_assistant_settings() -> OllamaAssistantSettings {
             .and_then(|x| x.as_str())
             .unwrap_or("")
             .to_owned(),
+        file_sharing_enabled: v
+            .get("ollama_file_sharing_enabled")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
+        share_folder: v
+            .get("ollama_share_folder")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_owned(),
     }
 }
 
@@ -139,6 +162,7 @@ fn rewrite_messages_tools_unavailable(messages: &mut [ChatTurn]) {
             .content
             .replace(TOOLS_SYSTEM_ADDON, TOOLS_UNAVAILABLE_NOTICE);
         m.content = m.content.replace(VOICE_TOOLS_ADDON, "");
+        m.content = m.content.replace(crate::ollama_tools::FILE_TOOLS_ADDON, "");
         if !m.content.contains(TOOLS_UNAVAILABLE_NOTICE) {
             m.content.push_str("\n\n");
             m.content.push_str(TOOLS_UNAVAILABLE_NOTICE);
@@ -162,6 +186,10 @@ pub fn auto_reply_system_prompt(settings: &OllamaAssistantSettings) -> String {
     if settings.tools_enabled {
         sys.push_str("\n\n");
         sys.push_str(crate::ollama_tools::TOOLS_SYSTEM_ADDON);
+    }
+    if settings.file_tools_active() {
+        sys.push_str("\n\n");
+        sys.push_str(crate::ollama_tools::FILE_TOOLS_ADDON);
     }
     if settings.voice_enabled {
         sys.push_str("\n\n");

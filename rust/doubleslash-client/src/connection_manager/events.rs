@@ -298,6 +298,9 @@ pub enum ConnectionEvent {
         rel_path: String,
         size: usize,
         purpose: String,
+        /// True for this device's own offer, echoed to the UI. A room offer
+        /// from another device of our own identity is `false`: it is inbound
+        /// here, and `origin_id` says it is ours.
         is_self: bool,
         /// Who offered the file. Same as `peer_id` on 1:1; the sender public
         /// id on a room offer (where `peer_id` is the room).
