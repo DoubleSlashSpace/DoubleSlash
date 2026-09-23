@@ -568,7 +568,7 @@ mod linux_impl {
     use crate::video::nv12;
 
     use v4l::buffer::Type;
-    use v4l::io::traits::CaptureStream;
+    use v4l::io::traits::{CaptureStream, Stream as _};
     use v4l::video::Capture;
     use v4l::{Device, FourCC};
 
@@ -639,7 +639,27 @@ mod linux_impl {
         height: u32,
         /// Row stride the driver negotiated, which is not always `width`.
         stride: usize,
+        /// Dequeues in a row that timed out without a frame.
+        stalls: u32,
     }
+
+    /// How long one dequeue waits for the driver before it counts as a stall.
+    ///
+    /// Without a bound, a driver that stops delivering — a stalled USB
+    /// transfer, a `vhci_hcd` with no isochronous support — blocks
+    /// `next_frame` forever. The capture loop then never sees its stop flag,
+    /// so ending the call cannot release the camera. Long enough for a slow
+    /// first frame while auto-exposure settles.
+    const DEQUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// Stalls in a row after which the camera is reported gone.
+    ///
+    /// Each stall already cost [`DEQUEUE_TIMEOUT`], and the capture loop
+    /// tolerates far more consecutive errors than that because ordinary start-up
+    /// failures return at once. Past this many, errors return immediately too,
+    /// so a dead device reaches the "camera lost" state in seconds rather than
+    /// minutes.
+    const MAX_STALLS: u32 = 3;
 
     impl V4l2Camera {
         /// Open `device_id` (a `/dev/videoN` path) or the first camera found,
@@ -719,7 +739,9 @@ mod linux_impl {
             let device_ref: &'static Device = unsafe { &*(&*device as *const Device) };
             // Four buffers: enough to absorb a scheduling hiccup without
             // adding a frame of latency the way a deep queue would.
-            let stream = v4l::io::mmap::Stream::with_buffers(device_ref, Type::VideoCapture, 4)?;
+            let mut stream =
+                v4l::io::mmap::Stream::with_buffers(device_ref, Type::VideoCapture, 4)?;
+            stream.set_timeout(DEQUEUE_TIMEOUT);
 
             Ok(Self {
                 stream,
@@ -728,46 +750,45 @@ mod linux_impl {
                 width: fmt.width,
                 height: fmt.height,
                 stride: fmt.stride as usize,
+                stalls: 0,
             })
         }
     }
 
     impl CameraSource for V4l2Camera {
         fn next_frame(&mut self) -> anyhow::Result<RawFrame> {
-            let (buf, meta) = self.stream.next()?;
+            if self.stalls >= MAX_STALLS {
+                anyhow::bail!(
+                    "camera delivered no frame in {}s",
+                    DEQUEUE_TIMEOUT.as_secs() * u64::from(MAX_STALLS)
+                );
+            }
+            let (buf, meta) = match self.stream.next() {
+                Ok(next) => next,
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    self.stalls += 1;
+                    // `next` re-queues the previous buffer before it waits, so a
+                    // call that timed out has queued it without dequeuing one;
+                    // the following call would queue it again and fail with
+                    // EINVAL from then on. Stopping hands every buffer back, and
+                    // the next call restarts the stream from a clean queue.
+                    if let Err(stop) = self.stream.stop() {
+                        tracing::debug!("[video] STREAMOFF after a stall failed: {stop}");
+                    }
+                    anyhow::bail!("camera stalled ({} of {MAX_STALLS})", self.stalls);
+                }
+                Err(e) => return Err(e.into()),
+            };
+            self.stalls = 0;
             // A short buffer means a truncated frame; converting it would read
             // past the end or produce a torn picture.
             let payload = buf.get(..meta.bytesused as usize).unwrap_or(buf);
 
             let (w, h) = (self.width, self.height);
             let (y, u, v) = match &self.fourcc {
-                b"YU12" => {
-                    // Already I420. Still copied per plane, because the
-                    // driver's rows may be padded to `stride`.
-                    let (wu, hu) = (w as usize, h as usize);
-                    let (cw, ch) = (wu / 2, hu / 2);
-                    if payload.len() < self.stride * hu + 2 * (self.stride / 2) * ch {
-                        anyhow::bail!("short I420 buffer: {} bytes", payload.len());
-                    }
-                    let mut y = Vec::with_capacity(wu * hu);
-                    for r in 0..hu {
-                        y.extend_from_slice(&payload[r * self.stride..r * self.stride + wu]);
-                    }
-                    let cstride = self.stride / 2;
-                    let ubase = self.stride * hu;
-                    let vbase = ubase + cstride * ch;
-                    let mut uo = Vec::with_capacity(cw * ch);
-                    let mut vo = Vec::with_capacity(cw * ch);
-                    for r in 0..ch {
-                        uo.extend_from_slice(
-                            &payload[ubase + r * cstride..ubase + r * cstride + cw],
-                        );
-                        vo.extend_from_slice(
-                            &payload[vbase + r * cstride..vbase + r * cstride + cw],
-                        );
-                    }
-                    (y, uo, vo)
-                }
+                // Already I420, but the driver's rows may be padded.
+                b"YU12" => nv12::i420_unpad(payload, self.stride, w, h)
+                    .ok_or_else(|| anyhow::anyhow!("short I420 buffer: {} bytes", payload.len()))?,
                 b"NV12" => nv12::nv12_to_i420(payload, self.stride, self.stride * h as usize, w, h)
                     .ok_or_else(|| anyhow::anyhow!("NV12 buffer too small for {w}x{h}"))?,
                 b"YUYV" => nv12::yuy2_to_i420(payload, self.stride, w, h)
@@ -1145,6 +1166,48 @@ mod tests {
         // the plane lengths are right either way. Light through a lens always
         // varies somewhere, so this is what separates "captured a picture"
         // from "captured the right number of bytes".
+        let first = frame.y[0];
+        assert!(
+            frame.y.iter().any(|&p| p != first),
+            "luma plane is a single flat value — capture produced no picture"
+        );
+    }
+
+    /// The macOS sibling: the only thing that runs the Objective-C shim against
+    /// a real `AVCaptureSession`. Ignored for the same reasons as the others.
+    ///
+    /// Run it from a terminal that has been granted camera access (or accept
+    /// the TCC prompt on first run, then run again: `open` pulls a frame, and
+    /// may time out while the prompt is still on screen). The size is printed
+    /// rather than asserted, because answering "does the preset give us what
+    /// we asked for" is part of why it exists.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires a physical camera"]
+    fn captures_a_frame_from_the_default_camera() {
+        let devices = list_devices();
+        println!("cameras: {devices:?}");
+        assert!(
+            !devices.is_empty(),
+            "no camera attached, or camera access denied"
+        );
+
+        let (want_w, want_h) = (640, 360);
+        let mut cam = AvfCamera::open(None, want_w, want_h).expect("open camera");
+        let (w, h) = cam.dimensions();
+        println!("requested {want_w}x{want_h}, session delivers {w}x{h}");
+
+        let mut frame = None;
+        for _ in 0..10 {
+            if let Ok(f) = cam.next_frame() {
+                frame = Some(f);
+                break;
+            }
+        }
+        let frame = frame.expect("camera produced no frame");
+        assert!(frame.is_consistent());
+        assert_eq!((frame.width, frame.height), (w, h));
+
         let first = frame.y[0];
         assert!(
             frame.y.iter().any(|&p| p != first),

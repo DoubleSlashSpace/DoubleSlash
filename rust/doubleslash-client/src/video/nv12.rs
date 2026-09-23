@@ -180,6 +180,43 @@ pub fn yuy2_to_i420(
     Some((y, u, v))
 }
 
+/// Copy a row-padded I420 buffer into tightly-packed planes.
+///
+/// This is V4L2's single-planar `YU12`: the three planes back to back, luma
+/// rows at `src_stride` and both chroma planes at `src_stride / 2`. Already
+/// the right format, but a driver may pad rows, so it is still copied row by
+/// row. The last row of the last plane need not carry its padding.
+pub fn i420_unpad(
+    src: &[u8],
+    src_stride: usize,
+    width: u32,
+    height: u32,
+) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let (w, h) = (width as usize, height as usize);
+    let (cw, ch) = (w / 2, h / 2);
+    if w == 0 || h == 0 || w % 2 != 0 || h % 2 != 0 || src_stride < w {
+        return None;
+    }
+    let cstride = src_stride / 2;
+    let ubase = src_stride * h;
+    let vbase = ubase + cstride * ch;
+    if src.len() < vbase + cstride * (ch - 1) + cw {
+        return None;
+    }
+
+    let mut y = Vec::with_capacity(w * h);
+    for row in 0..h {
+        y.extend_from_slice(&src[row * src_stride..row * src_stride + w]);
+    }
+    let mut u = Vec::with_capacity(cw * ch);
+    let mut v = Vec::with_capacity(cw * ch);
+    for row in 0..ch {
+        u.extend_from_slice(&src[ubase + row * cstride..ubase + row * cstride + cw]);
+        v.extend_from_slice(&src[vbase + row * cstride..vbase + row * cstride + cw]);
+    }
+    Some((y, u, v))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,5 +387,66 @@ mod tests {
         assert!(yuy2_to_i420(&src, 16, 7, 4).is_none());
         assert!(yuy2_to_i420(&src, 4, 8, 4).is_none(), "stride < width*2");
         assert!(yuy2_to_i420(&[0u8; 4], 16, 8, 4).is_none(), "truncated");
+    }
+
+    /// A `YU12` buffer at `stride` whose padding bytes are all `0xEE`, and the
+    /// tightly-packed planes it should unpad to. Every visible sample is
+    /// distinct from the padding.
+    fn padded_i420(w: usize, h: usize, stride: usize) -> (Vec<u8>, [Vec<u8>; 3]) {
+        let (cw, ch, cstride) = (w / 2, h / 2, stride / 2);
+        let y: Vec<u8> = (0..w * h).map(|i| (i % 200) as u8).collect();
+        let u: Vec<u8> = (0..cw * ch).map(|i| 1 + (i % 100) as u8).collect();
+        let v: Vec<u8> = (0..cw * ch).map(|i| 101 + (i % 100) as u8).collect();
+        let mut src = vec![0xEEu8; stride * h + 2 * cstride * ch];
+        for r in 0..h {
+            src[r * stride..r * stride + w].copy_from_slice(&y[r * w..r * w + w]);
+        }
+        let (ubase, vbase) = (stride * h, stride * h + cstride * ch);
+        for r in 0..ch {
+            src[ubase + r * cstride..ubase + r * cstride + cw]
+                .copy_from_slice(&u[r * cw..r * cw + cw]);
+            src[vbase + r * cstride..vbase + r * cstride + cw]
+                .copy_from_slice(&v[r * cw..r * cw + cw]);
+        }
+        (src, [y, u, v])
+    }
+
+    #[test]
+    fn i420_unpad_is_a_copy_when_rows_are_tight() {
+        let (src, [y, u, v]) = padded_i420(16, 8, 16);
+        assert_eq!(src.len(), y.len() + u.len() + v.len());
+        assert_eq!(i420_unpad(&src, 16, 16, 8).unwrap(), (y, u, v));
+    }
+
+    /// The case a real driver produces and a tight-stride test cannot: every
+    /// plane's rows start past the previous row's padding, and the chroma
+    /// planes use half the luma stride.
+    #[test]
+    fn i420_unpad_drops_row_padding_in_every_plane() {
+        let (src, [y, u, v]) = padded_i420(16, 8, 32);
+        let (oy, ou, ov) = i420_unpad(&src, 32, 16, 8).unwrap();
+        assert_eq!(oy, y, "luma rows");
+        assert_eq!(ou, u, "U rows at stride / 2");
+        assert_eq!(ov, v, "V rows at stride / 2");
+    }
+
+    #[test]
+    fn i420_unpad_accepts_a_last_row_without_padding() {
+        let (mut src, planes) = padded_i420(16, 8, 32);
+        src.truncate(src.len() - (32 / 2 - 16 / 2));
+        let (y, u, v) = i420_unpad(&src, 32, 16, 8).unwrap();
+        assert_eq!([y, u, v], planes);
+    }
+
+    #[test]
+    fn i420_unpad_rejects_bad_geometry_and_truncation() {
+        let (src, _) = padded_i420(16, 8, 32);
+        assert!(i420_unpad(&src, 32, 0, 8).is_none());
+        assert!(i420_unpad(&src, 32, 15, 8).is_none(), "odd width");
+        assert!(i420_unpad(&src, 8, 16, 8).is_none(), "stride < width");
+        assert!(
+            i420_unpad(&src[..src.len() - 9], 32, 16, 8).is_none(),
+            "last V row cut short"
+        );
     }
 }
