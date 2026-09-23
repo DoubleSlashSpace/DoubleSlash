@@ -1865,6 +1865,19 @@ async fn a_targeted_refusal_from_the_originator_fails_the_pull() {
     );
 }
 
+/// Offers are held in memory only. Accepting one this process does not know —
+/// a bubble left over from before a restart — must fail visibly, not do
+/// nothing.
+#[tokio::test]
+async fn accepting_an_unknown_offer_fails_visibly() {
+    let mut t = harness::test_cm();
+    t.cm.test_accept_file("tid-stale").await;
+    assert_eq!(
+        file_failed_reason(&mut t.events, "tid-stale").as_deref(),
+        Some("offer no longer available")
+    );
+}
+
 /// Device routing delivers a pull request to every endpoint of the offering
 /// identity. The endpoint that withdrew the offer refuses it; one that never
 /// held it must stay silent, or it cancels a live download from its sibling.

@@ -625,6 +625,12 @@ impl ConnectionManager {
             .insert(peer_id.to_owned(), Instant::now() - age);
     }
 
+    /// Test-only: what `ConnectionCommand::AcceptFile` runs.
+    #[cfg(test)]
+    pub(super) async fn test_accept_file(&mut self, transfer_id: &str) {
+        self.accept_inbound_file(transfer_id).await;
+    }
+
     /// Test-only: the room file manager, to seed inbound offers and pulls.
     #[cfg(test)]
     pub(super) fn test_room_file_mgr(&mut self) -> &mut FileTransferManager {

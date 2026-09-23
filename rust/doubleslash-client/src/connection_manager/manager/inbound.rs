@@ -2320,7 +2320,16 @@ impl ConnectionManager {
                 self.accept_room_file(&sn, &room_id, transfer_id, &origin)
                     .await;
             }
-            None => warn!("AcceptFile: unknown transfer {transfer_id}"),
+            None => {
+                // Offers live in memory, so a bubble from before a restart (or
+                // one this device never held) still shows Accept. Fail it
+                // visibly instead of leaving the click with no effect.
+                warn!("AcceptFile: unknown transfer {transfer_id}");
+                self.emit_event(ConnectionEvent::FileFailed {
+                    transfer_id: transfer_id.to_owned(),
+                    reason: "offer no longer available".to_owned(),
+                });
+            }
         }
     }
 
