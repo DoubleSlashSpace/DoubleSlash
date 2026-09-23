@@ -133,7 +133,12 @@ pub fn to_json(event: &ConnectionEvent) -> Option<Value> {
             "room_id": room_id,
         }),
         E::CallAccepted { peer_id } => json!({ "event": "call_accepted", "peer_id": peer_id }),
-        E::CallEnded { peer_id } => json!({ "event": "call_ended", "peer_id": peer_id }),
+        // Android keeps no missed-call count, so another device answering is
+        // the same `call_ended` the app already handles: stop ringing, clear
+        // the call.
+        E::CallEnded { peer_id } | E::CallAnsweredElsewhere { peer_id } => {
+            json!({ "event": "call_ended", "peer_id": peer_id })
+        }
         E::PeerVideoStateChanged { peer_id, active } => {
             json!({ "event": "peer_video_state", "peer_id": peer_id, "active": active })
         }
@@ -541,6 +546,14 @@ mod tests {
         );
         assert_eq!(
             name_of(&ConnectionEvent::CallEnded {
+                peer_id: "p".into()
+            }),
+            "call_ended",
+        );
+        // The app stops ringing on `call_ended`; a new name would leave the
+        // phone ringing after the desktop answered.
+        assert_eq!(
+            name_of(&ConnectionEvent::CallAnsweredElsewhere {
                 peer_id: "p".into()
             }),
             "call_ended",

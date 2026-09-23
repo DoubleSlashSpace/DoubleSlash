@@ -588,11 +588,51 @@ mod tests {
         assert_eq!(accepts, 1);
         let mut stopped = false;
         while let Ok(event) = desktop.events.try_recv() {
-            if matches!(event, ConnectionEvent::CallEnded { .. }) {
-                stopped = true;
+            match event {
+                ConnectionEvent::CallAnsweredElsewhere { .. } => stopped = true,
+                ConnectionEvent::CallEnded { .. } => {
+                    panic!("an answer on the phone is not a missed call")
+                }
+                _ => {}
             }
         }
         assert!(stopped);
+    }
+
+    /// The ordinary case: one device answers and the other never touches the
+    /// call. The untouched device must stop ringing, not ring until timeout.
+    #[tokio::test]
+    async fn answering_on_one_device_stops_the_other_ringing() {
+        use crate::connection_manager::ConnectionEvent;
+        let (mut caller, mut phone, mut desktop) = call_clients();
+        let caller_id = caller.manager.identity.peer_id();
+        let receiver_id = phone.manager.identity.peer_id();
+        send_call(&mut caller, MessageType::CallRequest, &receiver_id).await;
+        deliver_calls(&mut caller, &mut [&mut phone, &mut desktop]).await;
+        while desktop.events.try_recv().is_ok() {}
+
+        send_call(&mut phone, MessageType::CallAccept, &caller_id).await;
+        deliver_calls(&mut phone, &mut [&mut caller]).await;
+        deliver_calls(&mut caller, &mut [&mut phone, &mut desktop]).await;
+        deliver_calls(&mut phone, &mut [&mut caller]).await;
+
+        assert!(caller
+            .manager
+            .device_call_accepts_media(&receiver_id, phone.manager.device_id));
+        assert!(!desktop
+            .manager
+            .device_call_accepts_media(&caller_id, caller.manager.device_id));
+        let mut stopped = false;
+        while let Ok(event) = desktop.events.try_recv() {
+            match event {
+                ConnectionEvent::CallAnsweredElsewhere { .. } => stopped = true,
+                ConnectionEvent::CallEnded { .. } => {
+                    panic!("an answer on the phone is not a missed call")
+                }
+                _ => {}
+            }
+        }
+        assert!(stopped, "the device that did not answer is still ringing");
     }
 
     #[tokio::test]

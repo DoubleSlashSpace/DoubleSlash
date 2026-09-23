@@ -1141,7 +1141,10 @@ async fn handle_event(
                 voice_activation: va,
             });
         }
-        ConnectionEvent::CallEnded { peer_id } => {
+        // Headless keeps no missed-call count, so another device answering is
+        // just the call ending here.
+        ConnectionEvent::CallEnded { peer_id }
+        | ConnectionEvent::CallAnsweredElsewhere { peer_id } => {
             info!("Call ended with {}", peer_id);
             platform::stop_ringtone();
             let _ = call_cmd_tx.try_send(call_controller::CallCommand::StopAudio);

@@ -66,6 +66,10 @@ pub enum ConnectionEvent {
     CallAccepted { peer_id: String },
     /// Remote peer rejected or ended the call.
     CallEnded { peer_id: String },
+    /// Another device of this identity answered the incoming call from
+    /// `peer_id`. The call is over *here* — stop ringing — but it was not
+    /// missed, so it must not count as one.
+    CallAnsweredElsewhere { peer_id: String },
     /// Supernode relay ticket received.
     RelayGranted {
         supernode_id: String,

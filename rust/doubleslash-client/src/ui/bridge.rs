@@ -156,6 +156,12 @@ pub mod ffi {
         #[rust_name = "incoming_call"]
         fn incomingCall(self: Pin<&mut AppBridge>, peer_id: QString);
 
+        /// Emitted when a call still ringing here ends without being answered
+        /// here: the caller gave up, or another of our devices answered it.
+        #[qsignal]
+        #[rust_name = "incoming_call_cancelled"]
+        fn incomingCallCancelled(self: Pin<&mut AppBridge>, peer_id: QString);
+
         /// Emitted when the available SFU room list updates. `rooms_json` is a
         /// JSON object `{supernode_id, rooms: [{room_id, name, kind, count}]}`.
         #[qsignal]
@@ -6882,6 +6888,42 @@ fn emit_member_list_json(
 /// still live. Deliberately sends no signaling: the event path is already a
 /// *response* to the peer's `CallEnd`, and echoing one back would bounce
 /// between the two clients.
+/// A call with `peer_id` is over on this device.
+///
+/// `missed` is whether a call still ringing here counts as missed: true when
+/// the caller gave up, false when another of our devices answered it.
+fn end_call_here(bridge: &mut Pin<&mut ffi::AppBridge>, peer_id: &str, missed: bool) {
+    bridge.as_mut().rust_mut().incoming_call_fallback = None;
+    // Only a call still *ringing* here was missed. Once we answered, the peer
+    // hanging up is simply the end of the call.
+    if bridge.rust().has_incoming_call {
+        bridge.as_mut().rust_mut().has_incoming_call = false;
+        crate::platform::stop_ringtone();
+        bridge
+            .as_mut()
+            .incoming_call_cancelled(QString::from(peer_id));
+        if missed {
+            let mc = bridge.rust().missed_calls + 1;
+            bridge.as_mut().set_missed_calls(mc);
+        }
+    }
+    // Both `start_call` and `accept_call` set the active peer up front, so a
+    // live call always has one. Anything else -- a ring we never answered, or a
+    // stray CallEnd from a third peer -- must not tear down audio, because a
+    // room voice session may be running alongside and has to survive this.
+    let ours = {
+        let active = &bridge.rust().active_direct_call_peer_id;
+        !active.is_empty() && *active == peer_id
+    };
+    if ours {
+        teardown_call_locally(bridge);
+    } else {
+        bridge.as_mut().set_call_state(QString::from("idle"));
+        bridge.as_mut().set_call_duration_secs(0);
+        emit_peers_updated(bridge.as_mut());
+    }
+}
+
 fn teardown_call_locally(bridge: &mut Pin<&mut ffi::AppBridge>) {
     {
         let active = bridge.rust().active_direct_call_peer_id.clone();
@@ -8298,30 +8340,13 @@ fn dispatch_event(
         ConnectionEvent::CallEnded { peer_id } => {
             call_timer_stop.take(); // stop the duration timer
             let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
-                bridge.as_mut().rust_mut().incoming_call_fallback = None;
-                // Only a call still *ringing* here was missed. Once we answered,
-                // the peer hanging up is simply the end of the call.
-                if bridge.rust().has_incoming_call {
-                    bridge.as_mut().rust_mut().has_incoming_call = false;
-                    let mc = bridge.rust().missed_calls + 1;
-                    bridge.as_mut().set_missed_calls(mc);
-                }
-                // Both `start_call` and `accept_call` set the active peer up
-                // front, so a live call always has one. Anything else -- a ring
-                // we never answered, or a stray CallEnd from a third peer --
-                // must not tear down audio, because a room voice session may be
-                // running alongside and has to survive this.
-                let ours = {
-                    let active = &bridge.rust().active_direct_call_peer_id;
-                    !active.is_empty() && *active == peer_id
-                };
-                if ours {
-                    teardown_call_locally(&mut bridge.as_mut());
-                } else {
-                    bridge.as_mut().set_call_state(QString::from("idle"));
-                    bridge.as_mut().set_call_duration_secs(0);
-                    emit_peers_updated(bridge.as_mut());
-                }
+                end_call_here(&mut bridge, &peer_id, true);
+            });
+        }
+        ConnectionEvent::CallAnsweredElsewhere { peer_id } => {
+            call_timer_stop.take();
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                end_call_here(&mut bridge, &peer_id, false);
             });
         }
         ConnectionEvent::SessionStateUpdate(state) => {

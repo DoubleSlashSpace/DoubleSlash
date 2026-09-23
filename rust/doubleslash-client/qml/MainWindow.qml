@@ -1274,6 +1274,9 @@ ApplicationWindow {
         backend.incomingCall.connect(function(peerId) {
             incomingCallDialog.show(peerId)
         })
+        backend.incomingCallCancelled.connect(function(peerId) {
+            incomingCallDialog.cancel(peerId)
+        })
         backend.updateAvailable.connect(function(tag, url) {
             updateIndicator.tag = tag
             updateIndicator.installing = false

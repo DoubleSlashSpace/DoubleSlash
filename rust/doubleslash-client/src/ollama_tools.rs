@@ -122,7 +122,8 @@ impl LiveClientView {
                 self.incoming_call_from = None;
                 self.incoming_call_fallback = None;
             }
-            ConnectionEvent::CallEnded { peer_id } => {
+            ConnectionEvent::CallEnded { peer_id }
+            | ConnectionEvent::CallAnsweredElsewhere { peer_id } => {
                 if self.active_call_peer.as_deref() == Some(peer_id.as_str()) {
                     self.active_call_peer = None;
                 }

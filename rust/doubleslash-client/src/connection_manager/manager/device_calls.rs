@@ -177,7 +177,7 @@ impl ConnectionManager {
                     self.dispatch_outbound(ack).await;
                 } else {
                     self.device_calls.remove(&peer);
-                    self.emit_event(ConnectionEvent::CallEnded { peer_id: peer });
+                    self.emit_event(ConnectionEvent::CallAnsweredElsewhere { peer_id: peer });
                 }
                 return false;
             }

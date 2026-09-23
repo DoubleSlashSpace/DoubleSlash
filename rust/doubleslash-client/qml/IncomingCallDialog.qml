@@ -28,6 +28,17 @@ Item {
         root.visible = true
     }
 
+    // The call ended without an answer here — the caller gave up, or another
+    // of our devices took it. Close without replying: a reject now would be
+    // a second answer to a call that is already settled.
+    function cancel(peerId) {
+        if (!root.visible || peerId !== root.callPeerId)
+            return
+        root.visible = false
+        dismissTimer.stop()
+        root.callPeerId = ""
+    }
+
     function dismiss(wasAccepted) {
         root.visible = false
         dismissTimer.stop()
