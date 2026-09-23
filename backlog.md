@@ -6,9 +6,7 @@ Open work and acceptance criteria. Durable *shipped* invariants live in
 
 Phases are **priority order**, not calendar dates. Finish or explicitly defer a
 phase before treating a later one as current work. Public “in progress” claims
-in [`README.md`](README.md), [`ConquerD_www/index.html`](ConquerD_www/index.html),
-and [`ConquerD_www/architecture.html`](ConquerD_www/architecture.html) must have
-a home here.
+in [`README.md`](README.md) and on the website must have a home here.
 
 | Public claim | Phase |
 |---|---|
@@ -77,8 +75,9 @@ encoder unavailable, quota shed, stall vs intentional camera-off).
 Unit coverage uses a fake clock. Still unrun: clap+flash under a clean network,
 ~1–2 % loss, and a keyframe burst, plus a multi-peer check that per-sender
 timelines never cross. Target is ±40–80 ms audio-led. Procedure:
-[acceptance §4](docs/ACCEPTANCE.md#4-av-sync-on-a-real-network). The voice path
-was confirmed byte-identical to the pre-video code on 2026-09-22.
+[acceptance §4](docs/ACCEPTANCE.md#4-av-sync-on-a-real-network). If the
+keyframe burst empties the video hold queue while audio keeps playing, align the
+receiver's drop/keyframe-request policy with the sync hold queue.
 
 ### Linux / macOS camera hardware
 
@@ -202,10 +201,6 @@ Pairs with screen capture (same permissions on Linux/macOS).
 audio played locally re-enters the loop. Needs exclude-our-own-output, ducking,
 or a virtual cable.
 
-Still unsolved by design: **lip sync for a talking-head call.** The mic is not
-on the synced timeline. Accepted for v1; a follow-on could additionally carry
-the mic on the media layer during video calls.
-
 ---
 
 ## Phase 4 — Android distribution
@@ -215,8 +210,10 @@ App-side policy work for a first listing is in the tree (`targetSdk` 36,
 incoming-call notifications). What is left is mostly Play Console, CI, and
 release hardening.
 
-1. **CI.** No Android job exists. It needs the NDK, `cargo-ndk`, and
-   `cmake;3.31.6` (CMake 4 rejects libopus's `cmake_minimum_required`).
+1. **CI coverage.** `.github/workflows/android.yml` builds a debug APK on
+   `develop` pushes and publishes `android-nightly`. It does not run Gradle
+   unit tests or `cargo ndk` clippy (only `scripts/ci_local.*` does, when the
+   toolchain is present), and it does not gate pull requests.
 2. **Release APK hardening.** R8 rules exist (`app/proguard-rules.pro`) but a
    minified release build has never been run. `bundleRelease` signs from
    `DOUBLESLASH_KEYSTORE` when set; a Play upload key has not been used.
@@ -257,26 +254,10 @@ stay-unlocked, Legal reader, backups. Do not re-open those as missing.
 
 ---
 
-## Phase 5 — Media and desktop polish
+## Phase 5 — Client polish
 
-After the Windows checklist (Phase 1) and any new capture (Phase 3):
-
-1. **Receiver resilience.** PLI/FIR cadence, idle decoder GC under many room
-   members, graceful degrade when Qt Multimedia / sink is absent. Align
-   drop/keyframe policy with the shipped A/V sync hold queue so a PLI storm
-   does not empty the video timeline while audio keeps playing.
-2. **Video UX.** Screen-share picker may still be thin; multi-tile layout under
-   several active room cameras; confirm local-preview vs remote tile identity;
-   separate level meters / mute for voice vs content when both are live.
-3. **Polyphase resampling (V7).** Linear interpolation is near-inaudible for
-   8 kHz voice at typical device rates; a windowed-sinc or `rubato`
-   `FastFixedIn` drop-in if it becomes perceptible.
-4. **Stereo / spatial mixdown (V8).** Per-peer pan in `mix_pcm_frames` + stereo
-   ring buffer. Low-priority UX.
-5. **Ollama / plugin UX polish** — currently experimental on desktop. Android
-   has no plugin or Ollama surface; that is not a Phase 5 requirement.
-6. **Android room per-peer grants** (`generateRoomInviteForPeer`) are not wired;
-   shareable links carry a Space inclusion proof and no grant.
+1. **Android room per-peer grants** (`generateRoomInviteForPeer`) are not wired;
+   shareable links carry a Space inclusion proof and no grant. Desktop has it.
 
 ### Video non-goals (near-term)
 
@@ -343,8 +324,6 @@ fields, `v1` hash-label freeze) is shipped. Invariants are in `agents.md`.
   logging is shipped. Still deferred: CT-style append-only history with
   consistency proofs — which could also make the cluster roster itself an
   auditable membership log.
-- **`Closet` node kind.** Distinct node `kind` for a different semantic
-  (e.g. text-only sub-channels). Additive; not required for nesting depth.
 - **Layer 2 — key hierarchy (entirely unbuilt).** Extends pairwise sender-keys
   `GroupKeySource` (TreeKEM declined). Scope: per-node epoch secrets; HKDF
   inheritance down `inherit=true` edges; `inherit=false` compartments as their
@@ -355,71 +334,25 @@ fields, `v1` hash-label freeze) is shipped. Invariants are in `agents.md`.
   don't inherit.
 
 Space non-goals: literal MTC / X.509; subtree delegation in v1 (owner-signed
-delegation leaves are a compatible later addition); inter-cluster federation,
-blinded tokens, payments.
+delegation leaves are a compatible later addition); a separate node `kind` such
+as `Closet` (sub-rooms are Space children via `parent_id`); inter-cluster
+federation, blinded tokens, payments.
 
-### Post-quantum crypto (ML-KEM / ML-DSA) — assessed 2026-07-11
+### Post-quantum crypto
 
-Codebase is fully classical (Ed25519 + X25519 + AES-256-GCM/HKDF-SHA256).
-Symmetric bulk AEAD is PQ-adequate *if keys are*; quantum risk is key agreement
-(harvest-now-decrypt-later) and signatures (forge after CRQC). Defaults if/when
-built: **ML-KEM-768** + **ML-DSA-65**, hybrid with classical.
+Not built; the codebase is fully classical. The 2026-07-11 assessment, role
+table, findings, and build order are in
+[docs/POST_QUANTUM.md](docs/POST_QUANTUM.md). First step if picked up: hybrid
+`X25519MLKEM768` TLS via the `aws-lc-rs` rustls provider (transport only; do not
+market as “PQ-ready”).
 
-| Role | Classical today | PQ approach |
-|---|---|---|
-| Invite session key | Ephemeral X25519 → HKDF (`doubleslash-invite-session-v1`) | Hybrid: X25519 ss ‖ ML-KEM ss → new HKDF info (`…-v2-hybrid`) |
-| Pairwise relay / `SfuGroupKey` wrap | Static Ed25519→Montgomery DH (no FS) | KEM-DEM (finding 2); prefer ephemeral hybrid where interactive |
-| Room content | AES-GCM under sender keys | Unchanged AEAD; only key *wrap* migrates |
-| Identity / signaling / invites / Space roots | Ed25519 | Dual-sign transition; high-rate envelopes stay Ed25519 early |
-| Release + module manifests | Offline Ed25519 | Cheap early dual-sign (long-lived, low rate) |
-| QUIC/WS TLS | rustls + `ring` | Hybrid group via `aws-lc-rs` provider swap (finding 1) |
-| Browser `web-sdk` | `@noble/ed25519` | After native wire freeze (JS/WASM PQ) |
+### Relay discovery (only if demand appears)
 
-Findings, still in this order if built:
+Only once relay sets grow past a hand-managed cluster. The invite-only trust
+root stays intact; neither is a user directory.
 
-1. **Hybrid PQ TLS (transport only).** Switch rustls 0.23 from the pinned `ring`
-   provider to `aws-lc-rs` for `X25519MLKEM768`. Hard-coded
-   `rustls::crypto::ring::default_provider()` call sites (`quic_tls.rs`,
-   `relay.rs`, `main.rs`, cluster-link tests), larger/slower builds, possible
-   dual-provider graph, CI matrix risk. Protects only transport TLS HNDL
-   between upgraded peers; invite X25519, pairwise relay keys, and room AES
-   keys stay classical. Do not market as “PQ-ready.”
-2. **`derive_pairwise_relay_key` cannot be ported.** It relies on the
-   Ed25519→Montgomery birational map; ML-DSA keys have no map to ML-KEM.
-   Replacement is KEM-DEM: each identity carries a second static ML-KEM key
-   signed by the ML-DSA identity key. Direction now matters. Affects
-   `EncryptedSignal` and `SfuGroupKey` sealing.
-3. **Invite handshake maps cleanly** but the blob grows 32 B → 1,184 B of key
-   material + 1,088 B reply. Re-check invite-link and QR-code size limits.
-4. **Keep Ed25519-derived `public_id` as the stable peer id**; attach
-   `ml_dsa_pub` as a verified binding. ML-DSA-65 pubkeys are 1,952 B.
-5. **Do not dual-sign high-rate envelopes early.** Prefer invites, Space roots,
-   grants, tickets. Exception: release- and module-manifest signing is cheap
-   and long-lived.
-6. **Identity storage:** FIPS 203/204 seed-based keygen; keep storing small
-   seeds.
-
-Suggested build order: (1) hybrid TLS provider, (2) hybrid invite handshake,
-(3) KEM-DEM pairwise / group-key wrap, (4) dual-sign low-rate + manifests,
-(5) identity ML-DSA binding, (6) browser parity, (7) deprecate pure classical
-by policy only after ecosystem age.
-
-PQ non-goals: pure ML-KEM without X25519 hybrid on first ship; ML-DSA on every
-SFU audio frame; reviving TreeKEM for PQ rooms; QUIC-stack PQ as a hard
-dependency of app-layer PQ; SLH-DSA / FN-DSA unless a later trade-off demands
-it.
-
-Layer 1 still helps a future PQ migration: admission/directory trust costs
-**one signature per Space per epoch**.
-
-### Discovery / federation (only if demand appears)
-
-- In-band capability gossip of supernode bundles while the invite-only trust
-  root stays intact.
-- Signed `RelayAd` + capacity-aware selection, once relay sets grow past a
-  hand-managed cluster.
-- Inter-cluster federation or a DHT — only if cross-operator federation beyond
-  “link into one cluster” is required.
+- In-band capability gossip of supernode bundles.
+- Signed `RelayAd` + capacity-aware selection.
 
 ---
 
@@ -444,6 +377,13 @@ Matches the website “Not planned” column plus earlier design rejections.
   privacy toggle defaulting **off**.
 - **Room-chat history for joiners / offline store-and-forward.** The supernode
   does not persist messages.
+- **Inter-cluster federation or a DHT.** Linking nodes into one cluster is the
+  scaling model; cross-operator federation reopens discovery.
+- **Stereo / spatial voice mixdown.** Voice is mono end to end.
+- **Polyphase resampling.** Nobody has reported a linear-interpolation
+  artifact. Reopen only on one, with a recording.
+- **Mic on the media timeline (talking-head lip sync).** The microphone stays
+  off the synced PTS timeline; ±40–80 ms audio-led sync covers shared content.
 - **Durable first-party portal documents.** Demo state lives in open pages;
   closing the last page loses it. Collaborative-tool durability is an app
   problem, not a relay cache.
