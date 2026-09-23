@@ -99,6 +99,12 @@ impl ConnectionManager {
                 &frame.sealed,
             ) else {
                 debug!("[room.video.sfu] could not open sealed frame; dropping");
+                // A viewer that only watches is as invisible to the keyer as a
+                // listener that only listens; the frame's epoch is its way back.
+                if let Some(e) = crate::group_key::media_frame_epoch(&frame.sealed) {
+                    self.on_unopenable_room_frame(&conv_id, &frame.sender, e)
+                        .await;
+                }
                 return;
             };
             plain
@@ -203,6 +209,10 @@ impl ConnectionManager {
                 &frame.payload,
             ) else {
                 debug!("[{label}] could not open sealed frame; dropping");
+                if let Some(e) = crate::group_key::media_frame_epoch(&frame.payload) {
+                    self.on_unopenable_room_frame(&conv_id, &frame.sender, e)
+                        .await;
+                }
                 return;
             };
             plain

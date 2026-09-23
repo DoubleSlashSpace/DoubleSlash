@@ -62,6 +62,13 @@ pub fn elected_keyer_for(members: &[String]) -> Option<&String> {
         .min_by(|a, b| a.trim_end_matches('=').cmp(b.trim_end_matches('=')))
 }
 
+/// Comma-separated 8-character id prefixes, sorted, for group-key log lines.
+fn short_ids(ids: &[String]) -> String {
+    let mut short: Vec<&str> = ids.iter().map(|id| &id[..8.min(id.len())]).collect();
+    short.sort_unstable();
+    short.join(",")
+}
+
 /// Delay before the next `SfuGroupKeyRequest` for a room, given how many have
 /// already gone unanswered.
 ///
@@ -654,12 +661,19 @@ impl ConnectionManager {
     /// because every room send fails closed without a key. Asking is the only
     /// move it has left.
     ///
+    /// Also sent when we hold a key but the room has moved past it — we have
+    /// seen frames under an epoch we cannot open. A member that missed a
+    /// rotation and only *listens* is otherwise stuck until the next membership
+    /// change: its stale epoch never reaches the wire, so the keyer's
+    /// lagging-member reseal has nothing to notice it by.
+    ///
     /// Addressed to the elected keyer *identity*, not a device — device routing
     /// fans it to all of that identity's endpoints and the one that is the
     /// elected device answers, exactly as `SfuGroupKeyAck` already behaves.
     pub(super) async fn request_group_key(&mut self, room_id: &str) {
-        // Holding a key is the whole point; stop asking the moment we do.
-        if self.group_keys.has_real_key(room_id) {
+        // Holding the room's key is the whole point; stop asking the moment we
+        // do. An old epoch does not count once the wire shows a newer one.
+        if self.group_keys.has_real_key(room_id) && !self.group_keys.is_behind(room_id) {
             self.group_key_requests.remove(room_id);
             return;
         }
@@ -1040,8 +1054,24 @@ impl ConnectionManager {
             return;
         }
 
-        let removed = union_old.difference(&union_new).count() > 0;
+        let departed: Vec<String> = union_old.difference(&union_new).cloned().collect();
+        let removed = !departed.is_empty();
         let added: Vec<String> = union_new.difference(&union_old).cloned().collect();
+        if removed || !added.is_empty() {
+            // The keyer's view of the union is what every rotation is computed
+            // from, and a member it briefly drops misses that rotation. Record
+            // which node's snapshot moved it and what each node held, so a
+            // stranded member can be traced to the edge that stranded it.
+            info!(
+                "[group-key] keyer view of room {} changed via {}: -[{}] +[{}] now {} member(s); per node {}",
+                &room_id[..8.min(room_id.len())],
+                &supernode_id[..8.min(supernode_id.len())],
+                short_ids(&departed),
+                short_ids(&added),
+                union_new.len(),
+                self.room_snapshot_sizes(room_id)
+            );
+        }
 
         // Drop pending acks for members who left this room entirely.
         self.pending_group_key_acks
@@ -1058,12 +1088,25 @@ impl ConnectionManager {
             // (Caller already established we are elected keyer.)
             let (epoch, key) = self.group_keys.new_owner_epoch(room_id);
             let all: Vec<String> = union_new.iter().cloned().collect();
+            info!(
+                "[group-key] minting epoch {} for room {} to [{}]",
+                epoch,
+                &room_id[..8.min(room_id.len())],
+                short_ids(&all)
+            );
             self.distribute_group_key(room_id, epoch, &key, &all).await;
         } else if has_real && removed {
             // A member left the cluster entirely → rotate for forward secrecy
             // and reseal to the rest.
             let (epoch, key) = self.group_keys.rotate(room_id);
             let all: Vec<String> = union_new.iter().cloned().collect();
+            info!(
+                "[group-key] rotating room {} to epoch {} after [{}] left; sealing to [{}]",
+                &room_id[..8.min(room_id.len())],
+                epoch,
+                short_ids(&departed),
+                short_ids(&all)
+            );
             // Stale-epoch pendings for this room are obsolete after rotate.
             self.pending_group_key_acks.retain(|(r, _), _| r != room_id);
             self.distribute_group_key(room_id, epoch, &key, &all).await;
@@ -1076,6 +1119,40 @@ impl ConnectionManager {
             }
         }
         // else: elected but alone (or still no real key and no others) — wait.
+    }
+
+    /// `node=size` for every supernode snapshot of `room_id`, for log lines.
+    fn room_snapshot_sizes(&self, room_id: &str) -> String {
+        let mut sizes: Vec<String> = self
+            .room_group_members
+            .iter()
+            .filter_map(|(key, members)| {
+                let (node, room) = key.split_once(':')?;
+                (room == room_id)
+                    .then(|| format!("{}={}", &node[..8.min(node.len())], members.len()))
+            })
+            .collect();
+        sizes.sort_unstable();
+        sizes.join(" ")
+    }
+
+    /// A room frame from `sender` sealed under `epoch` would not open.
+    ///
+    /// The frame is the only evidence of where the room's keying actually is,
+    /// so every room content path — chat, voice, video, shared audio, files —
+    /// routes its failure here rather than just dropping it. Which side is
+    /// behind decides who moves: a keyer behind the room mints above it, a
+    /// member behind it asks the keyer, and a sender behind us is resealed to.
+    pub(super) async fn on_unopenable_room_frame(
+        &mut self,
+        room_id: &str,
+        sender: &str,
+        epoch: u8,
+    ) {
+        self.group_keys.note_observed_epoch(room_id, epoch);
+        self.rekey_room_if_behind(room_id).await;
+        self.request_group_key(room_id).await;
+        self.reseal_to_lagging_member(room_id, sender, epoch).await;
     }
 
     /// Catch up when the room has moved to an epoch we cannot open.
@@ -2401,5 +2478,104 @@ mod tests {
         // Keyed now, so the timer stops asking for this room.
         member.manager.retry_group_key_requests().await;
         assert_eq!(forward(&mut member, &mut keyer).await, 0);
+    }
+
+    const ROTATED_KEY: [u8; 32] = [9; 32];
+
+    /// Keyer and member both on `EPOCH`, then the keyer rotates and the member
+    /// misses the distribution. The member still holds a real key — just not
+    /// the room's.
+    fn left_behind() -> (Client, Client) {
+        let (mut keyer, mut member) = stranded();
+        member.manager.group_keys.install(ROOM, EPOCH, KEY);
+        keyer
+            .manager
+            .group_keys
+            .install(ROOM, EPOCH + 1, ROTATED_KEY);
+        (keyer, member)
+    }
+
+    /// Room voice from `sender`, genuinely sealed under its current epoch.
+    fn voice_from(sender: &Client) -> SignalingMessage {
+        use base64::Engine;
+        let me = sender.manager.identity.public_id();
+        let sealed = crate::group_key::seal_voice_frame(
+            &sender.manager.group_keys,
+            ROOM,
+            &me,
+            1,
+            &[1, 2, 3],
+        )
+        .expect("sender holds a real key");
+        let mut msg = SignalingMessage::new(MessageType::SfuAudio, me);
+        msg.payload.insert(
+            "audio".to_owned(),
+            Value::String(base64::engine::general_purpose::URL_SAFE.encode(&sealed)),
+        );
+        msg.payload.insert("e2e".to_owned(), Value::Bool(true));
+        msg.payload
+            .insert("room_id".to_owned(), Value::String(ROOM.to_owned()));
+        msg.payload
+            .insert("seq".to_owned(), Value::Number(1u64.into()));
+        let canonical = msg.canonical_bytes().unwrap();
+        let sig = sender.manager.identity.sign(&canonical);
+        msg.signature = Some(base64::engine::general_purpose::URL_SAFE.encode(sig));
+        msg
+    }
+
+    /// The listen-only strand: a member that missed a rotation sends nothing,
+    /// so the keyer's lagging-member reseal never sees it. Hearing a frame it
+    /// cannot open is its cue to ask.
+    #[tokio::test]
+    async fn a_listener_left_behind_by_a_rotation_asks_for_the_new_epoch() {
+        let (mut keyer, mut member) = left_behind();
+
+        let frame = voice_from(&keyer);
+        member
+            .manager
+            .handle_inbound_from_supernode(HOST.to_owned(), frame)
+            .await;
+        assert_eq!(
+            forward(&mut member, &mut keyer).await,
+            1,
+            "an unopenable frame prompts a request"
+        );
+        assert_eq!(forward(&mut keyer, &mut member).await, 1, "key sealed back");
+
+        assert_eq!(member.manager.group_keys.current_epoch(ROOM), EPOCH + 1);
+        assert_eq!(
+            member.manager.group_keys.epoch_key(ROOM, EPOCH + 1),
+            Some(ROTATED_KEY)
+        );
+        assert!(!member.manager.group_key_requests.contains_key(ROOM));
+    }
+
+    /// Recovery must not depend on the next frame arriving: once the member has
+    /// seen the room move on, the timer keeps asking.
+    #[tokio::test]
+    async fn the_retry_timer_asks_for_a_room_that_has_moved_past_us() {
+        let (mut keyer, mut member) = left_behind();
+        member
+            .manager
+            .group_keys
+            .note_observed_epoch(ROOM, EPOCH + 1);
+
+        member.manager.retry_group_key_requests().await;
+        assert_eq!(forward(&mut member, &mut keyer).await, 1);
+        assert_eq!(forward(&mut keyer, &mut member).await, 1);
+        assert_eq!(member.manager.group_keys.current_epoch(ROOM), EPOCH + 1);
+    }
+
+    /// Holding the room's current epoch is the ordinary state; it must stay
+    /// silent, or every member would poll the keyer forever.
+    #[tokio::test]
+    async fn a_member_on_the_current_epoch_does_not_ask() {
+        let (_keyer, mut member) = stranded();
+        member.manager.group_keys.install(ROOM, EPOCH, KEY);
+
+        member.manager.request_group_key(ROOM).await;
+        member.manager.retry_group_key_requests().await;
+        assert!(member.outgoing.try_recv().is_err());
+        assert!(!member.manager.group_key_requests.contains_key(ROOM));
     }
 }

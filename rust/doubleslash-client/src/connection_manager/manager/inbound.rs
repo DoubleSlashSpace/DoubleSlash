@@ -882,12 +882,9 @@ impl ConnectionManager {
                         );
                         // This frame is the only evidence of where the room actually
                         // is. Record it so a restarted keyer mints above that epoch
-                        // rather than below it, and catch up now if keying is ours.
+                        // rather than below it, and catch up now.
                         if let Some(e) = epoch_u8 {
-                            self.group_keys.note_observed_epoch(&room_id, e);
-                            self.rekey_room_if_behind(&room_id).await;
-                            // The other direction: the sender is the one behind.
-                            self.reseal_to_lagging_member(&room_id, &msg.sender, e)
+                            self.on_unopenable_room_frame(&room_id, &msg.sender, e)
                                 .await;
                         }
                         return;
@@ -1029,7 +1026,7 @@ impl ConnectionManager {
                         // Same recovery the chat path performs, and for the
                         // same reason: this frame is the only evidence of where
                         // the room's keying actually is, so record it and catch
-                        // up if keying is ours.
+                        // up.
                         //
                         // Voice is the case that needs it most. Keys live only
                         // in memory, so a restarted keyer has no idea the room
@@ -1038,12 +1035,11 @@ impl ConnectionManager {
                         // restart is indistinguishable from a rollback), and the
                         // room splits permanently. A voice-only room has no chat
                         // frames to heal it, so every one of these drops was the
-                        // evidence needed to converge, discarded.
+                        // evidence needed to converge, discarded. A listener
+                        // left behind by a rotation needs it just as much: it
+                        // sends nothing the keyer could notice it by.
                         if let Some(e) = crate::group_key::media_frame_epoch(&raw) {
-                            self.group_keys.note_observed_epoch(room_id, e);
-                            self.rekey_room_if_behind(room_id).await;
-                            // The other direction: the sender is the one behind.
-                            self.reseal_to_lagging_member(room_id, &msg.sender, e).await;
+                            self.on_unopenable_room_frame(room_id, &msg.sender, e).await;
                         }
                         return;
                     }
@@ -2554,7 +2550,8 @@ impl ConnectionManager {
         let Ok(sealed) = b64.decode(raw_data) else {
             return;
         };
-        let plaintext = epoch.try_into().ok().and_then(|e: u8| {
+        let epoch_u8: Option<u8> = epoch.try_into().ok();
+        let plaintext = epoch_u8.and_then(|e| {
             crate::group_key::open_file_chunk(
                 &self.group_keys,
                 room_id,
@@ -2570,6 +2567,9 @@ impl ConnectionManager {
                 "[room.file.v1] failed to open E2E chunk from {}; dropping",
                 &msg.sender[..8.min(msg.sender.len())]
             );
+            if let Some(e) = epoch_u8 {
+                self.on_unopenable_room_frame(room_id, &msg.sender, e).await;
+            }
             return;
         };
         // Hand the manager raw bytes. This used to re-encode the decrypted
