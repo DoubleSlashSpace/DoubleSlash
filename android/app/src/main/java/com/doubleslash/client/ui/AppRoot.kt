@@ -1485,6 +1485,7 @@ private fun MessageBubble(
     // With the link lifted into the card, a message that was only a link has
     // no text left worth a bubble.
     val text = if (invite == null) message.body else bodyWithoutInvite(message.body, invite)
+    val hasAttachment = message.attachmentName.isNotBlank() || message.attachmentPath.isNotBlank()
     var menuOpen by remember { mutableStateOf(false) }
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val alignment = if (message.isSelf) Alignment.End else Alignment.Start
@@ -1503,7 +1504,19 @@ private fun MessageBubble(
                     onLongClick = { menuOpen = true },
                 ),
             ) {
-                Text(text, modifier = Modifier.padding(10.dp))
+                // The body of an attachment message is only its label, so the
+                // file itself takes that place — a picture shows as a picture.
+                if (hasAttachment) {
+                    AttachmentContent(
+                        kind = message.kind,
+                        name = message.attachmentName,
+                        path = message.attachmentPath,
+                        sizeStr = message.sizeStr,
+                        modifier = Modifier.padding(10.dp),
+                    )
+                } else {
+                    Text(text, modifier = Modifier.padding(10.dp))
+                }
             }
 
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
@@ -1894,7 +1907,19 @@ private fun RoomMessageBubble(
                     modifier = Modifier.padding(horizontal = 4.dp),
                 )
             }
-            if (text.isNotBlank()) {
+            val hasAttachment =
+                message.attachmentName.isNotBlank() || message.attachmentPath.isNotBlank()
+            if (hasAttachment) {
+                Card(colors = CardDefaults.cardColors(containerColor = container)) {
+                    AttachmentContent(
+                        kind = message.kind,
+                        name = message.attachmentName,
+                        path = message.attachmentPath,
+                        sizeStr = message.sizeStr,
+                        modifier = Modifier.padding(10.dp),
+                    )
+                }
+            } else if (text.isNotBlank()) {
                 Card(colors = CardDefaults.cardColors(containerColor = container)) {
                     Text(text, modifier = Modifier.padding(10.dp))
                 }

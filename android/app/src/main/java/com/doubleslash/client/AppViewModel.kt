@@ -1250,6 +1250,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 body = it.body,
                 timestamp = it.timestamp,
                 isSelf = it.isSelf,
+                kind = it.kind,
+                attachmentName = it.attachmentName,
+                attachmentPath = it.attachmentPath,
+                sizeStr = it.sizeStr,
             )
         }
         _state.update { it.copy(roomMessages = history) }

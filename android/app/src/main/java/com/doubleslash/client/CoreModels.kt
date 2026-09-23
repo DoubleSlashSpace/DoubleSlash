@@ -71,6 +71,16 @@ data class ChatMessage(
     val kind: String = "text",
     @SerialName("status_note") val statusNote: String = "",
     @SerialName("sender_handle") val senderHandle: String = "",
+    /** Display name of an attached file, if this message carries one. */
+    @SerialName("attachment_name") val attachmentName: String = "",
+    /**
+     * Where the attachment is on this device, or empty until it is downloaded.
+     *
+     * A room file is advertised before any bytes move, so a bubble exists with
+     * a name and no path; the path arrives when the transfer completes.
+     */
+    @SerialName("attachment_path") val attachmentPath: String = "",
+    @SerialName("size_str") val sizeStr: String = "",
 )
 
 @Serializable
@@ -120,6 +130,10 @@ data class RoomMessage(
     val body: String,
     val timestamp: Double,
     val isSelf: Boolean,
+    val kind: String = "text",
+    val attachmentName: String = "",
+    val attachmentPath: String = "",
+    val sizeStr: String = "",
 )
 
 /**
