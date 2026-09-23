@@ -54,7 +54,7 @@ Android uses Kotlin/Compose with the same Rust core through JNI. It includes pee
 
 - Direct connectivity depends on network reachability. UPnP and coordinated hole punching cannot traverse every NAT or firewall; use a mutually trusted supernode for relay when direct connections fail.
 - Media support differs by platform as listed above. Cross-platform and two-client/room acceptance work remains in [backlog.md](backlog.md).
-- Device-aware routing is enabled by default and advertises `core.devices.v1`, but pairing, continuous history sync, and installed phone/desktop simultaneous-use acceptance remain unfinished. Use backups for device moves and quit the source device before connecting the destination. Clients and nodes used by an identity must agree on `device-routing` support.
+- Device-aware routing is enabled by default and advertises `core.devices.v1`, but pairing, continuous history sync, and the remaining installed phone/desktop simultaneous-use checks (answering calls on either device, restore edge cases) are unfinished. Use backups for device moves and quit the source device before connecting the destination. Clients and nodes used by an identity must agree on `device-routing` support.
 - Native feature plugins run in-process. A WASM sandbox is planned, not implemented.
 
 ## Quick Start

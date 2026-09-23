@@ -1,9 +1,12 @@
 # Devices and backups
 
 The first delivery provides portable encrypted backups, verified restore, and
-file-based moves between desktop and Android. It does **not** enable simultaneous
-connections from devices sharing an identity. Device linking and ongoing sync
-require the protocol changes listed below.
+file-based moves between desktop and Android. Device-aware routing, on by
+default, lets a desktop and a phone that share an identity (imported through a
+backup) stay connected at the same time; see
+[Simultaneous-identity preview testing](#simultaneous-identity-preview-testing)
+for what has passed. Device linking and ongoing sync require the protocol
+changes listed below.
 
 ## Create a backup
 
@@ -179,19 +182,22 @@ with bounded retries, dismisses sibling ringing, and binds direct media and
 reconnect fallback to the selected endpoint. Reliable chat/control delivery also
 uses encrypted relay copies to reach siblings without a direct route.
 
-These changes have not yet passed installed desktop/phone acceptance. Remaining
-work includes device endpoint discovery, device-scoped file/room-media/game state,
-and coordinated cluster device rosters.
+An endpoint that loses the selection reports `CallAnsweredElsewhere` rather than
+`CallEnded`: it stops ringing (the desktop closes its incoming-call dialog
+without sending a reject) and does not count a missed call. Android receives it
+as the same `call_ended` event.
+
+Installed desktop/phone acceptance has partly passed; see
+[Simultaneous-identity preview testing](#simultaneous-identity-preview-testing).
+Remaining work includes device endpoint discovery, device-scoped
+file/room-media/game state, and coordinated cluster device rosters.
 Continuous history sync and delegated device revocation remain separate unfinished
 parts of the linking workflow. Do not enable the release gate on the strength of
 room-chat tests alone.
 
-For same-identity hardware acceptance, use
-`Z:\Current Projects\DoubleSlash\dist\DoubleSlash\DoubleSlash.exe` with the user's
-normal profile and the connected phone. Do not substitute the separate `.clientA`
-profile used for the earlier distinct-identity baseline. The executable was
-confirmed running without command-line arguments; shared-identity runtime
-acceptance has not yet been performed with the new code.
+Same-identity hardware acceptance uses the installed desktop app with the
+user's normal profile and the connected phone. Do not substitute the separate
+`.clientA` profile used for the earlier distinct-identity baseline.
 
 Registered WebSocket and QUIC signaling writers now share an 8 MiB queued-byte
 ceiling per identity. Reconnecting cannot reset queued reservations while old
@@ -285,6 +291,17 @@ one device leaves the other connected. Repeat with a third contact and with one
 device using a relay. Continuous history sync and all room-media/file/game flows
 are not covered by this preview's automated acceptance.
 
+**Result, 2026-09-22.** The installed desktop (normal packaged profile) and the
+phone, both on one identity, passed the connected, room-chat, reconnect,
+third-contact, and relay checks; the user ran them. The desktop's log for that
+day shows both devices online throughout, own-device room-key rounds over two
+devices, and a room file pulled from the phone with a third contact in the
+room. **Still open:** answering an incoming call on either device. Reviewing
+that path found that the desktop's ringing dialog stayed open after the call
+ended elsewhere, and then sent a reject when it timed out 30 s later. The
+answer-elsewhere event above fixes that; repeat the call check on a build that
+includes it.
+
 `scripts/test_backup_wizard.ps1` runs the shipping desktop wizard with a mocked
 backend under Qt Quick Test, including preview confirmation, password clearing,
 retry after failure, busy-state controls, and compact-window sizing. The mock
@@ -293,5 +310,7 @@ does not substitute for the shared Rust archive tests or real document pickers.
 Before release, exercise desktop → real Android → desktop restore with a large
 attachment, a missing attachment, a keyfile-protected source, a failed/cancelled
 document-picker copy and a restart after profile selection. Check actual history
-and files, not only the success banner. Simultaneous device use is outside this
+and files, not only the success banner. A plain desktop → phone → desktop round
+trip has been done (the current desktop profile was restored from the phone);
+the listed edge cases have not. Simultaneous device use is outside this
 delivery's acceptance scope.

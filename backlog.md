@@ -30,16 +30,19 @@ new capture backends or pairing protocols until these have a written result.
 ### Group-key: remaining live gaps
 
 Election padding, catch-up minting, forward epoch jumps (`MAX_EPOCH_ADVANCE`),
-and reseal-to-lagging-member landed 2026-09-12 with unit and manager-harness
-tests. **Not yet verified live.**
+reseal-to-lagging-member, and a listen-only member asking the keyer when it
+hears an epoch it cannot open all have unit and manager-harness tests.
+**Not yet verified live** — run [acceptance §1](docs/ACCEPTANCE.md#1-group-key-convergence-live).
 
 Still open:
 
-- A stranded member that only *listens* sends no frames, so the keyer cannot
-  see it is behind; it recovers at the next membership change or rejoin.
 - Unexplained: a desktop never received epochs 2 and 3, which suggests the
-  keyer's membership union briefly excluded it. Capture the **keyer's** log
-  next time; the phone's logcat had already rolled past the event.
+  keyer's membership union briefly excluded it. The keyer now logs every union
+  change with its per-node snapshot sizes (`keyer view of room … changed via`)
+  and each rotation's recipients; capture the **keyer's** log next time. The
+  member should now recover by itself on the first frame it cannot open, so a
+  repeat shows up as a short gap plus a key request rather than lasting
+  silence.
 
 **Testing note:** the public `default` room is a bad place to test room E2E. It
 carries members on clients you do not control, and a single un-upgraded
@@ -58,23 +61,24 @@ Direct 1:1 voice is proven. Distinct-identity desktop/phone chat passed
 2. **Survive the background.** Nothing has been tested across doze, screen-off,
    or a Wi-Fi/cellular handover — the three things a desktop never exercises.
 
+Both steps are scripted in [acceptance §2](docs/ACCEPTANCE.md#2-android-private-room-voice-and-the-background).
+
 ### Windows two-client + room media checklist
 
-Gate “video calls ship” on a written manual checklist, not compile. Cover:
-
-- Direct 1:1 camera on both legs with decode to `QVideoSink`.
-- Room multi-party fan-out (relay path, mid-join keyframe recovery, camera-off
-  placeholders).
-- Direct-call → temporary SFU fallback still routing video (`video_route`).
-- Failure modes: no camera, camera in use, encoder unavailable, quota shed,
-  stall vs intentional camera-off (`SfuVideoState`).
+Gate “video calls ship” on the written manual checklist, not compile. It is
+[acceptance §3](docs/ACCEPTANCE.md#3-windows-two-client--room-media); nobody has
+run it yet. It covers direct 1:1 camera on both legs, room fan-out with
+mid-join keyframe recovery and camera-off placeholders, the direct-call → SFU
+fallback still routing video, and the failure modes (no camera, camera in use,
+encoder unavailable, quota shed, stall vs intentional camera-off).
 
 ### A/V sync on a real network
 
 Unit coverage uses a fake clock. Still unrun: clap+flash under a clean network,
 ~1–2 % loss, and a keyframe burst, plus a multi-peer check that per-sender
-timelines never cross. Target is ±40–80 ms audio-led. Confirm the voice path is
-byte-identical to before the media layer landed.
+timelines never cross. Target is ±40–80 ms audio-led. Procedure:
+[acceptance §4](docs/ACCEPTANCE.md#4-av-sync-on-a-real-network). The voice path
+was confirmed byte-identical to the pre-video code on 2026-09-22.
 
 ### Linux / macOS camera hardware
 
@@ -91,19 +95,24 @@ Linux 2026-09-03 against a Logitech C270 in WSL: enumeration and format
 negotiation work (`YUYV` chosen, 640x360). Frame delivery cannot be answered
 from WSL — UVC isochronous endpoints are unimplemented on USB/IP, so
 `next_frame` blocks forever. Need a real Linux machine, a VM with true USB
-passthrough, or a WSL kernel with `CONFIG_VIDEO_VIVID=m`. Also still open:
-stride across YU12/NV12/YUYV, buffer starvation, unplug-mid-call.
+passthrough, or a WSL kernel with `CONFIG_VIDEO_VIVID=m`. Padded-stride
+conversion is unit-tested for all three formats. Dequeues now time out, so a
+stalled driver is reported lost instead of wedging the capture thread; that
+and unplug-mid-call still need a device
+([acceptance §5](docs/ACCEPTANCE.md#5-linux--macos-camera-hardware)).
 
 macOS still needs the Objective-C shim compiled on a Mac (`test-macos` CI is
 the real signal), the TCC camera prompt, and confirmation that
-`AVCaptureSessionPreset` yields the requested size. Add a macOS sibling of the
-`#[ignore]`d `captures_a_frame_from_the_default_camera` test.
+`AVCaptureSessionPreset` yields the requested size. The `#[ignore]`d
+`captures_a_frame_from_the_default_camera` test now has a macOS sibling that
+prints the delivered size; it has never been compiled on a Mac.
 
 ### Portal over real QUIC
 
 In-tree Qt fixtures do not establish real-device QUIC acceptance. Open the same
 app/room on two devices, exercise catch-up, coordinator leave, and Focus/Session
-layout as described in [`games/README.md`](games/README.md). Focus Timer still
+layout as described in [`games/README.md`](games/README.md) and
+[acceptance §6](docs/ACCEPTANCE.md#6-portal-over-real-quic). Focus Timer still
 assumes synchronized device clocks; that is a demo limit, not a framework bug.
 
 ---
@@ -130,16 +139,19 @@ Sending works (CameraX → `nativeSubmitCameraFrame` → VP8). Still missing:
 room-key handoff, and portable backups exist. This is **not** completed pairing
 or continuous sync.
 
+The installed desktop (normal packaged profile) and phone on one identity
+passed the connected, room-chat, reconnect, third-contact, and relay checks on
+2026-09-22 ([result](docs/DEVICES_AND_BACKUPS.md#simultaneous-identity-preview-testing)).
 Still required before claiming the preview:
 
-- Installed desktop (normal packaged profile, not `.clientA`) + phone, same
-  identity, both unlocked: both stay connected; room chat appears on both with
-  own messages marked sent; an incoming call can be answered on either and
-  stops ringing on the other; reconnecting one leaves the other connected.
-  Repeat with a third contact and with one device on relay.
-- Desktop → real Android → desktop restore with a large attachment, a missing
-  attachment, a keyfile-protected source, a failed/cancelled document-picker
-  copy, and a restart after profile selection. Check actual history and files.
+- **Incoming call answered on either device, stopping the ring on the other.**
+  Not yet run live. The desktop's ringing dialog used to stay up after the call
+  ended elsewhere and send a reject when it timed out; `CallAnsweredElsewhere`
+  fixes that. Rerun on a build that includes it.
+- **Restore edge cases.** A plain desktop → phone → desktop round trip works.
+  Still to run: a large attachment, a missing attachment, a keyfile-protected
+  source, a failed or cancelled document-picker copy, and a restart after
+  profile selection. Check the actual history and files.
 
 File-based device moves still require quitting the source before connecting the
 destination. Do not enable a “ready” product gate on room-chat tests alone.
