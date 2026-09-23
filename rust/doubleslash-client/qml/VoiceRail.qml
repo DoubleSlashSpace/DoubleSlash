@@ -537,65 +537,71 @@ Rectangle {
         }
 
         // ── Participant tiles ─────────────────────────────────────────────
-        Flow {
-            id: participantFlow
+        //
+        // The Flow sits inside a plain Item the layout sizes, and fills it by
+        // anchors. A Flow placed directly in the ColumnLayout reports an
+        // implicit size the layout then resizes it by; with the rail animating
+        // open and a fractional scale factor the two never settled, and the
+        // polish pass spun forever — the window froze the moment a direct call
+        // started. Nothing inside may size itself from the Flow either, which
+        // is why the connecting placeholder is a sibling, not a child.
+        Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            padding: Theme.spacingSm
-            spacing: Theme.spacingSm
 
-            // Connecting spinner when no participants yet
-            Item {
-                visible: (root.participantModel === null ||
-                          (root.participantModel && root.participantModel.rowCount &&
-                           root.participantModel.rowCount() === 0)) &&
-                         root.callState === "connecting"
-                width: participantFlow.width - Theme.spacingSm * 2
-                height: 80
+            Flow {
+                id: participantFlow
+                anchors.fill: parent
+                padding: Theme.spacingSm
+                spacing: Theme.spacingSm
 
-                Column {
-                    anchors.centerIn: parent
-                    spacing: 8
+                Repeater {
+                    id: participantsRepeater
+                    model: root.participantModel
 
-                    BusyIndicator {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        running: true
-                        width: 32; height: 32
-                    }
+                    ParticipantWidget {
+                        peerId:      model.peerId
+                        displayName: model.handle || model.peerId || ""
+                        isMuted:     model.muted
+                        audioLevel:  model.isSelf ? backend.mic_level : model.audioLevel
+                        isSelf:      model.isSelf
+                        ringStore:   root.ringStateForPeer(model.peerId)
+                        showNameBubbles: root.showNameBubbles
+                        videoActive: model.videoActive === true
+                                     || root.peerHasVideo(model.peerId)
+                        locallyMuted: model.localMuted === true
 
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "Connecting..."
-                        color: Theme.muted
-                        font.pixelSize: Theme.fontSizeCaption
+                        onContextMenuRequested: peerMenu.openFor(
+                            model.peerId,
+                            model.handle || model.peerId || "",
+                            model.localMuted === true,
+                            model.localVolume === undefined ? 100 : model.localVolume,
+                            model.videoActive === true || root.peerHasVideo(model.peerId),
+                            model.isSelf === true)
+                        onExpandVideoRequested: root.expandVideoRequested(model.peerId)
                     }
                 }
             }
 
-            Repeater {
-                id: participantsRepeater
-                model: root.participantModel
+            // Connecting placeholder, until the first participant appears.
+            // `participantsRepeater.count` rather than `rowCount()`: a
+            // function call in a binding is never re-evaluated.
+            Column {
+                anchors.centerIn: parent
+                spacing: 8
+                visible: participantsRepeater.count === 0 && root.callState === "connecting"
 
-                ParticipantWidget {
-                    peerId:      model.peerId
-                    displayName: model.handle || model.peerId || ""
-                    isMuted:     model.muted
-                    audioLevel:  model.isSelf ? backend.mic_level : model.audioLevel
-                    isSelf:      model.isSelf
-                    ringStore:   root.ringStateForPeer(model.peerId)
-                    showNameBubbles: root.showNameBubbles
-                    videoActive: model.videoActive === true
-                                 || root.peerHasVideo(model.peerId)
-                    locallyMuted: model.localMuted === true
+                BusyIndicator {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    running: parent.visible
+                    width: 32; height: 32
+                }
 
-                    onContextMenuRequested: peerMenu.openFor(
-                        model.peerId,
-                        model.handle || model.peerId || "",
-                        model.localMuted === true,
-                        model.localVolume === undefined ? 100 : model.localVolume,
-                        model.videoActive === true || root.peerHasVideo(model.peerId),
-                        model.isSelf === true)
-                    onExpandVideoRequested: root.expandVideoRequested(model.peerId)
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "Connecting..."
+                    color: Theme.muted
+                    font.pixelSize: Theme.fontSizeCaption
                 }
             }
         }
