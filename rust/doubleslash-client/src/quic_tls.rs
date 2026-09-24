@@ -35,6 +35,18 @@ pub fn make_quic_endpoint_with_device(
     port: u16,
     device: Option<doubleslash_features::DeviceId>,
 ) -> anyhow::Result<quinn::Endpoint> {
+    make_quic_endpoint_tuned(signing_key, port, device, |_| {})
+}
+
+/// [`make_quic_endpoint_with_device`] with a hook to adjust the transport
+/// after the production timings are applied — tests use it to pin the path
+/// MTU at the QUIC floor, which loopback would otherwise probe past.
+fn make_quic_endpoint_tuned(
+    signing_key: &SigningKey,
+    port: u16,
+    device: Option<doubleslash_features::DeviceId>,
+    tune: impl FnOnce(&mut quinn::TransportConfig),
+) -> anyhow::Result<quinn::Endpoint> {
     let (cert_chain, key_der) = generate_self_signed_cert(signing_key, device)?;
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -75,6 +87,7 @@ pub fn make_quic_endpoint_with_device(
                 .map_err(|_| anyhow::anyhow!("idle timeout overflow"))?,
         ));
         t.keep_alive_interval(Some(Duration::from_secs(5)));
+        tune(&mut t);
         t
     });
 
@@ -412,6 +425,54 @@ fn encode_asn1_length(len: usize, buf: &mut Vec<u8>) {
 mod tests {
     use super::*;
     use doubleslash_features::DeviceId;
+
+    /// A path that never grew past the QUIC floor — a phone on a mobile
+    /// network — must still carry a full video fragment. Before this was
+    /// pinned, fragments were sized for the sender's grown path and every one
+    /// was refused on such a link, leaving the picture black while voice (small
+    /// datagrams) kept working.
+    #[tokio::test]
+    async fn a_portable_video_fragment_fits_a_path_held_at_the_quic_floor() {
+        let floor = |t: &mut quinn::TransportConfig| {
+            t.initial_mtu(1200);
+            t.min_mtu(1200);
+            t.mtu_discovery_config(None);
+        };
+        let a =
+            make_quic_endpoint_tuned(&SigningKey::from_bytes(&[51; 32]), 0, None, floor).unwrap();
+        let b =
+            make_quic_endpoint_tuned(&SigningKey::from_bytes(&[52; 32]), 0, None, floor).unwrap();
+        let address = std::net::SocketAddr::from(([127, 0, 0, 1], a.local_addr().unwrap().port()));
+        let connect = b.connect(address, "doubleslash").unwrap();
+        let accept = async { a.accept().await.unwrap().await.unwrap() };
+        let (client, server) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(connect, accept)
+        })
+        .await
+        .unwrap();
+        let client = client.unwrap();
+
+        let max = client.max_datagram_size().unwrap();
+        assert!(
+            max >= crate::video::PORTABLE_MAX_DATAGRAM,
+            "a floor path carries {max}B; the portable size must not exceed it"
+        );
+        // The old direct-video size — a whole 1200-byte UDP payload — does not
+        // fit in a QUIC datagram on this path.
+        assert!(max < 1200);
+
+        client
+            .send_datagram(vec![0xA5; crate::video::PORTABLE_MAX_DATAGRAM].into())
+            .expect("a portable-size datagram is accepted on a floor path");
+        let got = tokio::time::timeout(Duration::from_secs(5), server.read_datagram())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.len(), crate::video::PORTABLE_MAX_DATAGRAM);
+
+        a.close(0u32.into(), b"test complete");
+        b.close(0u32.into(), b"test complete");
+    }
 
     #[tokio::test]
     async fn direct_tls_authenticates_distinct_devices_under_one_root() {

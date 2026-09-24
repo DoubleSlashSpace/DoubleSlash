@@ -2579,7 +2579,7 @@ async fn p2p_video_fragments_across_quic_datagrams_with_the_video_tag() {
                     "direct video must ride the direct video tag, not the room one"
                 );
                 assert!(
-                    b.len() <= crate::video::DEFAULT_MAX_DATAGRAM,
+                    b.len() <= crate::video::PORTABLE_MAX_DATAGRAM,
                     "fragment of {} bytes exceeds the datagram budget",
                     b.len()
                 );

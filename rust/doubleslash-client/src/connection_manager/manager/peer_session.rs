@@ -859,8 +859,11 @@ impl ConnectionManager {
             return;
         };
 
-        // One byte of channel tag rides ahead of each fragment.
-        let budget = crate::video::DEFAULT_MAX_DATAGRAM.saturating_sub(1);
+        // One byte of channel tag rides ahead of each fragment. The portable
+        // size, not a round 1200: that is the UDP payload floor, and a QUIC
+        // datagram carries less than it, so full-size fragments were refused
+        // outright on any path that had not grown past the floor.
+        let budget = crate::video::PORTABLE_MAX_DATAGRAM.saturating_sub(1);
         let Some(fragments) = crate::video::fragment::fragment_frame(
             &sender, seq, keyframe, codec, pts_us, &signature, &encoded, budget,
         ) else {

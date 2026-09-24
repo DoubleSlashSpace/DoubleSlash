@@ -398,15 +398,19 @@ impl QuicRelayClient {
         )
     }
 
-    /// Usable fragment payload for this connection, after the relay's index and
-    /// tag bytes. Callers size fragments against this so
-    /// [`send_broadcast_tagged`](Self::send_broadcast_tagged) never has to drop
-    /// an oversized frame.
+    /// Usable fragment payload for room video, after the relay's index and tag
+    /// bytes.
+    ///
+    /// Capped at [`PORTABLE_MAX_DATAGRAM`](crate::video::PORTABLE_MAX_DATAGRAM)
+    /// even when this connection could carry more: the supernode forwards each
+    /// fragment unchanged to every member, and a member whose path never grew
+    /// past the QUIC floor cannot receive anything bigger.
     pub fn max_video_fragment_len(&self) -> usize {
         // `send_broadcast_tagged` prepends BROADCAST_INDEX + tag.
         self.connection
             .max_datagram_size()
-            .unwrap_or(crate::video::DEFAULT_MAX_DATAGRAM)
+            .unwrap_or(crate::video::PORTABLE_MAX_DATAGRAM)
+            .min(crate::video::PORTABLE_MAX_DATAGRAM)
             .saturating_sub(2)
     }
 

@@ -40,11 +40,23 @@ pub mod sink;
 
 use sha2::{Digest, Sha256};
 
-/// Fallback datagram budget when quinn has not yet surfaced a negotiated size.
+/// The largest QUIC datagram every path is guaranteed to carry.
 ///
-/// Matches the supernode's `MAX_DATAGRAM_SIZE`, so a fragment sized against
-/// this assumption is still forwardable once the real value is known.
-pub const DEFAULT_MAX_DATAGRAM: usize = 1200;
+/// Video fragments are sized against this, never against the sending
+/// connection's own `max_datagram_size`. That value grows as path-MTU
+/// discovery probes upward — to about 1400 bytes on a clean wired or Wi-Fi
+/// path — but a room's fragments are forwarded unchanged by the supernode over
+/// *each recipient's* connection. A phone on a mobile network often stays at
+/// the 1200-byte QUIC floor, so every fragment sized for the desktop's grown
+/// path failed its forward and was dropped without a trace: voice (small
+/// datagrams) worked while video stayed black. The sender cannot know every
+/// recipient's path, so it uses the one size they all share.
+///
+/// Derivation (quinn-proto 0.11): QUIC's guaranteed 1200-byte UDP payload,
+/// less the short-header overhead quinn reserves — 1 flags byte, a destination
+/// connection ID of up to 20 bytes, a 4-byte packet number bound and the
+/// 16-byte AEAD tag — less the DATAGRAM frame's 9-byte size bound.
+pub const PORTABLE_MAX_DATAGRAM: usize = 1200 - (1 + 20 + 4 + 16) - 9;
 
 /// Domain tag mixed into the per-frame signature so a video frame signature can
 /// never be replayed as a signature over anything else this identity signs.
