@@ -324,7 +324,11 @@ pub struct ConnectionManager {
     /// told otherwise, so "nothing announced yet" must not be replayed as
     /// "subscribe to nobody" on reconnect. See
     /// [`Self::resend_video_subscriptions`].
-    video_subscriptions: Option<Vec<String>>,
+    ///
+    /// Held with the room it was sent for. Suppression compares both: the same
+    /// set announced in a *different* room is news to that room's supernode,
+    /// which starts out forwarding everything.
+    video_subscriptions: Option<(String, Vec<String>)>,
     /// Whether our camera is on, as last announced by
     /// [`Self::send_video_state`].
     ///

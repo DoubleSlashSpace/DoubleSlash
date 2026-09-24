@@ -226,15 +226,20 @@ peer-to-peer, sealed under the room sender key.
 
 ### 9. Video
 
-* **Core** — `video/`: camera capture, codec seam (VP8 everywhere via
+* **Core** — `video/`: camera capture, codec seam (VP9 and VP8 everywhere via
   `doubleslash-vpx`, H.264 via Media Foundation on Windows), fragmentation over
-  datagrams, picture-in-picture compositing before encode.
+  datagrams, picture-in-picture compositing before encode. Rooms default to VP9
+  and fall back to VP8 on a device that cannot encode it in real time.
 * **Desktop** — `setVideoEnabled`, `setVideoPreviewEnabled`, `listVideoDevices`,
   `listVideoCodecs`, `setVideoAdaptiveBitrate`, `setVideoSubscriptions`, plus
   screen share and a pop-out video window.
 * **Android** — `video.start`, `video.stop`, with CameraX capture feeding
-  `nativeSubmitCameraFrame`. **Send-only**: there is no decode-to-Surface path,
-  so a phone can be seen but cannot see. No screen share.
+  `nativeSubmitCameraFrame`. Receiving is opt-in per peer from the voice rail or
+  call card menu: `video.watch` sets which senders are forwarded and decoded,
+  and frames are drawn into a `TextureView` through
+  `nativeAttachVideoSurface`. Sends VP9 into rooms and negotiates direct calls;
+  decodes VP9 and VP8, so only a desktop that chose H.264 shows no picture.
+  No screen share.
 
 ### 10. Content audio and A/V sync
 

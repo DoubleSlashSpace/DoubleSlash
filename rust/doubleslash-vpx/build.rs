@@ -1,4 +1,4 @@
-//! Builds VP8 out of the vendored libvpx tree.
+//! Builds VP8 and VP9 out of the vendored libvpx tree.
 //!
 //! # Why not libvpx's own build system
 //!
@@ -16,16 +16,27 @@
 //! needs beyond a C compiler, and it is already present on all three platforms
 //! (Git for Windows ships it; Linux and macOS have it in base).
 //!
-//! # The cost: no SIMD
+//! # SIMD: NEON on 64-bit ARM, plain C elsewhere
 //!
-//! Configuring for a generic architecture drops libvpx's x86/NEON assembly, so
-//! encode and decode run pure C. That is a real cost — several times slower
-//! than the SIMD paths — accepted because the alternative is having no codec at
-//! all on Linux, and because the call default is 640x360 at 30 fps rather than
-//! 1080p. Re-enabling SIMD later means adding an assembler to the build and
-//! turning on the matching `VPX_ARCH_*` / `HAVE_*` flags in `ConfigFlags`;
-//! nothing above this crate changes, since the RTCD indirection is exactly the
-//! seam libvpx uses to select implementations.
+//! On aarch64 (phones, Apple Silicon, ARM Linux) the build enables libvpx's
+//! NEON paths. Those are C intrinsics, so they need nothing beyond the C
+//! compiler — and NEON is part of the aarch64 baseline, so every such CPU has
+//! it and no runtime detection is needed. The optional extensions (dot-product,
+//! i8mm, SVE) are left off: using them without runtime detection would make the
+//! library crash on the older cores Android's minimum API still admits.
+//!
+//! x86 stays generic C for now. libvpx's x86 SIMD is partly hand-written
+//! assembly, so enabling it means adding nasm to every build machine; the RTCD
+//! indirection below is the seam, and nothing above this crate would change.
+//!
+//! `DOUBLESLASH_VPX_GENERIC=1` forces the generic build on aarch64 too. It
+//! exists to measure what SIMD buys and to rule it out when chasing a codec
+//! bug; nothing ships with it set.
+//!
+//! # Codecs: VP8 and VP9
+//!
+//! Both royalty-free, both from the same tree. VP9 roughly doubles the source
+//! list, which is why it was off until it had a caller.
 
 use std::path::{Path, PathBuf};
 
@@ -44,8 +55,13 @@ const SRC_MAKEFILES: &[(&str, &str)] = &[
     ("vp8/vp8_common.mk", "vp8"),
     ("vp8/vp8cx.mk", "vp8"),
     ("vp8/vp8dx.mk", "vp8"),
+    ("vp9/vp9_common.mk", "vp9"),
+    ("vp9/vp9cx.mk", "vp9"),
+    ("vp9/vp9dx.mk", "vp9"),
     ("vpx_dsp/vpx_dsp.mk", "vpx_dsp"),
     ("vpx_mem/vpx_mem.mk", "vpx_mem"),
+    // CPU detection, which the NEON RTCD headers call into.
+    ("vpx_ports/vpx_ports.mk", "vpx_ports"),
     ("vpx_scale/vpx_scale.mk", "vpx_scale"),
     ("vpx_util/vpx_util.mk", "vpx_util"),
 ];
@@ -61,6 +77,10 @@ const SRC_MAKEFILES: &[(&str, &str)] = &[
 ///   which case every one must be on, matching make's textual expansion.
 /// * `ifeq ($(FLAG),yes)` / `ifneq ($(filter yes,$(A) $(B)),)` / `else` /
 ///   `endif` — nested, tracked with a stack.
+/// * `<VAR>_REMOVE-$(CONFIG_X) += file.c` — subtracted from the result. VP9's
+///   manifests list the two-pass encoder this way under
+///   `CONFIG_REALTIME_ONLY`; reading them as additions would compile it back
+///   in.
 ///
 /// Anything unrecognised is treated as disabled: a source this build does not
 /// understand the condition for is better left out (a missing optional file
@@ -68,12 +88,17 @@ const SRC_MAKEFILES: &[(&str, &str)] = &[
 /// wall of errors inside vendored C).
 fn sources_from_makefile(text: &str, base: &str, flags: &Flags) -> Vec<String> {
     let mut out = Vec::new();
+    let mut removed = Vec::new();
     // Each entry: (this branch is active, any branch of this if has been taken)
     let mut stack: Vec<(bool, bool)> = Vec::new();
     let active = |stack: &[(bool, bool)]| stack.iter().all(|(a, _)| *a);
 
     for raw in text.lines() {
-        let line = raw.trim();
+        // Strip make comments first: libvpx annotates its branches
+        // (`else  # CONFIG_VP9_HIGHBITDEPTH`), and an `else` that is not
+        // recognised leaves the wrong branch active — compiling high-bitdepth
+        // sources into a build configured without them.
+        let line = raw.split('#').next().unwrap_or_default().trim();
 
         if let Some(cond) = line.strip_prefix("ifeq ") {
             let taken = eval_ifeq(cond, flags);
@@ -108,14 +133,20 @@ fn sources_from_makefile(text: &str, base: &str, flags: &Flags) -> Vec<String> {
         if !path.ends_with(".c") {
             continue; // headers, .mk, .asm
         }
-        let Some((_, cond)) = lhs.trim().rsplit_once('-') else {
+        let Some((var, cond)) = lhs.trim().rsplit_once('-') else {
             continue;
         };
         if !cond_enabled(cond.trim(), flags) {
             continue;
         }
-        out.push(format!("{base}/{path}"));
+        let entry = format!("{base}/{path}");
+        if var.ends_with("_REMOVE") {
+            removed.push(entry);
+        } else {
+            out.push(entry);
+        }
     }
+    out.retain(|src| !removed.contains(src));
     out
 }
 
@@ -180,10 +211,20 @@ fn main() {
     }
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let unix = target_os != "windows";
+    println!("cargo:rerun-if-env-changed=DOUBLESLASH_VPX_GENERIC");
+    let force_generic = std::env::var_os("DOUBLESLASH_VPX_GENERIC").is_some_and(|v| v == "1");
+    // Windows on ARM is left generic: nothing ships there, so its MSVC NEON
+    // build has never been run.
+    let simd = if target_arch == "aarch64" && target_os != "windows" && !force_generic {
+        Simd::Neon
+    } else {
+        Simd::None
+    };
 
     // ── Generated configuration ─────────────────────────────────────────────
-    let cfg = ConfigFlags::for_target(unix);
+    let cfg = ConfigFlags::for_target(unix, simd);
     let gen = out.join("vpx-generated");
     std::fs::create_dir_all(&gen).expect("create generated dir");
     std::fs::write(gen.join("vpx_config.h"), cfg.as_c_header()).expect("write vpx_config.h");
@@ -193,18 +234,22 @@ fn main() {
     // from configure's argv. Ours is fixed, so a literal is honest.
     std::fs::write(
         gen.join("vpx_config.c"),
-        "static const char* const cfg = \"generic-c-vp8-only\";\n\
-         const char *vpx_codec_build_config(void) { return cfg; }\n",
+        format!(
+            "static const char* const cfg = \"{}-vp8-vp9-realtime\";\n\
+             const char *vpx_codec_build_config(void) {{ return cfg; }}\n",
+            simd.label()
+        ),
     )
     .expect("write vpx_config.c");
 
     // ── RTCD headers, via libvpx's own generator ────────────────────────────
     for (sym, defs) in [
         ("vp8_rtcd", "vp8/common/rtcd_defs.pl"),
+        ("vp9_rtcd", "vp9/common/vp9_rtcd_defs.pl"),
         ("vpx_scale_rtcd", "vpx_scale/vpx_scale_rtcd.pl"),
         ("vpx_dsp_rtcd", "vpx_dsp/vpx_dsp_rtcd_defs.pl"),
     ] {
-        run_rtcd(&vpx, &gen, sym, defs);
+        run_rtcd(&vpx, &gen, sym, defs, simd);
     }
 
     // ── Compile ─────────────────────────────────────────────────────────────
@@ -324,11 +369,20 @@ fn find_perl() -> std::ffi::OsString {
 }
 
 /// Run libvpx's `rtcd.pl` for one symbol set.
-fn run_rtcd(vpx: &Path, gen: &Path, sym: &str, defs: &str) {
+///
+/// With runtime CPU detection off, the generator binds every function straight
+/// to the best implementation the config enables, so the arch named here must
+/// agree with [`ConfigFlags`] or it emits calls to functions nothing compiles.
+fn run_rtcd(vpx: &Path, gen: &Path, sym: &str, defs: &str, simd: Simd) {
     let out_file = gen.join(format!("{sym}.h"));
     let output = std::process::Command::new(find_perl())
         .arg(vpx.join("build").join("make").join("rtcd.pl"))
-        .arg("--arch=generic")
+        .arg(format!("--arch={}", simd.rtcd_arch()))
+        .args(
+            simd.rtcd_disabled()
+                .iter()
+                .map(|ext| format!("--disable-{ext}")),
+        )
         .arg(format!("--sym={sym}"))
         .arg(format!("--config={}", gen.join("vpx_config.mk").display()))
         .arg(vpx.join(defs))
@@ -362,6 +416,44 @@ fn version_header() -> String {
         .to_owned()
 }
 
+/// Which SIMD implementations the build compiles.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Simd {
+    /// Plain C.
+    None,
+    /// aarch64 NEON intrinsics — the architectural baseline, nothing optional.
+    Neon,
+}
+
+impl Simd {
+    fn rtcd_arch(self) -> &'static str {
+        match self {
+            Simd::None => "generic",
+            Simd::Neon => "arm64",
+        }
+    }
+
+    /// Extensions `rtcd.pl` must be told are off.
+    ///
+    /// The generator does not read these from `vpx_config.mk`; it takes them
+    /// as `--disable-*` arguments, the way libvpx's `configure` passes them.
+    /// Without this it binds functions to dot-product and SVE variants the
+    /// config never compiled, and the link fails on every one of them.
+    fn rtcd_disabled(self) -> &'static [&'static str] {
+        match self {
+            Simd::None => &[],
+            Simd::Neon => &["neon_dotprod", "neon_i8mm", "sve", "sve2"],
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Simd::None => "generic-c",
+            Simd::Neon => "arm64-neon",
+        }
+    }
+}
+
 /// The flags `configure` would otherwise write into `vpx_config.h`.
 ///
 /// Held as an ordered list rather than a struct so the C header and the make
@@ -388,14 +480,15 @@ impl ConfigFlags {
 }
 
 impl ConfigFlags {
-    fn for_target(unix: bool) -> Self {
+    fn for_target(unix: bool, simd: Simd) -> Self {
         let mut v: Vec<(&'static str, bool)> = Vec::new();
+        let neon = simd == Simd::Neon;
 
-        // Architecture: generic. Every arch is off, which is what drops the
-        // assembly and makes one source list work for x86_64 and aarch64 alike.
+        // Architecture. `VPX_ARCH_ARM` covers both ARM widths in libvpx's
+        // manifests; `VPX_ARCH_AARCH64` picks the 64-bit CPU detection.
+        v.push(("VPX_ARCH_ARM", neon));
+        v.push(("VPX_ARCH_AARCH64", neon));
         for a in [
-            "VPX_ARCH_ARM",
-            "VPX_ARCH_AARCH64",
             "VPX_ARCH_MIPS",
             "VPX_ARCH_X86",
             "VPX_ARCH_X86_64",
@@ -405,9 +498,10 @@ impl ConfigFlags {
             v.push((a, false));
         }
 
-        // Instruction-set features: all off, for the same reason.
+        // Instruction-set features. NEON only: see the module docs for why the
+        // optional ARM extensions stay off, and why x86 is generic.
+        v.push(("HAVE_NEON", neon));
         for h in [
-            "HAVE_NEON",
             "HAVE_NEON_ASM",
             "HAVE_NEON_DOTPROD",
             "HAVE_NEON_I8MM",
@@ -440,14 +534,13 @@ impl ConfigFlags {
         v.push(("HAVE_PTHREAD_SETNAME_NP", false));
         v.push(("HAVE_UNISTD_H", unix));
 
-        // Codecs: VP8 only, both directions. VP9 more than doubles the source
-        // list and nothing here speaks it.
+        // Codecs: VP8 and VP9, both directions.
         v.push(("CONFIG_VP8", true));
         v.push(("CONFIG_VP8_ENCODER", true));
         v.push(("CONFIG_VP8_DECODER", true));
-        v.push(("CONFIG_VP9", false));
-        v.push(("CONFIG_VP9_ENCODER", false));
-        v.push(("CONFIG_VP9_DECODER", false));
+        v.push(("CONFIG_VP9", true));
+        v.push(("CONFIG_VP9_ENCODER", true));
+        v.push(("CONFIG_VP9_DECODER", true));
         v.push(("CONFIG_ENCODERS", true));
         v.push(("CONFIG_DECODERS", true));
 
@@ -472,9 +565,10 @@ impl ConfigFlags {
         v.push(("CONFIG_DEBUG_LIBS", false));
         v.push(("CONFIG_DEQUANT_TOKENS", false));
         v.push(("CONFIG_DC_RECON", false));
-        // No runtime dispatch: with one (C) implementation there is nothing to
-        // dispatch between, and leaving it on would emit a resolver that
-        // expects per-arch symbols we do not build.
+        // No runtime dispatch: each build has exactly one implementation per
+        // function (C, or NEON where the config enables it), so there is
+        // nothing to choose between at run time, and leaving it on would emit
+        // a resolver that expects per-extension symbols we do not build.
         v.push(("CONFIG_RUNTIME_CPU_DETECT", false));
         v.push(("CONFIG_POSTPROC", false));
         v.push(("CONFIG_VP9_POSTPROC", false));

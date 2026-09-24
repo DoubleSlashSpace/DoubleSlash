@@ -344,7 +344,7 @@ above.
 | [Qt WebEngine](https://www.qt.io/privacy-policy) | Inline previews, supernode portal | Only when you load external or embed URLs (see above) |
 | [quinn](https://github.com/quinn-rs/quinn) | QUIC transport | None |
 | [libopus](https://opus-codec.org/) (vendored, `doubleslash-opus`) | Voice and shared-audio codec | None |
-| [libvpx](https://www.webmproject.org/) (vendored, `doubleslash-vpx`) | VP8 video codec on every platform | None |
+| [libvpx](https://www.webmproject.org/) (vendored, `doubleslash-vpx`) | VP8 and VP9 video codecs on every platform | None |
 | OS media APIs (Media Foundation, `Windows.Graphics.Capture`, WASAPI, V4L2, AVFoundation, CameraX, Oboe) | Camera / screen / audio capture and H.264 encode | None — local device access only |
 | [egui / eframe](https://github.com/emilk/egui) | Installer UI | None |
 | [Ollama](https://ollama.com/) (user-installed, optional) | Local AI backend | Only the URL you configure |

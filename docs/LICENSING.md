@@ -2,7 +2,7 @@
 
 The [MIT license](../LICENSE) covers DoubleSlash's own code. It does not
 replace the licenses of dependencies, fonts, codecs, runtime libraries, or
-other bundled assets. The MIT declarations in the Opus and VP8 wrapper
+other bundled assets. The MIT declarations in the Opus and VP8/VP9 wrapper
 manifests cover the wrappers, not the vendored upstream libraries.
 
 ## Automated Checks

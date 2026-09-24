@@ -11,7 +11,10 @@
 //!
 //! Everything else flows through the JSON command/event channel documented in
 //! [`command`] and [`event`], so adding a feature does not mean adding a JNI
-//! signature on both sides of the boundary.
+//! signature on both sides of the boundary. The exceptions carry things JSON
+//! cannot: `nativeSubmitCameraFrame` (CameraX buffers) and
+//! `nativeAttachVideoSurface` / `nativeDetachVideoSurface` (a view's `Surface`,
+//! for drawing received video).
 
 mod backup;
 // Host-lib builds do not feed CameraX; packing stays compiled for `cargo test`
@@ -20,6 +23,10 @@ mod backup;
 mod camera;
 mod command;
 mod event;
+// Surfaces only exist on a device; the registry and conversion stay compiled
+// for `cargo test`, like `camera` above.
+#[cfg(any(target_os = "android", test))]
+mod render;
 mod session;
 mod sink;
 mod video;
@@ -407,6 +414,59 @@ unsafe fn direct_slice<'a>(env: &JNIEnv<'_>, buffer: &JByteBuffer<'_>) -> Option
         return None;
     }
     Some(std::slice::from_raw_parts(address, capacity))
+}
+
+/// `long NativeCore.nativeAttachVideoSurface(Surface surface, String peerId)`
+///
+/// Draw `peerId`'s received video into `surface` until the returned token is
+/// detached. Returns 0 when the surface has no native window. Call from
+/// `surfaceCreated`; the decoder starts drawing on its next frame.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_doubleslash_client_NativeCore_nativeAttachVideoSurface<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    surface: JObject<'local>,
+    peer_id: JString<'local>,
+) -> jlong {
+    let peer_id: String = match env.get_string(&peer_id) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+    if surface.is_null() || peer_id.is_empty() {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        crate::render::attach_surface(&env, &surface, &peer_id)
+    }))
+    .unwrap_or_else(|_| {
+        error!("panicked attaching a video surface");
+        0
+    })
+}
+
+/// `void NativeCore.nativeDetachVideoSurface(long token)`
+///
+/// Stop drawing into a surface and release its window. Blocks until any draw
+/// in progress has finished, which is what `surfaceDestroyed` requires: the
+/// surface may not be touched once that callback returns.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_doubleslash_client_NativeCore_nativeDetachVideoSurface<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    token: jlong,
+) {
+    if token == 0 {
+        return;
+    }
+    if catch_unwind(AssertUnwindSafe(|| {
+        crate::render::registry().lock().detach(token);
+    }))
+    .is_err()
+    {
+        error!("panicked detaching a video surface");
+    }
 }
 
 /// `void NativeCore.nativeStop(long handle)`

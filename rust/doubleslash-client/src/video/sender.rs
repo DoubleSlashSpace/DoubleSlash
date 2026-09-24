@@ -20,6 +20,7 @@ use super::camera::MfCamera;
 use super::codec::VideoEncoder;
 use super::composite::Placement;
 use super::frame::RawFrame;
+use doubleslash_features::video_codec::VideoCodec;
 
 /// Smallest encoded edge offered. Below this a picture conveys nothing that
 /// justifies the packets, and the fragmenter's per-frame overhead starts to
@@ -525,10 +526,13 @@ impl CaptureLayout {
 pub trait FrameSink: Send {
     /// Hand off one encoded frame.
     ///
-    /// `keyframe` and `pts_us` both ride the fragment header. `pts_us` is the
+    /// `keyframe`, `codec` and `pts_us` all ride the fragment header. `codec`
+    /// is per frame rather than fixed for the sink because an encoder may
+    /// change codec mid-stream when the device cannot keep up (see
+    /// [`FallbackEncoder`](super::codec::FallbackEncoder)). `pts_us` is the
     /// time the frame was **captured**, not the time it finished encoding —
     /// see the stamping note on the capture loop.
-    fn send(&mut self, encoded: Vec<u8>, keyframe: bool, pts_us: u64);
+    fn send(&mut self, encoded: Vec<u8>, keyframe: bool, codec: VideoCodec, pts_us: u64);
 }
 
 /// Floor for adaptive bitrate control.
@@ -750,7 +754,7 @@ impl VideoSender {
                     match encoder.encode(&frame) {
                         Ok((data, keyframe)) if !data.is_empty() => {
                             count_t.fetch_add(1, Ordering::Relaxed);
-                            sink.send(data, keyframe, pts_us);
+                            sink.send(data, keyframe, encoder.codec(), pts_us);
                         }
                         // Empty output is normal while a pipelined encoder
                         // fills; it is not an error and must not be logged per
@@ -953,6 +957,12 @@ impl VideoEncoder for DiscardEncoder {
     }
 
     fn request_keyframe(&mut self) {}
+
+    /// Never consulted: a frame is only labelled with its codec on the way to
+    /// a sink, and this encoder never produces one.
+    fn codec(&self) -> VideoCodec {
+        VideoCodec::Stub
+    }
 }
 
 /// Sink for a preview-only capture. Unreachable in practice — [`DiscardEncoder`]
@@ -961,14 +971,17 @@ impl VideoEncoder for DiscardEncoder {
 struct DiscardSink;
 
 impl FrameSink for DiscardSink {
-    fn send(&mut self, _encoded: Vec<u8>, _keyframe: bool, _pts_us: u64) {}
+    fn send(&mut self, _encoded: Vec<u8>, _keyframe: bool, _codec: VideoCodec, _pts_us: u64) {}
 }
 
 /// A [`FrameSink`] that forwards to a channel, for wiring into the connection
 /// manager without this module depending on it.
+/// Builds a channel message from `(encoded, keyframe, codec, pts_us)`.
+type MakeMessage<T> = Box<dyn Fn(Vec<u8>, bool, VideoCodec, u64) -> T + Send>;
+
 pub struct ChannelSink<T> {
     tx: tokio::sync::mpsc::Sender<T>,
-    make: Box<dyn Fn(Vec<u8>, bool, u64) -> T + Send>,
+    make: MakeMessage<T>,
     dropped: u32,
 }
 
@@ -976,7 +989,7 @@ impl<T: Send> ChannelSink<T> {
     /// Wrap `tx`, using `make` to build the message for each frame.
     pub fn new(
         tx: tokio::sync::mpsc::Sender<T>,
-        make: impl Fn(Vec<u8>, bool, u64) -> T + Send + 'static,
+        make: impl Fn(Vec<u8>, bool, VideoCodec, u64) -> T + Send + 'static,
     ) -> Self {
         Self {
             tx,
@@ -987,13 +1000,13 @@ impl<T: Send> ChannelSink<T> {
 }
 
 impl<T: Send> FrameSink for ChannelSink<T> {
-    fn send(&mut self, encoded: Vec<u8>, keyframe: bool, pts_us: u64) {
+    fn send(&mut self, encoded: Vec<u8>, keyframe: bool, codec: VideoCodec, pts_us: u64) {
         // try_send, never blocking: stalling the capture thread on a full
         // channel would back pressure into the camera and stutter the frame
         // clock. Dropping the newest frame is the correct real-time choice.
         if self
             .tx
-            .try_send((self.make)(encoded, keyframe, pts_us))
+            .try_send((self.make)(encoded, keyframe, codec, pts_us))
             .is_err()
         {
             self.dropped = self.dropped.saturating_add(1);
@@ -1283,7 +1296,7 @@ mod tests {
     struct RecordingSink(Arc<std::sync::Mutex<Vec<(usize, bool)>>>);
 
     impl FrameSink for RecordingSink {
-        fn send(&mut self, encoded: Vec<u8>, keyframe: bool, _pts_us: u64) {
+        fn send(&mut self, encoded: Vec<u8>, keyframe: bool, _codec: VideoCodec, _pts_us: u64) {
             self.0.lock().unwrap().push((encoded.len(), keyframe));
         }
     }
@@ -1303,6 +1316,10 @@ mod tests {
 
         fn request_keyframe(&mut self) {
             self.keyframe_next = true;
+        }
+
+        fn codec(&self) -> VideoCodec {
+            VideoCodec::Stub
         }
     }
 
@@ -1488,9 +1505,9 @@ mod tests {
         // Capacity 1, then push 5 frames. A blocking sink would deadlock the
         // capture thread; this must drop instead.
         let (tx, _rx) = tokio::sync::mpsc::channel::<(Vec<u8>, bool, u64)>(1);
-        let mut sink = ChannelSink::new(tx, |d, k, p| (d, k, p));
+        let mut sink = ChannelSink::new(tx, |d, k, _c, p| (d, k, p));
         for _ in 0..5 {
-            sink.send(vec![0u8; 8], false, 0);
+            sink.send(vec![0u8; 8], false, VideoCodec::Stub, 0);
         }
         assert!(sink.dropped >= 3, "expected drops, saw {}", sink.dropped);
     }
@@ -1696,7 +1713,7 @@ mod tests {
         let frame = RawFrame::black(64, 48);
 
         let (data, kf) = enc.encode(&frame).unwrap();
-        sink.send(data, kf, 0);
+        sink.send(data, kf, VideoCodec::Stub, 0);
         assert_eq!(log.lock().unwrap().as_slice(), &[(3, true)]);
     }
 }

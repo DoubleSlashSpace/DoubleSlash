@@ -12,7 +12,7 @@ in [`README.md`](README.md) and on the website must have a home here.
 |---|---|
 | Linux/macOS camera hardware validation | 1 |
 | Two-client / room media acceptance | 1 |
-| Incoming video (and shared-audio playout) on Android | 2 |
+| Shared-audio playout on Android | 2 |
 | Device pairing and installed simultaneous-use | 2, 6 |
 | Screen and shared-audio capture outside Windows | 3 |
 | WASM plugin sandbox | 7 |
@@ -123,13 +123,50 @@ README/architecture already disclose as unfinished.
 
 ### Android incoming video and shared audio
 
-Sending works (CameraX → `nativeSubmitCameraFrame` → VP8). Still missing:
+Sending works (CameraX → `nativeSubmitCameraFrame` → VP9, or VP8). Receiving is
+implemented: the voice rail's or call card's per-peer menu opts in, decoded I420
+is drawn into a `TextureView` surface through `ANativeWindow`, and room
+subscriptions are narrowed to the watched set. Still missing:
 
-1. **Video render.** Decoded I420 to a `Surface` via `ANativeWindow` from Rust.
-   A phone can be seen but cannot see.
+1. **Video receive on a device.** Host tests, clippy and an APK build pass; no
+   phone has shown a picture yet. Run: room with a desktop camera on, open it
+   from the rail, confirm the picture and aspect ratio, full screen, stop
+   watching, camera off/on while watched, leave and rejoin (tile must not
+   reappear unasked), a direct call both ways, and a desktop that chose H.264
+   in Settings (expected: no picture). Check logcat for
+   `[room.video.sfu] subscribing` with an empty set on voice join, and for
+   `starting Android capture (vp9` when the phone's camera goes into a room.
 2. **Shared-audio playout.** Android has no content-audio capture *or* playout
    anchor. Incoming `ContentAudioReceived` must not be serialized into UI JSON;
    route it like voice in `session.rs::route_media`.
+
+### VP9 room default: live acceptance and x86 SIMD
+
+Rooms now send VP9, and VP8 takes over mid-call if a device cannot encode VP9
+in real time. The numbers behind that decision come from
+`rust/doubleslash-vpx/examples/encode_bench.rs`, run on the Xiph FourPeople
+conference clip (one encoder thread):
+
+| | VP8 | VP9 | Quality, same bitrate |
+|---|---|---|---|
+| Pixel 11, NEON, 360p | 1.7 ms | 1.2 ms | +0.9 dB |
+| Pixel 11, NEON, 720p | 6.9 ms | 4.5 ms | +0.6 dB |
+| x86 desktop, generic C, 720p | 16 ms | 28 ms (15 ms on 2 threads) | +1.5 dB |
+
+At equal quality VP9 needs about 15% fewer bits on the phone, and about 40%
+fewer at 720p on the desktop, where VP8 has less spare CPU to spend on quality.
+
+Still to do:
+
+1. **Live check.** Run a room with a Windows desktop and the phone both
+   sending. Both must see each other, and the logs must show `vp9` at capture
+   start. Force the fallback on a slow machine (or temporarily lower
+   `BUDGET_MEAN_SHARE`) and confirm that receivers keep the picture across the
+   switch.
+2. **x86 SIMD.** x86 desktops still encode VP9 in plain C, so 720p needs two
+   threads and a weak laptop will fall back to VP8. Enabling libvpx's x86 SIMD
+   means adding nasm to every build machine and CI image, and then
+   `Simd::X86` in `doubleslash-vpx/build.rs`.
 
 ### Installed simultaneous-use acceptance
 
@@ -180,7 +217,7 @@ the *compositor* draws the picker. That dialog is not skippable and cannot be
 replaced by our QML source list — `SourceSpec::Screen` needs a portal-shaped
 variant. An X11 fallback (XComposite/XShm) can keep the current id model.
 macOS needs Screen Recording entitlement and usage strings; not testable in CI.
-VP8 already covers encode; a backend only has to produce tightly-packed I420
+VP9/VP8 already cover encode; a backend only has to produce tightly-packed I420
 `RawFrame`.
 
 ### Content-audio capture

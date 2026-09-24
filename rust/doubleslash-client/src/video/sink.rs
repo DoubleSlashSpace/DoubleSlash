@@ -129,6 +129,48 @@ pub fn has_sink(peer_id: &str) -> bool {
     imp::has_sink(peer_id)
 }
 
+/// Where the decode thread draws, and how it asks whether anyone is looking.
+///
+/// The decode loop is platform-neutral; its render surface is not. The desktop
+/// draws into Qt video sinks registered from QML ([`QtSinks`]); Android draws
+/// into `ANativeWindow`s the app attaches from a `SurfaceView`. Injected into
+/// [`VideoReceiver`](super::receiver::VideoReceiver) rather than called as free
+/// functions so a build without Qt is not left with a receiver that decodes into
+/// a no-op.
+///
+/// Called from the decode thread, and `clear_peer` also from whoever tears a
+/// peer down, so implementations must be thread-safe and must not block on the
+/// UI thread.
+pub trait RenderSink: Send + Sync + 'static {
+    /// Whether anything is currently displaying this peer. The decode thread
+    /// skips every frame for a peer this answers `false` for.
+    fn has_sink(&self, peer_id: &str) -> bool;
+    /// Draw a decoded frame on every surface bound to `peer_id`.
+    fn push_frame(&self, peer_id: &str, frame: &RawFrame);
+    /// Blank a peer's surfaces without unbinding them.
+    fn clear_peer(&self, peer_id: &str);
+    /// Blank every surface.
+    fn clear_all(&self);
+}
+
+/// The desktop's QML `VideoRegistry`, through the free functions above.
+pub struct QtSinks;
+
+impl RenderSink for QtSinks {
+    fn has_sink(&self, peer_id: &str) -> bool {
+        has_sink(peer_id)
+    }
+    fn push_frame(&self, peer_id: &str, frame: &RawFrame) {
+        push_frame(peer_id, frame);
+    }
+    fn clear_peer(&self, peer_id: &str) {
+        clear_peer(peer_id);
+    }
+    fn clear_all(&self) {
+        clear_all();
+    }
+}
+
 /// Whether this build can render video at all.
 ///
 /// False when Qt Multimedia was absent at build time; the UI uses this to

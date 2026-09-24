@@ -33,13 +33,22 @@ enables `qt-ui`, which is what keeps Qt out of the Android dependency graph.
 
 ## The JNI boundary
 
-Four native methods, on `com.doubleslash.client.NativeCore`:
+Four lifecycle/command methods, on `com.doubleslash.client.NativeCore`:
 
 ```
 String nativeVersion()
-long   nativeStart(String homeDir, String passphrase, EventSink sink)
+long   nativeStart(String homeDir, String passphrase, String keyfilePath,
+                   String storedKey, Context context, EventSink sink)
 String nativeCommand(long handle, String json)
 void   nativeStop(long handle)
+```
+
+Plus three for what JSON cannot carry:
+
+```
+void nativeSubmitCameraFrame(ByteBuffer y, ..., int rotationDegrees)  // CameraX -> encoder
+long nativeAttachVideoSurface(Surface surface, String peerId)         // decoder -> view
+void nativeDetachVideoSurface(long token)
 ```
 
 Everything else rides a **JSON command/event channel**. Kotlin sends
@@ -56,7 +65,9 @@ the boundary every time one moved. One channel means a new feature is a new
 `PortalGameDatagram` are filtered out in `event.rs` — they arrive hundreds of
 times a second carrying raw payload bytes, and their pipelines live on the Rust
 side. Audio I/O reaches the device through cpal's Oboe backend without touching
-JNI at all.
+JNI at all. Received video is decoded in Rust and drawn straight into the
+`Surface` a `TextureView` attached; only rare, edge-triggered facts
+(`peer_video_size`, `peer_video_stalled`) come back as events.
 
 ### Threading
 
@@ -102,7 +113,7 @@ Gradle runs `cargo ndk` itself — `cargoBuildDebug` / `cargoBuildRelease` are
 wired ahead of `mergeDebugJniLibFolders`, so one command builds the whole thing.
 The Android debug build maps to cargo's dev profile and release to release; a
 release APK carrying a dev-profile core would be unusably slow through the Opus
-and VP8 paths, which are pure C compiled without SIMD. AGP 8.9.3 (Gradle
+and VP8/VP9 paths, whose C (and NEON intrinsics) are only fast when optimised. AGP 8.9.3 (Gradle
 wrapper 8.11.1) is the floor that officially supports `compileSdk` 36.
 
 To build the core alone:

@@ -76,7 +76,8 @@ graph TD
 MF / V4L2 / AVFoundation
 Windows.Graphics.Capture"]
             VCODEC["video/codec
-MF H.264 (Win) / VP8 (all)"]
+MF H.264 (Win) / VP9 + VP8 (all)
+VP9→VP8 realtime fallback"]
             VFRAG["video/fragment + sender
 fragmentation, per-frame sig, ABR"]
             VRECV[video/receiver — per-sender decode]
@@ -136,9 +137,10 @@ web.host.app.v1 / game.relay.v1"]
     end
 
     subgraph VPX_LIB["doubleslash-vpx  (Video Codec)"]
-        VPX[Vp8Encoder / Vp8Decoder]
-        LIBVPX["libvpx C — VP8, generic arch
-built by our build.rs, no SIMD"]
+        VPX[VpxEncoder / VpxDecoder]
+        LIBVPX["libvpx C — VP8 + VP9
+built by our build.rs
+NEON on aarch64, generic C on x86"]
         MFT["Media Foundation H.264
 Windows only — OS-held AVC licence"]
     end
@@ -284,7 +286,7 @@ example"]
 | **doubleslash-supernode** | Standalone server: WebSocket signaling, QUIC relay, SFU, in-app portal |
 | **doubleslash-features** | Shared capability registry, channel framing, quota enforcement, video-codec negotiation |
 | **doubleslash-opus** | Rust wrapper around libopus (DRED / OSCE neural models) |
-| **doubleslash-vpx** | Rust wrapper around a vendored libvpx (VP8 on every platform; built without libvpx's own `configure`/`make`) |
+| **doubleslash-vpx** | Rust wrapper around a vendored libvpx (VP8 and VP9 on every platform, NEON on aarch64; built without libvpx's own `configure`/`make`) |
 | **doubleslash-installer** | Cross-platform egui updater GUI; polls GitHub Releases |
 | **doubleslash-supernode-manager** | Separate workspace: cluster provisioning, `cluster-sync`, `build-deploy`, remote `exec` |
 | **web-sdk** | In-app portal game SDK (identity QUIC channel APIs) |
@@ -297,7 +299,7 @@ example"]
 | Peer message | QML → AppBridge → ConnectionManager → tagged QUIC peer stream, or supernode relay fallback → peer |
 | Direct voice audio | CPAL mic → AEC/noise/VAD → OpusEncoder → direct QUIC datagram → peer → JitterBuffer → OpusDecoder → CPAL speaker |
 | Room voice audio | CPAL mic → OpusEncoder → QuicRelayClient room datagram → supernode SFU/relay fan-out → peers |
-| Video | Camera/screen capture → composite (PiP drawn before encode) → H.264 or VP8 → fragments stamped with the session clock and signed → `VIDEO_TAG` direct datagram, or `ROOM_VIDEO_TAG` sealed under the room sender key → opaque relay fan-out → per-sender decode |
+| Video | Camera/screen capture → composite (PiP drawn before encode) → H.264, VP9 or VP8 → fragments stamped with the session clock and signed → `VIDEO_TAG` direct datagram, or `ROOM_VIDEO_TAG` sealed under the room sender key → opaque relay fan-out → per-sender decode |
 | Audio shared with a video | WASAPI loopback (system or one application) → OpusEncoder in `audio` mode → PTS from the same session clock → `CONTENT_AUDIO_TAG` / `ROOM_CONTENT_AUDIO_TAG` → receiver jitter buffer → playout anchor |
 | A/V sync | Content-audio playout sets a per-sender anchor → `media_sync` extrapolates between anchors → video is held or dropped to meet it; with no anchor (camera-only call) video free-runs |
 | File transfer | FileTransfer module → FeatureRegistry quota gate → `core.file.v1` / `room.file.v1` reliable signaling path |

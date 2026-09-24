@@ -14,9 +14,13 @@ import com.doubleslash.client.ui.AvatarArt
 import com.doubleslash.client.ui.parseAvatarSvg
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 /** Where the user is in the app. */
 sealed interface Screen {
@@ -146,6 +150,24 @@ data class AppState(
     val muted: Boolean = false,
     /** True while the local camera is capturing and sending. */
     val videoActive: Boolean = false,
+    /**
+     * Peers whose camera is on, by [videoKey]. From `peer_video_state`, which
+     * carries the sender's `public_id` for a direct call as well as a room.
+     */
+    val streamingPeers: Set<String> = emptySet(),
+    /**
+     * Peers whose video the user opened from the voice rail or call card.
+     *
+     * Opt-in, as on the desktop: nothing is decoded — and in a room, nothing is
+     * even forwarded to this phone — for a peer who is not in here. Spelled the
+     * way the roster or peer list spells them, because that is the id the
+     * supernode matches subscriptions against.
+     */
+    val watchedVideo: List<String> = emptyList(),
+    /** Latest decoded frame size per watched peer, by [videoKey], for aspect ratio. */
+    val videoSizes: Map<String, VideoSize> = emptyMap(),
+    /** Watched peers whose frames stopped arriving, by [videoKey]. */
+    val stalledVideo: Set<String> = emptySet(),
     /** An inbound file offer waiting on accept or decline. */
     val fileOffer: FileOffer? = null,
     /** Live transfers by id, 0.0-1.0, for the progress line. */
@@ -178,6 +200,34 @@ internal fun AppState.withPresence(
     onlinePeers = direct + relay,
     connectionMode = connectionMode,
 )
+
+/** A decoded picture's size, in pixels. */
+data class VideoSize(val width: Int, val height: Int)
+
+/**
+ * The spelling video state is keyed by.
+ *
+ * Room ids reach the client padded on some paths and unpadded on others, and
+ * the native render registry compares them unpadded; so does this.
+ */
+internal fun String.videoKey(): String = trimEnd('=')
+
+/**
+ * Whether [peerId]'s camera is on.
+ *
+ * A room roster id is the sender's `public_id`, which is what camera state is
+ * keyed by. A direct call is keyed by the hex peer-store id instead, so that
+ * one is bridged through the peer list.
+ */
+internal fun AppState.cameraOn(peerId: String): Boolean {
+    if (peerId.videoKey() in streamingPeers) return true
+    val pub = peers.firstOrNull { it.peerId == peerId }?.identityPub ?: return false
+    return pub.videoKey() in streamingPeers
+}
+
+/** Whether the user opened [peerId]'s video. */
+internal fun AppState.watching(peerId: String): Boolean =
+    watchedVideo.any { it.videoKey() == peerId.videoKey() }
 
 /**
  * Cluster-wide headcount for one room across every node that reported it.
@@ -1106,6 +1156,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val call = _state.value.call ?: return
         IncomingCallNotifier.cancel(getApplication())
         _state.update { it.copy(call = null) }
+        dropCallVideo(call.peerId)
         viewModelScope.launch {
             core.command("call.end") { put("peer_id", call.peerId) }
             CoreService.setMediaActive(getApplication(), microphone = false, camera = false)
@@ -1324,6 +1375,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         voiceRoom = VoiceRoom(room.supernodeId, room.roomId, room.roomName),
                     )
                 }
+                // Even when it is empty: until told otherwise a room's
+                // supernode forwards every camera, and on a phone that is
+                // downlink spent on pictures nobody opened.
+                publishWatchedVideo()
             } else {
                 _state.update { it.copy(error = reply.errorText) }
                 CoreService.setMediaActive(getApplication(), microphone = false, camera = false)
@@ -1334,6 +1389,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun leaveRoomVoice() {
         _state.update { it.copy(roomVoiceActive = false, voiceRoom = null) }
+        keepVideoOnlyFor(_state.value.call?.peerId)
         viewModelScope.launch {
             core.command("room.voice.leave")
             CoreService.setMediaActive(getApplication(), microphone = false, camera = false)
@@ -1384,6 +1440,95 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             microphone = _state.value.call != null || _state.value.roomVoiceActive,
             camera = false,
         )
+    }
+
+    /**
+     * Open or close [peerId]'s video — the voice rail's and call card's
+     * "Watch video". The core is told the whole set each time.
+     */
+    fun toggleWatchVideo(peerId: String) {
+        _state.update {
+            val key = peerId.videoKey()
+            val watched = if (it.watching(peerId)) {
+                it.watchedVideo.filterNot { id -> id.videoKey() == key }
+            } else {
+                it.watchedVideo + peerId
+            }
+            it.copy(watchedVideo = watched, stalledVideo = it.stalledVideo - key)
+        }
+        publishWatchedVideo()
+    }
+
+    /** Serialises [publishWatchedVideo], so a stale set can never land last. */
+    private val watchPublish = Mutex()
+
+    /**
+     * Send the watched set to the core.
+     *
+     * The set is read inside the lock rather than captured by the caller: two
+     * quick toggles then publish in order, and whichever runs last sends the
+     * current set rather than the one it started with.
+     */
+    private fun publishWatchedVideo() {
+        viewModelScope.launch {
+            watchPublish.withLock {
+                val ids = _state.value.watchedVideo
+                core.command("video.watch") {
+                    putJsonArray("peer_ids") { ids.forEach { add(it) } }
+                }
+            }
+        }
+    }
+
+    /**
+     * Drop every watched peer except [peerId] — what survives leaving room
+     * voice is the direct call, if one is running.
+     */
+    private fun keepVideoOnlyFor(peerId: String?) {
+        val before = _state.value.watchedVideo
+        _state.update {
+            it.copy(
+                watchedVideo = it.watchedVideo.filter { id -> peerId != null && id == peerId },
+                // Camera state is only announced while we share a session with
+                // the sender; once that ends, what we remember is stale.
+                streamingPeers = if (it.call == null) emptySet() else it.streamingPeers,
+            )
+        }
+        if (_state.value.watchedVideo != before) publishWatchedVideo()
+    }
+
+    /** A call ended: stop watching its peer, keep whatever the room had open. */
+    private fun dropCallVideo(peerId: String) {
+        val before = _state.value.watchedVideo
+        _state.update {
+            it.copy(
+                watchedVideo = it.watchedVideo.filterNot { id -> id == peerId },
+                streamingPeers = if (it.voiceRoom == null) emptySet() else it.streamingPeers,
+            )
+        }
+        if (_state.value.watchedVideo != before) publishWatchedVideo()
+    }
+
+    /**
+     * Forget watched room peers who left voice, so their decoder is freed and
+     * a rejoin does not reopen a tile the user may no longer want.
+     */
+    private fun pruneWatchedToVoiceRoom() {
+        val s = _state.value
+        val voice = s.voiceRoom ?: return
+        // Every node's roster for this room: a cluster homes one room on
+        // several members, and each knows only its own attachments.
+        val present = s.roomVoiceRosters
+            .filterKeys { it.substringAfter(':', "") == voice.roomId }
+            .values.flatten()
+            .map { it.videoKey() }
+            .toSet()
+        val callPeer = s.call?.peerId
+        val kept = s.watchedVideo.filter { it == callPeer || it.videoKey() in present }
+        if (kept != s.watchedVideo) {
+            _state.update { it.copy(watchedVideo = kept) }
+            publishWatchedVideo()
+        }
     }
 
     /** Mute the microphone. Applies to a direct call or room voice alike. */
@@ -1549,8 +1694,43 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (_state.value.videoActive) {
                     viewModelScope.launch { core.command("video.stop") }
                 }
+                val ended = _state.value.call?.peerId
                 _state.update { it.copy(call = null, videoActive = false) }
+                if (ended != null) dropCallVideo(ended)
                 CoreService.setMediaActive(getApplication(), microphone = false, camera = false)
+            }
+
+            "peer_video_state" -> {
+                val key = event.stringOrEmpty("peer_id").videoKey()
+                if (key.isEmpty()) return@onCoreEvent
+                val active = event.boolean("active", false)
+                _state.update {
+                    it.copy(
+                        streamingPeers = if (active) it.streamingPeers + key else it.streamingPeers - key,
+                        stalledVideo = it.stalledVideo - key,
+                    )
+                }
+            }
+
+            // Both come from the native decoder, only for watched peers.
+            "peer_video_size" -> {
+                val key = event.stringOrEmpty("peer_id").videoKey()
+                val size = VideoSize(
+                    event.number("width").toInt(),
+                    event.number("height").toInt(),
+                )
+                if (key.isEmpty() || size.width <= 0 || size.height <= 0) return@onCoreEvent
+                _state.update { it.copy(videoSizes = it.videoSizes + (key to size)) }
+            }
+
+            "peer_video_stalled" -> {
+                val key = event.stringOrEmpty("peer_id").videoKey()
+                val stalled = event.boolean("stalled", false)
+                _state.update {
+                    it.copy(
+                        stalledVideo = if (stalled) it.stalledVideo + key else it.stalledVideo - key,
+                    )
+                }
             }
 
             // A capture that stopped on its own - the camera was revoked, or
@@ -1723,6 +1903,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // present the moment the rail appears. Already-known ids are
                 // filtered out inside, so this is cheap to call on each change.
                 refreshAvatars(members)
+                pruneWatchedToVoiceRoom()
                 if (!isOpenRoom(event)) return@onCoreEvent
                 // Membership arriving at all means the supernode admitted us.
                 _state.update {

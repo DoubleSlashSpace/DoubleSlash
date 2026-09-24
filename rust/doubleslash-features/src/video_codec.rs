@@ -38,9 +38,13 @@ pub enum VideoCodec {
     /// deliberately no in-tree AVC implementation — see the video non-goals in
     /// `backlog.md`.
     H264,
-    /// VP8. Royalty-free, and the path to non-Windows peers, but only present
-    /// when the binary was built with a VP8 implementation linked in.
+    /// VP8. Royalty-free, built from vendored libvpx on every platform, and
+    /// the codec every build can both encode and decode.
     Vp8,
+    /// VP9. Royalty-free, from the same vendored libvpx as VP8. Better quality
+    /// per bit than VP8 at realtime speeds, and — with NEON on ARM — no slower
+    /// to encode, which makes it the room default.
+    Vp9,
     /// Compression-free I420 packing used by transport tests.
     ///
     /// Present on the wire so the test path exercises exactly the same framing
@@ -55,6 +59,7 @@ impl VideoCodec {
         match self {
             VideoCodec::H264 => 0x01,
             VideoCodec::Vp8 => 0x02,
+            VideoCodec::Vp9 => 0x03,
             VideoCodec::Stub => 0xFF,
         }
     }
@@ -65,6 +70,7 @@ impl VideoCodec {
         match b {
             0x01 => Some(VideoCodec::H264),
             0x02 => Some(VideoCodec::Vp8),
+            0x03 => Some(VideoCodec::Vp9),
             0xFF => Some(VideoCodec::Stub),
             _ => None,
         }
@@ -75,6 +81,7 @@ impl VideoCodec {
         match self {
             VideoCodec::H264 => "h264",
             VideoCodec::Vp8 => "vp8",
+            VideoCodec::Vp9 => "vp9",
             VideoCodec::Stub => "stub",
         }
     }
@@ -87,20 +94,41 @@ impl VideoCodec {
         match s {
             "h264" => Some(VideoCodec::H264),
             "vp8" => Some(VideoCodec::Vp8),
+            "vp9" => Some(VideoCodec::Vp9),
             "stub" => Some(VideoCodec::Stub),
             _ => None,
         }
     }
 }
 
-/// Preference order used by [`negotiate`], most preferred first.
+/// Preference order used by [`negotiate`] — direct calls — most preferred first.
 ///
-/// H.264 outranks VP8 because where both are available H.264 is the hardware
-/// path (Media Foundation will pick a GPU encoder when the machine has one),
-/// and hardware encode is what keeps a 720p send off the CPU. The stub ranks
-/// last so that a build which somehow advertises it still prefers any real
-/// codec.
-pub const PREFERENCE: [VideoCodec; 3] = [VideoCodec::H264, VideoCodec::Vp8, VideoCodec::Stub];
+/// H.264 leads because where both ends have it, it is the hardware path (Media
+/// Foundation will pick a GPU encoder when the machine has one), and hardware
+/// encode is what keeps a 720p send off the CPU. VP9 beats VP8 on quality per
+/// bit at no extra encode cost. The stub ranks last so that a build which
+/// somehow advertises it still prefers any real codec.
+pub const PREFERENCE: [VideoCodec; 4] = [
+    VideoCodec::H264,
+    VideoCodec::Vp9,
+    VideoCodec::Vp8,
+    VideoCodec::Stub,
+];
+
+/// Preference order for room video, used by [`best_for_room`].
+///
+/// Different from [`PREFERENCE`] because a room is not negotiated: the sender
+/// picks one codec for every member, so the right default is the best codec
+/// *everyone* can decode, not the best one this machine can encode. Every build
+/// decodes VP9 and VP8 from vendored libvpx; H.264 exists only where the OS
+/// provides it, so it ranks below both and is used in a room only when the user
+/// asks for it.
+pub const ROOM_PREFERENCE: [VideoCodec; 4] = [
+    VideoCodec::Vp9,
+    VideoCodec::Vp8,
+    VideoCodec::H264,
+    VideoCodec::Stub,
+];
 
 /// Pick the best codec both sides support.
 ///
@@ -168,10 +196,26 @@ pub fn negotiate_preferring(
 
 /// Our own most-preferred codec out of `available`, honouring `preferred`.
 ///
-/// The one-sided counterpart to [`negotiate_preferring`], for a room send where
-/// there is no single remote list to intersect with. A preference this build
-/// cannot encode is ignored rather than fatal.
+/// For a send with no remote list to intersect with, ranked by [`PREFERENCE`].
+/// A preference this build cannot encode is ignored rather than fatal.
 pub fn best_available(
+    available: &[VideoCodec],
+    preferred: Option<VideoCodec>,
+) -> Option<VideoCodec> {
+    pick_in_order(&PREFERENCE, available, preferred)
+}
+
+/// The codec for a room send: `preferred` when this build can encode it,
+/// otherwise the best of `available` by [`ROOM_PREFERENCE`].
+pub fn best_for_room(
+    available: &[VideoCodec],
+    preferred: Option<VideoCodec>,
+) -> Option<VideoCodec> {
+    pick_in_order(&ROOM_PREFERENCE, available, preferred)
+}
+
+fn pick_in_order(
+    order: &[VideoCodec],
     available: &[VideoCodec],
     preferred: Option<VideoCodec>,
 ) -> Option<VideoCodec> {
@@ -180,7 +224,7 @@ pub fn best_available(
             return Some(want);
         }
     }
-    PREFERENCE.iter().copied().find(|c| available.contains(c))
+    order.iter().copied().find(|c| available.contains(c))
 }
 
 /// Filter a locally-available codec set down to what should be advertised.
@@ -236,13 +280,14 @@ mod tests {
     fn wire_bytes_are_frozen() {
         assert_eq!(VideoCodec::H264.as_wire(), 0x01);
         assert_eq!(VideoCodec::Vp8.as_wire(), 0x02);
+        assert_eq!(VideoCodec::Vp9.as_wire(), 0x03);
         assert_eq!(VideoCodec::Stub.as_wire(), 0xFF);
     }
 
     #[test]
     fn unknown_wire_byte_is_not_guessed() {
         assert_eq!(VideoCodec::from_wire(0x00), None);
-        assert_eq!(VideoCodec::from_wire(0x03), None);
+        assert_eq!(VideoCodec::from_wire(0x04), None);
         assert_eq!(VideoCodec::from_wire(0x7F), None);
     }
 
@@ -423,6 +468,53 @@ mod tests {
         assert_eq!(
             codec_names(&[VideoCodec::H264, VideoCodec::Vp8]),
             vec!["h264".to_owned(), "vp8".to_owned()]
+        );
+    }
+
+    /// A room sender cannot know what every member decodes, so it defaults to
+    /// what every build decodes. A Windows sender with H.264 available must
+    /// still pick VP9 — sending H.264 into a room is what left every Android,
+    /// Linux and macOS member without a picture.
+    #[test]
+    fn a_room_prefers_vp9_even_where_h264_is_available() {
+        let windows = [VideoCodec::H264, VideoCodec::Vp9, VideoCodec::Vp8];
+        assert_eq!(best_for_room(&windows, None), Some(VideoCodec::Vp9));
+    }
+
+    #[test]
+    fn a_room_falls_back_to_vp8_without_vp9() {
+        assert_eq!(
+            best_for_room(&[VideoCodec::H264, VideoCodec::Vp8], None),
+            Some(VideoCodec::Vp8)
+        );
+    }
+
+    /// The user can still choose H.264 for a room they know is all-Windows.
+    #[test]
+    fn a_room_honours_an_explicit_preference_it_can_encode() {
+        let windows = [VideoCodec::H264, VideoCodec::Vp9, VideoCodec::Vp8];
+        assert_eq!(
+            best_for_room(&windows, Some(VideoCodec::H264)),
+            Some(VideoCodec::H264)
+        );
+        assert_eq!(
+            best_for_room(&[VideoCodec::Vp9, VideoCodec::Vp8], Some(VideoCodec::H264)),
+            Some(VideoCodec::Vp9)
+        );
+    }
+
+    /// Direct calls still negotiate, and two Windows peers still land on
+    /// hardware H.264; anyone else lands on VP9.
+    #[test]
+    fn a_direct_call_prefers_h264_then_vp9() {
+        let windows = [VideoCodec::H264, VideoCodec::Vp9, VideoCodec::Vp8];
+        let android = [VideoCodec::Vp9, VideoCodec::Vp8];
+        assert_eq!(negotiate(&windows, &windows), Some(VideoCodec::H264));
+        assert_eq!(negotiate(&windows, &android), Some(VideoCodec::Vp9));
+        assert_eq!(
+            negotiate(&windows, &[VideoCodec::Vp8]),
+            Some(VideoCodec::Vp8),
+            "an older peer without VP9 still gets a picture"
         );
     }
 }

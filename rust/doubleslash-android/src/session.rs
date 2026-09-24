@@ -58,6 +58,10 @@ pub struct Session {
     /// refuses a second capture rather than silently stealing frames from the
     /// first.
     pub video: Arc<RwLock<Option<doubleslash_client::video::sender::VideoSender>>>,
+    /// Inbound video: the peers the user chose to watch, and the decoder that
+    /// exists only while there are any. Shared with the event pump, which is
+    /// where frames arrive.
+    pub video_in: crate::video::SharedInbound,
     /// A clone of the event sink, so a capture that dies on its own can say so.
     pub sink: EventSink,
     /// Where everything this client persists lives. Held because the portal
@@ -90,6 +94,11 @@ pub struct Session {
     /// row per member instead of one per room, and misses hide state recorded
     /// against a sibling.
     pub cluster_members: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    /// The video codecs each peer advertised, from its capability announce.
+    ///
+    /// A direct call negotiates its codec from this; a peer missing here has
+    /// not announced yet, which is "unknown", not "none".
+    pub peer_video_codecs: PeerVideoCodecs,
     pump: Option<std::thread::JoinHandle<()>>,
     call_pump: Option<std::thread::JoinHandle<()>>,
 }
@@ -172,6 +181,7 @@ impl Session {
         runtime.spawn(sfu_fut);
 
         let cluster_members = Arc::new(RwLock::new(HashMap::new()));
+        let peer_video_codecs = PeerVideoCodecs::default();
         // The call controller has its own event channel, separate from the
         // connection manager's. Dropping it costs the real call state (the UI
         // is left guessing from signalling, and an answered call still reads
@@ -179,9 +189,11 @@ impl Session {
         let call_pump = spawn_call_event_pump(call_events, sink.clone())?;
         let sink_for_session = sink.clone();
 
+        let video_in = crate::video::SharedInbound::default();
         let pump = spawn_event_pump(
             event_rx,
             sink,
+            Arc::clone(&video_in),
             Arc::clone(&chat_store),
             key_dir.clone(),
             Arc::clone(&room_store),
@@ -191,6 +203,7 @@ impl Session {
             cmd_tx.clone(),
             call_tx.clone(),
             Arc::clone(&cluster_members),
+            Arc::clone(&peer_video_codecs),
             my_public_id.clone(),
         )?;
 
@@ -208,8 +221,10 @@ impl Session {
             pending_sub_room_parent,
             portal_datagrams,
             video: Arc::new(RwLock::new(None)),
+            video_in,
             sink: sink_for_session,
             cluster_members,
+            peer_video_codecs,
             pump: Some(pump),
             call_pump: Some(call_pump),
         })
@@ -256,6 +271,10 @@ impl Session {
         if let Some(video) = self.video.write().take() {
             video.stop();
         }
+        // Taken out before the join so the lock is not held while the decode
+        // thread winds down.
+        let receiver = self.video_in.lock().take_receiver();
+        drop(receiver);
 
         // Ask the manager to close cleanly first, so peers see a disconnect
         // rather than a dropped socket.
@@ -342,6 +361,7 @@ fn unlock_identity(
 fn spawn_event_pump(
     mut event_rx: mpsc::Receiver<ConnectionEvent>,
     sink: EventSink,
+    video_in: crate::video::SharedInbound,
     chat_store: Arc<ChatStore>,
     home_dir: PathBuf,
     room_store: Arc<RwLock<RoomStore>>,
@@ -351,6 +371,7 @@ fn spawn_event_pump(
     cmd_tx: mpsc::Sender<ConnectionCommand>,
     call_tx: mpsc::Sender<CallCommand>,
     cluster_members: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    peer_video_codecs: PeerVideoCodecs,
     my_public_id: String,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
@@ -366,6 +387,8 @@ fn spawn_event_pump(
 
             while let Some(ev) = event_rx.blocking_recv() {
                 route_media(&call_tx, &ev);
+                route_video(&video_in, &ev);
+                record_peer_codecs(&peer_video_codecs, &ev);
                 persist_if_chat(&chat_store, &ev);
                 persist_if_room_chat(&chat_store, &my_public_id, &ev);
                 persist_if_room_file_offer(&chat_store, &my_public_id, &ev);
@@ -444,6 +467,48 @@ fn spawn_call_event_pump(
 
             info!("call event pump finished");
         })
+}
+
+/// Per-peer advertised video codecs. See [`Session::peer_video_codecs`].
+pub type PeerVideoCodecs =
+    Arc<RwLock<HashMap<String, Vec<doubleslash_features::video_codec::VideoCodec>>>>;
+
+/// Remember what video codecs a peer can run, from its capability announce.
+fn record_peer_codecs(codecs: &PeerVideoCodecs, event: &ConnectionEvent) {
+    let ConnectionEvent::CapabilityAnnounced { peer_id, caps_json } = event else {
+        return;
+    };
+    let announced = doubleslash_client::video::codec::peer_codecs_from_caps_json(caps_json);
+    let mut map = codecs.write();
+    if announced.is_empty() {
+        map.remove(peer_id);
+    } else {
+        map.insert(peer_id.clone(), announced);
+    }
+}
+
+/// Hand inbound video to the decoder, and drop a peer's decoder the moment
+/// their camera goes off.
+///
+/// Like audio, frames never become UI JSON; unlike audio, they are only kept
+/// for peers the user asked to watch, which [`crate::video::Inbound`] decides.
+fn route_video(video_in: &crate::video::SharedInbound, event: &ConnectionEvent) {
+    match event {
+        ConnectionEvent::VideoFrameReceived {
+            peer_id,
+            encoded,
+            keyframe,
+            codec,
+            pts_us,
+        } => video_in
+            .lock()
+            .submit(peer_id, encoded, *keyframe, *codec, *pts_us),
+        ConnectionEvent::PeerVideoStateChanged {
+            peer_id,
+            active: false,
+        } => video_in.lock().forget(peer_id),
+        _ => {}
+    }
 }
 
 /// Hand real-time media to the audio pipeline.

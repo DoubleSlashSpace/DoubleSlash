@@ -26,7 +26,7 @@ use tracing::{debug, info, warn};
 
 use super::codec::VideoDecoder;
 use super::frame::RawFrame;
-use super::sink;
+use super::sink::RenderSink;
 
 /// One inbound encoded frame awaiting decode.
 pub struct InboundFrame {
@@ -164,11 +164,10 @@ const STALL_REPORT_AFTER: Duration = Duration::from_secs(10);
 /// streams is enough to saturate a modest machine and starve the audio
 /// pipeline, which is the failure users actually notice.
 ///
-/// **This bounds CPU and memory, not bandwidth.** The supernode fans room video
-/// to every member regardless of what we decode, so capping here does not
-/// reduce what arrives on the wire. Cutting inbound bandwidth needs a
-/// subscription protocol (a receiver telling the SFU which senders it wants),
-/// which this version does not have.
+/// **This bounds CPU and memory, not bandwidth.** Capping here does not reduce
+/// what arrives on the wire; that is the job of
+/// [`SetVideoSubscriptions`](crate::connection_manager::ConnectionCommand::SetVideoSubscriptions),
+/// which tells the supernode which senders to forward at all.
 pub const MAX_DECODED_STREAMS: usize = 4;
 
 /// How long a decoded stream must go quiet before its slot can be taken.
@@ -199,6 +198,9 @@ enum Control {
 pub struct VideoReceiver {
     /// Shared with the caller so content-audio playout can advance anchors.
     playout: SharedPlayout,
+    /// Where decoded frames are drawn. Held here as well as by the thread so
+    /// [`Self::forget`] can blank a tile without waiting on it.
+    sink: Arc<dyn RenderSink>,
     tx: mpsc::SyncSender<InboundFrame>,
     control_tx: mpsc::Sender<Control>,
     stop: Arc<AtomicBool>,
@@ -218,14 +220,14 @@ impl VideoReceiver {
     /// `false` when frames resume or the peer is forgotten. Edges only: it is
     /// never called twice with the same state for one peer.
     ///
-    /// `has_sink` answers "is anything displaying this peer?". Injected rather
-    /// than called directly so the loop can be exercised without a Qt render
-    /// surface; production passes [`sink::has_sink`].
+    /// `sink` is where frames are drawn, and answers "is anything displaying
+    /// this peer?" — the desktop passes [`QtSinks`](super::sink::QtSinks),
+    /// Android its `ANativeWindow` registry, tests a probe.
     pub fn start<F, D, S>(
         mut make_decoder: F,
         mut request_keyframe: D,
         mut report_stall: S,
-        has_sink: fn(&str) -> bool,
+        sink: Arc<dyn RenderSink>,
     ) -> Self
     where
         F: FnMut(VideoCodec) -> Option<Box<dyn VideoDecoder>> + Send + 'static,
@@ -238,6 +240,7 @@ impl VideoReceiver {
         let playout_t = Arc::clone(&playout);
         let stop = Arc::new(AtomicBool::new(false));
         let stop_t = Arc::clone(&stop);
+        let sink_t = Arc::clone(&sink);
 
         let handle = std::thread::Builder::new()
             .name("doubleslash-video-decode".into())
@@ -257,7 +260,7 @@ impl VideoReceiver {
                     // Lifecycle first: a peer who just left must not keep a
                     // decoder (and its HW surfaces) alive until the next frame
                     // arrives — which may never happen.
-                    drain_control(
+                    let blank = drain_control(
                         &control_rx,
                         &mut decoders,
                         &mut health,
@@ -266,6 +269,7 @@ impl VideoReceiver {
                         &mut stalled,
                         &mut report_stall,
                     );
+                    blank_tiles(sink_t.as_ref(), blank);
 
                     // Runs on the idle tick as well as after every frame, which
                     // is the whole point: a stream that stopped produces no
@@ -277,7 +281,7 @@ impl VideoReceiver {
                         &mut keyframe_asked,
                         &mut request_keyframe,
                         &mut report_stall,
-                        has_sink,
+                        |peer| sink_t.has_sink(peer),
                         std::time::Instant::now(),
                     );
 
@@ -289,7 +293,7 @@ impl VideoReceiver {
 
                     // Don't spend CPU decoding for a peer nobody is watching.
                     // Cheap to check and it is the common case in a large room.
-                    if !has_sink(&item.peer_id) {
+                    if !sink_t.has_sink(&item.peer_id) {
                         continue;
                     }
 
@@ -395,7 +399,7 @@ impl VideoReceiver {
                                 std::time::Instant::now(),
                             );
                             for f in due {
-                                sink::push_frame(&item.peer_id, &f.payload);
+                                sink_t.push_frame(&item.peer_id, &f.payload);
                             }
                         }
                         // Accepted, but nothing to draw yet: warming up, or
@@ -482,7 +486,7 @@ impl VideoReceiver {
                     }
                 }
                 // Final drain so a forget issued during shutdown still lands.
-                drain_control(
+                let blank = drain_control(
                     &control_rx,
                     &mut decoders,
                     &mut health,
@@ -491,6 +495,7 @@ impl VideoReceiver {
                     &mut stalled,
                     &mut report_stall,
                 );
+                blank_tiles(sink_t.as_ref(), blank);
                 decoders.clear();
                 health.clear();
                 last_frame.clear();
@@ -502,6 +507,7 @@ impl VideoReceiver {
 
         Self {
             playout,
+            sink,
             tx,
             control_tx,
             stop,
@@ -556,7 +562,7 @@ impl VideoReceiver {
 
     pub fn forget(&self, peer_id: &str) {
         // Immediate UI blank — do not wait for the decode thread.
-        sink::clear_peer(peer_id);
+        self.sink.clear_peer(peer_id);
         self.playout.lock().forget(peer_id);
         let _ = self.control_tx.send(Control::Forget(peer_id.to_owned()));
     }
@@ -648,7 +654,7 @@ fn sweep_stalls(
     keyframe_asked: &mut HashMap<String, std::time::Instant>,
     request_keyframe: &mut impl FnMut(&str),
     report_stall: &mut impl FnMut(&str, bool),
-    has_sink: fn(&str) -> bool,
+    has_sink: impl Fn(&str) -> bool,
     now: std::time::Instant,
 ) {
     for (peer, seen) in last_frame {
@@ -680,6 +686,26 @@ fn sweep_stalls(
     }
 }
 
+/// Tiles a drained control command left needing a blank.
+#[derive(Debug, PartialEq, Eq)]
+enum Blank {
+    Peer(String),
+    All,
+}
+
+fn blank_tiles(sink: &dyn RenderSink, blank: Vec<Blank>) {
+    for b in blank {
+        match b {
+            Blank::Peer(id) => sink.clear_peer(&id),
+            Blank::All => sink.clear_all(),
+        }
+    }
+}
+
+/// Apply pending lifecycle commands, returning the tiles to blank.
+///
+/// The blanking is returned rather than done here so this stays a pure
+/// transformation of the decode state, testable without a render surface.
 fn drain_control(
     control_rx: &mpsc::Receiver<Control>,
     decoders: &mut HashMap<String, PeerDecoder>,
@@ -688,7 +714,8 @@ fn drain_control(
     keyframe_asked: &mut HashMap<String, std::time::Instant>,
     stalled: &mut HashSet<String>,
     report_stall: &mut impl FnMut(&str, bool),
-) {
+) -> Vec<Blank> {
+    let mut blank = Vec::new();
     while let Ok(cmd) = control_rx.try_recv() {
         match cmd {
             Control::Forget(id) => {
@@ -704,7 +731,7 @@ fn drain_control(
                 if stalled.remove(&id) {
                     report_stall(&id, false);
                 }
-                sink::clear_peer(&id);
+                blank.push(Blank::Peer(id));
             }
             Control::ForgetAll => {
                 decoders.clear();
@@ -716,10 +743,11 @@ fn drain_control(
                 }
                 // Blank every tile, including peers that never produced a
                 // decoder (e.g. indicator-only, or frames still in reassembly).
-                sink::clear_all();
+                blank.push(Blank::All);
             }
         }
     }
+    blank
 }
 
 impl Drop for VideoReceiver {
@@ -779,6 +807,22 @@ mod tests {
         true
     }
 
+    /// A render sink that watches everyone and draws nowhere.
+    struct WatchAll;
+
+    impl RenderSink for WatchAll {
+        fn has_sink(&self, _peer_id: &str) -> bool {
+            true
+        }
+        fn push_frame(&self, _peer_id: &str, _frame: &RawFrame) {}
+        fn clear_peer(&self, _peer_id: &str) {}
+        fn clear_all(&self) {}
+    }
+
+    fn watched_sink() -> Arc<dyn RenderSink> {
+        Arc::new(WatchAll)
+    }
+
     /// The opposite: nothing is displayed, which is what a closed tile looks
     /// like to the sweep.
     fn unwatched(_peer: &str) -> bool {
@@ -795,7 +839,7 @@ mod tests {
             move |_codec| Some(Box::new(CountingDecoder(Arc::clone(&c)))),
             |_| {},
             |_, _| {},
-            watched,
+            watched_sink(),
         );
 
         let started = std::time::Instant::now();
@@ -821,7 +865,7 @@ mod tests {
             },
             |_| {},
             |_, _| {},
-            watched,
+            watched_sink(),
         );
 
         let handle = rx.playout();
@@ -849,7 +893,7 @@ mod tests {
             },
             |_| {},
             |_, _| {},
-            watched,
+            watched_sink(),
         );
         let now = std::time::Instant::now();
         rx.playout()
@@ -876,7 +920,7 @@ mod tests {
             },
             |_| {},
             |_, _| {},
-            watched,
+            watched_sink(),
         );
         rx.submit("peer", vec![1], false, VideoCodec::Stub, 0);
         let started = std::time::Instant::now();
@@ -1002,7 +1046,7 @@ mod tests {
             },
             |_| {},
             |_, _| {},
-            watched,
+            watched_sink(),
         );
 
         // 0xFF makes CountingDecoder fail, so every frame wedges it.
@@ -1042,7 +1086,7 @@ mod tests {
             },
             |_| {},
             |_, _| {},
-            watched,
+            watched_sink(),
         );
 
         let submissions = (FAILURES_BEFORE_DECODER_REBUILD * 4) as usize;
@@ -1287,7 +1331,7 @@ mod tests {
         let mut reports: Vec<(String, bool)> = Vec::new();
 
         tx.send(Control::Forget("alice".to_owned())).unwrap();
-        drain_control(
+        let blank = drain_control(
             &rx,
             &mut decoders,
             &mut health,
@@ -1297,11 +1341,16 @@ mod tests {
             &mut |p: &str, s: bool| reports.push((p.to_owned(), s)),
         );
         assert_eq!(reports, vec![("alice".to_owned(), false)]);
+        assert_eq!(
+            blank,
+            vec![Blank::Peer("alice".to_owned())],
+            "alice's tile blanks"
+        );
         assert!(stalled.contains("bob"), "bob's stall was cleared too");
 
         // Leaving the room clears everyone.
         tx.send(Control::ForgetAll).unwrap();
-        drain_control(
+        let blank = drain_control(
             &rx,
             &mut decoders,
             &mut health,
@@ -1310,6 +1359,7 @@ mod tests {
             &mut stalled,
             &mut |p: &str, s: bool| reports.push((p.to_owned(), s)),
         );
+        assert_eq!(blank, vec![Blank::All]);
         assert!(stalled.is_empty());
         assert!(reports.contains(&("bob".to_owned(), false)));
     }
@@ -1324,7 +1374,7 @@ mod tests {
             },
             |_| {},
             |_, _| {},
-            watched,
+            watched_sink(),
         );
         // Fill the frame queue so a coupled control path would block.
         for _ in 0..(QUEUE_DEPTH * 2) {

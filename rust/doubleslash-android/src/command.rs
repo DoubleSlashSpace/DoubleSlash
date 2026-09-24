@@ -69,6 +69,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "call.end",
     "video.start",
     "video.stop",
+    "video.watch",
     "audio.start",
     "audio.stop",
     "audio.set_muted",
@@ -1160,9 +1161,23 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
             let device_id = arg_str(&parsed, "device_id").unwrap_or("android:front");
             let quality = arg_str(&parsed, "quality").unwrap_or("balanced");
 
+            let peer_codecs = peer_id.as_ref().map(|id| {
+                session
+                    .peer_video_codecs
+                    .read()
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_default()
+            });
+            let choice = match crate::video::choose_codec(peer_codecs.as_deref()) {
+                Ok(choice) => choice,
+                Err(e) => return err(format!("could not start video: {e}")),
+            };
+
             match crate::video::start(
                 session.cmd_tx.clone(),
                 peer_id.clone(),
+                choice,
                 device_id,
                 quality,
                 Arc::clone(&session.video),
@@ -1200,6 +1215,30 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                 // ask for "off" without getting an error.
                 None => json!({ "ok": true }),
             }
+        }
+
+        // The peers whose video the user opened. The whole set every time, as
+        // on the desktop; an empty set is meaningful — it stops a room's
+        // supernode forwarding every camera to this phone.
+        "video.watch" => {
+            let peers: Vec<String> = parsed
+                .get("peer_ids")
+                .and_then(Value::as_array)
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            crate::video::watch(
+                &session.video_in,
+                peers,
+                &session.cmd_tx,
+                &session.call_tx,
+                &session.sink,
+            );
+            json!({ "ok": true })
         }
 
         // ── Audio ─────────────────────────────────────────────────────────

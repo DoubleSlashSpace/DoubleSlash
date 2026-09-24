@@ -128,6 +128,10 @@ import com.doubleslash.client.Room
 import com.doubleslash.client.RoomMessage
 import com.doubleslash.client.Peer
 import com.doubleslash.client.roomSenderName
+import com.doubleslash.client.cameraOn
+import com.doubleslash.client.videoKey
+import com.doubleslash.client.watching
+import com.doubleslash.client.VideoSize
 import com.doubleslash.client.Screen
 import java.text.DateFormat
 import java.util.Date
@@ -183,6 +187,12 @@ fun AppRoot(viewModel: AppViewModel) {
                     videoActive = state.videoActive,
                     speakerphone = state.speakerphone,
                     headsetAttached = state.headsetAttached,
+                    myId = state.identity.publicId,
+                    cameraOn = state::cameraOn,
+                    watching = state::watching,
+                    videoSizes = state.videoSizes,
+                    stalledVideo = state.stalledVideo,
+                    onToggleWatch = viewModel::toggleWatchVideo,
                     onToggleMute = viewModel::toggleMute,
                     onToggleSpeaker = { viewModel.setSpeakerphone(!state.speakerphone) },
                     onToggleVideo = {
@@ -312,6 +322,13 @@ fun AppRoot(viewModel: AppViewModel) {
             videoActive = state.videoActive,
             speakerphone = state.speakerphone,
             headsetAttached = state.headsetAttached,
+            peerCameraOn = state.cameraOn(call.peerId),
+            watchingPeer = state.watching(call.peerId),
+            // Keyed by the id frames arrive under, which on a direct call is
+            // the hex peer id rather than the public id.
+            peerVideoSize = state.videoSizes[call.peerId.videoKey()],
+            peerVideoStalled = call.peerId.videoKey() in state.stalledVideo,
+            onToggleWatch = { viewModel.toggleWatchVideo(call.peerId) },
             onAccept = viewModel::acceptCall,
             onReject = viewModel::rejectCall,
             onEnd = viewModel::endCall,
@@ -338,6 +355,11 @@ private fun CallOverlay(
     videoActive: Boolean,
     speakerphone: Boolean,
     headsetAttached: Boolean,
+    peerCameraOn: Boolean,
+    watchingPeer: Boolean,
+    peerVideoSize: VideoSize?,
+    peerVideoStalled: Boolean,
+    onToggleWatch: () -> Unit,
     onAccept: () -> Unit,
     onReject: () -> Unit,
     onEnd: () -> Unit,
@@ -346,6 +368,8 @@ private fun CallOverlay(
     onToggleVideo: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
+    var peerMenuOpen by remember { mutableStateOf(false) }
+    var fullScreen by remember { mutableStateOf(false) }
 
     // CameraX has to be bound before the core asks for video: the native side
     // waits a few seconds for a first frame to learn the capture size, so
@@ -377,55 +401,107 @@ private fun CallOverlay(
         return
     }
 
+    val showVideo = watchingPeer && peerCameraOn
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-        Card(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-            ),
-        ) {
-            Row(
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            if (showVideo) {
+                VideoTile(
+                    peerId = call.peerId,
+                    name = call.peerLabel,
+                    size = peerVideoSize,
+                    stalled = peerVideoStalled,
+                    modifier = Modifier.padding(horizontal = 12.dp).height(CALL_VIDEO_HEIGHT),
+                    onClick = { fullScreen = true },
+                )
+            }
+            Card(
                 modifier = Modifier.fillMaxWidth().padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                ),
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text(call.peerLabel, style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        if (call.phase == CallPhase.OUTGOING) "Calling..." else "In call",
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                }
-                TextButton(onClick = onToggleMute) {
-                    Text(if (call.muted) "Unmute" else "Mute")
-                }
-                // A headset takes the audio regardless of this preference, so
-                // the control is disabled rather than silently ignored.
-                TextButton(onClick = onToggleSpeaker, enabled = !headsetAttached) {
-                    Text(
-                        when {
-                            headsetAttached -> "Headset"
-                            speakerphone -> "Speaker"
-                            else -> "Earpiece"
-                        }
-                    )
-                }
-                TextButton(
-                    onClick = {
-                        if (videoActive) {
-                            onToggleVideo(false)
-                            CameraCapture.stop()
-                        } else {
-                            requestCamera()
-                        }
-                    },
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(if (videoActive) "Stop video" else "Video")
+                    // The peer's name opens their menu, as a face in the voice rail
+                    // does: video is watched on request, not pushed at the user.
+                    Box(Modifier.weight(1f)) {
+                        Column(Modifier.clickable { peerMenuOpen = true }) {
+                            Text(call.peerLabel, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                when {
+                                    call.phase == CallPhase.OUTGOING -> "Calling..."
+                                    peerCameraOn && !watchingPeer -> "In call · camera on"
+                                    else -> "In call"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                        DropdownMenu(expanded = peerMenuOpen, onDismissRequest = { peerMenuOpen = false }) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        when {
+                                            watchingPeer -> "Stop watching"
+                                            peerCameraOn -> "Watch video"
+                                            else -> "Camera is off"
+                                        }
+                                    )
+                                },
+                                enabled = watchingPeer || peerCameraOn,
+                                onClick = {
+                                    peerMenuOpen = false
+                                    onToggleWatch()
+                                },
+                            )
+                        }
+                    }
+                    TextButton(onClick = onToggleMute) {
+                        Text(if (call.muted) "Unmute" else "Mute")
+                    }
+                    // A headset takes the audio regardless of this preference, so
+                    // the control is disabled rather than silently ignored.
+                    TextButton(onClick = onToggleSpeaker, enabled = !headsetAttached) {
+                        Text(
+                            when {
+                                headsetAttached -> "Headset"
+                                speakerphone -> "Speaker"
+                                else -> "Earpiece"
+                            }
+                        )
+                    }
+                    TextButton(
+                        onClick = {
+                            if (videoActive) {
+                                onToggleVideo(false)
+                                CameraCapture.stop()
+                            } else {
+                                requestCamera()
+                            }
+                        },
+                    ) {
+                        Text(if (videoActive) "Stop video" else "Video")
+                    }
+                    TextButton(onClick = onEnd) { Text("End") }
                 }
-                TextButton(onClick = onEnd) { Text("End") }
             }
         }
     }
+
+    if (fullScreen && showVideo) {
+        FullScreenVideo(
+            peerId = call.peerId,
+            name = call.peerLabel,
+            size = peerVideoSize,
+            stalled = peerVideoStalled,
+            onDismiss = { fullScreen = false },
+        )
+    }
 }
+
+/** Larger than a rail tile: in a call this is the one picture there is. */
+private val CALL_VIDEO_HEIGHT = 220.dp
 
 // ── Unlock ─────────────────────────────────────────────────────────────────
 
@@ -1790,11 +1866,23 @@ private fun VoiceRail(
     videoActive: Boolean,
     speakerphone: Boolean,
     headsetAttached: Boolean,
+    myId: String,
+    cameraOn: (String) -> Boolean,
+    watching: (String) -> Boolean,
+    videoSizes: Map<String, VideoSize>,
+    stalledVideo: Set<String>,
+    onToggleWatch: (String) -> Unit,
     onToggleMute: () -> Unit,
     onToggleSpeaker: () -> Unit,
     onToggleVideo: () -> Unit,
     onLeave: () -> Unit,
 ) {
+    val myKey = myId.videoKey()
+    // Opened peers whose camera is on right now. A watched peer whose camera
+    // goes off keeps their place and comes back when it returns.
+    val shown = members.filter { it.videoKey() != myKey && watching(it) && cameraOn(it) }
+    var fullScreen by remember { mutableStateOf<String?>(null) }
+
     Surface(
         color = MaterialTheme.colorScheme.primaryContainer,
         modifier = Modifier.fillMaxWidth(),
@@ -1859,14 +1947,55 @@ private fun VoiceRail(
                             // helper bridges it to the hex-keyed peer store.
                             name = peers.roomSenderName(memberId, ""),
                             avatar = avatars[memberId],
+                            isSelf = memberId.videoKey() == myKey,
+                            cameraOn = cameraOn(memberId),
+                            watching = watching(memberId),
+                            onToggleWatch = { onToggleWatch(memberId) },
                         )
                         Spacer(Modifier.width(10.dp))
                     }
                 }
             }
+
+            // Only what the user opened: the rail sits above every screen, so
+            // it grows by a strip of video only on request.
+            if (shown.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    shown.forEach { memberId ->
+                        VideoTile(
+                            peerId = memberId,
+                            name = peers.roomSenderName(memberId, ""),
+                            size = videoSizes[memberId.videoKey()],
+                            stalled = memberId.videoKey() in stalledVideo,
+                            modifier = Modifier.height(VIDEO_TILE_HEIGHT),
+                            onClick = { fullScreen = memberId },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                }
+            }
         }
     }
+
+    // Closes itself when its peer stops being shown - camera off, left, or
+    // no longer watched - rather than holding a black screen open.
+    fullScreen?.takeIf { it in shown }?.let { memberId ->
+        FullScreenVideo(
+            peerId = memberId,
+            name = peers.roomSenderName(memberId, ""),
+            size = videoSizes[memberId.videoKey()],
+            stalled = memberId.videoKey() in stalledVideo,
+            onDismiss = { fullScreen = null },
+        )
+    }
 }
+
+/** Tall enough to recognise someone, short enough to leave the screen usable. */
+private val VIDEO_TILE_HEIGHT = 140.dp
 
 @Composable
 private fun RoomMessageBubble(
@@ -1942,24 +2071,67 @@ private fun RoomMessageBubble(
     }
 }
 
-/** One face in the voice rail: avatar beside handle, sized for a dense row. */
+/**
+ * One face in the voice rail: avatar beside handle, sized for a dense row.
+ *
+ * Tapping it opens the same per-peer menu as the desktop rail. Video is
+ * opt-in there, and so it is here: a peer's camera being on marks their name,
+ * but nothing is received or decoded until "Watch video" is chosen.
+ */
 @Composable
-private fun VoiceParticipant(name: String, avatar: AvatarArt?) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        if (avatar != null) {
-            Avatar(avatar, Modifier.size(VOICE_AVATAR_SIZE))
-        } else {
-            // Held open so names stay aligned while an avatar is still being
-            // fetched, rather than the row reflowing under them.
-            Spacer(Modifier.size(VOICE_AVATAR_SIZE))
+private fun VoiceParticipant(
+    name: String,
+    avatar: AvatarArt?,
+    isSelf: Boolean,
+    cameraOn: Boolean,
+    watching: Boolean,
+    onToggleWatch: () -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    Box {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = if (isSelf) Modifier else Modifier.clickable { menuOpen = true },
+        ) {
+            if (avatar != null) {
+                Avatar(avatar, Modifier.size(VOICE_AVATAR_SIZE))
+            } else {
+                // Held open so names stay aligned while an avatar is still being
+                // fetched, rather than the row reflowing under them.
+                Spacer(Modifier.size(VOICE_AVATAR_SIZE))
+            }
+            Spacer(Modifier.width(5.dp))
+            Text(
+                name,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (cameraOn) {
+                Spacer(Modifier.width(3.dp))
+                Text("\uD83D\uDCF9", style = MaterialTheme.typography.labelSmall)
+            }
         }
-        Spacer(Modifier.width(5.dp))
-        Text(
-            name,
-            style = MaterialTheme.typography.labelSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        when {
+                            watching -> "Stop watching"
+                            cameraOn -> "Watch video"
+                            else -> "Camera is off"
+                        }
+                    )
+                },
+                // Stopping stays possible with the camera off, or a peer who
+                // turned theirs off could never be un-watched.
+                enabled = watching || cameraOn,
+                onClick = {
+                    menuOpen = false
+                    onToggleWatch()
+                },
+            )
+        }
     }
 }
 

@@ -3,7 +3,7 @@ name = "doubleslash-vpx"
 version = "1.0.0"
 edition = "2021"
 license = "MIT"
-description = "First-party VP8 encode/decode wrapper over vendored libvpx for DoubleSlash."
+description = "First-party VP8/VP9 encode/decode wrapper over vendored libvpx for DoubleSlash."
 
 [lib]
 crate-type = ["rlib"]

@@ -19,7 +19,11 @@
 //! while the stub is in use, the bug is in the transport, not the codec. It is
 //! never advertised to a peer.
 
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
 use doubleslash_features::video_codec::VideoCodec;
+use tracing::warn;
 
 use super::frame::RawFrame;
 
@@ -57,6 +61,13 @@ pub trait VideoEncoder: Send {
     fn set_bitrate(&mut self, _bps: u32) -> anyhow::Result<()> {
         Ok(())
     }
+
+    /// The codec this encoder produces.
+    ///
+    /// Rides every frame's header, so a receiver picks the matching decoder —
+    /// and so an encoder that changes codec mid-stream ([`FallbackEncoder`]) is
+    /// followed by every receiver without any renegotiation.
+    fn codec(&self) -> VideoCodec;
 }
 
 /// Forward the trait through a box, so [`make_encoder`]'s
@@ -75,6 +86,10 @@ impl VideoEncoder for Box<dyn VideoEncoder> {
 
     fn set_bitrate(&mut self, bps: u32) -> anyhow::Result<()> {
         (**self).set_bitrate(bps)
+    }
+
+    fn codec(&self) -> VideoCodec {
+        (**self).codec()
     }
 }
 
@@ -129,6 +144,10 @@ impl VideoEncoder for StubEncoder {
     fn request_keyframe(&mut self) {
         // No-op: every stub frame is already a keyframe.
     }
+
+    fn codec(&self) -> VideoCodec {
+        VideoCodec::Stub
+    }
 }
 
 /// Counterpart to [`StubEncoder`].
@@ -172,17 +191,49 @@ impl VideoDecoder for StubDecoder {
     }
 }
 
-// ── VP8, via vendored libvpx ────────────────────────────────────────────────
+// ── VP8 and VP9, via vendored libvpx ─────────────────────────────────────────
 
-/// VP8 encoder adapter.
+/// The libvpx codec for a [`VideoCodec`], if libvpx implements it.
+fn vpx_codec(codec: VideoCodec) -> Option<doubleslash_vpx::Codec> {
+    match codec {
+        VideoCodec::Vp8 => Some(doubleslash_vpx::Codec::Vp8),
+        VideoCodec::Vp9 => Some(doubleslash_vpx::Codec::Vp9),
+        VideoCodec::H264 | VideoCodec::Stub => None,
+    }
+}
+
+/// VP8 or VP9 encoder.
 ///
-/// VP8 is the codec that makes video work off Windows: Media Foundation H.264
-/// and VideoToolbox H.264 rely on a licence the OS holds, and Linux has no
-/// equivalent, so VP8 — royalty-free, and built from vendored source on every
-/// platform — is the one codec a Windows peer and a Linux peer can agree on.
-pub struct Vp8EncoderAdapter(doubleslash_vpx::Vp8Encoder);
+/// These are the codecs that make video work everywhere: Media Foundation
+/// H.264 relies on a licence the OS holds and exists only on Windows, while
+/// libvpx is royalty-free and built from vendored source on every platform —
+/// so every build can both encode and decode both.
+pub struct VpxEncoderAdapter {
+    inner: doubleslash_vpx::VpxEncoder,
+    codec: VideoCodec,
+}
 
-impl VideoEncoder for Vp8EncoderAdapter {
+impl VpxEncoderAdapter {
+    pub fn new(codec: VideoCodec, params: EncoderParams) -> anyhow::Result<Self> {
+        let Some(vpx) = vpx_codec(codec) else {
+            anyhow::bail!("{} is not a libvpx codec", codec.as_str());
+        };
+        let config = doubleslash_vpx::EncoderConfig::realtime(
+            vpx,
+            params.width,
+            params.height,
+            params.bitrate_bps,
+            params.fps,
+            params.keyframe_interval_secs,
+        );
+        Ok(Self {
+            inner: doubleslash_vpx::VpxEncoder::new(vpx, config)?,
+            codec,
+        })
+    }
+}
+
+impl VideoEncoder for VpxEncoderAdapter {
     fn encode(&mut self, frame: &RawFrame) -> anyhow::Result<(Vec<u8>, bool)> {
         if !frame.is_consistent() {
             anyhow::bail!(
@@ -194,7 +245,7 @@ impl VideoEncoder for Vp8EncoderAdapter {
                 frame.v.len()
             );
         }
-        let (ew, eh) = self.0.dimensions();
+        let (ew, eh) = self.inner.dimensions();
         if (frame.width, frame.height) != (ew, eh) {
             // libvpx encodes at the size it was built for; a mismatched frame
             // would be read with the wrong stride rather than rescaled.
@@ -204,27 +255,39 @@ impl VideoEncoder for Vp8EncoderAdapter {
                 frame.height
             );
         }
-        self.0.encode(&frame.y, &frame.u, &frame.v)
+        self.inner.encode(&frame.y, &frame.u, &frame.v)
     }
 
     fn request_keyframe(&mut self) {
-        self.0.request_keyframe();
+        self.inner.request_keyframe();
     }
 
     fn set_bitrate(&mut self, bps: u32) -> anyhow::Result<()> {
-        self.0.set_bitrate(bps)
+        self.inner.set_bitrate(bps)
+    }
+
+    fn codec(&self) -> VideoCodec {
+        self.codec
     }
 }
 
-/// VP8 decoder adapter. See [`Vp8EncoderAdapter`].
-pub struct Vp8DecoderAdapter(doubleslash_vpx::Vp8Decoder);
+/// VP8 or VP9 decoder. See [`VpxEncoderAdapter`].
+pub struct VpxDecoderAdapter(doubleslash_vpx::VpxDecoder);
 
-impl VideoDecoder for Vp8DecoderAdapter {
-    /// libvpx decodes each packet on the call that submits it, so like the stub
-    /// this never reports "not yet" — a packet either yields a picture or fails.
+impl VpxDecoderAdapter {
+    pub fn new(codec: VideoCodec) -> anyhow::Result<Self> {
+        let Some(vpx) = vpx_codec(codec) else {
+            anyhow::bail!("{} is not a libvpx codec", codec.as_str());
+        };
+        Ok(Self(doubleslash_vpx::VpxDecoder::new(vpx)?))
+    }
+}
+
+impl VideoDecoder for VpxDecoderAdapter {
+    /// libvpx decodes each packet on the call that submits it. A packet that
+    /// decodes without a picture to show is the "not yet" answer.
     fn decode(&mut self, encoded: &[u8]) -> anyhow::Result<Option<RawFrame>> {
-        let f = self.0.decode(encoded)?;
-        Ok(Some(RawFrame {
+        Ok(self.0.decode(encoded)?.map(|f| RawFrame {
             width: f.width,
             height: f.height,
             y: f.y,
@@ -232,6 +295,184 @@ impl VideoDecoder for Vp8DecoderAdapter {
             v: f.v,
         }))
     }
+}
+
+// ── Falling back when a device cannot keep up ──────────────────────────────
+
+/// Frames skipped before judging encode time: the opening keyframe and the
+/// rate controller settling are not what a call spends its time doing.
+const BUDGET_WARMUP_FRAMES: u32 = 30;
+
+/// Frames judged together. Two seconds at 30 fps: long enough that one busy
+/// moment elsewhere on the device does not condemn the codec, short enough that
+/// a device genuinely too slow is rescued before the call has visibly suffered.
+const BUDGET_WINDOW_FRAMES: usize = 60;
+
+/// Mean encode time, as a share of the frame interval, above which the codec
+/// is too slow. Not 1.0: the capture thread also converts, previews and sends
+/// each frame, and the voice pipeline needs the CPU too.
+const BUDGET_MEAN_SHARE: f64 = 0.7;
+
+/// Share of frames in the window that may take longer than a whole frame
+/// interval. A codec that is fine on average but regularly blows the interval
+/// still stutters.
+const BUDGET_LATE_SHARE: f64 = 0.25;
+
+/// Judges encode times against the frame interval.
+///
+/// Pure bookkeeping, so the policy is testable without a slow encoder.
+pub struct EncodeBudget {
+    interval: Duration,
+    window: VecDeque<Duration>,
+    seen: u32,
+}
+
+impl EncodeBudget {
+    pub fn new(fps: u32) -> Self {
+        Self {
+            interval: Duration::from_micros(1_000_000 / u64::from(fps.max(1))),
+            window: VecDeque::with_capacity(BUDGET_WINDOW_FRAMES),
+            seen: 0,
+        }
+    }
+
+    /// Record one encode. Returns true once a full window shows the codec
+    /// cannot keep up.
+    pub fn record(&mut self, took: Duration) -> bool {
+        self.seen = self.seen.saturating_add(1);
+        if self.seen <= BUDGET_WARMUP_FRAMES {
+            return false;
+        }
+        if self.window.len() == BUDGET_WINDOW_FRAMES {
+            self.window.pop_front();
+        }
+        self.window.push_back(took);
+        if self.window.len() < BUDGET_WINDOW_FRAMES {
+            return false;
+        }
+
+        let n = self.window.len() as f64;
+        let mean = self.window.iter().map(Duration::as_secs_f64).sum::<f64>() / n;
+        let late = self.window.iter().filter(|t| **t > self.interval).count() as f64;
+        let interval = self.interval.as_secs_f64();
+        mean > interval * BUDGET_MEAN_SHARE || late > n * BUDGET_LATE_SHARE
+    }
+}
+
+/// An encoder that swaps to a cheaper codec when this device cannot run the
+/// one it started with in real time.
+///
+/// VP9 is the room default because on the hardware measured it costs no more
+/// than VP8 and looks better. Older phones and SIMD-less desktops can still
+/// fall short, and a codec that cannot keep up is worse than a weaker one that
+/// can: frames arrive late, the capture clock slips, and the picture stutters.
+/// So encode time is watched, and past [`EncodeBudget`]'s limits the encoder is
+/// replaced — once, for the rest of the session, since a device that could not
+/// keep up a moment ago is not going to start now, and flapping would cost a
+/// keyframe each way.
+///
+/// The swap needs nothing from receivers beyond what they already do: each
+/// frame carries its codec, a new encoder's first frame is a keyframe, and a
+/// receiver rebuilds its decoder when a sender's codec changes.
+pub struct FallbackEncoder {
+    current: Box<dyn VideoEncoder>,
+    /// Consumed by the swap.
+    fallback: Option<(VideoCodec, EncoderParams)>,
+    budget: EncodeBudget,
+    /// Latest rate asked for, so the replacement starts where adaptation left
+    /// the stream rather than back at the preset.
+    bitrate_bps: u32,
+}
+
+impl FallbackEncoder {
+    pub fn new(
+        primary: Box<dyn VideoEncoder>,
+        fallback: VideoCodec,
+        params: EncoderParams,
+    ) -> Self {
+        Self {
+            current: primary,
+            budget: EncodeBudget::new(params.fps),
+            bitrate_bps: params.bitrate_bps,
+            fallback: Some((fallback, params)),
+        }
+    }
+
+    /// Account for one encode, swapping codec if the budget says so.
+    fn after_encode(&mut self, took: Duration) {
+        if self.fallback.is_none() || !self.budget.record(took) {
+            return;
+        }
+        let Some((codec, params)) = self.fallback.take() else {
+            return;
+        };
+        let params = EncoderParams {
+            bitrate_bps: self.bitrate_bps,
+            ..params
+        };
+        let from = self.current.codec();
+        match make_encoder(codec, params) {
+            Ok(replacement) => {
+                warn!(
+                    "[video] this device cannot encode {} in real time; switching to {}",
+                    from.as_str(),
+                    codec.as_str()
+                );
+                self.current = replacement;
+            }
+            // Keep going on the slow codec: late frames beat no frames.
+            Err(e) => warn!(
+                "[video] {} is too slow here, but no {} encoder could be built: {e}",
+                from.as_str(),
+                codec.as_str()
+            ),
+        }
+    }
+}
+
+impl VideoEncoder for FallbackEncoder {
+    fn encode(&mut self, frame: &RawFrame) -> anyhow::Result<(Vec<u8>, bool)> {
+        let started = Instant::now();
+        let out = self.current.encode(frame);
+        self.after_encode(started.elapsed());
+        out
+    }
+
+    fn request_keyframe(&mut self) {
+        self.current.request_keyframe();
+    }
+
+    fn set_bitrate(&mut self, bps: u32) -> anyhow::Result<()> {
+        self.bitrate_bps = bps;
+        self.current.set_bitrate(bps)
+    }
+
+    fn codec(&self) -> VideoCodec {
+        self.current.codec()
+    }
+}
+
+/// The codec to drop to if `codec` proves too slow for this device.
+///
+/// Only VP9 has one. VP8 adapts its own effort to the CPU it finds, so it is
+/// the floor every build can run; H.264 is Media Foundation's hardware path,
+/// where encode time is not the CPU's problem.
+pub fn realtime_fallback(codec: VideoCodec) -> Option<VideoCodec> {
+    (codec == VideoCodec::Vp9).then_some(VideoCodec::Vp8)
+}
+
+/// [`make_encoder`], wrapped in a [`FallbackEncoder`] when `fallback` names a
+/// different codec.
+pub fn make_realtime_encoder(
+    codec: VideoCodec,
+    params: EncoderParams,
+    fallback: Option<VideoCodec>,
+) -> anyhow::Result<Box<dyn VideoEncoder>> {
+    let primary = make_encoder(codec, params)?;
+    Ok(match fallback.filter(|f| *f != codec) {
+        Some(f) => Box::new(FallbackEncoder::new(primary, f, params)),
+        None => primary,
+    })
 }
 
 // ── Codec registry ──────────────────────────────────────────────────────────
@@ -280,11 +521,87 @@ pub fn available_codecs() -> Vec<VideoCodec> {
         // First because it is the hardware path where both peers have it.
         out.push(VideoCodec::H264);
     }
-    // VP8 is built from vendored libvpx on every platform, so it is always
-    // available. That is deliberate rather than incidental: it is what gives a
-    // Windows peer and a Linux peer a codec in common.
+    // VP9 and VP8 are built from vendored libvpx on every platform, so they
+    // are always available. That is deliberate rather than incidental: it is
+    // what gives every pair of peers, and every room, codecs in common.
+    out.push(VideoCodec::Vp9);
     out.push(VideoCodec::Vp8);
     out
+}
+
+// ── Choosing a codec ────────────────────────────────────────────────────────
+
+/// Pull the video codec set out of a peer's `CAPABILITY_ANNOUNCE` payload.
+///
+/// Reads `core.video.v1` — the direct-call descriptor. Room video is not
+/// negotiated pairwise (see [`pick_room_codec`]), so its advertised set
+/// is not consulted here.
+///
+/// A peer with no video capability, or one advertising no codecs, yields an
+/// empty set, which negotiates to "send no video" rather than to a default.
+pub fn peer_codecs_from_caps_json(
+    caps_json: &str,
+) -> Vec<doubleslash_features::video_codec::VideoCodec> {
+    let Ok(parsed) =
+        serde_json::from_str::<Vec<doubleslash_features::CapabilityDescriptor>>(caps_json)
+    else {
+        return Vec::new();
+    };
+    parsed
+        .iter()
+        .find(|c| c.id == "core.video.v1")
+        .map(|c| doubleslash_features::video_codec::codecs_from_params(&c.params))
+        .unwrap_or_default()
+}
+
+/// Codec for a direct 1:1 call: the best codec both ends can run, preferring
+/// `preferred` when both ends have it.
+///
+/// `None` means no mutual codec, and the caller must not start the camera —
+/// sending frames the peer provably cannot decode wastes their bandwidth and
+/// shows them nothing.
+pub fn pick_direct_codec(
+    peer_codecs: &[doubleslash_features::video_codec::VideoCodec],
+    preferred: Option<doubleslash_features::video_codec::VideoCodec>,
+) -> Option<doubleslash_features::video_codec::VideoCodec> {
+    // An *empty* list means "we have not heard what this peer speaks", which is
+    // not the same as "this peer speaks nothing we do". Treating the two alike
+    // silently refused to start the camera whenever the capability announce had
+    // not arrived yet, or came from a build using the previous capability id —
+    // the caller sees only that video stopped working.
+    //
+    // Unknown therefore falls back to our own preferred codec and sends. A
+    // receiver that cannot decode it drops the frames and says so in its log,
+    // which is a far better failure than a camera that never turns on.
+    if peer_codecs.is_empty() {
+        return pick_room_codec(preferred);
+    }
+    doubleslash_features::video_codec::negotiate_preferring(
+        &available_codecs(),
+        peer_codecs,
+        preferred,
+    )
+}
+
+/// Codec for room video: our own most-preferred available codec, or the user's
+/// choice when this build can encode it.
+///
+/// Deliberately not a negotiation. A room sender fans one encoded stream out to
+/// every member, so satisfying everyone would mean either encoding once per
+/// codec (N encoders on the sender) or falling to the worst common denominator
+/// — and membership changes mid-call, which would force a re-encode and a
+/// keyframe every time someone joined. Instead the sender picks what it does
+/// best, stamps it on each frame, and a member without that decoder drops the
+/// frames and logs why. Room-wide codec convergence is a later problem, and the
+/// per-frame codec byte is what leaves room to solve it.
+///
+/// That structure is also why a user preference is safe here: nothing about a
+/// room send was ever agreed pairwise, so choosing VP8 over H.264 changes only
+/// which decoder each member routes the frames to.
+pub fn pick_room_codec(
+    preferred: Option<doubleslash_features::video_codec::VideoCodec>,
+) -> Option<doubleslash_features::video_codec::VideoCodec> {
+    doubleslash_features::video_codec::best_for_room(&available_codecs(), preferred)
 }
 
 /// Build an encoder for `codec`, or `Err` if this build cannot encode it.
@@ -310,15 +627,7 @@ pub fn make_encoder(
             "H.264 encode needs Media Foundation, which is Windows-only; \
              this build has no H.264 encoder"
         ),
-        VideoCodec::Vp8 => Ok(Box::new(Vp8EncoderAdapter(
-            doubleslash_vpx::Vp8Encoder::new(
-                params.width,
-                params.height,
-                params.bitrate_bps,
-                params.fps,
-                params.keyframe_interval_secs,
-            )?,
-        ))),
+        VideoCodec::Vp8 | VideoCodec::Vp9 => Ok(Box::new(VpxEncoderAdapter::new(codec, params)?)),
         VideoCodec::Stub => Ok(Box::new(StubEncoder)),
     }
 }
@@ -337,9 +646,7 @@ pub fn make_decoder(codec: VideoCodec) -> anyhow::Result<Box<dyn VideoDecoder>> 
             "H.264 decode needs Media Foundation, which is Windows-only; \
              this build has no H.264 decoder"
         ),
-        VideoCodec::Vp8 => Ok(Box::new(Vp8DecoderAdapter(
-            doubleslash_vpx::Vp8Decoder::new()?,
-        ))),
+        VideoCodec::Vp8 | VideoCodec::Vp9 => Ok(Box::new(VpxDecoderAdapter::new(codec)?)),
         VideoCodec::Stub => Ok(Box::new(StubDecoder)),
     }
 }
@@ -514,5 +821,136 @@ mod tests {
     #[test]
     fn windows_advertises_h264() {
         assert!(available_codecs().contains(&VideoCodec::H264));
+    }
+
+    // ── VP9 and the realtime fallback ──────────────────────────────────────
+
+    #[test]
+    fn every_build_encodes_and_decodes_vp9() {
+        assert!(available_codecs().contains(&VideoCodec::Vp9));
+        let params = EncoderParams {
+            width: 320,
+            height: 240,
+            bitrate_bps: 400_000,
+            fps: 30,
+            keyframe_interval_secs: 4,
+        };
+        let mut enc = make_encoder(VideoCodec::Vp9, params).unwrap();
+        assert_eq!(enc.codec(), VideoCodec::Vp9);
+        let (packet, keyframe) = enc.encode(&RawFrame::black(320, 240)).unwrap();
+        assert!(keyframe);
+        let mut dec = make_decoder(VideoCodec::Vp9).unwrap();
+        let frame = dec.decode(&packet).unwrap().expect("a keyframe is shown");
+        assert_eq!((frame.width, frame.height), (320, 240));
+    }
+
+    /// Rooms default to VP9 on every platform, including Windows, where H.264
+    /// used to win and left every non-Windows member without a picture.
+    #[test]
+    fn a_room_sends_vp9_by_default() {
+        assert_eq!(pick_room_codec(None), Some(VideoCodec::Vp9));
+    }
+
+    fn slow(ms: u64) -> Duration {
+        Duration::from_millis(ms)
+    }
+
+    /// Past warm-up, a full window of encodes at 80% of the frame interval is
+    /// a codec this device cannot afford.
+    #[test]
+    fn a_consistently_slow_codec_is_over_budget() {
+        let mut budget = EncodeBudget::new(30);
+        let verdicts: Vec<bool> = (0..BUDGET_WARMUP_FRAMES as usize + BUDGET_WINDOW_FRAMES)
+            .map(|_| budget.record(slow(27)))
+            .collect();
+        assert!(
+            !verdicts[..verdicts.len() - 1].iter().any(|v| *v),
+            "no verdict before warm-up plus a full window"
+        );
+        assert!(verdicts[verdicts.len() - 1]);
+    }
+
+    #[test]
+    fn a_codec_with_headroom_is_left_alone() {
+        let mut budget = EncodeBudget::new(30);
+        // What VP9 720p measured on a Pixel 11: 4.5 ms of a 33 ms interval.
+        assert!(!(0..300).any(|_| budget.record(slow(5))));
+    }
+
+    /// The warm-up exists for the opening keyframe, which is legitimately slow.
+    #[test]
+    fn a_slow_start_is_forgiven() {
+        let mut budget = EncodeBudget::new(30);
+        for _ in 0..BUDGET_WARMUP_FRAMES {
+            assert!(!budget.record(slow(200)));
+        }
+        assert!(!(0..300).any(|_| budget.record(slow(5))));
+    }
+
+    /// Fine on average but regularly blowing the interval still stutters.
+    #[test]
+    fn frequent_overruns_are_over_budget_even_with_a_low_mean() {
+        let mut budget = EncodeBudget::new(30);
+        let mut over = false;
+        for i in 0..(BUDGET_WARMUP_FRAMES as usize + BUDGET_WINDOW_FRAMES) {
+            // Every third frame blows the 33 ms interval; the rest are quick.
+            over = budget.record(if i % 3 == 0 { slow(40) } else { slow(2) });
+        }
+        assert!(over);
+    }
+
+    fn fallback_params() -> EncoderParams {
+        EncoderParams {
+            width: 320,
+            height: 240,
+            bitrate_bps: 400_000,
+            fps: 30,
+            keyframe_interval_secs: 4,
+        }
+    }
+
+    #[test]
+    fn a_slow_encoder_is_replaced_once_and_keeps_its_bitrate() {
+        let params = fallback_params();
+        let primary = make_encoder(VideoCodec::Vp9, params).unwrap();
+        let mut enc = FallbackEncoder::new(primary, VideoCodec::Vp8, params);
+        enc.set_bitrate(250_000).unwrap();
+
+        for _ in 0..(BUDGET_WARMUP_FRAMES as usize + BUDGET_WINDOW_FRAMES) {
+            enc.after_encode(slow(30));
+        }
+        assert_eq!(enc.codec(), VideoCodec::Vp8, "switched to the fallback");
+        assert_eq!(enc.bitrate_bps, 250_000);
+        assert!(enc.fallback.is_none(), "the fallback is spent");
+
+        // The replacement's first frame is a keyframe, which is what lets
+        // every receiver start decoding the new codec at once.
+        let (packet, keyframe) = enc.encode(&RawFrame::black(320, 240)).unwrap();
+        assert!(!packet.is_empty());
+        assert!(keyframe);
+
+        // And it never switches back, however the budget reads afterwards.
+        for _ in 0..200 {
+            enc.after_encode(slow(30));
+        }
+        assert_eq!(enc.codec(), VideoCodec::Vp8);
+    }
+
+    #[test]
+    fn a_fast_encoder_keeps_its_codec() {
+        let params = fallback_params();
+        let primary = make_encoder(VideoCodec::Vp9, params).unwrap();
+        let mut enc = FallbackEncoder::new(primary, VideoCodec::Vp8, params);
+        for _ in 0..300 {
+            enc.after_encode(slow(4));
+        }
+        assert_eq!(enc.codec(), VideoCodec::Vp9);
+    }
+
+    #[test]
+    fn only_vp9_falls_back() {
+        assert_eq!(realtime_fallback(VideoCodec::Vp9), Some(VideoCodec::Vp8));
+        assert_eq!(realtime_fallback(VideoCodec::Vp8), None);
+        assert_eq!(realtime_fallback(VideoCodec::H264), None);
     }
 }

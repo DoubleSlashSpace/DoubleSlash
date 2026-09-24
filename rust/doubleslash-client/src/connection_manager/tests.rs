@@ -2876,6 +2876,42 @@ async fn video_subscriptions_replace_suppress_and_replay() {
     );
 }
 
+/// An unchanged set is only unchanged *within one room*. Each room's supernode
+/// starts out forwarding every sender, so "watch nobody" said in the last room
+/// must still be said in this one — suppressing it as a repeat leaves the new
+/// room's fan-out running at full rate, which on a phone is the downlink the
+/// subscription exists to save.
+#[tokio::test]
+async fn the_same_set_is_announced_again_in_a_new_room() {
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-AAAA");
+    let announced = |sent: &[crate::protocol::SignalingMessage]| {
+        sent.iter()
+            .filter(|m| m.msg_type == crate::protocol::MessageType::SfuVideoSubscribe)
+            .filter_map(|m| m.payload.get("room_id").and_then(|v| v.as_str()))
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+
+    t.cm.test_set_room("SN-AAAA", "room-1");
+    t.cm.test_set_video_subscriptions(vec![]).await;
+    assert_eq!(announced(&harness::drain_ws(&mut sn)), vec!["room-1"]);
+
+    t.cm.test_set_room("SN-AAAA", "room-2");
+    t.cm.test_set_video_subscriptions(vec![]).await;
+    assert_eq!(
+        announced(&harness::drain_ws(&mut sn)),
+        vec!["room-2"],
+        "the new room's supernode has never heard this set"
+    );
+
+    t.cm.test_set_video_subscriptions(vec![]).await;
+    assert!(
+        announced(&harness::drain_ws(&mut sn)).is_empty(),
+        "within one room an unchanged set is still suppressed"
+    );
+}
+
 /// Before the UI has said anything there is no set to replay, and announcing an
 /// empty one would be wrong: the supernode's default is "forward everything",
 /// which is exactly right until the first tile decision is made.

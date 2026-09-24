@@ -46,7 +46,7 @@ Unless stated otherwise, client paths below are relative to `rust/doubleslash-cl
 | Transport and signaling | `connection_manager/`, especially `manager/{inbound,routing,invite,peer_session,room_session,device_session,device_calls,video_session}.rs`; `quic_relay_client.rs`, `quic_tls.rs` |
 | Calls and media | `call_controller.rs`, `video/`, `content_capture.rs`, `content_sender.rs`, `content_playout.rs`, `content_audio.rs`, `media_clock.rs`, `media_sync.rs`, `group_key.rs` |
 | Desktop UI | `ui/bridge.rs`, `ui/settings_model.rs`, models in `ui/`, and `rust/doubleslash-client/qml/` |
-| Android | `rust/doubleslash-android/src/{lib,command,event,session,video}.rs` and `android/app/src/main/java/com/doubleslash/client/` |
+| Android | `rust/doubleslash-android/src/{lib,command,event,session,video,render}.rs` and `android/app/src/main/java/com/doubleslash/client/` |
 | Capability runtime | `rust/doubleslash-features/src/{descriptor,registry,quota,client_modules,wellknown,channel_frame,channel_tag,loader}.rs` |
 | Supernode | `rust/doubleslash-supernode/src/{main,relay,signaling,sfu,manifest,cluster_link}.rs` |
 | Installer / packaging | `rust/doubleslash-installer/`, `build_win64.ps1`, `build_linux.sh`, `build_macos.sh`, `scripts/build_supernode.*`, `.github/workflows/` |
@@ -126,8 +126,10 @@ Supernodes may use peer/device IDs, room/session IDs, membership, indices, signa
 
 ### Android boundary
 
-- The JNI bridge uses four lifecycle/command methods **plus** `nativeSubmitCameraFrame` for CameraX buffers. Add ordinary features through the JSON command/event channel; keep literal event wire names stable. Camera frames use the dedicated buffer interface, not JSON.
-- Never serialize incoming per-frame audio/video/content-audio events into UI JSON. `session.rs::route_media` must route direct and room voice into `CallController`; simply filtering events would produce silent calls. Incoming video/shared-audio consumers are still missing. Portal datagrams are queued for the portal bridge separately.
+- The JNI bridge uses four lifecycle/command methods **plus** `nativeSubmitCameraFrame` for CameraX buffers and `nativeAttachVideoSurface` / `nativeDetachVideoSurface` for the views received video is drawn into. Add ordinary features through the JSON command/event channel; keep literal event wire names stable. Camera frames and surfaces use their dedicated interfaces, not JSON.
+- Never serialize incoming per-frame audio/video/content-audio events into UI JSON. `session.rs::route_media` must route direct and room voice into `CallController`; simply filtering events would produce silent calls. `route_video` hands `VideoFrameReceived` to the core `VideoReceiver`. An incoming shared-audio consumer is still missing. Portal datagrams are queued for the portal bridge separately.
+- Android video receive is opt-in per peer, like the desktop rail menu. `video.watch` carries the whole watched set: it drives `SetVideoSubscriptions`, a keyframe request for each newly watched sender, and the decode thread, which exists only while the set is non-empty. Publish the set on every room-voice join even when it is empty, because a supernode forwards every sender until told otherwise. The manager suppresses an unchanged set only within one room.
+- `render.rs` binds surfaces by attach token, not peer id, because Compose can create a peer's replacement view before destroying the old one. Detach must block until any in-progress draw finishes, so the view can release its surface once it returns. Size changes go to Kotlin as `peer_video_size` and are reported outside the registry lock.
 - Keep the dedicated event OS thread attached to the JVM; do not turn it into a migrating Tokio task that reattaches for each event.
 - Set room mode before starting room audio; clear it before stopping. Leaving a voice room must stop capture. Preserve incoming-call notifications and Answer/Decline handling when the activity or ViewModel is absent.
 - Keep the unlocked-session foreground service as `specialUse`; claim microphone/camera types only for an active call with the matching permission. Preserve the notification Disconnect action, terms acceptance, explained runtime permissions, and identifier-only share-sheet reporting.
@@ -137,7 +139,10 @@ Supernodes may use peer/device IDs, room/session IDs, membership, indices, signa
 ### Media invariants
 
 - Camera implementations cover Windows, Linux, macOS, and Android. Screen/window capture and WASAPI shared-audio capture remain Windows-only. The macOS camera uses an ARC Objective-C shim; preserve a compiling empty-device fallback on unsupported targets.
-- Retain VP8 on every platform. Advertise only codecs the build can encode and decode (`available_codecs`); never advertise test `Stub`. Windows also has Media Foundation H.264. Do not add an in-tree AVC encoder without licensing review.
+- Retain VP8 and VP9 on every platform; both come from the vendored libvpx. Advertise only codecs the build can encode and decode (`available_codecs`); never advertise test `Stub`. Windows also has Media Foundation H.264. Do not add an in-tree AVC encoder or decoder without licensing review.
+- Rooms default to VP9 (`ROOM_PREFERENCE` / `best_for_room`), because a room sender must use a codec every member decodes. H.264 goes into a room only when the user picks it. Direct calls still negotiate (`PREFERENCE`: H.264, VP9, VP8).
+- A VP9 send is wrapped in `FallbackEncoder`: if `EncodeBudget` shows the device cannot encode in real time, it switches to VP8 once, for the rest of the session. The codec travels on every frame (`VideoEncoder::codec`, `FrameSink::send`), so receivers follow the switch without renegotiation. A direct peer gets the fallback only if it advertised VP8 or has not announced yet.
+- Encoder speed and threads come from measurements (`doubleslash-vpx/examples/encode_bench.rs`), recorded in `EncoderConfig::realtime`. Use one encoder thread on aarch64: two and four threads were 3–8× slower on a Pixel 11. Re-measure before changing either.
 - Capability IDs are codec-independent. Direct calls negotiate a common codec; rooms send one codec chosen by the sender. Decoders are per `(sender, codec)`. A decoder change must not reuse another codec's reference state.
 - `video/fragment.rs` owns framing (`FRAGMENT_VERSION = 0x03`). Codec and PTS are signature-bound; unknown codecs and mixed-frame metadata must be rejected. Preserve frozen codec bytes in `rust/doubleslash-features/src/video_codec.rs`.
 - Picture-in-picture is composited before encoding, into one stream per peer. Room video is relay-datagram-only; do not add a WebSocket media envelope. WebSocket-only members can retain room voice.
@@ -191,9 +196,10 @@ The portal uses `WebAppRequest` / `WebAppResponseHeader` framing from [web_app.r
 
 ## Build Gotchas (Agent-Relevant)
 
-- There are four Rust workspaces: `rust/` (features, supernode, installer, Opus, VP8), `rust/doubleslash-client/`, `rust/doubleslash-android/`, and `rust/doubleslash-supernode-manager/`. Run commands in the intended workspace; `--manifest-path` does not make Cargo read that directory's local `.cargo/config.toml` when invoked from elsewhere.
+- There are four Rust workspaces: `rust/` (features, supernode, installer, Opus, VP8/VP9), `rust/doubleslash-client/`, `rust/doubleslash-android/`, and `rust/doubleslash-supernode-manager/`. Run commands in the intended workspace; `--manifest-path` does not make Cargo read that directory's local `.cargo/config.toml` when invoked from elsewhere.
 - Initialize both codec submodules. Opus uses CMake and default DNN weights from `scripts/fetch_opus_weights.ps1` / `.sh`. With CMake 4, preserve `CMAKE_POLICY_VERSION_MINIMUM=3.5` where configured.
-- VP8 builds through the wrapper's `build.rs`, Perl RTCD generation, and parsed libvpx `.mk` source manifests. Do not replace this with source globs that include VP9. Generic C builds currently avoid assembler/SIMD; changing that requires matching architecture flags and build tooling.
+- VP8 and VP9 build through the wrapper's `build.rs`, Perl RTCD generation, and parsed libvpx `.mk` source manifests. Do not replace this with source globs. The parser must strip `#` comments, because libvpx annotates `else` lines, and it must honour `_REMOVE` lists, which drop the two-pass VP9 encoder under `CONFIG_REALTIME_ONLY`.
+- aarch64 (except Windows) builds NEON intrinsics with no runtime detection. `rtcd.pl` takes disabled extensions as `--disable-*` arguments, not from the config file, so keep `neon_dotprod`, `neon_i8mm`, `sve` and `sve2` disabled there, or the link fails and older ARM cores would crash. x86 is still generic C, because its SIMD needs nasm. `DOUBLESLASH_VPX_GENERIC=1` forces generic C for measurement.
 - Cross-compiling `build.rs` must use `CARGO_CFG_TARGET_OS`, not host `cfg!`. Android/Bionic must not link a separate `pthread` library.
 - Preserve Android `-Wl,--no-undefined` and the `c++abi` link alongside the static C++ runtime. Keep the deliberate weak `getrandom` probe compatible with older supported APIs.
 - Qt UI requires Qt 6 (`QMAKE` / `CMAKE_PREFIX_PATH`); WebEngine is an optional additional feature. Linux camera bindings need libclang. Headless checks cannot validate QML, CXX-Qt properties, or native platform capture.
@@ -232,7 +238,7 @@ Maintain open work and acceptance criteria in [backlog.md](backlog.md), not a se
 
 Current boundaries that affect agent claims:
 
-- A/V sync and adaptive bitrate are implemented. Windows has camera, screen/window, and shared-audio capture; Linux/macOS camera hardware validation and non-Windows screen/shared-audio capture remain gaps. Android has camera sending but lacks incoming video/shared-audio consumers. Full media acceptance still needs physical-device/two-client/room checks.
+- A/V sync and adaptive bitrate are implemented. Windows has camera, screen/window, and shared-audio capture; Linux/macOS camera hardware validation and non-Windows screen/shared-audio capture remain gaps. Android sends camera video and decodes opted-in incoming video; on-device rendering is not yet validated. It lacks an incoming shared-audio consumer. Full media acceptance still needs physical-device/two-client/room checks.
 - Device routing, device keys/registries, and portable backups exist. Pairing, delegated live authorization, continuous local-data sync, remaining endpoint-state integration, and the call-answer and restore-edge-case parts of installed simultaneous-use acceptance are unfinished.
 - Space Layer 1 supplies signed trees and admission proofs; remaining Space crypto work is in the backlog. Native plugin sandboxing is not implemented.
 - Portal demo state is ephemeral. Browser fixtures do not establish real-device QUIC acceptance; Focus Timer also assumes synchronized device clocks.

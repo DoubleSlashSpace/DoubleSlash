@@ -3122,6 +3122,11 @@ impl ffi::AppBridge {
         // capture light off rather than streaming into a void.
         let preferred = encoder.preferred_codec();
         let direct_target = self.rust().direct_video_target();
+        // What the encoder may drop to if this machine cannot run `codec` in
+        // real time. A room always can take it — every build decodes VP8 — but
+        // a direct peer only if it said so, or has not said anything yet (the
+        // same "unknown is not no" rule `pick_direct_codec` applies).
+        let mut fallback_ok = true;
         let codec = match &direct_target {
             Some(peer_id) => {
                 let peer_codecs = self
@@ -3130,7 +3135,9 @@ impl ffi::AppBridge {
                     .get(peer_id)
                     .cloned()
                     .unwrap_or_default();
-                match pick_direct_video_codec(&peer_codecs, preferred) {
+                fallback_ok = peer_codecs.is_empty()
+                    || peer_codecs.contains(&doubleslash_features::video_codec::VideoCodec::Vp8);
+                match crate::video::codec::pick_direct_codec(&peer_codecs, preferred) {
                     Some(c) => c,
                     None => {
                         warn!(
@@ -3144,7 +3151,7 @@ impl ffi::AppBridge {
                     }
                 }
             }
-            None => match pick_room_video_codec(preferred) {
+            None => match crate::video::codec::pick_room_codec(preferred) {
                 Some(c) => c,
                 None => {
                     warn!("[video] this build has no video encoder; not starting the camera");
@@ -3166,6 +3173,7 @@ impl ffi::AppBridge {
                 codec,
                 direct_target,
                 encoder,
+                fallback_ok,
             );
             warn!("[video] capture/encode is not implemented on this platform");
             return false;
@@ -3173,7 +3181,7 @@ impl ffi::AppBridge {
 
         #[cfg(target_os = "windows")]
         {
-            let video_encoder = match crate::video::codec::make_encoder(
+            let video_encoder = match crate::video::codec::make_realtime_encoder(
                 codec,
                 crate::video::codec::EncoderParams {
                     width: quality.width,
@@ -3182,6 +3190,7 @@ impl ffi::AppBridge {
                     fps: quality.fps,
                     keyframe_interval_secs: quality.keyframe_interval_secs,
                 },
+                crate::video::codec::realtime_fallback(codec).filter(|_| fallback_ok),
             ) {
                 Ok(e) => {
                     info!(
@@ -3219,7 +3228,7 @@ impl ffi::AppBridge {
             let sink = match direct_target {
                 Some(peer_id) => crate::video::sender::ChannelSink::new(
                     conn_tx,
-                    move |encoded, keyframe, pts_us| ConnectionCommand::SendVideoFrame {
+                    move |encoded, keyframe, codec, pts_us| ConnectionCommand::SendVideoFrame {
                         peer_id: peer_id.clone(),
                         encoded,
                         keyframe,
@@ -3229,7 +3238,7 @@ impl ffi::AppBridge {
                 ),
                 None => crate::video::sender::ChannelSink::new(
                     conn_tx,
-                    move |encoded, keyframe, pts_us| ConnectionCommand::SendRoomVideo {
+                    move |encoded, keyframe, codec, pts_us| ConnectionCommand::SendRoomVideo {
                         encoded,
                         keyframe,
                         codec,
@@ -7791,29 +7800,6 @@ fn rooms_sidebar_json(store: &crate::peer_store::PeerStore) -> String {
     .unwrap_or_else(|_| "[]".to_owned())
 }
 
-/// Pull the video codec set out of a peer's `CAPABILITY_ANNOUNCE` payload.
-///
-/// Reads `core.video.v1` — the direct-call descriptor. Room video is not
-/// negotiated pairwise (see [`pick_room_video_codec`]), so its advertised set
-/// is not consulted here.
-///
-/// A peer with no video capability, or one advertising no codecs, yields an
-/// empty set, which negotiates to "send no video" rather than to a default.
-fn video_codecs_from_caps_json(
-    caps_json: &str,
-) -> Vec<doubleslash_features::video_codec::VideoCodec> {
-    let Ok(parsed) =
-        serde_json::from_str::<Vec<doubleslash_features::CapabilityDescriptor>>(caps_json)
-    else {
-        return Vec::new();
-    };
-    parsed
-        .iter()
-        .find(|c| c.id == "core.video.v1")
-        .map(|c| doubleslash_features::video_codec::codecs_from_params(&c.params))
-        .unwrap_or_default()
-}
-
 /// Human-readable name for a codec in the settings picker.
 ///
 /// Names the *implementation* where there is only one, because that is what
@@ -7831,61 +7817,11 @@ fn video_codec_label(codec: doubleslash_features::video_codec::VideoCodec) -> &'
         doubleslash_features::video_codec::VideoCodec::Vp8 => {
             "VP8 (software, works with every platform)"
         }
+        doubleslash_features::video_codec::VideoCodec::Vp9 => {
+            "VP9 (software, works with every platform, better quality per bit)"
+        }
         doubleslash_features::video_codec::VideoCodec::Stub => "Uncompressed (test only)",
     }
-}
-
-/// Codec for a direct 1:1 call: the best codec both ends can run, preferring
-/// `preferred` when both ends have it.
-///
-/// `None` means no mutual codec, and the caller must not start the camera —
-/// sending frames the peer provably cannot decode wastes their bandwidth and
-/// shows them nothing.
-fn pick_direct_video_codec(
-    peer_codecs: &[doubleslash_features::video_codec::VideoCodec],
-    preferred: Option<doubleslash_features::video_codec::VideoCodec>,
-) -> Option<doubleslash_features::video_codec::VideoCodec> {
-    // An *empty* list means "we have not heard what this peer speaks", which is
-    // not the same as "this peer speaks nothing we do". Treating the two alike
-    // silently refused to start the camera whenever the capability announce had
-    // not arrived yet, or came from a build using the previous capability id —
-    // the caller sees only that video stopped working.
-    //
-    // Unknown therefore falls back to our own preferred codec and sends. A
-    // receiver that cannot decode it drops the frames and says so in its log,
-    // which is a far better failure than a camera that never turns on.
-    if peer_codecs.is_empty() {
-        return pick_room_video_codec(preferred);
-    }
-    doubleslash_features::video_codec::negotiate_preferring(
-        &crate::video::codec::available_codecs(),
-        peer_codecs,
-        preferred,
-    )
-}
-
-/// Codec for room video: our own most-preferred available codec, or the user's
-/// choice when this build can encode it.
-///
-/// Deliberately not a negotiation. A room sender fans one encoded stream out to
-/// every member, so satisfying everyone would mean either encoding once per
-/// codec (N encoders on the sender) or falling to the worst common denominator
-/// — and membership changes mid-call, which would force a re-encode and a
-/// keyframe every time someone joined. Instead the sender picks what it does
-/// best, stamps it on each frame, and a member without that decoder drops the
-/// frames and logs why. Room-wide codec convergence is a later problem, and the
-/// per-frame codec byte is what leaves room to solve it.
-///
-/// That structure is also why a user preference is safe here: nothing about a
-/// room send was ever agreed pairwise, so choosing VP8 over H.264 changes only
-/// which decoder each member routes the frames to.
-fn pick_room_video_codec(
-    preferred: Option<doubleslash_features::video_codec::VideoCodec>,
-) -> Option<doubleslash_features::video_codec::VideoCodec> {
-    doubleslash_features::video_codec::best_available(
-        &crate::video::codec::available_codecs(),
-        preferred,
-    )
 }
 
 /// The `video_*` encoder settings, as they arrive from
@@ -9161,7 +9097,7 @@ fn dispatch_event(
                                 );
                             });
                         },
-                        crate::video::sink::has_sink,
+                        std::sync::Arc::new(crate::video::sink::QtSinks),
                     );
                     // The call controller anchors the sync timeline from its
                     // own playout tick, so it needs the same state this
@@ -9391,7 +9327,7 @@ fn dispatch_event(
             );
             // Record what video codecs this peer can run, so a later camera
             // start can negotiate without a round trip to the manager.
-            let codecs = video_codecs_from_caps_json(&caps_json);
+            let codecs = crate::video::codec::peer_codecs_from_caps_json(&caps_json);
             let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
                 if codecs.is_empty() {
                     bridge

@@ -10,6 +10,10 @@ import android.content.Context
  * carry. The desktop client exposes close to a hundred bridge invokables, and
  * mirroring each as its own `external fun` would mean changing declarations on
  * both sides of the boundary every time one of them moved.
+ *
+ * The exceptions carry what JSON cannot: camera buffers
+ * ([nativeSubmitCameraFrame]) and the surfaces received video is drawn into
+ * ([nativeAttachVideoSurface], [nativeDetachVideoSurface]).
  */
 object NativeCore {
 
@@ -73,6 +77,26 @@ object NativeCore {
         height: Int,
         rotationDegrees: Int,
     )
+
+    /**
+     * Draw [peerId]'s received video into [surface] until detached.
+     *
+     * Process-wide rather than per session: a view's surface outlives a core
+     * restart. Only peers named in `video.watch` are forwarded and decoded, so
+     * attaching alone shows nothing for a peer who is not watched.
+     *
+     * @return a token for [nativeDetachVideoSurface], or 0 if the surface has
+     *   no native window.
+     */
+    external fun nativeAttachVideoSurface(surface: android.view.Surface, peerId: String): Long
+
+    /**
+     * Stop drawing into a surface attached by [nativeAttachVideoSurface].
+     *
+     * Blocks until a draw in progress finishes, so the surface may be released
+     * as soon as this returns. Safe with 0.
+     */
+    external fun nativeDetachVideoSurface(token: Long)
 
     /** Run one command, returning one JSON reply. Never throws. */
     external fun nativeCommand(handle: Long, json: String): String

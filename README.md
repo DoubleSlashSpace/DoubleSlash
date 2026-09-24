@@ -21,12 +21,12 @@ The desktop client includes video tiles, a pop-out view, local preview, quality 
 
 | Platform | Implemented capture | Video codecs | Current limits |
 |---|---|---|---|
-| Windows | Camera, screen/window, system or application audio | Media Foundation H.264, VP8 | Full media path implemented; the remaining product acceptance checklist is in [backlog.md](backlog.md) |
-| Linux | V4L2 camera | VP8 | Camera hardware validation pending; no screen/window or shared-audio capture |
-| macOS | AVFoundation camera | VP8 | Camera hardware validation pending; no screen/window or shared-audio capture |
-| Android | CameraX camera, VP8 sending | VP8 | Incoming video and shared-audio playback are not connected to a consumer yet |
+| Windows | Camera, screen/window, system or application audio | Media Foundation H.264, VP9, VP8 | Full media path implemented; the remaining product acceptance checklist is in [backlog.md](backlog.md) |
+| Linux | V4L2 camera | VP9, VP8 | Camera hardware validation pending; no screen/window or shared-audio capture |
+| macOS | AVFoundation camera | VP9, VP8 | Camera hardware validation pending; no screen/window or shared-audio capture |
+| Android | CameraX camera, sending and receiving | VP9, VP8 | Incoming video is opt-in per peer and not yet validated on a device; shared-audio playback is not connected yet |
 
-Direct video negotiates a common codec. Room senders choose their own codec; a receiver without that decoder cannot display the stream. Room video requires QUIC relay datagrams. Room voice also has a WebSocket fallback.
+Direct video negotiates a common codec. Rooms default to VP9, which every build decodes; a device that cannot encode VP9 in real time drops to VP8 mid-call. H.264 is used in a room only when chosen in Settings, and only Windows members can display it. Room video requires QUIC relay datagrams. Room voice also has a WebSocket fallback.
 
 ### Rooms
 
@@ -155,7 +155,7 @@ For the schema and configuration examples, see [manifest.rs](rust/doubleslash-su
 | [doubleslash-android](rust/doubleslash-android/) + [android](android/) | JNI bridge and Kotlin/Compose UI |
 | [doubleslash-features](rust/doubleslash-features/) | Capability descriptors, negotiation, auth tiers, quotas, channel framing, module loading |
 | [doubleslash-supernode](rust/doubleslash-supernode/) | QUIC relay, WebSocket signaling, ephemeral SFU rooms, portal and game hosting |
-| [doubleslash-opus](rust/doubleslash-opus/) / [doubleslash-vpx](rust/doubleslash-vpx/) | Vendored Opus and VP8 codec wrappers |
+| [doubleslash-opus](rust/doubleslash-opus/) / [doubleslash-vpx](rust/doubleslash-vpx/) | Vendored Opus and VP8/VP9 codec wrappers |
 | [doubleslash-installer](rust/doubleslash-installer/) | Release download, verification, installation, and repair |
 | [doubleslash-supernode-manager](rust/doubleslash-supernode-manager/) | Cluster deployment and operations |
 

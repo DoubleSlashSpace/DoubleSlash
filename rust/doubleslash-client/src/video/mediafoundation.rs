@@ -519,6 +519,10 @@ impl VideoEncoder for MfEncoder {
         self.encode_inner(frame)
     }
 
+    fn codec(&self) -> doubleslash_features::video_codec::VideoCodec {
+        doubleslash_features::video_codec::VideoCodec::H264
+    }
+
     fn request_keyframe(&mut self) {
         self.force_keyframe = true;
     }

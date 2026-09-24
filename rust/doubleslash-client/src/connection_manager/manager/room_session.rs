@@ -1555,17 +1555,21 @@ impl ConnectionManager {
         let mut senders = senders;
         senders.sort();
         senders.dedup();
-        if !force && self.video_subscriptions.as_ref() == Some(&senders) {
+        let room_id = self.current_room_id.clone();
+        let unchanged = self
+            .video_subscriptions
+            .as_ref()
+            .is_some_and(|(room, sent)| *room == room_id && *sent == senders);
+        if !force && unchanged {
             return;
         }
 
-        let room_id = self.current_room_id.clone();
         let supernode_id = self.live_room_route(&self.current_supernode_id.clone());
         let mut msg =
             SignalingMessage::new(MessageType::SfuVideoSubscribe, self.identity.public_id());
         msg.target = Some(supernode_id);
         msg.payload
-            .insert("room_id".to_owned(), Value::String(room_id));
+            .insert("room_id".to_owned(), Value::String(room_id.clone()));
         msg.payload.insert(
             "senders".to_owned(),
             Value::Array(
@@ -1579,7 +1583,7 @@ impl ConnectionManager {
             "[room.video.sfu] subscribing to {} sender(s)",
             senders.len()
         );
-        self.video_subscriptions = Some(senders);
+        self.video_subscriptions = Some((room_id, senders));
         self.dispatch_outbound(msg).await;
     }
 
@@ -1591,7 +1595,7 @@ impl ConnectionManager {
     /// and announcing an empty set here would black out video that is about to
     /// be asked for.
     pub(super) async fn resend_video_subscriptions(&mut self) {
-        if let Some(current) = self.video_subscriptions.clone() {
+        if let Some((_, current)) = self.video_subscriptions.clone() {
             self.send_video_subscriptions(current, true).await;
         }
     }
