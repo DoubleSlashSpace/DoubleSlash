@@ -1,11 +1,16 @@
-// VoiceRail.qml — Right-side voice/room panel.
+// VoiceRail.qml — The right-hand column: who is here, and the voice controls.
 //
-// Replaces the small floating CallPanel with a proper collapsible strip that
-// Shows during both direct P2P calls and SFU room sessions.
-// 
+// One list for a room, not two. While a room is open it lists everyone in it —
+// voice members first, then text-only members, dimmed — so who can hear you
+// and who is only reading are answered in one place. Outside a room it lists
+// the live voice session (a direct call, or a room browsed away from).
 //
-// Width animates between 0 (hidden) and 200 (visible) so the centre chat
-// panel expands and contracts smoothly.
+// Every per-person action starts from that person's row: watching their video,
+// muting them for yourself, messaging a trusted peer or inviting a member who
+// is not one yet.
+//
+// Width animates between 0 (hidden) and its open width so the centre panel
+// expands and contracts smoothly.
 
 import QtQuick
 import QtQuick.Controls
@@ -35,7 +40,52 @@ Rectangle {
         return root.videoActivePeers[peerId] === true
     }
 
+    /// The live voice session's participants: `RoomModel` for room voice, a
+    /// synthetic 2-entry ListModel for a direct call.
     property var participantModel: null
+
+    /// True while a room is open: the rail then lists `memberModel` (the whole
+    /// room, each row marked in or out of voice) instead of the voice session.
+    property bool roomView: false
+    /// Every member of the open room, with `inVoice`, `trusted` and
+    /// `listPeerId` roles.
+    property var memberModel: null
+    /// The open room, for trust invites sent from its list.
+    property string roomId: ""
+    /// Voice is live for the open room itself, so its voice members are the
+    /// voice session and their audio controls apply.
+    property bool voiceHere: false
+    /// Any voice session is live. The controls bar exists only then.
+    property bool voiceActive: false
+
+    /// Peer ids whose video is on screen here — expanded or popped out.
+    property var watchedPeers: []
+    /// Our trust invites by member id: "pending" | "sent".
+    property var inviteStates: ({})
+    /// Last trust-invite failure to explain, or "".
+    property string inviteNotice: ""
+
+    /// The model the list shows.
+    readonly property var listModel: root.roomView ? root.memberModel : root.participantModel
+
+    /// Whether a member's voice is part of the session our controls drive —
+    /// everyone outside a room view, and in-voice members of the room we are in
+    /// voice for.
+    function inSession(inVoice) {
+        return !root.roomView || (root.voiceHere && inVoice)
+    }
+
+    function isWatching(pid) {
+        return root.watchedPeers.indexOf(pid) !== -1
+    }
+
+    /// Watch a peer in the centre region, or stop watching wherever they are.
+    function toggleWatch(pid) {
+        if (root.isWatching(pid))
+            root.stopWatchingRequested(pid)
+        else
+            root.expandVideoRequested(pid)
+    }
 
     /// Display name shown in the header (room name or remote peer handle).
     property string contextName: ""
@@ -47,12 +97,9 @@ Rectangle {
     property string supernodeHandle: ""
 
     // Header avatar is room-only (supernode host). Direct P2P peers already
-    // appear in the participant flow below — same voice rail, no duplicate tile.
+    // appear in the member list below — same voice rail, no duplicate row.
     readonly property string headerAvatarPeerId: root.inRoom ? root.supernodeId : ""
     readonly property string headerAvatarHandle: root.inRoom ? root.supernodeHandle : ""
-    readonly property bool showNameBubbles: root.inRoom
-        || root.callState === "connecting"
-        || root.callState === "in_call"
 
     /// Call/room state passed from bridge: "idle" | "connecting" | "in_call"
     property string callState: "idle"
@@ -108,98 +155,6 @@ Rectangle {
     /// Connection mode for the header pill.
     property string connectionMode: "offline"
 
-    // ── Ring history store ─────────────────────────────────────────────────────────────
-    // Keyed by peerId → { samples, wp, ema, peak, ceil }.
-    //   peak — short-window envelope (rises instantly, decays ~3 dB/100 ms).
-    //   ceil — rolling ceiling per peer (rises instantly to new peaks,
-    //          decays toward _ringMinCeil over ~1.5 s).  Samples are
-    //          divided by `ceil` so mics with very different gain
-    //          produce comparable ring heights, while still recovering
-    //          quickly from one-off spikes so subsequent quieter speech
-    //          still registers.
-    property var _ringStore: ({})
-    // Minimum ceiling: prevents division blow-up during long silences.
-    // Kept low (0.10) so even very quiet speech normalises to near full
-    // scale instead of being suppressed by an artificially high floor.
-    readonly property real _ringMinCeil: 0.10
-    // Perceptual compression exponent.  The level from Rust is already
-    // on a dB scale (linear-in-dB ≈ log in amplitude), which partially
-    // compensates for loudness perception.  A mild ^0.75 nudges quiet
-    // voices up further without over-compressing the loud end.
-    readonly property real _ringPerceptualExp: 0.75
-
-    function ringStateForPeer(pid) {
-        if (!_ringStore[pid]) {
-            var arr = new Array(60)
-            for (var i = 0; i < 60; i++) arr[i] = 0.0
-            _ringStore[pid] = { samples: arr, wp: 0, ema: 0.0, peak: 0.0, ceil: _ringMinCeil }
-        }
-        return _ringStore[pid]
-    }
-
-    // Fast envelope tracker: polls audioLevel ~30× per second.
-    //   * `peak` is the short envelope used by ringTimer (1 Hz aliasing fix).
-    //   * `ceil` is the rolling ceiling used for adaptive normalization.
-    Timer {
-        id: peakTimer
-        interval: 33
-        running:  true
-        repeat:   true
-        onTriggered: {
-            for (var i = 0; i < participantsRepeater.count; i++) {
-                var item = participantsRepeater.itemAt(i)
-                if (!item) continue
-                var pid = item.peerId
-                var st  = _ringStore[pid]
-                if (!st) continue
-                var raw = item.isMuted ? 0.0 : item.audioLevel
-                // Mild perceptual compression to nudge quiet voices up.
-                var lvl = raw > 0.0 ? Math.pow(raw, root._ringPerceptualExp) : 0.0
-
-                // Short envelope — fast attack, ~3 dB / 100 ms release.
-                var decayed = st.peak * 0.92
-                st.peak = lvl > decayed ? lvl : decayed
-
-                // Rolling ceiling — instant rise, ~1.5 s half-life decay
-                // (0.985^30 ≈ 0.64 per second @ 30 Hz) so a one-off spike
-                // doesn't suppress the next few seconds of normal speech.
-                var ceilDecayed = st.ceil * 0.985
-                if (ceilDecayed < root._ringMinCeil) ceilDecayed = root._ringMinCeil
-                st.ceil = lvl > ceilDecayed ? lvl : ceilDecayed
-            }
-        }
-    }
-
-    // Single persistent timer — iterates every live Repeater delegate, reads
-    // the per-peer peak envelope (updated by peakTimer above), normalizes
-    // it against the rolling ceiling, then pushes the sample.
-    // ParticipantWidget reads live audio levels directly for its lightweight
-    // visual ring; this history remains available for richer renderers.
-    Timer {
-        id: ringTimer
-        interval: 1000
-        running:  true      // VoiceRail is only mounted when voice_active
-        repeat:   true
-        onTriggered: {
-            for (var i = 0; i < participantsRepeater.count; i++) {
-                var item = participantsRepeater.itemAt(i)
-                if (!item) continue
-                var pid = item.peerId
-                var st  = _ringStore[pid]
-                if (!st) continue
-                var raw  = item.isMuted ? 0.0 : st.peak
-                var norm = raw / st.ceil
-                if (norm > 1.0) norm = 1.0
-                if (norm < 0.0) norm = 0.0
-                st.samples[st.wp] = norm
-                st.wp  = (st.wp + 1) % 60
-                st.ema = st.ema * 0.7 + norm * 0.3
-                // Reset short envelope so the next one-second window starts fresh.
-                st.peak = raw * 0.25
-            }
-        }
-    }
-
     signal endCallRequested()
     signal muteToggled(bool muted)
     /// Camera button pressed; `on` is the requested new state.
@@ -225,6 +180,12 @@ Rectangle {
     signal expandVideoRequested(string peerId)
     /// A peer's video should be shown in its own detached window.
     signal popoutVideoRequested(string peerId)
+    /// Take a peer's video off screen — collapse the tile or close its window.
+    signal stopWatchingRequested(string peerId)
+    /// Open the 1:1 chat with a trusted member, by Peers-list id.
+    signal messagePeerRequested(string listPeerId, string name)
+    /// Offer a room member we do not trust to become trusted peers.
+    signal trustInviteRequested(string peerId)
 
     /// Peers currently expanded in the centre region, so the menu can offer
     /// "Collapse" instead of "Expand" for those already showing.
@@ -357,22 +318,55 @@ Rectangle {
         property int targetVolume: 100
         property bool targetVideoActive: false
         property bool targetIsSelf: false
+        /// Their voice is part of our session, so hearing and watching them
+        /// are ours to control. False for a text-only member, or a room we
+        /// are only browsing.
+        property bool targetInSession: true
+        property bool targetTrusted: false
+        property string targetListPeerId: ""
 
-        function openFor(pid, name, muted, volume, videoActive, isSelf) {
-            peerMenu.targetPeerId = pid
-            peerMenu.targetName = name
-            peerMenu.targetLocalMuted = muted
-            peerMenu.targetVolume = volume
-            peerMenu.targetVideoActive = videoActive
-            peerMenu.targetIsSelf = isSelf
+        function openFor(m) {
+            peerMenu.targetPeerId = m.peerId
+            peerMenu.targetName = m.name
+            peerMenu.targetLocalMuted = m.localMuted
+            peerMenu.targetVolume = m.volume
+            peerMenu.targetVideoActive = m.videoActive
+            peerMenu.targetIsSelf = m.isSelf
+            peerMenu.targetInSession = m.inSession
+            peerMenu.targetTrusted = m.trusted
+            peerMenu.targetListPeerId = m.listPeerId
             peerMenu.popup()
         }
+
+        readonly property string targetInviteState:
+            root.inviteStates[peerMenu.targetPeerId] || ""
+
+        MenuItem {
+            // Watching is how video starts arriving at all: nothing is received
+            // or decoded for a peer until it is chosen. Stopping stays possible
+            // after their camera goes off, or the tile could never be closed.
+            enabled: peerMenu.targetInSession && !peerMenu.targetIsSelf
+                && (peerMenu.targetVideoActive || root.isWatching(peerMenu.targetPeerId))
+            text: root.isWatching(peerMenu.targetPeerId)
+                ? qsTr("Stop watching")
+                : (peerMenu.targetVideoActive ? qsTr("Watch video") : qsTr("Camera is off"))
+            onTriggered: root.toggleWatch(peerMenu.targetPeerId)
+        }
+
+        MenuItem {
+            enabled: peerMenu.targetInSession && !peerMenu.targetIsSelf
+                && peerMenu.targetVideoActive
+            text: qsTr("Pop out video")
+            onTriggered: root.popoutVideoRequested(peerMenu.targetPeerId)
+        }
+
+        MenuSeparator {}
 
         MenuItem {
             // Muting yourself locally would be meaningless — you don't hear
             // your own playback — so the entry is disabled rather than absent,
             // keeping the menu's shape stable between peers.
-            enabled: !peerMenu.targetIsSelf
+            enabled: !peerMenu.targetIsSelf && peerMenu.targetInSession
             checkable: true
             checked: peerMenu.targetLocalMuted
             text: qsTr("Mute for me")
@@ -386,7 +380,7 @@ Rectangle {
         }
 
         MenuItem {
-            enabled: !peerMenu.targetIsSelf
+            enabled: !peerMenu.targetIsSelf && peerMenu.targetInSession
             text: qsTr("Volume…")
             onTriggered: volumePopup.openFor(
                 peerMenu.targetPeerId, peerMenu.targetName, peerMenu.targetVolume)
@@ -394,25 +388,26 @@ Rectangle {
 
         MenuSeparator {}
 
+        // A trusted peer can be messaged; a room member who is not one can be
+        // offered that. Only one of the two is ever shown, so the menu says
+        // plainly which relationship you have with this person.
         MenuItem {
-            // Collapsing stays available after the camera goes off. Gating both
-            // directions on `targetVideoActive` stranded the tile: the peer
-            // stops sharing, the entry greys out, and the only control that
-            // removes the tile is gone. Expanding still requires a live camera.
-            enabled: peerMenu.targetVideoActive || root.isExpanded(peerMenu.targetPeerId)
-            text: root.isExpanded(peerMenu.targetPeerId)
-                ? qsTr("Collapse video")
-                : qsTr("Expand video")
-            onTriggered: root.expandVideoRequested(peerMenu.targetPeerId)
+            visible: peerMenu.targetTrusted && !peerMenu.targetIsSelf
+            height: visible ? implicitHeight : 0
+            text: qsTr("Message")
+            onTriggered: root.messagePeerRequested(
+                peerMenu.targetListPeerId, peerMenu.targetName)
         }
 
         MenuItem {
-            enabled: peerMenu.targetVideoActive
-            text: qsTr("Pop out video")
-            onTriggered: root.popoutVideoRequested(peerMenu.targetPeerId)
+            visible: !peerMenu.targetTrusted && !peerMenu.targetIsSelf && root.roomId !== ""
+            height: visible ? implicitHeight : 0
+            enabled: peerMenu.targetInviteState === ""
+            text: peerMenu.targetInviteState === "sent" ? qsTr("Invite sent")
+                : peerMenu.targetInviteState === "pending" ? qsTr("Sending invite…")
+                : qsTr("Invite to trusted peers")
+            onTriggered: root.trustInviteRequested(peerMenu.targetPeerId)
         }
-
-        MenuSeparator {}
 
         MenuItem {
             text: qsTr("Copy Peer ID")
@@ -459,7 +454,7 @@ Rectangle {
                 spacing: Theme.spacingSm
 
                 Item {
-                    visible: root.headerAvatarPeerId !== ""
+                    visible: root.headerAvatarPeerId !== "" && !root.roomView
                     Layout.preferredWidth: 36
                     Layout.preferredHeight: 36
                     Layout.alignment: Qt.AlignVCenter
@@ -501,9 +496,11 @@ Rectangle {
                     Layout.fillWidth: true
                     spacing: 2
 
-                    // Room/peer name
+                    // Room members, or the voice session's room/peer name.
                     Text {
-                        text: root.contextName || (root.inRoom ? "Voice Room" : "Call")
+                        text: root.roomView
+                            ? qsTr("Members") + " · " + memberList.count
+                            : (root.contextName || (root.inRoom ? "Voice Room" : "Call"))
                         color: Theme.text
                         font.pixelSize: Theme.fontSizeBody
                         font.bold: true
@@ -511,8 +508,22 @@ Rectangle {
                         Layout.fillWidth: true
                     }
 
+                    // In a room you are not in voice for, say so instead of
+                    // showing a connection pill for some other session.
+                    Text {
+                        visible: root.roomView && !root.voiceHere
+                        text: root.voiceActive
+                            ? qsTr("Your voice is in ") + (root.contextName || qsTr("another call"))
+                            : qsTr("You are not in voice")
+                        color: Theme.muted
+                        font.pixelSize: Theme.fontSizeMicro
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
+
                     // Connection mode pill
                     Rectangle {
+                        visible: root.voiceActive && (!root.roomView || root.voiceHere)
                         width: modePillText.implicitWidth + Theme.spacingSm
                         height: Theme.fontSizeCaption + Theme.spacingXs
                         radius: Theme.radiusSm
@@ -536,60 +547,99 @@ Rectangle {
             }
         }
 
-        // ── Participant tiles ─────────────────────────────────────────────
+        // ── Member list ───────────────────────────────────────────────────
         //
-        // The Flow sits inside a plain Item the layout sizes, and fills it by
-        // anchors. A Flow placed directly in the ColumnLayout reports an
+        // The list sits inside a plain Item the layout sizes, and fills it by
+        // anchors. A view placed directly in the ColumnLayout reports an
         // implicit size the layout then resizes it by; with the rail animating
         // open and a fractional scale factor the two never settled, and the
         // polish pass spun forever — the window froze the moment a direct call
-        // started. Nothing inside may size itself from the Flow either, which
-        // is why the connecting placeholder is a sibling, not a child.
+        // started. The connecting placeholder is a sibling for the same reason.
         Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            Flow {
-                id: participantFlow
+            ListView {
+                id: memberList
                 anchors.fill: parent
-                padding: Theme.spacingSm
-                spacing: Theme.spacingSm
+                anchors.topMargin: Theme.spacingXs
+                clip: true
+                model: root.listModel
+                boundsBehavior: Flickable.StopAtBounds
 
-                Repeater {
-                    id: participantsRepeater
-                    model: root.participantModel
+                // In voice first, then text-only: the roster arrives in that
+                // order, so each group is one section. Outside a room view
+                // everyone listed is in voice and a heading would be noise.
+                section.property: root.roomView ? "inVoice" : ""
+                section.criteria: ViewSection.FullString
+                section.delegate: Item {
+                    required property string section
+                    width: memberList.width
+                    height: 22
 
-                    ParticipantWidget {
-                        peerId:      model.peerId
-                        displayName: model.handle || model.peerId || ""
-                        isMuted:     model.muted
-                        audioLevel:  model.isSelf ? backend.mic_level : model.audioLevel
-                        isSelf:      model.isSelf
-                        ringStore:   root.ringStateForPeer(model.peerId)
-                        showNameBubbles: root.showNameBubbles
-                        videoActive: model.videoActive === true
-                                     || root.peerHasVideo(model.peerId)
-                        locallyMuted: model.localMuted === true
+                    Text {
+                        anchors {
+                            verticalCenter: parent.verticalCenter
+                            left: parent.left
+                            leftMargin: Theme.spacingMd
+                        }
+                        text: parent.section === "true" ? qsTr("In voice") : qsTr("Text only")
+                        color: Theme.muted
+                        font.pixelSize: Theme.fontSizeMicro
+                        font.capitalization: Font.AllUppercase
+                        font.letterSpacing: 1.0
+                        font.bold: true
+                    }
+                }
 
-                        onContextMenuRequested: peerMenu.openFor(
-                            model.peerId,
-                            model.handle || model.peerId || "",
-                            model.localMuted === true,
-                            model.localVolume === undefined ? 100 : model.localVolume,
-                            model.videoActive === true || root.peerHasVideo(model.peerId),
-                            model.isSelf === true)
-                        onExpandVideoRequested: root.expandVideoRequested(model.peerId)
+                delegate: MemberRow {
+                    id: row
+                    width: ListView.view ? ListView.view.width : 0
+
+                    // `directCallModel` has no inVoice/trusted roles; both are
+                    // undefined there, and everyone in a call is in voice.
+                    readonly property bool rowInVoice: model.inVoice !== false
+                    readonly property bool rowInSession: root.inSession(rowInVoice)
+
+                    peerId: model.peerId || ""
+                    displayName: model.handle || ""
+                    isSelf: model.isSelf === true
+                    inVoice: rowInVoice
+                    isMuted: model.muted === true
+                    // Levels only mean anything for the session we are in; a
+                    // room we are browsing would otherwise borrow our mic.
+                    audioLevel: !rowInSession ? 0.0
+                        : (model.isSelf ? backend.mic_level : (model.audioLevel || 0.0))
+                    videoActive: rowInSession
+                        && (model.videoActive === true || root.peerHasVideo(model.peerId))
+                    watching: root.isWatching(model.peerId)
+                    locallyMuted: model.localMuted === true
+                    trusted: model.trusted === true
+                    inviteState: root.inviteStates[model.peerId] || ""
+
+                    onMenuRequested: peerMenu.openFor({
+                        peerId: model.peerId,
+                        name: model.handle || model.peerId || "",
+                        localMuted: model.localMuted === true,
+                        volume: model.localVolume === undefined ? 100 : model.localVolume,
+                        videoActive: row.videoActive,
+                        isSelf: model.isSelf === true,
+                        inSession: row.rowInSession,
+                        trusted: model.trusted === true,
+                        listPeerId: model.listPeerId || ""
+                    })
+                    onVideoClicked: {
+                        if (!model.isSelf)
+                            root.toggleWatch(model.peerId)
                     }
                 }
             }
 
             // Connecting placeholder, until the first participant appears.
-            // `participantsRepeater.count` rather than `rowCount()`: a
-            // function call in a binding is never re-evaluated.
             Column {
                 anchors.centerIn: parent
                 spacing: 8
-                visible: participantsRepeater.count === 0 && root.callState === "connecting"
+                visible: memberList.count === 0 && root.callState === "connecting"
 
                 BusyIndicator {
                     anchors.horizontalCenter: parent.horizontalCenter
@@ -606,12 +656,33 @@ Rectangle {
             }
         }
 
+        // ── Trust-invite notice ───────────────────────────────────────────
+        //
+        // Why an invite did not go, beside the list it was sent from. The
+        // session banner is for connection state and would be overwritten by
+        // the next connection event before anyone read it.
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: inviteNoticeText.implicitHeight + Theme.spacingSm * 2
+            visible: root.inviteNotice !== ""
+            color: Theme.bg3
+
+            Text {
+                id: inviteNoticeText
+                anchors { fill: parent; margins: Theme.spacingSm }
+                text: root.inviteNotice
+                color: Theme.warn
+                font.pixelSize: Theme.fontSizeMicro
+                wrapMode: Text.WordWrap
+            }
+        }
+
         // ── Duration counter ──────────────────────────────────────────────
         Rectangle {
             Layout.fillWidth: true
             height: 24
             color: Theme.bg3
-            visible: root.callState === "in_call" || root.inRoom
+            visible: root.voiceActive && (root.callState === "in_call" || root.inRoom)
 
             Text {
                 anchors.centerIn: parent
@@ -634,10 +705,14 @@ Rectangle {
         }
 
         // ── Controls bar ─────────────────────────────────────────────────
+        //
+        // Drives the live voice session wherever it is, so it shows only while
+        // there is one — a room opened just to read has nothing to mute.
         Rectangle {
             Layout.fillWidth: true
             height: 52
             color: Theme.bg3
+            visible: root.voiceActive
 
             // Top divider
             Rectangle {

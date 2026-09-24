@@ -653,7 +653,9 @@ ApplicationWindow {
             ToolTip.delay: Theme.animSlow
             onClicked: {
                 backend.copyInvite()
-                invitePopup.visible = true
+                // Empty when none could be minted; the session banner says why.
+                if (backend.invite_url !== "")
+                    invitePopup.visible = true
             }
             Shortcut {
                 sequence: "Ctrl+N"
@@ -960,6 +962,47 @@ ApplicationWindow {
         root.videoPopouts = ({})
     }
 
+    /// Take a peer's video off screen, wherever it is showing.
+    function stopWatchingVideo(peerId) {
+        root.collapseVideo(peerId)
+        if (root.videoPopouts[peerId])
+            root.videoPopouts[peerId].close()
+    }
+
+    // ── Trust invites ────────────────────────────────────────────────────────
+
+    /// Our trust invites by member id: "pending" | "sent". Session-only — it
+    /// exists so the menu does not offer a second invite to someone who has
+    /// one waiting, not as a record of who was asked.
+    property var trustInviteStates: ({})
+    /// Why the last invite was not sent, shown in the rail; "" when fine.
+    property string trustInviteNotice: ""
+
+    function setTrustInviteState(memberId, state) {
+        var next = {}
+        for (var k in root.trustInviteStates)
+            next[k] = root.trustInviteStates[k]
+        if (state === "")
+            delete next[memberId]
+        else
+            next[memberId] = state
+        root.trustInviteStates = next
+    }
+
+    function sendTrustInvite(memberId) {
+        if (!memberId || roomPanel.roomId === "")
+            return
+        root.setTrustInviteState(memberId, "pending")
+        root.trustInviteNotice = ""
+        backend.sendTrustInvite(roomPanel.roomId, memberId)
+    }
+
+    Timer {
+        id: trustInviteNoticeTimer
+        interval: 8000
+        onTriggered: root.trustInviteNotice = ""
+    }
+
     /// Resolve a peer's display name from the active voice roster.
     function videoPeerName(peerId) {
         var model = backend.voice_in_room ? roomModel : directCallModel
@@ -1107,7 +1150,8 @@ ApplicationWindow {
     ChatModel         { id: chatModel }
     // Voice-rail participants (active voice room only).
     RoomModel         { id: roomModel }
-    // Text-room members panel (selected room's chat recipients).
+    // The open room's whole roster — chat recipients and voice participants,
+    // each marked in or out of voice. What the rail lists while a room is open.
     RoomModel         { id: textRoomModel }
     FileTransferModel { id: fileTransferModel }
 
@@ -1213,17 +1257,37 @@ ApplicationWindow {
         backend.messageStatusChanged.connect(chatModel.updateMessageStatus)
         backend.participantsUpdated.connect(roomModel.setParticipants)
         backend.textMembersUpdated.connect(textRoomModel.setParticipants)
+        // Live audio state goes to the room's member list too while it shows
+        // the room we are in voice for — that list is where the rail reads it
+        // from then. Never otherwise: a peer can be in both rooms, and the
+        // room merely being browsed must not light up with this call's levels.
         backend.localSpeakingChanged.connect(function(speaking) {
             roomModel.updateParticipant(backend.public_id, speaking, false)
+            if (roomPanel.voiceActiveHere)
+                textRoomModel.updateParticipant(backend.public_id, speaking, false)
         })
         backend.peerSpeakingChanged.connect(function(peerId, speaking) {
             roomModel.updateParticipant(peerId, speaking, false)
+            if (roomPanel.voiceActiveHere)
+                textRoomModel.updateParticipant(peerId, speaking, false)
         })
         backend.peerLevelChanged.connect(function(peerId, level) {
             roomModel.setAudioLevel(peerId, level)
+            if (roomPanel.voiceActiveHere)
+                textRoomModel.setAudioLevel(peerId, level)
+        })
+        backend.trustInviteReceived.connect(function(senderId, handle, roomName, inviteUrl) {
+            trustInviteDialog.enqueue(senderId, handle, roomName, inviteUrl)
+        })
+        backend.trustInviteResult.connect(function(memberId, error) {
+            root.setTrustInviteState(memberId, error === "" ? "sent" : "")
+            root.trustInviteNotice = error === "" ? "" : qsTr("Invite not sent: ") + error
+            if (error !== "")
+                trustInviteNoticeTimer.restart()
         })
         backend.peerVideoStateChanged.connect(function(peerId, active) {
             roomModel.setVideoActive(peerId, active)
+            textRoomModel.setVideoActive(peerId, active)
             // Drives the video region, which cannot read model roles.
             root.setPeerVideoActive(peerId, active)
             // A camera that just turned on or off cannot also be stalled; the
@@ -1542,6 +1606,15 @@ ApplicationWindow {
             backend.acceptCall(peerId)
         }
         onRejected: function(peerId) { backend.rejectCall(peerId) }
+    }
+
+    // A room member offering to become trusted peers. Accepting redeems the
+    // invite they sealed to us, through the same path as a pasted link.
+    TrustInviteDialog {
+        id: trustInviteDialog
+        anchors.fill: parent
+        z: 99
+        onAccepted: (inviteUrl) => backend.pasteInvite(inviteUrl)
     }
 
     // ── Join Room dialog ──────────────────────────────────────────────────
@@ -2743,13 +2816,16 @@ ApplicationWindow {
             }
         }  // end contentArea
 
-        // ── Right voice rail (replaces floating overlay) ──────────────────
+        // ── Right rail: the room's members and the voice controls ─────────
         VoiceRail {
             id: voiceRail
             Layout.fillHeight: true
-            // Animate width in/out for smooth open/close
-            // Show only when voice is actually active — not for chat-only room joins.
-            Layout.preferredWidth: backend.voice_active ? 200 : 0
+            // Open while voice is live anywhere, and while a room is open with
+            // its member list shown — one column for both, never two.
+            readonly property bool showsRoom: navIndex === 1
+                && roomPanel.roomId !== ""
+                && roomPanel.membersOpen
+            Layout.preferredWidth: (backend.voice_active || showsRoom) ? 220 : 0
             visible: Layout.preferredWidth > 0
             clip: true
 
@@ -2761,10 +2837,32 @@ ApplicationWindow {
             // camera state from this map instead.
             videoActivePeers: root.videoActivePeers
 
-            // Always the active voice session only (never the selected text room).
+            // The voice session's participants, for when no room is open.
             participantModel: backend.voice_in_room
                 ? roomModel
                 : directCallModel
+            // The open room's whole roster, which the rail shows instead
+            // whenever a room is open.
+            roomView: showsRoom
+            memberModel: textRoomModel
+            roomId: roomPanel.roomId
+            voiceHere: roomPanel.voiceActiveHere
+            voiceActive: backend.voice_active
+            watchedPeers: root.watchedVideoPeers
+            inviteStates: root.trustInviteStates
+            inviteNotice: root.trustInviteNotice
+            onStopWatchingRequested: (pid) => root.stopWatchingVideo(pid)
+            onTrustInviteRequested: (pid) => root.sendTrustInvite(pid)
+            onMessagePeerRequested: function(listPeerId, name) {
+                if (!listPeerId)
+                    return
+                chatPanel.selectedPeerId = listPeerId
+                chatPanel.selectedPeerName = name
+                backend.selectPeer(listPeerId)
+                peerModel.setPeerUnread(listPeerId, 0)
+                sidebarTabBar.currentIndex = 0
+                navIndex = 0
+            }
             contextName: backend.voice_in_room
                 ? root.voiceRoomName
                 : (root.activeCallPeerHandle() || chatPanel.selectedPeerName || chatPanel.selectedPeerId || "Call")
@@ -2835,8 +2933,10 @@ ApplicationWindow {
                 // members learn about it from the SfuVideoState announcement.
                 // `public_id` is the exposed Q_PROPERTY — `my_public_id` is the
                 // internal Rust field name and reads as undefined from QML.
-                if (roomModel && roomModel.setVideoActive && backend.public_id)
+                if (roomModel && roomModel.setVideoActive && backend.public_id) {
                     roomModel.setVideoActive(backend.public_id, true)
+                    textRoomModel.setVideoActive(backend.public_id, true)
+                }
                 root.setPeerVideoActive(backend.public_id, true)
 
                 if (audioMode === "off")
@@ -2876,8 +2976,10 @@ ApplicationWindow {
                     settingsModel.video_quality,
                     settingsModel.video_overlays_json,
                     settingsModel.videoEncoderJson())
-                if (roomModel && roomModel.setVideoActive && backend.public_id)
+                if (roomModel && roomModel.setVideoActive && backend.public_id) {
                     roomModel.setVideoActive(backend.public_id, false)
+                    textRoomModel.setVideoActive(backend.public_id, false)
+                }
                 root.setPeerVideoActive(backend.public_id, false)
             }
 

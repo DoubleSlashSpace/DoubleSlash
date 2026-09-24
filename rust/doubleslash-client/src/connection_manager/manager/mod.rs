@@ -14,6 +14,7 @@ mod invite;
 mod peer_session;
 mod room_session;
 mod routing;
+mod trust_invite;
 mod video_session;
 
 use std::collections::{HashMap, HashSet};
@@ -131,6 +132,13 @@ pub(super) fn unix_now_f64() -> f64 {
         .unwrap_or(0.0)
 }
 
+pub(super) fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 // ---- re-exports (tests import via `connection_manager::manager::…`) --------
 
 pub use invite::{build_room_invite_url, parse_room_invite, RoomInvitePayload, ROOM_INVITE_SCHEMA};
@@ -188,6 +196,10 @@ pub struct ConnectionManager {
     /// Pending invite initiations: invite_id → invite data awaiting
     /// `INVITE_HANDSHAKE_ACCEPT` from the other party.
     pending_invites: HashMap<String, PendingInvite>,
+    /// Personal invites this client minted and nobody has redeemed yet:
+    /// invite_id → expiry (unix secs). The inviter side of the handshake admits
+    /// only these, or a re-run from a peer already trusted.
+    issued_invites: HashMap<String, u64>,
     /// File-transfer state machine.
     file_mgr: FileTransferManager,
     room_file_mgr: FileTransferManager,
@@ -352,6 +364,14 @@ pub struct ConnectionManager {
     /// This is the member half of the strand recovery: see
     /// [`MessageType::SfuGroupKeyRequest`](crate::protocol::MessageType::SfuGroupKeyRequest).
     group_key_requests: HashMap<String, GroupKeyRequest>,
+    /// When we last sent a trust invite to each room member, keyed by their
+    /// unpadded public_id. Stops a repeated click from minting a fresh invite
+    /// (and a fresh prompt on their side) every time.
+    trust_invites_sent: HashMap<String, Instant>,
+    /// When each sender last had a trust invite shown to us, keyed by unpadded
+    /// public_id. Anyone sharing a room can send one, so both the per-sender
+    /// rate and the number of distinct senders per window are bounded.
+    trust_invites_received: HashMap<String, Instant>,
     /// Trusted peers we will re-dial over direct QUIC after a disconnect.
     /// Keyed by peer_id (or provisional transport id until relabel).
     pending_peer_reconnects: HashMap<String, peer_session::PendingPeerReconnect>,
@@ -545,6 +565,7 @@ impl ConnectionManager {
             internal_tx,
             internal_rx,
             pending_invites: HashMap::new(),
+            issued_invites: HashMap::new(),
             file_mgr: FileTransferManager::new(),
             room_file_mgr: FileTransferManager::new(),
             feature_registry,
@@ -588,6 +609,8 @@ impl ConnectionManager {
             pending_join_space_creds: HashMap::new(),
             pending_group_key_acks: HashMap::new(),
             group_key_requests: HashMap::new(),
+            trust_invites_sent: HashMap::new(),
+            trust_invites_received: HashMap::new(),
             pending_peer_reconnects: HashMap::new(),
             direct_fallback: DirectFallbackCoordinator::new(),
             public_quic_hint: None,
@@ -1307,6 +1330,12 @@ impl ConnectionManager {
                         ConnectionCommand::AcceptInvite { invite_url } => {
                             self.handle_accept_invite(invite_url).await;
                         }
+                        ConnectionCommand::SendTrustInvite {
+                            room_id,
+                            member_public_id,
+                        } => {
+                            self.send_trust_invite(&room_id, &member_public_id).await;
+                        }
                         ConnectionCommand::GenerateInvite { reply_tx } => {
                             let _ = reply_tx.send(self.generate_invite_url());
                         }
@@ -1561,6 +1590,7 @@ impl ConnectionManager {
                     self.tick_peer_reconnects().await;
                     self.tick_call_fallback_checks().await;
                     self.expire_unanswered_room_file_pulls();
+                    self.expire_rejected_invites();
                 }
                 _ = room_join_retry_interval.tick() => {
                     self.retry_pending_room_joins().await;

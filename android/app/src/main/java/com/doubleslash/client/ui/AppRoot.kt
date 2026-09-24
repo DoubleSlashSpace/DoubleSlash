@@ -108,6 +108,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.doubleslash.client.AppViewModel
 import com.doubleslash.client.roomHeadcount
+import com.doubleslash.client.roomMembersUnion
 import com.doubleslash.client.R
 import com.doubleslash.client.ChatMessage
 import kotlinx.coroutines.flow.drop
@@ -131,6 +132,9 @@ import com.doubleslash.client.roomSenderName
 import com.doubleslash.client.cameraOn
 import com.doubleslash.client.videoKey
 import com.doubleslash.client.watching
+import com.doubleslash.client.trustedPeer
+import com.doubleslash.client.TrustOffer
+import androidx.compose.ui.draw.alpha
 import com.doubleslash.client.VideoSize
 import com.doubleslash.client.Screen
 import java.text.DateFormat
@@ -166,6 +170,16 @@ fun AppRoot(viewModel: AppViewModel) {
         onDispose { view.keepScreenOn = false }
     }
 
+    // One set of member actions for every place a person is listed, so the
+    // voice strip and the room's member sheet can never offer different things.
+    val memberActions = remember(viewModel) {
+        MemberActions(
+            onToggleWatch = viewModel::toggleWatchVideo,
+            onMessage = viewModel::messageRoomMember,
+            onInvite = { roomId, memberId -> viewModel.sendTrustInvite(roomId, memberId) },
+        )
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbars) },
     ) { padding ->
@@ -175,12 +189,13 @@ fun AppRoot(viewModel: AppViewModel) {
             // screen. Without this a live call is only reachable — and only
             // visible — from the room it began in.
             state.voiceRoom?.let { voice ->
+                // The room voice is actually in, not whatever room is on
+                // screen — and every node's roster for it, since a cluster
+                // member knows only the peers attached to itself.
+                val voiceMembers = state.roomVoiceRosters.roomMembersUnion(voice.roomId)
                 VoiceRail(
                     roomName = voice.roomName,
-                    // Rosters are per supernode and this room may be homed on
-                    // several, so the rail reads the one for the room voice is
-                    // actually in rather than whatever room is on screen.
-                    members = state.roomVoiceRosters[voice.rosterKey].orEmpty(),
+                    members = voiceMembers,
                     peers = state.peers,
                     avatars = state.avatars,
                     muted = state.muted,
@@ -192,7 +207,10 @@ fun AppRoot(viewModel: AppViewModel) {
                     watching = state::watching,
                     videoSizes = state.videoSizes,
                     stalledVideo = state.stalledVideo,
-                    onToggleWatch = viewModel::toggleWatchVideo,
+                    memberView = { id ->
+                        state.memberView(id, voice.roomId, voiceMembers, voiceHere = true)
+                    },
+                    memberActions = memberActions,
                     onToggleMute = viewModel::toggleMute,
                     onToggleSpeaker = { viewModel.setSpeakerphone(!state.speakerphone) },
                     onToggleVideo = {
@@ -288,6 +306,24 @@ fun AppRoot(viewModel: AppViewModel) {
                     transfers = state.transfers,
                     onSendFile = viewModel::sendRoomFile,
                     onShare = viewModel::generateRoomInvite,
+                    memberViews = run {
+                        val room = screen.room
+                        val voiceHere = state.roomVoiceActive &&
+                            state.voiceRoom?.roomId == room.roomId
+                        // Unioned across nodes, as the voice strip is: the
+                        // open-room fields hold whichever node reported last.
+                        val voice = state.roomVoiceRosters.roomMembersUnion(room.roomId)
+                        // Voice members are folded in as well as marked, so
+                        // someone in voice before the chat roster caught up
+                        // still shows.
+                        val everyone = (
+                            state.roomTextRosters.roomMembersUnion(room.roomId) + voice
+                        ).distinctBy { it.videoKey() }
+                        everyone.map {
+                            state.memberView(it, room.roomId, voice, voiceHere)
+                        }
+                    },
+                    memberActions = memberActions,
                 )
             }
             }
@@ -296,6 +332,17 @@ fun AppRoot(viewModel: AppViewModel) {
 
     state.inviteUrl?.let { url ->
         InviteDialog(url = url, onDismiss = viewModel::dismissInvite)
+    }
+
+    state.trustOffers.firstOrNull()?.let { offer ->
+        TrustOfferDialog(
+            offer = offer,
+            roomName = state.rooms.firstOrNull { it.roomId == offer.roomId }
+                ?.roomName?.ifBlank { null } ?: "a room",
+            avatar = state.avatars[offer.senderId],
+            waiting = state.trustOffers.size - 1,
+            onAnswer = viewModel::answerTrustOffer,
+        )
     }
 
     // A file offer is a question, not a notification: nothing is transferred
@@ -1677,8 +1724,12 @@ private fun RoomChatScreen(
     transfers: Map<String, Float>,
     onSendFile: (android.net.Uri) -> Unit,
     onShare: () -> Unit,
+    /** Everyone in the room, each marked in or out of voice, for the sheet. */
+    memberViews: List<MemberView>,
+    memberActions: MemberActions,
 ) {
     var draft by remember { mutableStateOf("") }
+    var membersOpen by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val pinned = rememberPinnedToLatest(
         listState = listState,
@@ -1745,6 +1796,11 @@ private fun RoomChatScreen(
                 }
             },
             actions = {
+                // Who is here, in voice or reading — and the way to watch,
+                // message or invite any of them.
+                IconButton(enabled = joined, onClick = { membersOpen = true }) {
+                    Icon(Icons.Filled.Person, contentDescription = "Members")
+                }
                 IconButton(onClick = onShare) {
                     Icon(Icons.Filled.Share, contentDescription = "Share this room")
                 }
@@ -1847,6 +1903,15 @@ private fun RoomChatScreen(
             }
         }
     }
+
+    if (membersOpen) {
+        RoomMembersSheet(
+            members = memberViews,
+            avatars = avatars,
+            actions = memberActions,
+            onDismiss = { membersOpen = false },
+        )
+    }
 }
 
 /**
@@ -1871,7 +1936,9 @@ private fun VoiceRail(
     watching: (String) -> Boolean,
     videoSizes: Map<String, VideoSize>,
     stalledVideo: Set<String>,
-    onToggleWatch: (String) -> Unit,
+    /** Describe one voice member for the shared member menu. */
+    memberView: (String) -> MemberView,
+    memberActions: MemberActions,
     onToggleMute: () -> Unit,
     onToggleSpeaker: () -> Unit,
     onToggleVideo: () -> Unit,
@@ -1943,14 +2010,10 @@ private fun VoiceRail(
                     members.forEach { memberId ->
                         VoiceParticipant(
                             // Room rosters carry the base64 public_id, which is
-                            // also the spelling avatars are fetched under; the
-                            // helper bridges it to the hex-keyed peer store.
-                            name = peers.roomSenderName(memberId, ""),
+                            // also the spelling avatars are fetched under.
+                            member = memberView(memberId),
                             avatar = avatars[memberId],
-                            isSelf = memberId.videoKey() == myKey,
-                            cameraOn = cameraOn(memberId),
-                            watching = watching(memberId),
-                            onToggleWatch = { onToggleWatch(memberId) },
+                            actions = memberActions,
                         )
                         Spacer(Modifier.width(10.dp))
                     }
@@ -2074,24 +2137,20 @@ private fun RoomMessageBubble(
 /**
  * One face in the voice rail: avatar beside handle, sized for a dense row.
  *
- * Tapping it opens the same per-peer menu as the desktop rail. Video is
- * opt-in there, and so it is here: a peer's camera being on marks their name,
- * but nothing is received or decoded until "Watch video" is chosen.
+ * Tapping it opens the same member menu as the room's member sheet and the
+ * desktop rail: watch their video, message them or invite them.
  */
 @Composable
 private fun VoiceParticipant(
-    name: String,
+    member: MemberView,
     avatar: AvatarArt?,
-    isSelf: Boolean,
-    cameraOn: Boolean,
-    watching: Boolean,
-    onToggleWatch: () -> Unit,
+    actions: MemberActions,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Box {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = if (isSelf) Modifier else Modifier.clickable { menuOpen = true },
+            modifier = if (member.isSelf) Modifier else Modifier.clickable { menuOpen = true },
         ) {
             if (avatar != null) {
                 Avatar(avatar, Modifier.size(VOICE_AVATAR_SIZE))
@@ -2102,41 +2161,346 @@ private fun VoiceParticipant(
             }
             Spacer(Modifier.width(5.dp))
             Text(
-                name,
+                member.name,
                 style = MaterialTheme.typography.labelSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (cameraOn) {
+            if (member.cameraOn) {
                 Spacer(Modifier.width(3.dp))
                 Text("\uD83D\uDCF9", style = MaterialTheme.typography.labelSmall)
             }
         }
-        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+        MemberMenu(
+            expanded = menuOpen,
+            member = member,
+            actions = actions,
+            onDismiss = { menuOpen = false },
+        )
+    }
+}
+
+/** Smaller than the 32dp message avatar: the rail is a strip, not a list. */
+private val VOICE_AVATAR_SIZE = 20.dp
+
+// ── Room members ───────────────────────────────────────────────────────────
+
+/**
+ * One person as the member menu sees them, whichever surface they were reached
+ * from — the room's member sheet or the voice strip.
+ */
+internal data class MemberView(
+    val id: String,
+    val name: String,
+    val isSelf: Boolean,
+    val inVoice: Boolean,
+    /**
+     * Their voice is part of the session we are in, so watching them is ours to
+     * decide. False for a text-only member, or any member of a room we are only
+     * reading.
+     */
+    val inSession: Boolean,
+    val cameraOn: Boolean,
+    val watching: Boolean,
+    /** Set when they are a trusted peer: the menu offers a chat, not an invite. */
+    val trustedPeer: Peer?,
+    /** `""`, `"pending"` or `"sent"` — our trust invite to them this session. */
+    val inviteState: String,
+    /** The room they were reached through, which a trust invite names. */
+    val roomId: String,
+)
+
+/** What the member menu can do, supplied once by the caller. */
+internal class MemberActions(
+    val onToggleWatch: (String) -> Unit,
+    val onMessage: (Peer) -> Unit,
+    val onInvite: (roomId: String, memberId: String) -> Unit,
+)
+
+/**
+ * Describe [id], a member of [roomId], for the member menu.
+ *
+ * [voiceMembers] is that room's voice roster, and [voiceHere] whether our own
+ * voice is live in it — a room being read is not a session we can watch in.
+ */
+internal fun AppState.memberView(
+    id: String,
+    roomId: String,
+    voiceMembers: List<String>,
+    voiceHere: Boolean,
+): MemberView {
+    val key = id.videoKey()
+    val inVoice = voiceMembers.any { it.videoKey() == key }
+    return MemberView(
+        id = id,
+        name = peers.roomSenderName(id, ""),
+        isSelf = key == identity.publicId.videoKey(),
+        inVoice = inVoice,
+        inSession = voiceHere && inVoice,
+        cameraOn = cameraOn(id),
+        watching = watching(id),
+        trustedPeer = trustedPeer(id),
+        inviteState = trustInvites[key].orEmpty(),
+        roomId = roomId,
+    )
+}
+
+/**
+ * Everything you can do about one person, the same wherever they are listed.
+ *
+ * Video is opt-in, as on the desktop: nothing is received or decoded for a
+ * peer until "Watch video" is chosen. A trusted peer can be messaged; anyone
+ * else in the room can be offered that relationship instead.
+ */
+@Composable
+private fun MemberMenu(
+    expanded: Boolean,
+    member: MemberView,
+    actions: MemberActions,
+    onDismiss: () -> Unit,
+) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        if (!member.isSelf) {
             DropdownMenuItem(
                 text = {
                     Text(
                         when {
-                            watching -> "Stop watching"
-                            cameraOn -> "Watch video"
+                            member.watching -> "Stop watching"
+                            !member.inSession -> "Join voice to watch"
+                            member.cameraOn -> "Watch video"
                             else -> "Camera is off"
                         }
                     )
                 },
                 // Stopping stays possible with the camera off, or a peer who
                 // turned theirs off could never be un-watched.
-                enabled = watching || cameraOn,
+                enabled = member.watching || (member.inSession && member.cameraOn),
                 onClick = {
-                    menuOpen = false
-                    onToggleWatch()
+                    onDismiss()
+                    actions.onToggleWatch(member.id)
                 },
             )
+            val peer = member.trustedPeer
+            if (peer != null) {
+                DropdownMenuItem(
+                    text = { Text("Message") },
+                    onClick = {
+                        onDismiss()
+                        actions.onMessage(peer)
+                    },
+                )
+            } else if (member.roomId.isNotEmpty()) {
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            when (member.inviteState) {
+                                "sent" -> "Invite sent"
+                                "pending" -> "Sending invite..."
+                                else -> "Invite to trusted peers"
+                            }
+                        )
+                    },
+                    enabled = member.inviteState.isEmpty(),
+                    onClick = {
+                        onDismiss()
+                        actions.onInvite(member.roomId, member.id)
+                    },
+                )
+            }
+        }
+        DropdownMenuItem(
+            text = { Text("Copy ID") },
+            onClick = {
+                clipboard.setText(androidx.compose.ui.text.AnnotatedString(member.id))
+                onDismiss()
+            },
+        )
+    }
+}
+
+/**
+ * Everyone in the open room, in voice first and text-only after.
+ *
+ * The phone's counterpart to the desktop rail's member list: who can hear you
+ * and who is only reading, in one place, with the same menu on every row.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RoomMembersSheet(
+    members: List<MemberView>,
+    avatars: Map<String, AvatarArt>,
+    actions: MemberActions,
+    onDismiss: () -> Unit,
+) {
+    val inVoice = members.filter { it.inVoice }
+    val textOnly = members.filterNot { it.inVoice }
+    // Watching draws into the voice strip at the top of the screen, which
+    // this sheet covers; staying open made "Watch video" look like it did
+    // nothing. Messaging leaves the room view altogether. Inviting stays.
+    val sheetActions = remember(actions, onDismiss) {
+        MemberActions(
+            onToggleWatch = { id ->
+                onDismiss()
+                actions.onToggleWatch(id)
+            },
+            onMessage = { peer ->
+                onDismiss()
+                actions.onMessage(peer)
+            },
+            onInvite = actions.onInvite,
+        )
+    }
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        LazyColumn(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+            item {
+                Text(
+                    "Members · ${members.size}",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
+            if (inVoice.isNotEmpty()) {
+                item { MemberSectionLabel("In voice") }
+                items(inVoice, key = { "v:" + it.id }) {
+                    MemberSheetRow(it, avatars[it.id], sheetActions)
+                }
+            }
+            if (textOnly.isNotEmpty()) {
+                item { MemberSectionLabel("Text only") }
+                items(textOnly, key = { "t:" + it.id }) {
+                    MemberSheetRow(it, avatars[it.id], sheetActions)
+                }
+            }
         }
     }
 }
 
-/** Smaller than the 32dp message avatar: the rail is a strip, not a list. */
-private val VOICE_AVATAR_SIZE = 20.dp
+@Composable
+private fun MemberSectionLabel(text: String) {
+    Text(
+        text.uppercase(),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp),
+    )
+}
+
+@Composable
+private fun MemberSheetRow(member: MemberView, avatar: AvatarArt?, actions: MemberActions) {
+    var menuOpen by remember { mutableStateOf(false) }
+    Box {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { menuOpen = true }
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+            // Text-only members recede: still in the room, but they cannot
+            // hear you, and that is the first thing this list has to say.
+            val alpha = if (member.inVoice) 1f else 0.6f
+            Box(Modifier.alpha(alpha)) { RoomAvatarSlot(avatar) }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f).alpha(alpha)) {
+                Text(
+                    if (member.isSelf) "${member.name} (you)" else member.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    when {
+                        member.inviteState == "sent" -> "Invite sent"
+                        member.inviteState == "pending" -> "Sending invite..."
+                        member.inVoice -> "In voice"
+                        else -> "Text only"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (member.inviteState.isNotEmpty()) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+            if (member.cameraOn && member.inVoice) {
+                Text(
+                    "📹",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.alpha(if (member.watching) 1f else 0.6f),
+                )
+            }
+        }
+        MemberMenu(
+            expanded = menuOpen,
+            member = member,
+            actions = actions,
+            onDismiss = { menuOpen = false },
+        )
+    }
+}
+
+/**
+ * A room member asks to become trusted peers.
+ *
+ * Only the oldest offer is shown; the rest wait behind it, so a second offer
+ * cannot swap the face under a tap aimed at the first. The invite inside lives
+ * 15 minutes, so an offer left that long goes quietly rather than failing when
+ * accepted.
+ */
+@Composable
+private fun TrustOfferDialog(
+    offer: TrustOffer,
+    roomName: String,
+    avatar: AvatarArt?,
+    waiting: Int,
+    onAnswer: (Boolean) -> Unit,
+) {
+    LaunchedEffect(offer) {
+        val left = TRUST_OFFER_LIFETIME_MS - (System.currentTimeMillis() - offer.receivedAtMs)
+        kotlinx.coroutines.delay(left.coerceAtLeast(0))
+        onAnswer(false)
+    }
+    AlertDialog(
+        onDismissRequest = { onAnswer(false) },
+        icon = { avatar?.let { Avatar(it, Modifier.size(48.dp)) } },
+        title = { Text("Become trusted peers?") },
+        text = {
+            Column {
+                // The handle is the name they chose; the id beneath it is
+                // what actually identifies them.
+                Text(
+                    "${offer.handle.ifBlank { "A room member" }} in $roomName " +
+                        "asked to add you as a trusted peer.",
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    offer.senderId,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Trusted peers can message you, call you and send you files outside the room.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (waiting > 0) {
+                    Spacer(Modifier.height(4.dp))
+                    Text("$waiting more waiting", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onAnswer(true) }) { Text("Accept") } },
+        dismissButton = { TextButton(onClick = { onAnswer(false) }) { Text("Not now") } },
+    )
+}
+
+/** A minute short of the invite's own 15, so an accept never races its expiry. */
+private const val TRUST_OFFER_LIFETIME_MS = 14 * 60 * 1000L
 
 /**
  * One avatar beside a room message, holding its space while the art loads.

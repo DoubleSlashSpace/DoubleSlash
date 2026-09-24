@@ -119,11 +119,39 @@ The peer list is the client's own record of who it trusts.
 The only way a peer relationship starts. A `d://` URL carrying an
 ephemeral X25519 key; the handshake completes over the supernode.
 
+The manager records every personal invite it mints (`issued_invites`). The
+inviter side of the handshake admits a joiner only by redeeming one of those
+(single use, within its 15 minutes) or when the joiner is already trusted.
+Anything else gets an `InviteHandshakeReject`. The joiner reports the refusal
+only if no accept follows within a few seconds, because another device signed
+in as the inviter may be the one that minted the invite. Invites are held in
+memory only, so links minted before a restart stop working.
+
 * **Core** — `connection_manager/manager/invite.rs`.
 * **Desktop** — `generateInvite`, `copyInvite`, `pasteInvite`.
 * **Android** — `invite.generate`, `invite.accept`, plus a `d://` intent
   filter so a tapped link opens the app. Links that arrive before unlock are
   held and replayed.
+
+**Trust invites.** You can offer a room member you do not yet trust a personal
+invite without leaving the room. The core
+(`connection_manager/manager/trust_invite.rs`) mints an ordinary invite and
+wraps it in a signed `TrustRequest`. It seals that to the member inside an
+`EncryptedSignal`, so the supernode cannot redeem the invite. The receiver
+checks four things:
+
+* the message came sealed;
+* the sender is a current member of the room it names;
+* we hold no record of the sender;
+* the invite was minted by the sender and is still live.
+
+Offers are rate-limited per sender and in total. Accepting is `AcceptInvite`
+with the carried URL.
+
+* **Desktop** — `sendTrustInvite`, `trustInviteResult`, `trustInviteReceived`
+  (`TrustInviteDialog.qml`).
+* **Android** — `room.trust_invite`, the `trust_invite_result` and
+  `trust_invite_received` events, and `invite.accept` to answer.
 
 ### 4. Direct chat
 
@@ -220,9 +248,13 @@ cpal's Oboe backend panics and takes the call controller with it.
 Same audio pipeline, fanned out by the supernode's SFU instead of sent
 peer-to-peer, sealed under the room sender key.
 
-* **Desktop** — `joinRoomWithVoice`, the `VoiceRail` and `ParticipantWidget` UI.
-* **Android** — `room.voice.join`, `room.voice.leave`, with a voice rail in the
-  room screen.
+* **Desktop** — `joinRoomWithVoice`, and the `VoiceRail` and `MemberRow` UI.
+  While a room is open, the rail lists the whole room from `textMembersUpdated`,
+  each row marked `in_voice`, `trusted` and `list_peer_id`. Otherwise it lists
+  the live voice session.
+* **Android** — `room.voice.join`, `room.voice.leave`, and a voice strip shown
+  over every screen. The room screen's Members sheet lists everyone in the room.
+  The strip and the sheet share one member menu.
 
 ### 9. Video
 

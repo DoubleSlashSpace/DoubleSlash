@@ -180,7 +180,43 @@ data class AppState(
     val avatars: Map<String, AvatarArt> = emptyMap(),
     /** Known supernodes, for the management screen. */
     val supernodeInfo: List<SupernodeInfo> = emptyList(),
+    /**
+     * Room members' offers to become trusted peers, oldest first. Only the
+     * first is shown; the rest wait their turn rather than replacing it.
+     */
+    val trustOffers: List<TrustOffer> = emptyList(),
+    /**
+     * Our trust invites this session, by [videoKey] of the member:
+     * `"pending"` or `"sent"`. Only there so the member menu does not offer a
+     * second invite to someone with one waiting.
+     */
+    val trustInvites: Map<String, String> = emptyMap(),
 )
+
+/** A room member asked to become trusted peers; accepting redeems [inviteUrl]. */
+data class TrustOffer(
+    val senderId: String,
+    /** The name they gave themselves — a claim, not an identity. */
+    val handle: String,
+    val roomId: String,
+    val inviteUrl: String,
+    val receivedAtMs: Long,
+)
+
+/**
+ * The trusted peer a room member is, or `null`.
+ *
+ * Room membership alone never makes someone a peer: this only says whether the
+ * member menu can open a chat, or must offer an invite instead. Matched on
+ * either spelling, as [roomSenderName] does.
+ */
+internal fun AppState.trustedPeer(memberId: String): Peer? {
+    val bare = memberId.trimEnd('=')
+    return peers.firstOrNull {
+        !it.blocked && !it.revoked && !it.isSupernode &&
+            (it.identityPub.trimEnd('=') == bare || it.peerId == memberId)
+    }
+}
 
 /**
  * Update one presence source and recompute [AppState.onlinePeers] from all of
@@ -243,6 +279,23 @@ internal fun Map<String, List<String>>.roomHeadcount(roomId: String): Int =
         .flatMap { it.value.asSequence() }
         .toSet()
         .size
+
+/**
+ * Everyone one room's rosters list, across every node that reported one.
+ *
+ * A cluster homes a room on several members and each node's roster names only
+ * its own attachments, so reading the roster of the node *we* joined through
+ * misses anyone attached elsewhere. For the voice strip that meant a peer
+ * streaming via another member had no tile to draw into: "Watch video" took
+ * effect and nothing appeared. Deduplicated across padding spellings, keeping
+ * the first spelling seen, since that is what subscriptions are matched on.
+ */
+internal fun Map<String, List<String>>.roomMembersUnion(roomId: String): List<String> =
+    entries.asSequence()
+        .filter { it.key.substringAfter(':', "") == roomId }
+        .flatMap { it.value.asSequence() }
+        .distinctBy { it.videoKey() }
+        .toList()
 
 /** An inbound offer: nothing arrives until it is accepted. */
 data class FileOffer(
@@ -1012,6 +1065,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Open the 1:1 chat with a trusted room member.
+     *
+     * Leaves the room view the way the back button does — voice, if live,
+     * carries on in the rail — so the chat is not stacked on a room screen
+     * that no longer has its state.
+     */
+    fun messageRoomMember(peer: Peer) {
+        if (_state.value.screen is Screen.RoomChat) closeRoom()
+        openChat(peer)
+    }
+
     fun closeChat() {
         _state.update { it.copy(screen = Screen.Home, messages = emptyList()) }
     }
@@ -1518,9 +1583,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val voice = s.voiceRoom ?: return
         // Every node's roster for this room: a cluster homes one room on
         // several members, and each knows only its own attachments.
-        val present = s.roomVoiceRosters
-            .filterKeys { it.substringAfter(':', "") == voice.roomId }
-            .values.flatten()
+        val present = s.roomVoiceRosters.roomMembersUnion(voice.roomId)
             .map { it.videoKey() }
             .toSet()
         val callPeer = s.call?.peerId
@@ -1587,6 +1650,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
         val reply = core.command("invite.accept") { put("invite_url", trimmed) }
         if (!reply.ok) _state.update { it.copy(error = reply.errorText) }
+    }
+
+    /**
+     * Offer [memberId], a member of room [roomId], to become trusted peers.
+     *
+     * The core seals a fresh invite to them; they are asked before anything
+     * is trusted. The outcome arrives as `trust_invite_result`.
+     */
+    fun sendTrustInvite(roomId: String, memberId: String) = viewModelScope.launch {
+        if (roomId.isEmpty() || memberId.isEmpty()) return@launch
+        val key = memberId.videoKey()
+        _state.update { it.copy(trustInvites = it.trustInvites + (key to "pending")) }
+        val reply = core.command("room.trust_invite") {
+            put("room_id", roomId)
+            put("member_id", memberId)
+        }
+        if (!reply.ok) {
+            _state.update { it.copy(trustInvites = it.trustInvites - key, error = reply.errorText) }
+        }
+    }
+
+    /** Answer the offer on screen; accepting redeems its invite like a pasted link. */
+    fun answerTrustOffer(accept: Boolean) {
+        val offer = _state.value.trustOffers.firstOrNull() ?: return
+        _state.update { it.copy(trustOffers = it.trustOffers.drop(1)) }
+        if (accept) acceptInvite(offer.inviteUrl)
     }
 
     fun dismissError() = _state.update { it.copy(error = null, notice = null) }
@@ -1760,6 +1849,41 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             "invite_failed" ->
                 _state.update { it.copy(error = event.string("reason") ?: "invite failed") }
 
+            "trust_invite_received" -> {
+                val offer = TrustOffer(
+                    senderId = event.stringOrEmpty("sender_id"),
+                    handle = event.stringOrEmpty("handle"),
+                    roomId = event.stringOrEmpty("room_id"),
+                    inviteUrl = event.stringOrEmpty("invite_url"),
+                    receivedAtMs = System.currentTimeMillis(),
+                )
+                if (offer.senderId.isEmpty() || offer.inviteUrl.isEmpty()) return@onCoreEvent
+                refreshAvatars(listOf(offer.senderId))
+                _state.update { s ->
+                    // A newer offer from the same person replaces theirs in
+                    // place: the older invite may already have expired.
+                    val at = s.trustOffers.indexOfFirst { it.senderId == offer.senderId }
+                    val next = if (at >= 0) {
+                        s.trustOffers.toMutableList().also { it[at] = offer }
+                    } else {
+                        s.trustOffers + offer
+                    }
+                    s.copy(trustOffers = next)
+                }
+            }
+
+            "trust_invite_result" -> {
+                val key = event.stringOrEmpty("member_id").videoKey()
+                val error = event.stringOrEmpty("error")
+                _state.update {
+                    if (error.isEmpty()) {
+                        it.copy(trustInvites = it.trustInvites + (key to "sent"))
+                    } else {
+                        it.copy(trustInvites = it.trustInvites - key, error = "Invite not sent: $error")
+                    }
+                }
+            }
+
             "device_routing_unsupported" ->
                 _state.update { it.copy(error = "This node needs an update before it can connect multiple devices using one identity.") }
 
@@ -1902,7 +2026,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // roster, not just the open room's — is what makes an avatar
                 // present the moment the rail appears. Already-known ids are
                 // filtered out inside, so this is cheap to call on each change.
-                refreshAvatars(members)
+                // Text-only members too: the room's member sheet lists them.
+                refreshAvatars(members + chatMembers)
                 pruneWatchedToVoiceRoom()
                 if (!isOpenRoom(event)) return@onCoreEvent
                 // Membership arriving at all means the supernode admitted us.

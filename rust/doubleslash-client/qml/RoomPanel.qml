@@ -22,7 +22,9 @@ Item {
     property bool youtubePreviewEnabled: true
     property bool youtubeInlineAck: false
 
-    // Members sidebar (who is in this text room + their presence).
+    // Whether the room's member list is shown. The list itself lives in the
+    // voice rail — one roster for voice and text — which MainWindow opens
+    // while this is true.
     property bool membersOpen: true
 
     // True when voice is already live for *this* room, so the header's Join
@@ -257,7 +259,7 @@ Item {
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.margins: Theme.spacingMd
-        anchors.rightMargin: membersPanel.width + Theme.spacingMd
+        anchors.rightMargin: Theme.spacingMd
         anchors.topMargin: Theme.touchTarget + Theme.spacingMd + Theme.spacingXs
         visible: root._statsPanelOpen && root.roomId !== ""
         title: "Room Connection"
@@ -652,139 +654,5 @@ Item {
         }
     }  // end chat ColumnLayout
 
-        // ── Members sidebar ───────────────────────────────────────────────
-        // Live roster of who is in this text room, grouped by presence.
-        Rectangle {
-            id: membersPanel
-            Layout.fillHeight: true
-            Layout.preferredWidth: root.membersOpen && root.participantCount > 0 ? 190 : 0
-            visible: Layout.preferredWidth > 0
-            clip: true
-            color: Theme.bg1
-
-            Behavior on Layout.preferredWidth {
-                NumberAnimation { duration: Theme.animFast; easing.type: Easing.InOutQuad }
-            }
-
-            // Left separator
-            Rectangle {
-                anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
-                width: 1
-                color: Theme.divider
-            }
-
-            ColumnLayout {
-                anchors { fill: parent; leftMargin: 1 }
-                spacing: 0
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: Theme.touchTarget + Theme.spacingXs
-                    color: Theme.bg2
-
-                    Text {
-                        anchors {
-                            verticalCenter: parent.verticalCenter
-                            left: parent.left
-                            leftMargin: Theme.spacingMd
-                        }
-                        text: "Members (" + root.participantCount + ")"
-                        color: Theme.muted
-                        font.pixelSize: Theme.fontSizeCaption
-                        font.capitalization: Font.AllUppercase
-                        font.letterSpacing: 1.2
-                        font.bold: true
-                    }
-                }
-
-                ListView {
-                    id: membersList
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    model: root.roomModel
-
-                    // Present members first, absent (offline) below.
-                    section.property: "online"
-                    section.criteria: ViewSection.FullString
-                    section.delegate: Rectangle {
-                        width: membersList.width
-                        height: 20
-                        color: "transparent"
-
-                        Text {
-                            anchors {
-                                verticalCenter: parent.verticalCenter
-                                left: parent.left
-                                leftMargin: Theme.spacingMd
-                            }
-                            text: (section === "true" ? "Online" : "Offline")
-                            color: Theme.muted
-                            font.pixelSize: Theme.fontSizeMicro
-                            font.capitalization: Font.AllUppercase
-                            font.letterSpacing: 1.0
-                            font.bold: true
-                        }
-                    }
-
-                    delegate: Item {
-                        id: memberRow
-                        width: ListView.view ? ListView.view.width : 0
-                        height: 44
-
-                        required property string peerId
-                        required property string handle
-                        required property bool isSelf
-                        required property bool online
-
-                        RowLayout {
-                            anchors {
-                                fill: parent
-                                leftMargin: Theme.spacingMd
-                                rightMargin: Theme.spacingSm
-                            }
-                            spacing: Theme.spacingSm
-
-                            Avatar {
-                                peerId: memberRow.peerId
-                                size: 28
-                                showRing: true
-                                ringColor: memberRow.online ? Theme.online : tintColor
-                                Layout.alignment: Qt.AlignVCenter
-                            }
-
-                            Text {
-                                text: memberRow.isSelf
-                                    ? ((memberRow.handle || memberRow.peerId) + " (you)")
-                                    : (memberRow.handle || memberRow.peerId)
-                                color: Theme.text
-                                font.pixelSize: Theme.fontSizeBody
-                                elide: Text.ElideRight
-                                Layout.fillWidth: true
-                            }
-
-                            // Presence dot
-                            Rectangle {
-                                width: 8
-                                height: 8
-                                radius: 4
-                                color: memberRow.online ? Theme.online : Theme.muted
-                                Layout.alignment: Qt.AlignVCenter
-                            }
-                        }
-                    }
-
-                    EmptyState {
-                        anchors.centerIn: parent
-                        visible: membersList.count === 0
-                        width: Math.min(parent.width - Theme.spacingLg, 150)
-                        iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/peers.svg"
-                        iconSize: 28
-                        title: "No one else here"
-                        subtitle: "Members appear as they join."
-                    }
-                }
-            }
-        }
     }  // end RowLayout
 }

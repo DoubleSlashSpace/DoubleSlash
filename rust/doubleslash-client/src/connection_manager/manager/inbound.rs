@@ -552,6 +552,20 @@ impl ConnectionManager {
                     }
                 }
             }
+            MessageType::TrustRequest => {
+                // Deliberately outside the mutual-trust gate: it is how a room
+                // member we do not trust yet asks to be. Sealed only — the
+                // invite inside would be redeemable by any supernode that saw
+                // it in the clear.
+                if encrypted {
+                    self.handle_trust_request(&msg);
+                } else {
+                    warn!(
+                        "[trust-invite] cleartext offer from {} — dropped",
+                        &msg.sender[..8.min(msg.sender.len())],
+                    );
+                }
+            }
             MessageType::SfuGroupKeyRequest => {
                 // Keyer side: a member says it holds no key for this room. The
                 // outer EncryptedSignal already proved possession of
@@ -1557,6 +1571,47 @@ impl ConnectionManager {
                     .filter(|hint| parse_quic_lan_hint(hint).is_some())
                     .unwrap_or("")
                     .to_owned();
+
+                // The signature proves who the joiner is, not that we ever
+                // invited them. Admit only an invite this client issued and
+                // nobody has redeemed, or a re-run from a peer already trusted
+                // (a reconnect, or the same INIT arriving over a second path).
+                // Without this, anyone who could reach us — any member of a
+                // room we share, which lists our public_id — could make
+                // themselves our trusted peer.
+                let joiner_bare = joiner_identity_pub.trim_end_matches('=');
+                let (already_trusted, key_taken) = {
+                    let store = self.peer_store.read();
+                    let trusted = store
+                        .find_identity(&joiner_identity_pub)
+                        .is_some_and(|r| !r.blocked && !r.revoked && !r.is_supernode);
+                    // `joiner_peer_id` is theirs to choose, and the store is
+                    // keyed by it: naming another peer's key would overwrite
+                    // that peer's record below.
+                    let taken = store
+                        .get(&joiner_peer_id)
+                        .is_some_and(|r| r.identity_pub.trim_end_matches('=') != joiner_bare);
+                    (trusted, taken)
+                };
+                if key_taken {
+                    warn!(
+                        "InviteHandshakeInit from {} claims another peer's id — refused",
+                        &joiner_identity_pub[..8.min(joiner_identity_pub.len())]
+                    );
+                    return;
+                }
+                let issued = self.redeem_issued_invite(&invite_id);
+                if !issued && !already_trusted {
+                    warn!(
+                        "InviteHandshakeInit from {} for an invite we did not issue (id={}) — refused",
+                        &joiner_identity_pub[..8.min(joiner_identity_pub.len())],
+                        &invite_id[..8.min(invite_id.len())]
+                    );
+                    self.send_invite_reject(&joiner_identity_pub, &invite_id)
+                        .await;
+                    return;
+                }
+
                 if let Some(ref transport_peer_id) = quic_peer_id {
                     self.relabel_quic_peer_session(transport_peer_id, &joiner_peer_id);
                 }
@@ -1770,10 +1825,23 @@ impl ConnectionManager {
                 }
             }
             MessageType::InviteHandshakeReject => {
+                let invite_id = msg
+                    .payload
+                    .get("invite_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let reason = msg
+                    .payload
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("no reason given");
                 warn!(
-                    "Invite rejected by {}",
+                    "Invite rejected by {}: {reason}",
                     &msg.sender[..8.min(msg.sender.len())]
                 );
+                // Only the inviter can refuse its own invite; the match on
+                // sender inside keeps a third party from cancelling ours.
+                self.note_invite_rejected(&msg.sender, invite_id, reason);
             }
             // ── File transfer ─────────────────────────────────────────────────────────────
             MessageType::FileTransferOffer => {

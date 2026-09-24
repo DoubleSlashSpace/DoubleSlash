@@ -266,9 +266,21 @@ pub(super) struct PendingInvite {
     pub(super) lan_hint: String,
     pub(super) is_supernode: bool,
     pub(super) created_at: Instant,
+    /// When the inviter refused this handshake, if it has.
+    ///
+    /// Provisional: every device signed in as the inviter receives the INIT,
+    /// and only the one that minted the invite recognises it — a sibling's
+    /// refusal can arrive just before the minting device's accept. So a refusal
+    /// only fails the invite once [`INVITE_REJECT_GRACE`] passes without one.
+    pub(super) rejected_at: Option<Instant>,
+    pub(super) reject_reason: String,
 }
 
 pub(super) const INVITE_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// How long a refused invite waits for an accept from another of the
+/// inviter's devices before it is reported as failed.
+pub(super) const INVITE_REJECT_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct PeerTransportStats {

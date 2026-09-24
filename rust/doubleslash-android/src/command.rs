@@ -539,6 +539,19 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                 invite_url: invite_url.to_owned(),
             }))
         }
+        // Offer a room member we do not trust to become trusted peers. The
+        // outcome arrives as `trust_invite_result`.
+        "room.trust_invite" => {
+            let (Some(room_id), Some(member_id)) =
+                (arg_str(&parsed, "room_id"), arg_str(&parsed, "member_id"))
+            else {
+                return err("room.trust_invite requires \"room_id\" and \"member_id\"");
+            };
+            queued(session.send(ConnectionCommand::SendTrustInvite {
+                room_id: room_id.to_owned(),
+                member_public_id: member_id.to_owned(),
+            }))
+        }
 
         // ── Rooms ─────────────────────────────────────────────────────────
         "room.list" => {

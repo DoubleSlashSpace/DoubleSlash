@@ -234,6 +234,23 @@ impl PeerStore {
             .find(|r| r.identity_pub == identity_pub)
     }
 
+    /// The record for a room member or other `public_id`, whichever spelling.
+    ///
+    /// Room rosters carry padded base64url ids while some stored identities are
+    /// unpadded, so an exact [`Self::get_by_identity`] can miss a peer we do
+    /// hold — and a miss here reads as "not trusted".
+    pub fn find_identity(&self, id: &str) -> Option<&PeerRecord> {
+        let bare = id.trim_end_matches('=');
+        if bare.is_empty() {
+            return None;
+        }
+        self.records.get(id).or_else(|| {
+            self.records
+                .values()
+                .find(|r| r.identity_pub.trim_end_matches('=') == bare)
+        })
+    }
+
     pub fn get_mut(&mut self, peer_id: &str) -> Option<&mut PeerRecord> {
         self.records.get_mut(peer_id)
     }

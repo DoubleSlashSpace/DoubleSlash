@@ -25,6 +25,31 @@ in [`README.md`](README.md) and on the website must have a home here.
 Fixes and live acceptance of paths the product already advertises. Do not start
 new capture backends or pairing protocols until these have a written result.
 
+### Unified room member list and trust invites
+
+The room member list now lives in the desktop `VoiceRail` and the Android
+Members sheet: in voice / text only, with a shared per-member menu.
+Room-member trust invites (`TrustRequest` sealed in `EncryptedSignal`) have
+unit, bridge and two-manager tests. **Not yet verified live:**
+
+- Desktop ↔ Android, both directions, on a private two-party room:
+  1. Invite, Accept, then the peer appears in Peers on both sides, and
+     Message opens the chat.
+  2. Not now leaves nothing trusted.
+  3. A second invite within a minute is refused with a notice.
+- In-voice marks follow joins and leaves while a room is browsed without
+  voice, across a cluster (the union of per-node voice rosters).
+- Watch video from the member list, Stop watching for a popped-out window,
+  and the level rings in the list while voice is live in that room.
+- Invite handshake gate (issued-invite check, unit and manager tests only):
+  1. An ordinary pasted link still completes desktop ↔ Android.
+  2. The same link used a second time by someone else is refused, with a
+     banner on their side.
+  3. A link minted before the inviter restarts is refused afterwards.
+  4. With the inviter's desktop and phone both online as one identity, a link
+     minted on one still completes. The other device's refusal must not
+     surface as a failure.
+
 ### Group-key: remaining live gaps
 
 Election padding, catch-up minting, forward epoch jumps (`MAX_EPOCH_ADVANCE`),

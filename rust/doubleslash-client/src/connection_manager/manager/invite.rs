@@ -9,10 +9,13 @@ use tracing::{info, warn};
 use crate::protocol::{MessageType, SignalingMessage};
 
 use super::super::events::ConnectionEvent;
-use super::super::internal::PendingInvite;
+use super::super::internal::{PendingInvite, INVITE_REJECT_GRACE};
 use super::ConnectionManager;
 
-use super::{parse_quic_lan_hint, unix_now_f64};
+use super::{parse_quic_lan_hint, unix_now_f64, unix_now_secs};
+
+/// Most issued-but-unredeemed invites remembered at once.
+const MAX_ISSUED_INVITES: usize = 256;
 
 /// breaking change to [`build_room_invite_url`] / [`parse_room_invite`] and add
 /// migration handling in the parser.
@@ -209,7 +212,104 @@ impl ConnectionManager {
             }
         }
         let encoded = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
+        // Recorded so the handshake can tell an invite we issued from an id a
+        // stranger made up: the INIT is signed by the joiner, which proves who
+        // they are, not that we ever invited them.
+        self.record_issued_invite(&invite_id, expires_at);
         Some(doubleslash_features::mint_invite_https("invite", &encoded))
+    }
+
+    /// Remember that we minted `invite_id`, live until `expires_at` (unix secs).
+    ///
+    /// In memory only: an invite lives 15 minutes, so one issued before a
+    /// restart failing closed afterwards is the price of not persisting bearer
+    /// credentials. Bounded, dropping the soonest-expiring first.
+    pub(super) fn record_issued_invite(&mut self, invite_id: &str, expires_at: u64) {
+        let now = unix_now_secs();
+        self.issued_invites.retain(|_, exp| *exp >= now);
+        if self.issued_invites.len() >= MAX_ISSUED_INVITES {
+            if let Some(soonest) = self
+                .issued_invites
+                .iter()
+                .min_by_key(|(_, exp)| **exp)
+                .map(|(id, _)| id.clone())
+            {
+                self.issued_invites.remove(&soonest);
+            }
+        }
+        self.issued_invites.insert(invite_id.to_owned(), expires_at);
+    }
+
+    /// Consume `invite_id` if we issued it and it is still live.
+    ///
+    /// Single use: the first joiner to present an invite is the one it admits.
+    /// A second INIT from that same joiner (it sends over QUIC and the relay
+    /// both) is admitted as a re-run of a trusted peer instead, not by the id.
+    pub(super) fn redeem_issued_invite(&mut self, invite_id: &str) -> bool {
+        match self.issued_invites.remove(invite_id) {
+            Some(expires_at) => expires_at >= unix_now_secs(),
+            None => false,
+        }
+    }
+
+    /// Tell a joiner we will not complete their handshake.
+    pub(super) async fn send_invite_reject(&mut self, joiner_identity_pub: &str, invite_id: &str) {
+        let mut reject = SignalingMessage::new(
+            MessageType::InviteHandshakeReject,
+            self.identity.public_id(),
+        );
+        reject.target = Some(joiner_identity_pub.to_owned());
+        reject
+            .payload
+            .insert("invite_id".into(), Value::String(invite_id.to_owned()));
+        reject.payload.insert(
+            "reason".into(),
+            Value::String(
+                "the inviter does not recognise this invite — it may have expired, \
+                 been used already, or been created before they restarted"
+                    .into(),
+            ),
+        );
+        self.dispatch_outbound(reject).await;
+    }
+
+    /// Joiner side: the inviter refused `invite_id` (or, from a supernode that
+    /// names none, whichever invite we hold from it). Marks it; the failure is
+    /// reported by [`Self::expire_rejected_invites`] if no accept follows.
+    ///
+    /// Supernode refusals are only logged: re-accepting a supernode invite the
+    /// node has already consumed is routine, and was trusted from the URL.
+    pub(super) fn note_invite_rejected(&mut self, sender: &str, invite_id: &str, reason: &str) {
+        let sender = sender.trim_end_matches('=');
+        let now = Instant::now();
+        for pending in self.pending_invites.values_mut() {
+            if pending.is_supernode
+                || pending.rejected_at.is_some()
+                || pending.inviter_identity_pub.trim_end_matches('=') != sender
+                || (!invite_id.is_empty() && pending.invite_id != invite_id)
+            {
+                continue;
+            }
+            pending.rejected_at = Some(now);
+            pending.reject_reason = reason.to_owned();
+        }
+    }
+
+    /// Fail every refused invite whose grace period passed without an accept.
+    pub(super) fn expire_rejected_invites(&mut self) {
+        let failed: Vec<(String, String)> = self
+            .pending_invites
+            .iter()
+            .filter(|(_, p)| {
+                p.rejected_at
+                    .is_some_and(|at| at.elapsed() >= INVITE_REJECT_GRACE)
+            })
+            .map(|(id, p)| (id.clone(), p.reject_reason.clone()))
+            .collect();
+        for (invite_id, reason) in failed {
+            self.pending_invites.remove(&invite_id);
+            self.emit_invite_failed(format!("invite refused: {reason}"));
+        }
     }
 
     /// Build a self-contained room invite URL for a room hosted on
@@ -631,6 +731,8 @@ impl ConnectionManager {
                 lan_hint: lan_hint.clone(),
                 is_supernode,
                 created_at: Instant::now(),
+                rejected_at: None,
+                reject_reason: String::new(),
             },
         );
 
@@ -769,5 +871,264 @@ impl ConnectionManager {
                 warn!("AcceptInvite: no WS session for inviter — message dropped");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The inviter side of the personal-invite handshake.
+    //!
+    //! A signed INIT proves who the joiner is, never that they were invited.
+    //! These pin that only an invite this client issued — once — or a re-run
+    //! from a peer already trusted gets anyone into the peer store.
+
+    use super::*;
+    use crate::identity::Identity;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+    use tokio_tungstenite::tungstenite::Message;
+
+    const HOST: &str = "host";
+
+    struct Client {
+        manager: ConnectionManager,
+        outgoing: mpsc::Receiver<Message>,
+        events: mpsc::Receiver<ConnectionEvent>,
+        _profile: tempfile::TempDir,
+    }
+
+    fn client() -> Client {
+        let identity = Arc::new(Identity::generate());
+        let profile = tempfile::tempdir().unwrap();
+        let store =
+            crate::peer_store::PeerStore::open(&identity, Some(&profile.path().join("peers.dat")))
+                .unwrap();
+        let (mut manager, events) =
+            ConnectionManager::new_for_test(identity, Arc::new(RwLock::new(store)));
+        let outgoing = manager.test_add_supernode_session(HOST);
+        Client {
+            manager,
+            outgoing,
+            events,
+            _profile: profile,
+        }
+    }
+
+    fn public_id(c: &Client) -> String {
+        c.manager.identity.public_id()
+    }
+
+    /// Everything `source` queued, as the supernode would relay it.
+    fn drain(source: &mut Client) -> Vec<SignalingMessage> {
+        let mut out = Vec::new();
+        while let Ok(Message::Text(raw)) = source.outgoing.try_recv() {
+            out.push(SignalingMessage::from_json(&raw).unwrap());
+        }
+        out
+    }
+
+    async fn deliver(messages: Vec<SignalingMessage>, target: &mut Client) {
+        for m in messages {
+            target
+                .manager
+                .handle_inbound_from_supernode(HOST.to_owned(), m)
+                .await;
+        }
+    }
+
+    fn knows(c: &Client, id: &str) -> bool {
+        c.manager.peer_store.read().find_identity(id).is_some()
+    }
+
+    fn invite_failures(c: &mut Client) -> usize {
+        let mut n = 0;
+        while let Ok(e) = c.events.try_recv() {
+            if matches!(e, ConnectionEvent::InviteFailed { .. }) {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// A well-formed invite in `inviter`'s name that `inviter` never minted.
+    fn forged_invite(inviter: &Client) -> String {
+        let eph = crate::crypto::generate_ephemeral_keypair();
+        let payload = serde_json::json!({
+            "inviter_peer_id": inviter.manager.identity.peer_id(),
+            "inviter_identity_pub": public_id(inviter),
+            "invite_id": "made-up-by-the-joiner",
+            "expires_at": unix_now_secs() + 900,
+            "inviter_ephemeral_pub": crate::crypto::b64url_encode_nopad(eph.public.as_bytes()),
+        });
+        doubleslash_features::mint_invite_https(
+            "invite",
+            &URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes()),
+        )
+    }
+
+    /// Run a whole handshake for `url` from `joiner` to `inviter`.
+    async fn handshake(joiner: &mut Client, inviter: &mut Client, url: &str) {
+        joiner.manager.handle_accept_invite(url.to_owned()).await;
+        let init = drain(joiner);
+        deliver(init, inviter).await;
+        let reply = drain(inviter);
+        deliver(reply, joiner).await;
+    }
+
+    #[tokio::test]
+    async fn an_issued_invite_admits_one_joiner_and_only_once() {
+        let mut inviter = client();
+        let mut first = client();
+        let mut second = client();
+        let url = inviter.manager.generate_invite_url().unwrap();
+
+        handshake(&mut first, &mut inviter, &url).await;
+        assert!(
+            knows(&inviter, &public_id(&first)),
+            "the invited joiner is admitted"
+        );
+
+        handshake(&mut second, &mut inviter, &url).await;
+        assert!(
+            !knows(&inviter, &public_id(&second)),
+            "a used invite admits nobody else"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invite_we_never_issued_is_refused_and_the_joiner_told() {
+        let mut inviter = client();
+        let mut joiner = client();
+        let url = forged_invite(&inviter);
+
+        joiner.manager.handle_accept_invite(url).await;
+        deliver(drain(&mut joiner), &mut inviter).await;
+        assert!(!knows(&inviter, &public_id(&joiner)), "nothing is trusted");
+
+        let reply = drain(&mut inviter);
+        assert!(!reply.is_empty());
+        assert!(
+            reply
+                .iter()
+                .all(|m| m.msg_type == MessageType::InviteHandshakeReject),
+            "a refusal and nothing else goes back"
+        );
+        deliver(reply, &mut joiner).await;
+
+        // Provisional until the grace passes without an accept.
+        joiner.manager.expire_rejected_invites();
+        assert_eq!(invite_failures(&mut joiner), 0);
+        for p in joiner.manager.pending_invites.values_mut() {
+            assert!(p.rejected_at.is_some(), "the refusal was recorded");
+            p.rejected_at = Some(Instant::now() - INVITE_REJECT_GRACE);
+        }
+        joiner.manager.expire_rejected_invites();
+        assert_eq!(invite_failures(&mut joiner), 1);
+        assert!(joiner.manager.pending_invites.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_trusted_peer_re_running_the_handshake_is_admitted() {
+        let mut inviter = client();
+        let mut joiner = client();
+        let url = inviter.manager.generate_invite_url().unwrap();
+        handshake(&mut joiner, &mut inviter, &url).await;
+        assert!(knows(&inviter, &public_id(&joiner)));
+
+        // Same, now-spent invite again: admitted as a known peer's re-run.
+        joiner.manager.handle_accept_invite(url).await;
+        deliver(drain(&mut joiner), &mut inviter).await;
+        let reply = drain(&mut inviter);
+        assert!(!reply.is_empty(), "the inviter answers");
+        assert!(
+            reply
+                .iter()
+                .all(|m| m.msg_type != MessageType::InviteHandshakeReject),
+            "a trusted peer is not refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_joiner_cannot_claim_another_peers_store_key() {
+        let mut inviter = client();
+        let joiner = client();
+        let victim = crate::peer_store::PeerRecord {
+            peer_id: "victim-key".into(),
+            identity_pub: "victim-identity".into(),
+            handle: "victim".into(),
+            ..Default::default()
+        };
+        inviter.manager.peer_store.write().upsert(victim);
+        let url = inviter.manager.generate_invite_url().unwrap();
+        let rest = doubleslash_features::normalize_app_url(&url).unwrap();
+        let encoded = rest.strip_prefix("invite#").unwrap().to_owned();
+        let payload: Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(encoded).unwrap()).unwrap();
+
+        let mut init = SignalingMessage::new(MessageType::InviteHandshakeInit, public_id(&joiner));
+        init.target = Some(public_id(&inviter));
+        init.payload
+            .insert("invite_id".into(), payload["invite_id"].clone());
+        init.payload
+            .insert("joiner_peer_id".into(), Value::String("victim-key".into()));
+        init.payload
+            .insert("joiner_handle".into(), Value::String("mallory".into()));
+        let sig = joiner
+            .manager
+            .identity
+            .sign(&init.canonical_bytes().unwrap());
+        init.signature = Some(base64::engine::general_purpose::URL_SAFE.encode(sig));
+        inviter
+            .manager
+            .handle_inbound_from_supernode(HOST.to_owned(), init)
+            .await;
+
+        let store = inviter.manager.peer_store.read();
+        let rec = store.get("victim-key").unwrap();
+        assert_eq!(rec.handle, "victim", "the victim's record is untouched");
+        assert_eq!(rec.identity_pub, "victim-identity");
+        assert!(store.find_identity(&public_id(&joiner)).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_siblings_refusal_does_not_undo_the_minting_devices_accept() {
+        let mut inviter = client();
+        let mut joiner = client();
+        let url = inviter.manager.generate_invite_url().unwrap();
+
+        joiner.manager.handle_accept_invite(url).await;
+        // Another device signed in as the inviter never issued it, and says so
+        // first.
+        let inviter_pub = public_id(&inviter);
+        joiner
+            .manager
+            .note_invite_rejected(&inviter_pub, "", "not recognised");
+        deliver(drain(&mut joiner), &mut inviter).await;
+        deliver(drain(&mut inviter), &mut joiner).await;
+
+        assert!(knows(&joiner, &inviter_pub), "the accept still completes");
+        joiner.manager.expire_rejected_invites();
+        assert_eq!(invite_failures(&mut joiner), 0);
+    }
+
+    #[tokio::test]
+    async fn only_the_inviter_can_refuse_its_invite() {
+        let inviter = client();
+        let mut joiner = client();
+        let url = forged_invite(&inviter);
+        joiner.manager.handle_accept_invite(url).await;
+        assert!(!joiner.manager.pending_invites.is_empty());
+
+        joiner
+            .manager
+            .note_invite_rejected("someone-else", "", "go away");
+        assert!(joiner
+            .manager
+            .pending_invites
+            .values()
+            .all(|p| p.rejected_at.is_none()));
     }
 }

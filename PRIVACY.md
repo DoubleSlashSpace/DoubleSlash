@@ -319,6 +319,13 @@ signaling and session channels:
 - Optional `AvatarConfig` after handshake (trusted peers only)
 - Negotiated capability descriptors (`CAPABILITY_ANNOUNCE`)
 
+If you choose **Invite to trusted peers** on a room member, that member receives
+an ordinary personal invite from you: your display name, public key, and, when
+known, your local-network QUIC address. It is encrypted to them before it
+reaches the supernode. The supernode can see that you sent them an encrypted
+message, but not what it contains. Nothing is sent unless you choose the
+action, and neither of you trusts the other until they accept.
+
 When you use a volunteer **supernode** for relay or group voice:
 
 - The supernode forwards encrypted/signed payloads between peers but **cannot

@@ -33,6 +33,7 @@ Direct video negotiates a common codec. Rooms default to VP9, which every build 
 - Supernodes host SFU (Selective Forwarding Unit) rooms for voice, chat, files, and video. The local room limit is 32 participants.
 - Clients save room definitions in encrypted `my_rooms.dat` and replay them when reconnecting. Supernode room state is held in memory; user-created rooms are removed after about 15 minutes without voice participants or text subscribers. The built-in `default` room is retained.
 - The Rooms sidebar supports nested rooms and private-room invitations, including a “Members can invite” option. Removing a room from the sidebar hides it locally. Leaving voice keeps the text room selected.
+- A room has one member list: the right-hand rail on desktop, the Members sheet on Android. Voice members are listed first; text-only members follow, dimmed. Selecting a member opens a menu. From it you can watch their video (only while you are in that room's voice), message them if they are a trusted peer, or invite them to become one. The invite is encrypted to that member, so the supernode cannot use it. They must accept before either side trusts the other.
 - Public user-created rooms are disabled by default. The `room.audio.sfu` capability's room-creation policy controls this; operators can enable them.
 - Signed Space trees and membership proofs support private-room admission across a supernode cluster. Cluster forwarding carries room chat and audio between nodes.
 
@@ -192,6 +193,7 @@ For module authors, [examples.rs](rust/doubleslash-features/src/examples.rs) con
 ## Security & Identity
 
 - Long-term Ed25519 identities authenticate invites and signaling. Invite handshakes use ephemeral X25519, HKDF, and AES-GCM with transcript binding and expiry checks.
+- A personal invite link works once, within 15 minutes, and only for the device that created it. A client restart invalidates any links it made before. A handshake that names an invite the inviter never issued is refused, so knowing someone's public ID is not enough to become their trusted peer.
 - Post-handshake signed signaling has timestamp freshness checks and per-sender replay deduplication. Real-time SFU audio and receiver-idempotent file chunk/completion messages are exempt from deduplication, but still require valid signatures and fresh timestamps.
 - Direct application signaling is session-encrypted. Room chat, file chunks, and media are sealed before reaching the supernode; group-key installation checks the elected keyer. Room names, membership, traffic volumes, and file-offer metadata remain visible to the relay.
 - Peer build-attestation messages carry signed claims and release metadata. They are not proof that a remote process is executing unmodified code.

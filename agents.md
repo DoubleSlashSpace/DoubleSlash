@@ -54,8 +54,22 @@ Unless stated otherwise, client paths below are relative to `rust/doubleslash-cl
 ### Identity, signaling, and reconnects
 
 - Invite handshakes require ephemeral X25519 material, signature verification, transcript binding, and expiry checks. Do not restore the empty session-key compatibility path.
+- A signed `InviteHandshakeInit` proves who the joiner is, not that they were invited. The inviter admits one only in two cases:
+  - it redeems an invite this manager minted (`issued_invites`: in memory, single use, expiring);
+  - it comes from a peer already trusted (a re-run over a second path, or a reconnect).
+
+  Refuse a `joiner_peer_id` that already keys another identity's record. Mint personal invites only through `ConnectionManager::generate_invite_url`, never in the bridge or elsewhere. An invite minted outside the manager is refused by our own client.
+- Only the device that minted an invite recognises it, so a sibling device refuses with `InviteHandshakeReject`. The joiner treats a refusal as provisional: it fails the invite only after `INVITE_REJECT_GRACE` passes without an accept, and only for a refusal from the inviter's own identity. Refusals from supernodes are logged, not surfaced.
 - Post-handshake signaling requires Ed25519 verification and timestamp freshness (`MAX_MESSAGE_AGE_SECS`, currently 300 seconds), plus per-sender signature replay deduplication. `SfuAudio`, `FileTransferChunk` / `FileTransferComplete`, and `SfuFileChunk` / `SfuFileComplete` skip deduplication, not signatures or freshness. Preserve negative tests for replayed, stale, and future-dated messages.
 - Preserve the mutual-trust receiver gate for all chat/call/file message classes, including call accept/end and file payloads. An authenticated relay connection alone does not authorize a peer to send application traffic.
+- Room-member trust invites (`manager/trust_invite.rs`) carry an ordinary personal invite inside a signed `TrustRequest`, sealed to the member in `EncryptedSignal`. Honor `TrustRequest` only when it arrived sealed: a supernode that sees the invite could redeem it. `TrustRequest` sits outside the mutual-trust gate, because asking for trust is its purpose. Keep all of the receiver's checks:
+  - the sender is in the named room's membership union;
+  - we hold no peer-store record of them (trusted, blocked, revoked, or supernode);
+  - the invite's `inviter_identity_pub` equals the sender, and the invite is live;
+  - the handle is stripped of control and bidi characters;
+  - per-sender and total rate limits apply.
+
+  Receiving an offer must only prompt; trust begins at `AcceptInvite`.
 - Normalize padded/unpadded Ed25519 public IDs where identity equality or ordering matters, including SFU ACLs and group-key election. A hex peer-store key is not a `public_id`.
 - Direct video/content-audio signatures bind `direct_conv_id(sender_public_id, recipient_public_id)`. Resolve the recipient through `recipient_public_id` in `manager/peer_session.rs`; signing against the `peers` map's hex key makes the receiver reconstruct a different conversation ID.
 - Classify new supernodes from the signed invite's `is_supernode`, persisted as `is_supernode` / `supernode_from_invite`. Do not infer supernode identity from `relay_hints` or a WebSocket URL. Existing `restore_supernodes_referenced_by_ids` recovery uses saved room references; it is not a general endpoint heuristic.
@@ -118,6 +132,11 @@ Supernodes may use peer/device IDs, room/session IDs, membership, indices, signa
 
 - Keep Peers limited to `list_non_supernode_peers()`; Rooms lists trusted `supernodes()`. Keep `connection_mode`, participant state, unread/missed-call badges, and tray behavior synchronized.
 - Voice ends through `VoiceRail` End/Leave. `RoomPanel` is the text room; leaving voice must retain its selection. Sidebar removal is local hiding, not a remote delete or voice hang-up action.
+- A room has one member list: `VoiceRail` in `roomView`, over `textRoomModel`. Do not add a second members panel to `RoomPanel`.
+  - `textMembersUpdated` folds in the voice roster and marks rows with `in_voice`, `trusted` and `list_peer_id`. Re-emit it when a voice roster changes for the viewed room, and when trust changes.
+  - Forward live levels and speaking state to `textRoomModel` only while voice is live for the viewed room.
+  - Watching, per-peer mute and volume apply only to members of the voice session we are in.
+  - `RoomModel::setParticipants` carries listener-local state (local mute, volume, level) across resets.
 - Wire room nesting/invite controls through `create_room_impl` / `create_sub_room` and `adopt_room_into_space`. Preserve expand/collapse for existing `parent_id` hierarchies.
 - Re-enumerate share sources on every popup open. A missing saved source must show “Source unavailable,” not silently select another. Ask about audio when starting a share, not stopping it.
 - Drive video UI from `video_active`, `content_audio_active`, and `video_preview_active`. Show an explicit unavailable state where a capture/encode path is absent.
@@ -135,6 +154,7 @@ Supernodes may use peer/device IDs, room/session IDs, membership, indices, signa
 - Keep the unlocked-session foreground service as `specialUse`; claim microphone/camera types only for an active call with the matching permission. Preserve the notification Disconnect action, terms acceptance, explained runtime permissions, and identifier-only share-sheet reporting.
 - Never navigate to external HTTPS content with the native portal JS bridge attached. Keep file/content-provider access disabled in the portal WebView.
 - Keep CameraX-to-Rust sending separate from unsupported-platform `NullCamera` fallback. Android is no longer a platform with no camera implementation.
+- The room screen's Members sheet and the voice strip share one `MemberMenu` through `MemberActions`, so the two cannot offer different actions. Trust invites use `room.trust_invite` and the `trust_invite_received` / `trust_invite_result` events.
 
 ### Media invariants
 

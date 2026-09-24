@@ -151,6 +151,23 @@ pub mod ffi {
         #[rust_name = "text_members_updated"]
         fn textMembersUpdated(self: Pin<&mut AppBridge>, json: QString);
 
+        /// A room member offered to become trusted peers. `handle` is the name
+        /// they gave themselves; accepting is `pasteInvite(invite_url)`.
+        #[qsignal]
+        #[rust_name = "trust_invite_received"]
+        fn trustInviteReceived(
+            self: Pin<&mut AppBridge>,
+            sender_id: QString,
+            handle: QString,
+            room_name: QString,
+            invite_url: QString,
+        );
+
+        /// Outcome of `sendTrustInvite`: `error` is empty once it was sent.
+        #[qsignal]
+        #[rust_name = "trust_invite_result"]
+        fn trustInviteResult(self: Pin<&mut AppBridge>, member_id: QString, error: QString);
+
         /// Emitted when a remote peer requests an audio call.
         #[qsignal]
         #[rust_name = "incoming_call"]
@@ -253,6 +270,13 @@ pub mod ffi {
         #[qinvokable]
         #[rust_name = "paste_invite"]
         fn pasteInvite(self: Pin<&mut AppBridge>, url: &QString);
+
+        /// Offer `member_id`, a member of room `room_id`, to become trusted
+        /// peers. The invite is sealed to them and they are asked first; the
+        /// outcome arrives as `trustInviteResult`.
+        #[qinvokable]
+        #[rust_name = "send_trust_invite"]
+        fn sendTrustInvite(self: Pin<&mut AppBridge>, room_id: &QString, member_id: &QString);
 
         /// Append a QML-originated diagnostic line to the client log (visible in
         /// `~/.doubleslash/logs/doubleslash-client.log` at info level).
@@ -1510,6 +1534,33 @@ pub struct AppBridgeRust {
     rematerialized_hosts: HashSet<String>,
 }
 
+/// Mint a personal invite through the connection manager, or say why not.
+///
+/// Only the manager may mint: it records each invite it issues, and the
+/// inviter side of the handshake admits no other. An invite built here while
+/// the manager is not answering would look fine and be refused by our own
+/// client on use — so there is no local fallback, only an explanation.
+fn mint_invite_or_explain(bridge: &mut Pin<&mut ffi::AppBridge>) -> Option<String> {
+    if bridge.rust().identity.is_none() {
+        warn!("invite: identity not yet unlocked");
+        return None;
+    }
+    match request_invite_url(bridge.rust()) {
+        Some(url) => {
+            bridge.as_mut().set_invite_url(QString::from(url.as_str()));
+            Some(url)
+        }
+        None => {
+            warn!("invite: connection manager did not mint one");
+            bridge.as_mut().set_invite_url(QString::default());
+            bridge.as_mut().set_session_banner(QString::from(
+                "Could not create an invite yet — try again in a moment.",
+            ));
+            None
+        }
+    }
+}
+
 fn request_invite_url(rust: &AppBridgeRust) -> Option<String> {
     let tx = rust.conn_cmd_tx.as_ref()?;
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
@@ -2687,89 +2738,19 @@ impl ffi::AppBridge {
     }
 
     fn copy_invite(mut self: Pin<&mut Self>) {
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine;
-
-        let Some(ref identity) = self.rust().identity else {
-            warn!("copy_invite: identity not yet unlocked");
+        let Some(url) = mint_invite_or_explain(&mut self) else {
             return;
         };
-        if let Some(url) = request_invite_url(self.rust()) {
-            match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(url.clone())) {
-                Ok(_) => info!("Invite link copied to clipboard: {url}"),
-                Err(e) => warn!("Clipboard write failed: {e} - invite URL: {url}"),
-            }
-            self.as_mut().set_invite_url(QString::from(url.as_str()));
-            return;
-        }
-        let peer_id = identity.peer_id().to_owned();
-        let pub_key = identity.public_id().to_owned();
-
-        // Build a minimal signed invite URL.
-        // Format: https://doubleslash.space/i#<base64url(JSON)>
-        let invite_id = uuid::Uuid::new_v4().to_string();
-        let expires_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-            + 900; // 15-minute TTL
-
-        let payload = serde_json::json!({
-            "inviter_peer_id": peer_id,
-            "inviter_identity_pub": pub_key,
-            "invite_id": invite_id,
-            "expires_at": expires_at,
-        });
-        let encoded = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
-        let url = doubleslash_features::mint_invite_https("invite", &encoded);
-
         match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(url.clone())) {
             Ok(_) => info!("Invite link copied to clipboard: {url}"),
-            Err(e) => warn!("Clipboard write failed: {e} — invite URL: {url}"),
+            Err(e) => warn!("Clipboard write failed: {e} - invite URL: {url}"),
         }
-        self.as_mut().set_invite_url(QString::from(url.as_str()));
     }
 
     fn generate_invite(mut self: Pin<&mut Self>) -> QString {
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine;
-
-        let Some(ref identity) = self.rust().identity else {
-            warn!("generate_invite: identity not yet unlocked");
-            return QString::default();
-        };
-        if let Some(url) = request_invite_url(self.rust()) {
-            self.as_mut().set_invite_url(QString::from(url.as_str()));
-            return QString::from(url.as_str());
-        }
-        let peer_id = identity.peer_id().to_owned();
-        let pub_key = identity.public_id().to_owned();
-
-        let invite_id = uuid::Uuid::new_v4().to_string();
-        let expires_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-            + 900;
-
-        let inviter_handle = read_local_handle();
-        // Keep the offline/fallback path wire-compatible with ConnectionManager::
-        // generate_invite_url (AcceptInvite rejects invites without this field).
-        let inviter_eph = crate::crypto::generate_ephemeral_keypair();
-        let inviter_ephemeral_pub =
-            crate::crypto::b64url_encode_nopad(inviter_eph.public.as_bytes());
-        let payload = serde_json::json!({
-            "inviter_peer_id": peer_id,
-            "inviter_identity_pub": pub_key,
-            "invite_id": invite_id,
-            "expires_at": expires_at,
-            "inviter_ephemeral_pub": inviter_ephemeral_pub,
-            "inviter_handle": inviter_handle,
-        });
-        let encoded = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
-        let url = doubleslash_features::mint_invite_https("invite", &encoded);
-        self.as_mut().set_invite_url(QString::from(url.as_str()));
-        QString::from(url.as_str())
+        mint_invite_or_explain(&mut self)
+            .map(|url| QString::from(url.as_str()))
+            .unwrap_or_default()
     }
 
     fn generate_room_invite(
@@ -3977,6 +3958,19 @@ impl ffi::AppBridge {
         }
     }
 
+    fn send_trust_invite(self: Pin<&mut Self>, room_id: &QString, member_id: &QString) {
+        let (room_id, member_public_id) = (room_id.to_string(), member_id.to_string());
+        if room_id.is_empty() || member_public_id.is_empty() {
+            return;
+        }
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::SendTrustInvite {
+                room_id,
+                member_public_id,
+            });
+        }
+    }
+
     fn configure_direct_p2p(self: Pin<&mut Self>, enabled: bool, port: i32) {
         let port = port.clamp(1, u16::MAX as i32) as u16;
         if let Some(ref tx) = self.rust().conn_cmd_tx {
@@ -4748,7 +4742,7 @@ impl ffi::AppBridge {
         }
     }
 
-    fn remove_peer(self: Pin<&mut Self>, peer_id: &QString) {
+    fn remove_peer(mut self: Pin<&mut Self>, peer_id: &QString) {
         let pid = peer_id.to_string();
         // Remove from in-memory + persisted peer store
         if let Some(ref ps) = self.rust().peer_store {
@@ -4757,6 +4751,7 @@ impl ffi::AppBridge {
                 let _ = store.save();
             }
         }
+        refresh_members_trust(&mut self);
         // Disconnect any active audio session
         if let Some(ref tx) = self.rust().call_cmd_tx {
             let _ = tx.try_send(CallCommand::RemovePeer {
@@ -6859,23 +6854,32 @@ fn emit_member_list_json(
         }
         set
     };
-    let json = if let Some(ps) = bridge.rust().peer_store.as_ref() {
-        room_participants_json(
-            Some(&ps.read()),
-            Some(&display_handles),
-            members,
-            &my_peer_id,
-            &my_public_id,
-            &streaming,
-        )
+    // The members list is the room's one roster: everyone in it, each marked
+    // in or out of voice. Voice participants are folded in as well as marked,
+    // so someone who joined voice before the chat roster caught up still shows.
+    let (ids, voice_ids) = if as_voice {
+        (members.to_vec(), None)
     } else {
+        let voice = selected_room_voice_ids(bridge.rust());
+        let mut ids = members.to_vec();
+        for id in &voice {
+            if !ids.iter().any(|m| pub_id_eq(m, id)) {
+                ids.push(id.clone());
+            }
+        }
+        (ids, Some(voice))
+    };
+    let json = {
+        let r = bridge.rust();
+        let store = r.peer_store.as_ref().map(|ps| ps.read());
         room_participants_json(
-            None,
+            store.as_deref(),
             Some(&display_handles),
-            members,
+            &ids,
             &my_peer_id,
             &my_public_id,
             &streaming,
+            voice_ids.as_deref(),
         )
     };
     if as_voice {
@@ -6887,6 +6891,62 @@ fn emit_member_list_json(
             .as_mut()
             .text_members_updated(QString::from(json.as_str()));
     }
+}
+
+/// Voice participants of the room shown in the members list, from every
+/// cluster member that reported one.
+///
+/// The live voice roster wins when that room is the one we are in voice for;
+/// otherwise the per-room cache the sidebar counts come from.
+fn selected_room_voice_ids(bridge: &AppBridgeRust) -> Vec<String> {
+    let room_id = bridge.current_room_id.as_str();
+    if room_id.is_empty() {
+        return Vec::new();
+    }
+    if is_active_voice_room(bridge, &bridge.current_supernode_id, room_id) {
+        return bridge.room_participant_ids.clone();
+    }
+    let mut out: Vec<String> = Vec::new();
+    for (key, ids) in &bridge.room_voice_rosters {
+        // Keys are `supernode_id:room_id`; supernode ids are base64url and room
+        // ids hex, so the first ':' is the only separator.
+        let Some((sn, rid)) = key.split_once(':') else {
+            continue;
+        };
+        if rid != room_id || !same_cluster_scope(bridge, &bridge.current_supernode_id, sn) {
+            continue;
+        }
+        for id in ids {
+            if !out.iter().any(|o| pub_id_eq(o, id)) {
+                out.push(id.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Re-emit the members list after a trust change, so a member who just became
+/// (or stopped being) a peer is offered the right actions.
+fn refresh_members_trust(bridge: &mut Pin<&mut ffi::AppBridge>) {
+    if bridge.rust().text_member_ids.is_empty() {
+        return;
+    }
+    let ids = bridge.rust().text_member_ids.clone();
+    emit_member_list_json(bridge, &ids, false);
+}
+
+/// Re-emit the members list when a voice roster changed for the room it shows,
+/// so the in/out-of-voice marks follow people joining and leaving voice.
+fn refresh_members_for_voice_change(
+    bridge: &mut Pin<&mut ffi::AppBridge>,
+    supernode_id: &str,
+    room_id: &str,
+) {
+    if !is_selected_text_room(bridge.rust(), supernode_id, room_id) {
+        return;
+    }
+    let ids = bridge.rust().text_member_ids.clone();
+    emit_member_list_json(bridge, &ids, false);
 }
 
 /// Local-only teardown for a call that is over, shared by both hang-up paths.
@@ -7070,6 +7130,7 @@ fn update_room_voice_count(
             .as_mut()
             .sfu_rooms_updated(QString::from(patch.as_str()));
     }
+    refresh_members_for_voice_change(bridge, supernode_id, room_id);
 }
 
 /// Mutate the cached voice roster for a room (join/leave of a single peer)
@@ -7105,6 +7166,7 @@ fn adjust_room_voice_member(
             .as_mut()
             .sfu_rooms_updated(QString::from(patch.as_str()));
     }
+    refresh_members_for_voice_change(bridge, supernode_id, room_id);
 }
 
 /// Seed/refresh per-room voice rosters from an SFU room-list snapshot.
@@ -7149,6 +7211,7 @@ fn seed_voice_rosters_from_room_list(
                 .rust_mut()
                 .room_voice_rosters
                 .insert(key, participant_ids);
+            refresh_members_for_voice_change(bridge, supernode_id, room_id);
         }
     }
 }
@@ -7743,10 +7806,31 @@ fn room_participants_json(
     my_peer_id: &str,
     my_public_id: &str,
     streaming: &HashSet<String>,
+    // Who of `ids` is in voice; `None` when every id is (the voice roster).
+    voice_ids: Option<&[String]>,
 ) -> String {
+    let in_voice = |id: &str| voice_ids.is_none_or(|v| v.iter().any(|m| pub_id_eq(m, id)));
+    // In voice first: the list is read top-down for who can hear you, and the
+    // order within each group stays the roster's so rows do not shuffle.
+    let mut ordered: Vec<&String> = ids.iter().collect();
+    ordered.sort_by_key(|id| !in_voice(id));
     serde_json::to_string(
-        &ids.iter()
+        &ordered
+            .into_iter()
             .map(|id| {
+                let is_self = id == my_public_id || id == my_peer_id;
+                // The Peers-list key for a member we trust, "" otherwise. Room
+                // membership alone never makes someone a peer; this only says
+                // whether the menu can open a chat or must offer an invite.
+                let list_peer_id = if is_self {
+                    String::new()
+                } else {
+                    peer_store
+                        .and_then(|s| s.find_identity(id))
+                        .filter(|r| !r.blocked && !r.revoked && !r.is_supernode)
+                        .map(|r| r.peer_id.clone())
+                        .unwrap_or_default()
+                };
                 serde_json::json!({
                     "peer_id": id,
                     "handle": room_participant_label(
@@ -7758,11 +7842,14 @@ fn room_participants_json(
                     ),
                     "speaking": false,
                     "muted": false,
-                    "is_self": id == my_public_id || id == my_peer_id,
+                    "is_self": is_self,
                     // Roster ids are the room's live-present members, so each is
                     // online by construction. The field is explicit so the room
                     // members list can bind a presence indicator directly.
                     "online": true,
+                    "in_voice": in_voice(id),
+                    "trusted": !list_peer_id.is_empty(),
+                    "list_peer_id": list_peer_id,
                     // Listener-local UI state. Emitted explicitly even though
                     // `Row` defaults them: every field here is `#[serde(default)]`
                     // on the consuming side, so a key omitted by mistake shows
@@ -9458,9 +9545,49 @@ fn dispatch_event(
                     mark_peer_online(&mut bridge.as_mut().rust_mut(), &pid, true);
                 }
                 emit_peers_updated(bridge.as_mut());
+                refresh_members_trust(&mut bridge);
                 bridge.as_mut().peer_added(
                     QString::from(peer_id.as_str()),
                     QString::from(handle.as_str()),
+                );
+            });
+        }
+        ConnectionEvent::TrustInviteReceived {
+            sender_public_id,
+            handle,
+            room_id,
+            invite_url,
+        } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                let room_name = bridge
+                    .rust()
+                    .room_store
+                    .as_ref()
+                    .and_then(|rs| {
+                        rs.read()
+                            .list()
+                            .into_iter()
+                            .find(|e| e.room_id == room_id)
+                            .map(|e| e.room_name.clone())
+                    })
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or(room_id);
+                bridge.as_mut().trust_invite_received(
+                    QString::from(sender_public_id.as_str()),
+                    QString::from(handle.as_str()),
+                    QString::from(room_name.as_str()),
+                    QString::from(invite_url.as_str()),
+                );
+            });
+        }
+        ConnectionEvent::TrustInviteResult {
+            member_public_id,
+            error,
+        } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge.as_mut().trust_invite_result(
+                    QString::from(member_public_id.as_str()),
+                    QString::from(error.as_str()),
                 );
             });
         }
@@ -10173,6 +10300,122 @@ mod room_voice_count_tests {
         let room = &out.as_array().unwrap()[0];
         assert_eq!(room.get("voice_count").and_then(|v| v.as_u64()), Some(1));
         assert_eq!(room.get("chat_count").and_then(|v| v.as_u64()), Some(3));
+    }
+}
+
+#[cfg(test)]
+mod member_list_tests {
+    //! The room's one roster: every member, marked in or out of voice, with
+    //! whether they are a trusted peer deciding what their menu offers.
+
+    use super::room_participants_json;
+    use std::collections::HashSet;
+
+    fn rows(json: &str) -> Vec<serde_json::Value> {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn voice_members_come_first_and_are_marked() {
+        let ids = ["text-a", "voice-b=", "text-c", "voice-d"].map(String::from);
+        // One spelled padded, one not: voice rosters and chat rosters disagree.
+        let voice = ["voice-b", "voice-d="].map(String::from);
+        let out = rows(&room_participants_json(
+            None,
+            None,
+            &ids,
+            "",
+            "",
+            &HashSet::new(),
+            Some(&voice),
+        ));
+        let order: Vec<(&str, bool)> = out
+            .iter()
+            .map(|r| {
+                (
+                    r["peer_id"].as_str().unwrap(),
+                    r["in_voice"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("voice-b=", true),
+                ("voice-d", true),
+                ("text-a", false),
+                ("text-c", false)
+            ],
+            "in voice first; roster order kept within each group"
+        );
+    }
+
+    #[test]
+    fn the_voice_roster_is_everyone_in_voice() {
+        let ids = ["a", "b"].map(String::from);
+        let out = rows(&room_participants_json(
+            None,
+            None,
+            &ids,
+            "",
+            "",
+            &HashSet::new(),
+            None,
+        ));
+        assert!(out.iter().all(|r| r["in_voice"] == true));
+    }
+
+    #[test]
+    fn only_usable_non_supernode_records_count_as_trusted() {
+        let identity = crate::identity::Identity::generate();
+        let dir = tempfile::tempdir().unwrap();
+        let mut store =
+            crate::peer_store::PeerStore::open(&identity, Some(&dir.path().join("peers.dat")))
+                .unwrap();
+        let record = |key: &str, pub_id: &str| crate::peer_store::PeerRecord {
+            peer_id: key.to_owned(),
+            identity_pub: pub_id.to_owned(),
+            ..Default::default()
+        };
+        store.upsert(record("hex-friend", "friend="));
+        let mut blocked = record("hex-blocked", "blocked");
+        blocked.blocked = true;
+        store.upsert(blocked);
+        let mut node = record("node", "node");
+        node.is_supernode = true;
+        store.upsert(node);
+
+        let ids = ["friend", "blocked", "node", "stranger", "me"].map(String::from);
+        let out = rows(&room_participants_json(
+            Some(&store),
+            None,
+            &ids,
+            "",
+            "me",
+            &HashSet::new(),
+            None,
+        ));
+        let trusted: Vec<(&str, bool, &str)> = out
+            .iter()
+            .map(|r| {
+                (
+                    r["peer_id"].as_str().unwrap(),
+                    r["trusted"].as_bool().unwrap(),
+                    r["list_peer_id"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            trusted,
+            [
+                // Found across the padding difference, keyed for the Peers list.
+                ("friend", true, "hex-friend"),
+                ("blocked", false, ""),
+                ("node", false, ""),
+                ("stranger", false, ""),
+                ("me", false, ""),
+            ]
+        );
     }
 }
 

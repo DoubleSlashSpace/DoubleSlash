@@ -294,6 +294,23 @@ pub enum ConnectionEvent {
     InviteAccepted { peer_id: String, handle: String },
     /// An invite could not be accepted or routed.
     InviteFailed { reason: String },
+    /// A room member we do not trust yet offered to become a trusted peer.
+    ///
+    /// `invite_url` is an ordinary personal invite whose inviter has already
+    /// been checked against the sealed envelope's sender, so accepting it is
+    /// `AcceptInvite` and nothing more. `handle` is the name the sender chose
+    /// for themselves — display it as a claim, not as an identity.
+    TrustInviteReceived {
+        sender_public_id: String,
+        handle: String,
+        room_id: String,
+        invite_url: String,
+    },
+    /// Outcome of a `SendTrustInvite`: `error` is empty once the invite left.
+    TrustInviteResult {
+        member_public_id: String,
+        error: String,
+    },
     /// Remote peer sent a file offer.
     FileOffered {
         transfer_id: String,
@@ -495,6 +512,13 @@ pub enum ConnectionCommand {
     /// invite handshake with the inviter.
     AcceptInvite {
         invite_url: String,
+    },
+    /// Offer a member of `room_id` a personal invite, sealed to them so the
+    /// supernode relaying it cannot redeem it. They are asked before anything
+    /// is trusted; see [`ConnectionEvent::TrustInviteReceived`].
+    SendTrustInvite {
+        room_id: String,
+        member_public_id: String,
     },
     /// Generate an invite URL from the transport layer so it can advertise
     /// the real local QUIC listener.

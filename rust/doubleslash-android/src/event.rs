@@ -313,6 +313,27 @@ pub fn to_json(event: &ConnectionEvent) -> Option<Value> {
             json!({ "event": "invite_accepted", "peer_id": peer_id, "handle": handle })
         }
         E::InviteFailed { reason } => json!({ "event": "invite_failed", "reason": reason }),
+        // Carries the invite itself: accepting is `invite.accept` with it.
+        E::TrustInviteReceived {
+            sender_public_id,
+            handle,
+            room_id,
+            invite_url,
+        } => json!({
+            "event": "trust_invite_received",
+            "sender_id": sender_public_id,
+            "handle": handle,
+            "room_id": room_id,
+            "invite_url": invite_url,
+        }),
+        E::TrustInviteResult {
+            member_public_id,
+            error,
+        } => json!({
+            "event": "trust_invite_result",
+            "member_id": member_public_id,
+            "error": error,
+        }),
         E::DeviceRoutingUnsupported { peer_id } => {
             json!({ "event": "device_routing_unsupported", "peer_id": peer_id })
         }
@@ -557,6 +578,22 @@ mod tests {
                 peer_id: "p".into()
             }),
             "call_ended",
+        );
+        assert_eq!(
+            name_of(&ConnectionEvent::TrustInviteReceived {
+                sender_public_id: "p".into(),
+                handle: "h".into(),
+                room_id: "r".into(),
+                invite_url: "u".into(),
+            }),
+            "trust_invite_received",
+        );
+        assert_eq!(
+            name_of(&ConnectionEvent::TrustInviteResult {
+                member_public_id: "p".into(),
+                error: String::new(),
+            }),
+            "trust_invite_result",
         );
     }
 

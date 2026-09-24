@@ -22,6 +22,12 @@ mod room_roles {
     pub const LOCAL_VOLUME: i32 = 264;
     /// Whether the participant is currently sending video.
     pub const VIDEO_ACTIVE: i32 = 265;
+    /// In the room's voice channel, as opposed to only its text chat.
+    pub const IN_VOICE: i32 = 266;
+    /// A trusted peer of ours (in the Peers list), not just a room member.
+    pub const TRUSTED: i32 = 267;
+    /// The Peers-list key for a trusted member, "" otherwise.
+    pub const LIST_PEER_ID: i32 = 268;
 }
 
 #[cxx_qt::bridge]
@@ -159,6 +165,13 @@ pub struct RoomParticipant {
     /// Whether this peer is currently sending video, which drives the voice
     /// rail's streaming indicator.
     pub video_active: bool,
+    /// In voice rather than text-only. Always true on the voice roster.
+    pub in_voice: bool,
+    /// A trusted peer, which decides whether the member menu offers a chat or
+    /// an invite.
+    pub trusted: bool,
+    /// Peers-list key for a trusted member, "" otherwise.
+    pub list_peer_id: String,
 }
 
 impl Default for RoomParticipant {
@@ -174,6 +187,9 @@ impl Default for RoomParticipant {
             local_muted: false,
             local_volume: 100,
             video_active: false,
+            in_voice: true,
+            trusted: false,
+            list_peer_id: String::new(),
         }
     }
 }
@@ -215,6 +231,9 @@ impl ffi::RoomModel {
             r if r == room_roles::LOCAL_MUTED => QVariant::from(&p.local_muted),
             r if r == room_roles::LOCAL_VOLUME => QVariant::from(&p.local_volume),
             r if r == room_roles::VIDEO_ACTIVE => QVariant::from(&p.video_active),
+            r if r == room_roles::IN_VOICE => QVariant::from(&p.in_voice),
+            r if r == room_roles::TRUSTED => QVariant::from(&p.trusted),
+            r if r == room_roles::LIST_PEER_ID => (&QString::from(p.list_peer_id.as_str())).into(),
             _ => QVariant::default(),
         }
     }
@@ -231,6 +250,9 @@ impl ffi::RoomModel {
         h.insert(room_roles::LOCAL_MUTED, QByteArray::from("localMuted"));
         h.insert(room_roles::LOCAL_VOLUME, QByteArray::from("localVolume"));
         h.insert(room_roles::VIDEO_ACTIVE, QByteArray::from("videoActive"));
+        h.insert(room_roles::IN_VOICE, QByteArray::from("inVoice"));
+        h.insert(room_roles::TRUSTED, QByteArray::from("trusted"));
+        h.insert(room_roles::LIST_PEER_ID, QByteArray::from("listPeerId"));
         h
     }
 
@@ -259,24 +281,45 @@ impl ffi::RoomModel {
             local_volume: i32,
             #[serde(default)]
             video_active: bool,
+            // Absent on the voice roster, where everyone is in voice.
+            #[serde(default = "default_online")]
+            in_voice: bool,
+            #[serde(default)]
+            trusted: bool,
+            #[serde(default)]
+            list_peer_id: String,
         }
         if let Ok(rows) = serde_json::from_str::<Vec<Row>>(&json.to_string()) {
-            self.as_mut().begin_reset_model();
-            self.as_mut().rust_mut().participants = rows
+            // A roster reset knows who is here, not what this listener did about
+            // them or how loud they are right now. The producer sends defaults
+            // for both, so a member who was already listed keeps ours — or every
+            // join or leave elsewhere in the room would clear "muted for me" and
+            // blank the level rings until the next audio tick.
+            let prior = &self.participants;
+            let carried = |id: &str| prior.iter().find(|p| p.peer_id == id);
+            let next: Vec<RoomParticipant> = rows
                 .into_iter()
-                .map(|r| RoomParticipant {
-                    peer_id: r.peer_id,
-                    handle: r.handle,
-                    speaking: r.speaking,
-                    muted: r.muted,
-                    audio_level: r.audio_level,
-                    is_self: r.is_self,
-                    online: r.online,
-                    local_muted: r.local_muted,
-                    local_volume: r.local_volume,
-                    video_active: r.video_active,
+                .map(|r| {
+                    let old = carried(&r.peer_id);
+                    RoomParticipant {
+                        speaking: old.map_or(r.speaking, |o| o.speaking),
+                        audio_level: old.map_or(r.audio_level, |o| o.audio_level),
+                        local_muted: old.map_or(r.local_muted, |o| o.local_muted),
+                        local_volume: old.map_or(r.local_volume, |o| o.local_volume),
+                        peer_id: r.peer_id,
+                        handle: r.handle,
+                        muted: r.muted,
+                        is_self: r.is_self,
+                        online: r.online,
+                        video_active: r.video_active,
+                        in_voice: r.in_voice,
+                        trusted: r.trusted,
+                        list_peer_id: r.list_peer_id,
+                    }
                 })
                 .collect();
+            self.as_mut().begin_reset_model();
+            self.as_mut().rust_mut().participants = next;
             self.as_mut().end_reset_model();
         }
     }
