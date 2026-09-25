@@ -227,6 +227,15 @@ pub fn union_members_for_room(
     union
 }
 
+/// Whether `after` names anyone `before` did not, ignoring how each spelled
+/// the id: nodes report the same member padded or not depending on the path.
+fn roster_gained(before: &HashSet<String>, after: &HashSet<String>) -> bool {
+    let known: HashSet<&str> = before.iter().map(|m| m.trim_end_matches('=')).collect();
+    after
+        .iter()
+        .any(|m| !known.contains(m.trim_end_matches('=')))
+}
+
 /// Parameters for `send_room_create`, bundled into one struct to keep the
 /// function under clippy's argument-count lint — every field maps 1:1 to a
 /// `SfuRoomCreate` wire field or a client-only replay/materialize flag, so
@@ -1660,6 +1669,81 @@ impl ConnectionManager {
             return;
         }
         self.send_video_state(true, None).await;
+    }
+
+    /// Apply one node's `SfuMembers` for `room_id`: reconcile the group key
+    /// over the text roster, record the voice roster, and replay our camera
+    /// state if the room now holds anyone it did not.
+    ///
+    /// `SfuPeerJoined` covers a join on the node that sent it, but a cluster
+    /// homes one room on several members and each tells only its own
+    /// attachments. A member who joins through another node reaches us only as
+    /// a bigger roster from that node — we are subscribed on every node we are
+    /// multi-homed to — so that growth is the replay trigger too. Voice and
+    /// text are compared separately: a text member stepping into voice is
+    /// still news, since a client resets what it knows about cameras when its
+    /// own voice session ends.
+    pub(super) async fn apply_room_rosters(
+        &mut self,
+        supernode_id: &str,
+        room_id: &str,
+        members: &[String],
+        chat_members: &[String],
+    ) {
+        let voice_before = union_members_for_room(&self.room_voice_members, room_id);
+        let text_before = union_members_for_room(&self.room_group_members, room_id);
+
+        let me = self.identity.public_id();
+        let voice: HashSet<String> = members
+            .iter()
+            .filter(|m| m.trim_end_matches('=') != me.trim_end_matches('='))
+            .cloned()
+            .collect();
+        self.room_voice_members
+            .insert(room_scope_key(supernode_id, room_id), voice);
+        self.sync_room_membership(supernode_id, room_id, chat_members)
+            .await;
+
+        let voice_after = union_members_for_room(&self.room_voice_members, room_id);
+        let text_after = union_members_for_room(&self.room_group_members, room_id);
+        if roster_gained(&voice_before, &voice_after) || roster_gained(&text_before, &text_after) {
+            self.reannounce_video_state(room_id).await;
+        }
+    }
+
+    /// Apply an `SfuPeerJoined` from `supernode_id`: key the newcomer and
+    /// replay our camera state to them.
+    pub(super) async fn apply_room_peer_joined(
+        &mut self,
+        supernode_id: &str,
+        room_id: &str,
+        peer_id: &str,
+    ) {
+        // Reseal the current epoch key to the newcomer if we're the elected
+        // keyer (see `sync_room_membership`).
+        let room_key = room_scope_key(supernode_id, room_id);
+        let me = self.identity.public_id();
+        let mut set = self
+            .room_group_members
+            .get(&room_key)
+            .cloned()
+            .unwrap_or_default();
+        set.insert(me.clone());
+        set.insert(peer_id.to_owned());
+        let members: Vec<String> = set.into_iter().collect();
+        self.sync_room_membership(supernode_id, room_id, &members)
+            .await;
+        // Counted as seen now, so the `SfuMembers` this node sends right after
+        // the join does not replay a second time.
+        if peer_id.trim_end_matches('=') != me.trim_end_matches('=') {
+            self.room_voice_members
+                .entry(room_key)
+                .or_default()
+                .insert(peer_id.to_owned());
+        }
+        // The newcomer never saw our camera-on edge; replay it so their
+        // indicator (and ours on their side) reflects who is streaming.
+        self.reannounce_video_state(room_id).await;
     }
 
     pub(super) fn check_room_video_outbound_quota(&self, target: &str, byte_count: usize) -> bool {

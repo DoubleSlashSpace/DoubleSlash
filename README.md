@@ -35,7 +35,7 @@ Direct video negotiates a common codec. Rooms default to VP9, which every build 
 - The Rooms sidebar supports nested rooms and private-room invitations, including a “Members can invite” option. Removing a room from the sidebar hides it locally. Leaving voice keeps the text room selected.
 - A room has one member list: the right-hand rail on desktop, the Members sheet on Android. Voice members are listed first; text-only members follow, dimmed. Selecting a member opens a menu. From it you can watch their video (only while you are in that room's voice), message them if they are a trusted peer, or invite them to become one. The invite is encrypted to that member, so the supernode cannot use it. They must accept before either side trusts the other.
 - Public user-created rooms are disabled by default. The `room.audio.sfu` capability's room-creation policy controls this; operators can enable them.
-- Signed Space trees and membership proofs support private-room admission across a supernode cluster. Cluster forwarding carries room chat and audio between nodes.
+- Signed Space trees and membership proofs support private-room admission across a supernode cluster. Cluster forwarding carries room chat, audio, and camera/screen on-off announcements between nodes.
 
 ### In-App Supernode Portal & Browser Games
 

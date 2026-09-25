@@ -297,6 +297,31 @@ internal fun Map<String, List<String>>.roomMembersUnion(roomId: String): List<St
         .distinctBy { it.videoKey() }
         .toList()
 
+/**
+ * [AppState.streamingPeers] minus anyone we no longer share a room or call with.
+ *
+ * Camera state is an edge — the sender announces it once per toggle and
+ * replays it only when it sees an `SfuPeerJoined` — so what we were told has
+ * to be kept for as long as we can still hear the matching "off". That is as
+ * long as the sender is on a roster we hold, not as long as our voice is up:
+ * leaving voice on Android keeps the SFU membership and the chat
+ * subscription, and rejoining sends no join the sender could replay to.
+ * Clearing on voice leave is what made a streaming member look idle after a
+ * leave and rejoin. Someone who leaves mid-stream sends no "off", so their
+ * departure from every roster is what retires the entry instead.
+ */
+internal fun AppState.streamingStillPresent(): Set<String> {
+    val present = (roomVoiceRosters.values.asSequence() + roomTextRosters.values.asSequence())
+        .flatten()
+        .map { it.videoKey() }
+        .toMutableSet()
+    call?.peerId?.let { id ->
+        present += id.videoKey()
+        peers.firstOrNull { it.peerId == id }?.identityPub?.let { present += it.videoKey() }
+    }
+    return streamingPeers.filterTo(mutableSetOf()) { it in present }
+}
+
 /** An inbound offer: nothing arrives until it is accepted. */
 data class FileOffer(
     val transferId: String,
@@ -1552,12 +1577,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun keepVideoOnlyFor(peerId: String?) {
         val before = _state.value.watchedVideo
         _state.update {
-            it.copy(
-                watchedVideo = it.watchedVideo.filter { id -> peerId != null && id == peerId },
-                // Camera state is only announced while we share a session with
-                // the sender; once that ends, what we remember is stale.
-                streamingPeers = if (it.call == null) emptySet() else it.streamingPeers,
-            )
+            // Only the watched set: camera state outlives voice, because the
+            // SFU membership it arrives through does. See streamingStillPresent.
+            it.copy(watchedVideo = it.watchedVideo.filter { id -> peerId != null && id == peerId })
         }
         if (_state.value.watchedVideo != before) publishWatchedVideo()
     }
@@ -1568,7 +1590,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.update {
             it.copy(
                 watchedVideo = it.watchedVideo.filterNot { id -> id == peerId },
-                streamingPeers = if (it.voiceRoom == null) emptySet() else it.streamingPeers,
+                // The caller has already cleared the call, so this drops the
+                // call peer unless a room we hold still lists them.
+                streamingPeers = it.streamingStillPresent(),
             )
         }
         if (_state.value.watchedVideo != before) publishWatchedVideo()
@@ -2016,10 +2040,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val key = event.stringOrEmpty("supernode_id") +
                     ":" + event.stringOrEmpty("room_id")
                 _state.update {
-                    it.copy(
+                    val next = it.copy(
                         roomVoiceRosters = it.roomVoiceRosters + (key to members),
                         roomTextRosters = it.roomTextRosters + (key to chatMembers),
                     )
+                    next.copy(streamingPeers = next.streamingStillPresent())
                 }
                 // The persistent voice rail draws faces, and it is visible from
                 // screens that never load a room. Fetching here — for every

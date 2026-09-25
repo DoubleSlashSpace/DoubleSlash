@@ -731,9 +731,9 @@ impl ConnectionManager {
                 }
                 // Reconcile the room group key against the authoritative key
                 // group (participants + subscribers) so text-only members are
-                // keyed too. Voice rail uses `members`; text members panel uses
-                // `chat_members`.
-                self.sync_room_membership(&msg.sender, &room_id, &chat_members)
+                // keyed too, and replay our camera to anyone new. Voice rail
+                // uses `members`; text members panel uses `chat_members`.
+                self.apply_room_rosters(&msg.sender, &room_id, &members, &chat_members)
                     .await;
                 self.emit_event(ConnectionEvent::RoomMembersChanged {
                     supernode_id: msg.sender.clone(),
@@ -755,23 +755,8 @@ impl ConnectionManager {
                     .and_then(Value::as_str)
                     .unwrap_or(&msg.sender)
                     .to_owned();
-                // Reseal the current epoch key to the newcomer if we're the
-                // elected keyer (see `sync_room_membership`).
-                let room_key = format!("{}:{}", msg.sender, room_id);
-                let me = self.identity.public_id();
-                let mut set = self
-                    .room_group_members
-                    .get(&room_key)
-                    .cloned()
-                    .unwrap_or_default();
-                set.insert(me);
-                set.insert(peer_id.clone());
-                let members: Vec<String> = set.into_iter().collect();
-                self.sync_room_membership(&msg.sender, &room_id, &members)
+                self.apply_room_peer_joined(&msg.sender, &room_id, &peer_id)
                     .await;
-                // The newcomer never saw our camera-on edge; replay it so their
-                // indicator (and ours on their side) reflects who is streaming.
-                self.reannounce_video_state(&room_id).await;
                 self.emit_event(ConnectionEvent::RoomPeerJoined {
                     supernode_id: msg.sender.clone(),
                     room_id,
@@ -1350,6 +1335,7 @@ impl ConnectionManager {
                     // the same name can repeat one).
                     let room_key = room_scope_key(&supernode_id, &room_id);
                     self.room_group_members.remove(&room_key);
+                    self.room_voice_members.remove(&room_key);
                     self.group_keys.forget(&room_id);
                     self.pending_group_key_acks
                         .retain(|(r, _), _| r != &room_id);

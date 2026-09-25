@@ -300,6 +300,12 @@ pub struct ConnectionManager {
     /// Last-seen member set per room we're in (`supernode_id:room_id` → member
     /// public_ids, excluding self), used to diff joins/leaves for rekeying.
     room_group_members: HashMap<String, HashSet<String>>,
+    /// The voice half of each node's `SfuMembers`, keyed like
+    /// [`Self::room_group_members`] and excluding self. Only there so a member
+    /// who joins voice on *another* node — whose `SfuPeerJoined` never reaches
+    /// us — still prompts [`Self::reannounce_video_state`]. See
+    /// [`Self::apply_room_rosters`].
+    room_voice_members: HashMap<String, HashSet<String>>,
     /// Monotonic per-send sequence for E2E room-audio frames, bound into the
     /// GCM AAD (`conv_id ‖ sender ‖ sequence`) and carried as the envelope
     /// `seq` field so the receiver can reconstruct the AAD.
@@ -597,6 +603,7 @@ impl ConnectionManager {
             room_relay_cooldown_frames: 0,
             group_keys: SenderKeysGroup::new(),
             room_group_members: HashMap::new(),
+            room_voice_members: HashMap::new(),
             room_audio_seq: 0,
             room_video_seq: 0,
             room_content_audio_seq: 0,
@@ -839,6 +846,37 @@ impl ConnectionManager {
     #[cfg(test)]
     pub(super) async fn test_reannounce_video_state(&mut self, room_id: &str) {
         self.reannounce_video_state(room_id).await;
+    }
+
+    /// Test-only: this manager's own `public_id`, as rosters spell it.
+    #[cfg(test)]
+    pub(super) fn test_public_id(&self) -> String {
+        self.identity.public_id()
+    }
+
+    /// Test-only: one node's `SfuMembers` for `room_id`, past signature checks.
+    #[cfg(test)]
+    pub(super) async fn test_apply_room_rosters(
+        &mut self,
+        supernode_id: &str,
+        room_id: &str,
+        members: &[String],
+        chat_members: &[String],
+    ) {
+        self.apply_room_rosters(supernode_id, room_id, members, chat_members)
+            .await;
+    }
+
+    /// Test-only: one node's `SfuPeerJoined` for `room_id`, past signature checks.
+    #[cfg(test)]
+    pub(super) async fn test_apply_room_peer_joined(
+        &mut self,
+        supernode_id: &str,
+        room_id: &str,
+        peer_id: &str,
+    ) {
+        self.apply_room_peer_joined(supernode_id, room_id, peer_id)
+            .await;
     }
 
     #[cfg(test)]
@@ -1159,6 +1197,7 @@ impl ConnectionManager {
                                 self.pending_group_key_acks
                                     .retain(|(r, _), _| r != &room_id);
                                 self.room_group_members.remove(&room_key);
+                                self.room_voice_members.remove(&room_key);
                                 self.forget_room_device_scope(&supernode_id, &room_id);
                             }
                             self.send_room_leave(&supernode_id, &room_id).await;
@@ -1193,6 +1232,7 @@ impl ConnectionManager {
                                 self.pending_group_key_acks
                                     .retain(|(r, _), _| r != &room_id);
                                 self.room_group_members.remove(&room_key);
+                                self.room_voice_members.remove(&room_key);
                                 self.forget_room_device_scope(&supernode_id, &room_id);
                             }
                             self.send_room_unsubscribe(&supernode_id, &room_id).await;

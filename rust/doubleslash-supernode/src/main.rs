@@ -551,8 +551,37 @@ impl SupernodeState {
         }
     }
 
-    /// Route an inbound cluster `Replicate` frame to chat or audio delivery
-    /// based on the wire `type` of the opaque client envelope.
+    /// Fan a camera/screen on-off announcement out to this node's room
+    /// recipients — voice participants and text subscribers alike, since the
+    /// indicator shows in the member list as well as the voice rail. Never
+    /// back to the sender, who may be multi-homed onto this node.
+    fn deliver_video_state(&self, room_id: &str, sender: &str, raw: &str) {
+        let Some(ref sfu) = self.sfu else {
+            return;
+        };
+        let recipients = sfu.read().get_chat_recipients(room_id);
+        for peer in &recipients {
+            if is_room_frame_author(peer, sender) {
+                continue;
+            }
+            self.signaling.send_to_peer(peer, raw);
+        }
+    }
+
+    /// Deliver a video-state announcement replicated from another cluster
+    /// member. Deduped by `message_id`; never re-replicated.
+    fn deliver_replicated_video_state(&self, room_id: &str, message_id: &str, raw: &str) {
+        if !self.replication_seen.write().insert_new(message_id) {
+            return;
+        }
+        let sender = SignalingMessage::from_json(raw)
+            .map(|m| m.sender)
+            .unwrap_or_default();
+        self.deliver_video_state(room_id, &sender, raw);
+    }
+
+    /// Route an inbound cluster `Replicate` frame to chat, audio or video-state
+    /// delivery based on the wire `type` of the opaque client envelope.
     fn deliver_replicated_room_frame(&self, room_id: &str, message_id: &str, raw: &str) {
         // Game sessions share this channel under a `game:` prefix that a room
         // id can never carry, so the key alone says which delivery path a
@@ -561,18 +590,12 @@ impl SupernodeState {
             self.deliver_replicated_game_datagram(room_id, message_id, raw);
             return;
         }
-        let is_audio = serde_json::from_str::<serde_json::Value>(raw)
-            .ok()
-            .and_then(|v| {
-                v.get("type")
-                    .and_then(|t| t.as_str())
-                    .map(|s| s == "sfu_audio")
-            })
-            .unwrap_or(false);
-        if is_audio {
-            self.deliver_replicated_audio(room_id, message_id, raw);
-        } else {
-            self.deliver_replicated_chat(room_id, message_id, raw);
+        match ReplicatedKind::of(raw) {
+            ReplicatedKind::Audio => self.deliver_replicated_audio(room_id, message_id, raw),
+            ReplicatedKind::VideoState => {
+                self.deliver_replicated_video_state(room_id, message_id, raw);
+            }
+            ReplicatedKind::Chat => self.deliver_replicated_chat(room_id, message_id, raw),
         }
     }
 
@@ -1858,6 +1881,40 @@ fn audio_replication_id(msg: &SignalingMessage) -> String {
     format!("a:{room}:{}:{seq}", msg.sender)
 }
 
+/// Stable id for cluster dedup of a video-state announcement: its signature,
+/// which the sender's per-toggle and per-replay messages each carry fresh.
+/// Prefixed apart from audio so the two id spaces cannot collide.
+fn video_state_replication_id(msg: &SignalingMessage) -> String {
+    if let Some(sig) = msg.signature.as_deref().filter(|s| !s.is_empty()) {
+        return format!("v:{sig}");
+    }
+    let active = msg.payload.get("active").and_then(|v| v.as_bool()) == Some(true);
+    format!("v:{}:{}:{active}", msg.sender, msg.timestamp)
+}
+
+/// Which delivery path a cluster-replicated room frame takes, read off the
+/// opaque client envelope's wire `type`. Anything unrecognised is chat, which
+/// is what every replicated frame was before audio and video state joined it.
+#[derive(Debug, PartialEq, Eq)]
+enum ReplicatedKind {
+    Audio,
+    VideoState,
+    Chat,
+}
+
+impl ReplicatedKind {
+    fn of(raw: &str) -> Self {
+        let wire_type = serde_json::from_str::<serde_json::Value>(raw)
+            .ok()
+            .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_owned));
+        match wire_type.as_deref() {
+            Some("sfu_audio") => Self::Audio,
+            Some("sfu_video_state") => Self::VideoState,
+            _ => Self::Chat,
+        }
+    }
+}
+
 /// Payload byte count for `SfuChat` inbound quota accounting.
 ///
 /// Payload byte count for `SfuChat` inbound quota (opaque sealed `body` length).
@@ -3005,12 +3062,13 @@ impl SupernodeHandler {
             return;
         }
 
-        let recipients = sfu.read().get_chat_recipients(room_id);
-        for peer in &recipients {
-            if is_room_frame_author(peer, &msg.sender) {
-                continue;
-            }
-            self.state.signaling.send_to_peer(peer, raw);
+        self.state.deliver_video_state(room_id, &msg.sender, raw);
+        // A cluster homes one room on several members, and each fans out only
+        // to its own attachments. Without this a member attached elsewhere
+        // never hears that the stream started, and never sees the replay the
+        // sender makes when it notices them join.
+        if let Some(link) = self.state.cluster_link.read().clone() {
+            link.replicate(room_id, &video_state_replication_id(msg), raw);
         }
     }
 
@@ -4524,22 +4582,53 @@ mod cluster_audio_replication_tests {
     }
 
     #[test]
-    fn replicated_frame_type_detection_audio_vs_chat() {
+    fn replicated_frame_type_detection() {
         let audio = r#"{"type":"sfu_audio","sender":"x","payload":{}}"#;
+        let video = r#"{"type":"sfu_video_state","sender":"x","payload":{}}"#;
         let chat = r#"{"type":"sfu_chat","sender":"x","payload":{}}"#;
-        let is_audio = |raw: &str| {
-            serde_json::from_str::<serde_json::Value>(raw)
-                .ok()
-                .and_then(|v| {
-                    v.get("type")
-                        .and_then(|t| t.as_str())
-                        .map(|s| s == "sfu_audio")
-                })
-                .unwrap_or(false)
-        };
-        assert!(is_audio(audio));
-        assert!(!is_audio(chat));
-        assert!(!is_audio("not-json"));
+        assert_eq!(ReplicatedKind::of(audio), ReplicatedKind::Audio);
+        assert_eq!(ReplicatedKind::of(video), ReplicatedKind::VideoState);
+        assert_eq!(ReplicatedKind::of(chat), ReplicatedKind::Chat);
+        assert_eq!(ReplicatedKind::of("not-json"), ReplicatedKind::Chat);
+    }
+
+    /// The wire name the router matches must be the one the type serializes
+    /// to, or replicated announcements fall through to chat delivery.
+    #[test]
+    fn video_state_wire_name_matches_the_router() {
+        let msg = SignalingMessage::new(
+            MessageType::SfuVideoState,
+            "senderPub=",
+            serde_json::json!({"room_id": "r1", "active": true}),
+        );
+        assert_eq!(
+            ReplicatedKind::of(&msg.to_json()),
+            ReplicatedKind::VideoState
+        );
+    }
+
+    /// An "on" replayed to a newcomer must not be deduped against the
+    /// original "on": each is a separately signed message.
+    #[test]
+    fn video_state_replication_id_is_per_signed_message() {
+        let mut first = SignalingMessage::new(
+            MessageType::SfuVideoState,
+            "senderPub=",
+            serde_json::json!({"room_id": "r1", "active": true}),
+        );
+        let mut replay = first.clone();
+        first.signature = Some("sig1".into());
+        replay.signature = Some("sig2".into());
+        assert_eq!(video_state_replication_id(&first), "v:sig1");
+        assert_ne!(
+            video_state_replication_id(&first),
+            video_state_replication_id(&replay)
+        );
+        assert_ne!(
+            video_state_replication_id(&first),
+            audio_replication_id(&first),
+            "video state and audio must not share an id space"
+        );
     }
 }
 

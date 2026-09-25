@@ -157,7 +157,8 @@ subscriptions are narrowed to the watched set. Still missing:
    phone has shown a picture yet. Run: room with a desktop camera on, open it
    from the rail, confirm the picture and aspect ratio, full screen, stop
    watching, camera off/on while watched, leave and rejoin (tile must not
-   reappear unasked), a direct call both ways, and a desktop that chose H.264
+   reappear unasked, but the sender must still show as streaming and be
+   watchable again), a direct call both ways, and a desktop that chose H.264
    in Settings (expected: no picture). Check logcat for
    `[room.video.sfu] subscribing` with an empty set on voice join, and for
    `starting Android capture (vp9` when the phone's camera goes into a room.

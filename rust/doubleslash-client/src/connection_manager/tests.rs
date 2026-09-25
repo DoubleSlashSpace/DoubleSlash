@@ -2997,6 +2997,132 @@ async fn a_peer_joining_mid_stream_is_told_the_camera_is_on() {
     );
 }
 
+/// How many camera-state announcements reached one supernode session.
+fn video_states_sent(
+    rx: &mut tokio::sync::mpsc::Receiver<tokio_tungstenite::tungstenite::Message>,
+) -> usize {
+    harness::drain_ws(rx)
+        .iter()
+        .filter(|m| m.msg_type == MessageType::SfuVideoState)
+        .count()
+}
+
+/// A cluster homes one room on several nodes, and `SfuPeerJoined` reaches only
+/// the members attached to the node that took the join. Someone joining
+/// through a sibling shows up to us only as that sibling's bigger roster, and
+/// that has to replay the camera too — or they see us as not streaming.
+#[tokio::test]
+async fn a_member_joining_through_another_node_is_told_the_camera_is_on() {
+    let mut t = harness::test_cm();
+    let mut ours = t.cm.test_add_supernode_session("SN-AAAA");
+    let _sibling = t.cm.test_add_supernode_session("SN-BBBB");
+    t.cm.test_set_room("SN-AAAA", "room-1");
+    t.cm.test_send_video_state(true, None).await;
+    let _ = harness::drain_ws(&mut ours);
+
+    let bob = crate::identity::Identity::generate().public_id();
+    t.cm.test_apply_room_rosters(
+        "SN-BBBB",
+        "room-1",
+        std::slice::from_ref(&bob),
+        std::slice::from_ref(&bob),
+    )
+    .await;
+    assert_eq!(
+        video_states_sent(&mut ours),
+        1,
+        "a member new to the room on any node must be told"
+    );
+
+    // The same member, unpadded, on another node: not news.
+    let bare = bob.trim_end_matches('=').to_owned();
+    t.cm.test_apply_room_rosters("SN-AAAA", "room-1", &[], &[bare])
+        .await;
+    assert_eq!(video_states_sent(&mut ours), 0, "already known to the room");
+}
+
+/// Voice and text are separate edges. A member who only read the room and now
+/// joins voice gets a replay: a client drops what it knows about cameras when
+/// its own voice session ends, and rejoining voice is the only sign we see.
+#[tokio::test]
+async fn a_text_member_stepping_into_voice_is_told_the_camera_is_on() {
+    let mut t = harness::test_cm();
+    let mut ours = t.cm.test_add_supernode_session("SN-AAAA");
+    t.cm.test_set_room("SN-AAAA", "room-1");
+    t.cm.test_send_video_state(true, None).await;
+    let bob = crate::identity::Identity::generate().public_id();
+
+    t.cm.test_apply_room_rosters("SN-BBBB", "room-1", &[], std::slice::from_ref(&bob))
+        .await;
+    let _ = harness::drain_ws(&mut ours);
+
+    t.cm.test_apply_room_rosters(
+        "SN-BBBB",
+        "room-1",
+        std::slice::from_ref(&bob),
+        std::slice::from_ref(&bob),
+    )
+    .await;
+    assert_eq!(video_states_sent(&mut ours), 1);
+
+    // Left voice and came back: told again.
+    t.cm.test_apply_room_rosters("SN-BBBB", "room-1", &[], std::slice::from_ref(&bob))
+        .await;
+    assert_eq!(video_states_sent(&mut ours), 0, "a departure is not news");
+    t.cm.test_apply_room_rosters(
+        "SN-BBBB",
+        "room-1",
+        std::slice::from_ref(&bob),
+        std::slice::from_ref(&bob),
+    )
+    .await;
+    assert_eq!(video_states_sent(&mut ours), 1);
+}
+
+/// A join on our own node arrives as `SfuPeerJoined` and then the node's
+/// `SfuMembers`. One replay covers it; the second would be a duplicate signed
+/// message fanned to the whole room.
+#[tokio::test]
+async fn a_join_on_our_own_node_replays_once() {
+    let mut t = harness::test_cm();
+    let mut ours = t.cm.test_add_supernode_session("SN-AAAA");
+    t.cm.test_set_room("SN-AAAA", "room-1");
+    t.cm.test_send_video_state(true, None).await;
+    let _ = harness::drain_ws(&mut ours);
+
+    let bob = crate::identity::Identity::generate().public_id();
+    t.cm.test_apply_room_peer_joined("SN-AAAA", "room-1", &bob)
+        .await;
+    t.cm.test_apply_room_rosters(
+        "SN-AAAA",
+        "room-1",
+        std::slice::from_ref(&bob),
+        std::slice::from_ref(&bob),
+    )
+    .await;
+    assert_eq!(video_states_sent(&mut ours), 1);
+}
+
+/// Our own entry in a roster is never a newcomer.
+#[tokio::test]
+async fn our_own_roster_entry_replays_nothing() {
+    let mut t = harness::test_cm();
+    let mut ours = t.cm.test_add_supernode_session("SN-AAAA");
+    t.cm.test_set_room("SN-AAAA", "room-1");
+    t.cm.test_send_video_state(true, None).await;
+    let _ = harness::drain_ws(&mut ours);
+
+    let me = t.cm.test_public_id();
+    t.cm.test_apply_room_rosters(
+        "SN-BBBB",
+        "room-1",
+        std::slice::from_ref(&me),
+        std::slice::from_ref(&me),
+    )
+    .await;
+    assert_eq!(video_states_sent(&mut ours), 0);
+}
+
 /// Only "on" is replayed, and only for the room we are actually in. A member
 /// who never heard from us already assumes camera-off, so announcing it on
 /// every join would be a signed message per join conveying nothing.
