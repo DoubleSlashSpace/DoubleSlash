@@ -381,6 +381,8 @@ Run `cargo fmt --all -- --check` and targeted `cargo clippy … -- -D warnings` 
 
 The [release workflow](.github/workflows/release.yml) supports Windows SignPath signing, macOS Developer ID signing/notarization, and GitHub artifact attestations when configured. Platform signatures depend on the release configuration; their presence should not be inferred from the version number.
 
+Platform signing and the Windows build-attestation signing key are used only for pushes of `v*` release tags. Develop pushes, scheduled nightlies, and manual workflow runs do not request SignPath signing or Apple signing/notarization, even when credentials are configured. Tagged release publication uses the GitHub `release` environment and its configured approval rules; branch protection and SignPath signing approvals are separate controls.
+
 The project Ed25519 release-manifest key is separate from platform code-signing certificates. Its public key is in [keys/release-signer-public.pem](keys/release-signer-public.pem) and [installer release_manifest.rs](rust/doubleslash-installer/src/release_manifest.rs). Verification behavior, including nightly exceptions, is described under [Updates](#updates).
 
 ### Team Roles
