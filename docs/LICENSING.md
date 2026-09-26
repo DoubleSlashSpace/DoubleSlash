@@ -288,9 +288,9 @@ correct.
 | Supernode archive | `licenses/` |
 | Android APK/AAB | `assets/licenses/<target>/` plus preserved/merged upstream META-INF notices |
 
-Keep the installer companion notice with standalone redistribution. Launcher
-self-copy/update now requires and retains that notice, including the embedded
-font notices. SignPath restores it from the original artifact and verifies the
+Keep the installer companion notice with standalone redistribution. The
+installer does not require it at run time: the release publishes it, and the
+launcher runs and updates without it. SignPath restores it from the original artifact and verifies the
 signed archive; signed and unsigned releases retain the same companion filename
 when the nightly executable is renamed.
 
