@@ -165,6 +165,13 @@ Supernodes may use peer/device IDs, room/session IDs, membership, indices, signa
 - Encoder speed and threads come from measurements (`doubleslash-vpx/examples/encode_bench.rs`), recorded in `EncoderConfig::realtime`. Use one encoder thread on aarch64: two and four threads were 3–8× slower on a Pixel 11. Re-measure before changing either.
 - Capability IDs are codec-independent. Direct calls negotiate a common codec; rooms send one codec chosen by the sender. Decoders are per `(sender, codec)`. A decoder change must not reuse another codec's reference state.
 - `video/fragment.rs` owns framing (`FRAGMENT_VERSION = 0x03`). Codec and PTS are signature-bound; unknown codecs and mixed-frame metadata must be rejected. Preserve frozen codec bytes in `rust/doubleslash-features/src/video_codec.rs`.
+- A frame over `MAX_ENCODED_FRAME_BYTES` cannot be fragmented, and a dropped keyframe makes every viewer ask for another one. Keep these in step with that ceiling:
+  - the encoder size targets: libvpx's per-frame cap and the Media Foundation VBV buffer, both derived from `FRAME_SIZE_TARGET_BYTES`;
+  - the capture loop's `FrameSizeGuard`, which drops an oversized frame, asks for a keyframe, and caps the bitrate after repeated oversized keyframes;
+  - the receiver's `MAX_PARTIAL_BYTES_PER_SENDER` and its fragment-scaled partial timeout.
+
+  Raising `MAX_FRAGS_PER_FRAME` is receiver-visible: older receivers drop frames with more fragments than their own limit.
+- Screen capture of an HDR display takes FP16 scRGB and converts it on the GPU (`video/gpu_convert.rs`). SDR white, at the user's SDR brightness level, must come out as full white. Anything brighter is scaled by its largest channel, never clipped per channel.
 - Picture-in-picture is composited before encoding, into one stream per peer. Room video is relay-datagram-only; do not add a WebSocket media envelope. WebSocket-only members can retain room voice.
 - `SessionMediaClock` stamps video and shared audio at capture. Content offsets come from the capture device (`CaptureTimeline`), not frame counts: a quiet loopback device emits no packets, but time still passes. Preserve resampler phase across capture reads.
 - Shared-audio playout anchors video per sender. Hold/drop against that sender's timeline; free-run when no anchor exists or it is stale. Do not compare different senders' PTS or slave video to the microphone stream, which has no PTS.

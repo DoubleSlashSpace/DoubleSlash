@@ -144,6 +144,59 @@ fn variant_u32(value: u32) -> VARIANT {
     VARIANT::from(value)
 }
 
+/// The VBV buffer, in bits, for an encoder at `bitrate_bps`.
+///
+/// A constant-bitrate encoder cannot emit a frame larger than its buffer, so
+/// this is the one control that bounds a keyframe on a hardware encoder. Left
+/// unset, a GPU encoder sized 1080p desktop keyframes at 330-560 KB — far over
+/// what the transport fragments — and every one was dropped. One second of
+/// bitrate, capped at [`FRAME_SIZE_TARGET_BYTES`](super::codec::FRAME_SIZE_TARGET_BYTES):
+/// at low rates the second is the tighter bound and keeps latency down.
+pub(crate) fn vbv_buffer_bits(bitrate_bps: u32) -> u32 {
+    let cap_bits = (super::codec::FRAME_SIZE_TARGET_BYTES as u64 * 8).min(u32::MAX as u64) as u32;
+    bitrate_bps.min(cap_bits).max(1)
+}
+
+/// Ask the encoder for call-shaped rate control.
+///
+/// Best-effort, one property at a time: support varies by vendor, and a
+/// transform that ignores one of these still encodes — the capture loop's
+/// frame-size check catches what a missing buffer bound lets through.
+fn configure_realtime_rate_control(transform: &IMFTransform, config: &MfEncoderConfig) {
+    let Ok(codec_api) = transform.cast::<ICodecAPI>() else {
+        debug!("[video] H.264 encoder exposes no ICodecAPI; using its defaults");
+        return;
+    };
+    let gop = config.fps.max(1) * config.keyframe_interval_secs.max(1);
+    let settings: [(&GUID, VARIANT, &str); 4] = [
+        (
+            &CODECAPI_AVEncCommonRateControlMode,
+            variant_u32(eAVEncCommonRateControlMode_CBR.0 as u32),
+            "CBR rate control",
+        ),
+        (
+            &CODECAPI_AVEncCommonBufferSize,
+            variant_u32(vbv_buffer_bits(config.bitrate_bps)),
+            "VBV buffer size",
+        ),
+        (&CODECAPI_AVEncMPVGOPSize, variant_u32(gop), "GOP size"),
+        // No reordering delay and no lookahead: each picture comes out as it
+        // goes in.
+        (
+            &CODECAPI_AVLowLatencyMode,
+            VARIANT::from(true),
+            "low-latency mode",
+        ),
+    ];
+    for (key, value, what) in settings {
+        // SAFETY: `value` is a well-formed VARIANT owned here; the codec copies
+        // what it needs during SetValue.
+        if let Err(e) = unsafe { codec_api.SetValue(key, &value) } {
+            debug!("[video] H.264 encoder refused {what}: {e}");
+        }
+    }
+}
+
 /// Find an H.264 transform, preferring hardware.
 ///
 /// `MFT_ENUM_FLAG_SORTANDFILTER` puts the best match first, and asking for
@@ -373,6 +426,10 @@ impl MfEncoder {
         // confirmation that a GPU encoder was found.
         let is_async = unlock_if_async(&transform)?;
 
+        // Before the media types: some transforms only read rate-control
+        // properties when the output type is negotiated.
+        configure_realtime_rate_control(&transform, &config);
+
         // Output type must be set before input on an encoder MFT: the encoder
         // derives its input constraints from the chosen output format, and
         // setting input first is rejected with MF_E_TRANSFORM_TYPE_NOT_SET.
@@ -554,6 +611,12 @@ impl VideoEncoder for MfEncoder {
             codec_api
                 .SetValue(&CODECAPI_AVEncCommonMeanBitRate, &value)
                 .map_err(|e| anyhow::anyhow!("set mean bitrate {bps}: {e}"))?;
+            // The buffer bound is a function of the rate; keep it in step.
+            // Best-effort like the initial setting.
+            let _ = codec_api.SetValue(
+                &CODECAPI_AVEncCommonBufferSize,
+                &variant_u32(vbv_buffer_bits(bps)),
+            );
         }
         self.config.bitrate_bps = bps;
         debug!("[video] encoder bitrate -> {bps} bps");

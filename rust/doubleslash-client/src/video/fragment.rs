@@ -97,32 +97,57 @@ const FLAG_HAS_SIGNATURE: u8 = 0b0000_0010;
 /// Maximum fragments one frame may claim.
 ///
 /// Chunks are sized to fragment 0's budget (which also carries the signature),
-/// so with a 1198-byte datagram and a 44-byte sender id each holds ~1070 bytes.
-/// At 128 that caps a single frame at ~134 KB.
+/// so at the portable datagram size with a 44-byte sender id each holds 1020
+/// bytes. At 512 that caps a single frame at ~510 KB
+/// ([`MAX_ENCODED_FRAME_BYTES`]).
 ///
-/// **Why not 64.** It was, and 64 is ~67 KB — which 1080p exceeds on every
-/// keyframe. Measured against the Media Foundation encoder at the auto bitrate,
-/// 1080p keyframes run 72–80 KB (75 fragments) where 720p runs ~35 KB (33).
-/// A frame over the cap is not truncated or degraded: [`fragment_frame`]
-/// returns `None` and the sender drops it whole. Dropping *keyframes*
-/// specifically means receivers never get the one frame a decoder can start
-/// from, so the stream produces no picture at all while inter frames keep
-/// arriving — indistinguishable, from the outside, from a broken decoder.
+/// **Why not 128.** It was, and 128 is ~130 KB. That covered camera keyframes
+/// but not a shared screen: text is detail everywhere, and a 1080p desktop
+/// keyframe measured 330–560 KB from the Media Foundation encoder at the auto
+/// bitrate, and over 250 KB from VP8 even at its coarsest quantiser. A frame
+/// over the cap is not truncated or degraded: [`fragment_frame`] returns
+/// `None` and the sender drops it whole. Dropping *keyframes* specifically
+/// means receivers never get the one frame a decoder can start from, so they
+/// ask for another — which is just as large, and dropped just the same. From
+/// the viewer's side that is a slideshow at best.
 ///
 /// Raising it is a compatibility change even though the header is untouched:
 /// [`parse_fragment`] rejects a `frag_count` above this bound, so a receiver
-/// still on 64 drops every 1080p keyframe a sender on 128 emits. Both ends must
-/// ship together.
+/// still on 128 drops every keyframe over ~130 KB a sender on 512 emits — which
+/// is no worse than a sender on 128, which never sent them.
 ///
 /// It is also the allocation guard: the count is validated *before* any
 /// per-fragment `Vec` is sized, so a hostile `frag_count = 65535` cannot make
 /// us reserve 65535 slots. The real memory bound is
-/// [`MAX_PARTIAL_BYTES_PER_SENDER`], which is unchanged and still sheds the
-/// oldest partial long before 128 × 8 in-flight fragments could accumulate.
-pub const MAX_FRAGS_PER_FRAME: u16 = 128;
+/// [`MAX_PARTIAL_BYTES_PER_SENDER`].
+pub const MAX_FRAGS_PER_FRAME: u16 = 512;
+
+/// Largest encoded frame that is sure to fragment within
+/// [`MAX_FRAGS_PER_FRAME`] on any path.
+///
+/// Worked from the tightest case: a [`PORTABLE_MAX_DATAGRAM`] fragment less
+/// the relay's index and tag bytes, a 44-byte sender id, the signature every
+/// chunk is sized around, and room for the media seal (epoch, nonce and GCM
+/// tag, rounded up). Encoders size their keyframes from this, and the capture
+/// loop checks it before handing a frame on, because a frame over it is
+/// dropped whole by [`fragment_frame`] — and a dropped keyframe is a receiver
+/// asking for another one, which comes out just as large.
+///
+/// [`PORTABLE_MAX_DATAGRAM`]: super::PORTABLE_MAX_DATAGRAM
+pub const MAX_ENCODED_FRAME_BYTES: usize = MAX_FRAGS_PER_FRAME as usize
+    * (super::PORTABLE_MAX_DATAGRAM
+        - 2
+        - (FIXED_PREFIX_LEN + 44 + FIXED_SUFFIX_LEN)
+        - SIGNATURE_LEN)
+    - 64;
 
 /// Maximum bytes of partially-reassembled frames held for one sender.
-pub const MAX_PARTIAL_BYTES_PER_SENDER: usize = 512 * 1024;
+///
+/// Room for one frame at [`MAX_ENCODED_FRAME_BYTES`] with the inter frames
+/// that follow it while it completes. Less, and the largest keyframe a sender
+/// may emit would shed itself on arrival.
+pub const MAX_PARTIAL_BYTES_PER_SENDER: usize = 1536 * 1024;
+const _: () = assert!(MAX_PARTIAL_BYTES_PER_SENDER >= 2 * MAX_ENCODED_FRAME_BYTES);
 
 /// Maximum senders tracked at once.
 pub const MAX_SENDERS: usize = 32;
@@ -134,7 +159,21 @@ pub const MAX_IN_FLIGHT_PER_SENDER: usize = 8;
 ///
 /// A 30 fps frame interval is 33 ms, so 200 ms tolerates roughly six frames of
 /// jitter while never carrying stale fragments into the next group of pictures.
+/// A large frame gets longer — see [`partial_timeout`].
 pub const PARTIAL_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Extra time a partial frame is given per fragment it claims.
+///
+/// A large keyframe cannot arrive all at once: at 10 Mbps a 400 KB frame takes
+/// a third of a second just to cross the link, so a flat [`PARTIAL_TIMEOUT`]
+/// abandoned exactly the frames a receiver can least do without. Two
+/// milliseconds per ~1 KB fragment allows for a path of about 4 Mbps.
+const PARTIAL_TIMEOUT_PER_FRAGMENT: Duration = Duration::from_millis(2);
+
+/// How long a partial frame of `frag_count` fragments is held.
+fn partial_timeout(frag_count: usize) -> Duration {
+    PARTIAL_TIMEOUT.max(PARTIAL_TIMEOUT_PER_FRAGMENT * frag_count as u32)
+}
 
 /// How far behind the newest completed frame a fragment may be before it is
 /// treated as dead weight. Late fragments for a superseded frame cannot be
@@ -458,14 +497,16 @@ impl Reassembler {
         self.senders.clear();
     }
 
-    /// Drop every partial older than [`PARTIAL_TIMEOUT`], and forget senders
-    /// that are left with nothing buffered.
+    /// Drop every partial held past its [`partial_timeout`], and forget
+    /// senders that are left with nothing buffered.
     pub fn evict_expired(&mut self, now: Instant) {
         self.senders.retain(|_, s| {
             let expired: Vec<u32> = s
                 .partials
                 .iter()
-                .filter(|(_, p)| now.duration_since(p.first_seen) >= PARTIAL_TIMEOUT)
+                .filter(|(_, p)| {
+                    now.duration_since(p.first_seen) >= partial_timeout(p.chunks.len())
+                })
                 .map(|(seq, _)| *seq)
                 .collect();
             for seq in expired {
@@ -530,7 +571,7 @@ impl Reassembler {
                 pts_us: hdr.pts_us,
                 signature: None,
                 // Safe: `parse_fragment` already bounded frag_count by
-                // MAX_FRAGS_PER_FRAME, so this allocates at most 64 slots.
+                // MAX_FRAGS_PER_FRAME, so this allocates at most that many slots.
                 chunks: vec![None; hdr.frag_count as usize],
                 received: 0,
                 bytes: 0,
@@ -655,6 +696,32 @@ mod tests {
     /// and 16-byte tag. The cap has to clear this or 1080p produces no picture
     /// at all — see [`MAX_FRAGS_PER_FRAME`].
     const MEASURED_1080P_KEYFRAME: usize = 79_627 + 29;
+
+    /// A shared 1080p desktop's keyframe, sealed, as the Media Foundation
+    /// encoder produced it at 1080p60 and the 128-fragment cap dropped it.
+    const MEASURED_1080P_DESKTOP_KEYFRAME: usize = 497_782;
+
+    #[test]
+    fn a_1080p_desktop_keyframe_fits_the_fragment_budget() {
+        let sealed = vec![0x5Au8; MEASURED_1080P_DESKTOP_KEYFRAME];
+        let sender = "S".repeat(44);
+        let parts = fragment_frame(
+            &sender,
+            1,
+            true,
+            CODEC,
+            PTS,
+            &SIG,
+            &sealed,
+            super::super::PORTABLE_MAX_DATAGRAM - 2,
+        )
+        .expect("a measured desktop keyframe must fit at the portable datagram size");
+        assert!(parts.len() <= MAX_FRAGS_PER_FRAME as usize);
+        let mut r = Reassembler::new();
+        let now = Instant::now();
+        let out = parts.iter().find_map(|p| r.push(p, now));
+        assert_eq!(out.expect("reassembles").sealed.len(), sealed.len());
+    }
 
     /// The regression this guards: at 64 fragments every 1080p keyframe was
     /// dropped by the sender, so receivers never got a frame their decoder
@@ -1097,6 +1164,42 @@ mod tests {
 
         r.evict_expired(start + PARTIAL_TIMEOUT);
         assert_eq!(r.buffered_bytes(SENDER), 0, "stale partial must be evicted");
+    }
+
+    /// A 1080p desktop keyframe is hundreds of fragments and takes longer than
+    /// the flat timeout just to cross a 10 Mbps link. Abandoning it at 200 ms
+    /// threw away the frame the receiver was waiting for.
+    #[test]
+    fn a_large_frame_gets_time_to_arrive() {
+        let sealed = vec![5u8; 400 * 1024];
+        let f = frags(&sealed, 8, true);
+        assert!(f.len() > 300, "premise: a genuinely large frame");
+        let mut r = Reassembler::new();
+        let start = Instant::now();
+
+        for part in &f[..f.len() - 1] {
+            assert!(r.push(part, start).is_none());
+        }
+        // 350 ms: what 400 KB takes at about 10 Mbps.
+        let later = start + Duration::from_millis(350);
+        let frame = r
+            .push(&f[f.len() - 1], later)
+            .expect("a large frame still arriving must not be abandoned");
+        assert_eq!(frame.sealed, sealed);
+
+        // It is still bounded.
+        for part in &f[..f.len() - 1] {
+            let _ = r.push(part, later);
+        }
+        r.evict_expired(later + partial_timeout(f.len()));
+        assert_eq!(r.buffered_bytes(SENDER), 0);
+    }
+
+    #[test]
+    fn small_frames_keep_the_flat_timeout() {
+        assert_eq!(partial_timeout(1), PARTIAL_TIMEOUT);
+        assert_eq!(partial_timeout(100), PARTIAL_TIMEOUT);
+        assert!(partial_timeout(MAX_FRAGS_PER_FRAME as usize) > Duration::from_millis(800));
     }
 
     #[test]

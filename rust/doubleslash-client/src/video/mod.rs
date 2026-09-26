@@ -27,6 +27,8 @@ pub mod composite;
 pub mod fragment;
 pub mod frame;
 #[cfg(target_os = "windows")]
+pub mod gpu_convert;
+#[cfg(target_os = "windows")]
 pub mod mediafoundation;
 #[cfg(target_os = "windows")]
 pub mod mf_async;

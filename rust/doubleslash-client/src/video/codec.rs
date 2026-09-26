@@ -35,6 +35,19 @@ pub const STUB_WIDTH: u32 = 160;
 /// See [`STUB_WIDTH`].
 pub const STUB_HEIGHT: u32 = 120;
 
+/// The frame size encoders are asked to stay under.
+///
+/// A quarter of the transport's hard ceiling
+/// ([`MAX_ENCODED_FRAME_BYTES`](super::fragment::MAX_ENCODED_FRAME_BYTES)),
+/// because encoders treat it as a target and miss it upward: on a detailed
+/// 1080p desktop libvpx still produced 2-6x the cap on the first keyframe,
+/// which is sized before rate control has seen any content. A cap near the
+/// ceiling did nothing at all there. Keyframes are what reach it — a shared
+/// desktop is detail everywhere — and each one is a burst of datagrams a slow
+/// path absorbs at once, so smaller is also a shorter wait for the picture.
+/// What still overshoots the ceiling is handled by the capture loop.
+pub const FRAME_SIZE_TARGET_BYTES: usize = super::fragment::MAX_ENCODED_FRAME_BYTES / 4;
+
 /// Bytes of stub header before the planes: `[width:u16 BE][height:u16 BE]`.
 const STUB_HEADER_LEN: usize = 4;
 
@@ -218,14 +231,17 @@ impl VpxEncoderAdapter {
         let Some(vpx) = vpx_codec(codec) else {
             anyhow::bail!("{} is not a libvpx codec", codec.as_str());
         };
-        let config = doubleslash_vpx::EncoderConfig::realtime(
-            vpx,
-            params.width,
-            params.height,
-            params.bitrate_bps,
-            params.fps,
-            params.keyframe_interval_secs,
-        );
+        let config = doubleslash_vpx::EncoderConfig {
+            max_frame_bytes: FRAME_SIZE_TARGET_BYTES as u32,
+            ..doubleslash_vpx::EncoderConfig::realtime(
+                vpx,
+                params.width,
+                params.height,
+                params.bitrate_bps,
+                params.fps,
+                params.keyframe_interval_secs,
+            )
+        };
         Ok(Self {
             inner: doubleslash_vpx::VpxEncoder::new(vpx, config)?,
             codec,
@@ -689,6 +705,29 @@ mod tests {
             parts.len() > 20,
             "expected a genuinely multi-fragment frame"
         );
+    }
+
+    /// The advertised ceiling has to be one the fragmenter really accepts, at
+    /// the tightest datagram size and a full-length sender id, once sealed.
+    #[test]
+    fn the_largest_encoded_frame_still_fragments() {
+        use super::super::fragment::{fragment_frame, MAX_ENCODED_FRAME_BYTES, SIGNATURE_LEN};
+        // epoch + nonce + GCM tag, as `group_key::seal_media_frame` adds.
+        const SEAL: usize = 1 + 12 + 16;
+        let sealed = vec![0u8; MAX_ENCODED_FRAME_BYTES + SEAL];
+        let sender = "S".repeat(44);
+        let parts = fragment_frame(
+            &sender,
+            1,
+            true,
+            VideoCodec::Vp9,
+            0,
+            &[0u8; SIGNATURE_LEN],
+            &sealed,
+            super::super::PORTABLE_MAX_DATAGRAM - 2,
+        );
+        assert!(parts.is_some(), "the declared ceiling must fit");
+        const { assert!(FRAME_SIZE_TARGET_BYTES < MAX_ENCODED_FRAME_BYTES) };
     }
 
     #[test]

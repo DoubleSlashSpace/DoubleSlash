@@ -56,6 +56,7 @@ mod ffi {
             keyframe_interval_secs: c_int,
             cpu_used: c_int,
             threads: c_int,
+            max_frame_bytes: c_int,
         ) -> *mut cq_vpx_enc;
         pub fn cq_vpx_enc_free(e: *mut cq_vpx_enc);
         pub fn cq_vpx_enc_request_keyframe(e: *mut cq_vpx_enc);
@@ -130,6 +131,13 @@ pub struct EncoderConfig {
     /// Encoder threads. VP9 turns these into tile columns and row-based
     /// multithreading; VP8 into row-parallel encoding.
     pub threads: u32,
+    /// Size one frame should stay under, in bytes; 0 leaves it to libvpx.
+    ///
+    /// Aimed mostly at keyframes, which rate control otherwise sizes from its
+    /// buffer and can make several times larger than a transport that
+    /// fragments frames will carry. libvpx treats it as a target, not a hard
+    /// limit, so leave headroom below the real ceiling.
+    pub max_frame_bytes: u32,
 }
 
 /// Frames up to this many pixels encode VP9 at speed 7 rather than 8.
@@ -184,6 +192,7 @@ impl EncoderConfig {
             keyframe_interval_secs,
             cpu_used,
             threads,
+            max_frame_bytes: 0,
         }
     }
 }
@@ -231,6 +240,7 @@ impl VpxEncoder {
             keyframe_interval_secs,
             cpu_used,
             threads,
+            max_frame_bytes,
         } = config;
         // 4:2:0 chroma planes need even dimensions.
         if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
@@ -250,6 +260,7 @@ impl VpxEncoder {
                 keyframe_interval_secs as c_int,
                 cpu_used as c_int,
                 threads.max(1) as c_int,
+                max_frame_bytes.min(i32::MAX as u32) as c_int,
             )
         };
         if inner.is_null() {
@@ -613,6 +624,108 @@ mod tests {
                 decoded >= 5,
                 "{codec:?}: only {decoded} of 10 frames decoded"
             );
+        }
+    }
+
+    /// A 1080p frame shaped like a busy desktop: flat panels with bands of
+    /// small, distinct, high-contrast glyphs — text is what makes a
+    /// screen-share keyframe large.
+    fn detailed_1080p() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let (w, h) = (1920usize, 1080usize);
+        let mut y = vec![0u8; w * h];
+        let mut state = 0x2545_f491_u32;
+        for row in 0..h {
+            // Text lines 9 px tall with 7 px of leading, in the left 60% of
+            // each 480 px column: a document, a chat log, a terminal.
+            let in_line = row % 16 < 9;
+            for col in 0..w {
+                let background = if (col / 480) % 2 == 0 { 30 } else { 200 };
+                let in_text = in_line && col % 480 < 288;
+                if in_text && col % 6 == 0 {
+                    // xorshift, stepped per 6 px cell so each glyph differs.
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                }
+                let ink = in_text && (state >> ((row % 16) * 2 + col % 6)) & 1 == 1;
+                y[row * w + col] = if ink { 255 - background } else { background };
+            }
+        }
+        let c = vec![128u8; (w / 2) * (h / 2)];
+        (y, c.clone(), c)
+    }
+
+    /// A frame cap has to bite on the frame it exists for: a detailed 1080p
+    /// desktop keyframe, which uncapped runs to hundreds of KB.
+    ///
+    /// libvpx treats the cap as a rate-control target, not a ceiling, and the
+    /// first keyframe is sized before rate control has seen any content, so
+    /// neither frame lands *at* the cap. Measured on this frame at 5 Mbps and a
+    /// 64 KB cap: VP8 388 → 185 KB first and 211 → 162 KB on request, VP9
+    /// 585 → 385 KB and 78 → 66 KB. What is asserted is the direction: capped
+    /// is never larger, and is smaller wherever the uncapped frame was over.
+    #[test]
+    fn a_frame_cap_shrinks_large_keyframes() {
+        const CAP: u32 = 64 * 1024;
+        let (y, u, v) = detailed_1080p();
+        for codec in BOTH {
+            let base = EncoderConfig::realtime(codec, 1920, 1080, 5_000_000, 60, 4);
+            let mut free = VpxEncoder::new(codec, base).unwrap();
+            let mut capped = VpxEncoder::new(
+                codec,
+                EncoderConfig {
+                    max_frame_bytes: CAP,
+                    ..base
+                },
+            )
+            .unwrap();
+
+            // The first frame, and a keyframe asked for once rate control has
+            // settled — the one a receiver's request produces.
+            for step in 0..20 {
+                if step == 19 {
+                    free.request_keyframe();
+                    capped.request_keyframe();
+                }
+                let (a, a_key) = free.encode(&y, &u, &v).unwrap();
+                let (b, b_key) = capped.encode(&y, &u, &v).unwrap();
+                if step != 0 && step != 19 {
+                    continue;
+                }
+                assert!(a_key && b_key, "{codec:?} step {step}: expected keyframes");
+                if a.len() > CAP as usize {
+                    assert!(
+                        b.len() < a.len(),
+                        "{codec:?} step {step}: capped {} B is not below uncapped {} B",
+                        b.len(),
+                        a.len()
+                    );
+                } else {
+                    assert!(b.len() <= a.len(), "{codec:?} step {step}");
+                }
+            }
+        }
+    }
+
+    /// A bitrate change re-derives the cap, which libvpx takes as a share of
+    /// the per-frame budget; it must still encode afterwards.
+    #[test]
+    fn a_capped_encoder_survives_a_bitrate_change() {
+        let (y, u, v) = test_frame(4);
+        for codec in BOTH {
+            let mut enc = VpxEncoder::new(
+                codec,
+                EncoderConfig {
+                    max_frame_bytes: 16 * 1024,
+                    ..EncoderConfig::realtime(codec, W, H, 600_000, 30, 4)
+                },
+            )
+            .unwrap();
+            let _ = enc.encode(&y, &u, &v).unwrap();
+            enc.set_bitrate(200_000).unwrap();
+            enc.request_keyframe();
+            let (packet, keyframe) = enc.encode(&y, &u, &v).unwrap();
+            assert!(keyframe && !packet.is_empty(), "{codec:?}");
         }
     }
 

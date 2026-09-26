@@ -143,6 +143,12 @@ windows = { version = "0.58", features = [
     "Graphics_DirectX",
     "Graphics_DirectX_Direct3D11",
     "Win32_Graphics_Direct3D",
+    # Runtime HLSL compilation (d3dcompiler_47, part of Windows 10+) for the
+    # capture converter that tone-maps HDR desktops and scales on the GPU.
+    "Win32_Graphics_Direct3D_Fxc",
+    # The SDR white level of an HDR display (DisplayConfigGetDeviceInfo), so
+    # tone mapping puts SDR white where the user's brightness slider has it.
+    "Win32_Devices_Display",
     "Win32_Graphics_Dxgi",
     "Win32_System_WinRT",
     "Win32_System_WinRT_Graphics_Capture",

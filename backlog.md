@@ -166,6 +166,32 @@ subscriptions are narrowed to the watched set. Still missing:
    anchor. Incoming `ContentAudioReceived` must not be serialized into UI JSON;
    route it like voice in `session.rs::route_media`.
 
+### Screen share at 1080p60 and HDR: live acceptance
+
+A 1080p60 desktop share looked like a slideshow to a viewer. The sender's log
+showed Media Foundation H.264 keyframes of 330–560 KB, and every one was
+dropped at the old ~130 KB fragment ceiling. The ceiling is now ~510 KB and the
+encoders are capped below it. A frame that still does not fit is dropped before
+it is sent and followed by a keyframe request. If keyframes keep coming out too
+large, the bitrate is capped. An HDR desktop is now captured as FP16 and tone
+mapped on the GPU, and every capture is scaled there. Unit tests cover all of
+this, the shader included on WARP. Still to do:
+
+1. **1080p60 live check.** Share a detailed desktop at 1080p60 in each codec
+   (VP9, then H.264 from Settings). Every 10 s the sender logs a line starting
+   `[video] screen <codec>: sent N/60 fps`. N should stay near 60, capture and
+   encode should each fit in the 16 ms frame, and `oversized` should be 0 after
+   the first keyframe. If the sender keeps its rate and the viewer still
+   stutters, the problem is downstream. Look at the viewer's decoder: libvpx
+   decodes on one thread, in plain C on x86.
+2. **HDR live check.** On an HDR display, the capture log should read
+   `capturing an HDR display (SDR white N nits), scaling on the GPU`, with N
+   matching Windows' SDR content brightness. The viewer's picture should match
+   the desktop's contrast. Also check a window share on the HDR display and an
+   SDR display on the same machine.
+3. **Viewers on older builds** still drop any keyframe over 128 fragments. Ship
+   the receiver change before relying on large keyframes.
+
 ### VP9 room default: live acceptance and x86 SIMD
 
 Rooms now send VP9, and VP8 takes over mid-call if a device cannot encode VP9

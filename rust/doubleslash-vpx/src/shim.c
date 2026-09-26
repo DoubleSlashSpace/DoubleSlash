@@ -56,6 +56,11 @@ struct cq_vpx_enc {
   int64_t pts;
   /* Set by cq_vpx_enc_request_keyframe, consumed by the next encode. */
   int force_keyframe;
+  int codec;
+  int fps;
+  /* Target ceiling for one frame, 0 for libvpx's own judgement. Kept so a
+   * bitrate change can re-derive the percentage libvpx takes it as. */
+  int max_frame_bytes;
 };
 
 struct cq_vpx_dec {
@@ -82,10 +87,42 @@ static int vp9_tile_columns_log2(int width, int threads) {
   return log2;
 }
 
+/* max_frame_bytes as the percentage of the average frame that libvpx's
+ * frame-size caps are expressed in.
+ *
+ * libvpx has no absolute ceiling, only "this many percent of the per-frame
+ * budget", so the same byte cap is a different percentage at every bitrate
+ * and frame rate. 0 means no cap, which is also what libvpx reads 0 as. */
+static unsigned int frame_cap_pct(int max_frame_bytes, int bitrate_bps,
+                                  int fps) {
+  if (max_frame_bytes <= 0 || bitrate_bps <= 0 || fps <= 0) return 0;
+  double per_frame = (double)bitrate_bps / 8.0 / (double)fps;
+  double pct = (double)max_frame_bytes * 100.0 / per_frame;
+  if (pct < 1.0) return 1;
+  if (pct > 1000000.0) return 1000000;
+  return (unsigned int)pct;
+}
+
+/* Hold keyframes (and, on VP9, inter frames) to max_frame_bytes.
+ *
+ * A keyframe is by far the largest frame and the one a receiver cannot start
+ * without. Left alone, libvpx sizes it from the rate controller's buffer, and
+ * a detailed 1080p desktop comes out several times larger than the transport
+ * can fragment -- so it is dropped, the receiver asks for another, and that
+ * one is dropped too. VP8 has no inter-frame control; its inter frames sit far
+ * below a keyframe at any realtime rate. */
+static void apply_frame_caps(struct cq_vpx_enc *e, int bitrate_bps) {
+  unsigned int pct = frame_cap_pct(e->max_frame_bytes, bitrate_bps, e->fps);
+  vpx_codec_control(&e->ctx, VP8E_SET_MAX_INTRA_BITRATE_PCT, pct);
+  if (e->codec == CQ_VP9) {
+    vpx_codec_control(&e->ctx, VP9E_SET_MAX_INTER_BITRATE_PCT, pct);
+  }
+}
+
 struct cq_vpx_enc *cq_vpx_enc_new(int codec, int width, int height,
                                   int bitrate_bps, int fps,
                                   int keyframe_interval_secs, int cpu_used,
-                                  int threads) {
+                                  int threads, int max_frame_bytes) {
   if (width <= 0 || height <= 0 || fps <= 0) return NULL;
   vpx_codec_iface_t *iface = enc_iface(codec);
   if (!iface) return NULL;
@@ -158,6 +195,10 @@ struct cq_vpx_enc *cq_vpx_enc_new(int codec, int width, int height,
   e->height = height;
   e->pts = 0;
   e->force_keyframe = 0;
+  e->codec = codec;
+  e->fps = fps;
+  e->max_frame_bytes = max_frame_bytes > 0 ? max_frame_bytes : 0;
+  apply_frame_caps(e, bitrate_bps);
   return e;
 }
 
@@ -178,7 +219,10 @@ int cq_vpx_enc_set_bitrate(struct cq_vpx_enc *e, int bitrate_bps) {
    * controller without resetting reference frames, which is what keeps a rate
    * change from costing a keyframe. */
   e->cfg.rc_target_bitrate = (unsigned int)(bitrate_bps / 1000);
-  return vpx_codec_enc_config_set(&e->ctx, &e->cfg) ? -1 : 0;
+  if (vpx_codec_enc_config_set(&e->ctx, &e->cfg)) return -1;
+  /* The byte cap is fixed but the per-frame budget just moved. */
+  apply_frame_caps(e, bitrate_bps);
+  return 0;
 }
 
 /*

@@ -13,19 +13,25 @@
 //!
 //! WGC is push-oriented and GPU-resident: frames arrive in a pool as D3D11
 //! textures. Everything above [`super::sender`] wants tightly-packed I420 in
-//! system memory, so each frame is copied to a CPU-readable staging texture,
-//! then converted and scaled down to the encoder's target size.
+//! system memory, so each frame is scaled down to the encoder's target size on
+//! the GPU, read back, and converted.
 //!
 //! ```text
-//! WGC frame pool -> ID3D11Texture2D (BGRA, GPU)
-//!                -> staging texture (BGRA, CPU-readable)
-//!                -> BGRA -> I420 + box downscale  (super::scale)
+//! WGC frame pool -> ID3D11Texture2D (BGRA, or FP16 scRGB on an HDR display)
+//!                -> shader: scale + letterbox, HDR to SDR   (super::gpu_convert)
+//!                -> staging texture (BGRA at encoder size, CPU-readable)
+//!                -> BGRA -> I420                            (super::scale)
 //! ```
+//!
+//! If the shader pipeline cannot be built, frames are read back at source size
+//! and scaled on the CPU instead, as they always were — in 8-bit, so an HDR
+//! display then looks washed out again, but still captures.
 //!
 //! The downscale is not optional: a 3840x2160 monitor is 33x the pixels of the
 //! 640x360 the encoder is configured for, and handing that to H.264 unscaled
 //! would blow the frame budget and the fragment cap in one step.
 
+use tracing::{info, warn};
 use windows::core::Interface;
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem};
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
@@ -68,6 +74,12 @@ pub struct ScreenCapture {
     /// Encoder-facing size. Frames are scaled into this.
     out_width: u32,
     out_height: u32,
+    /// GPU scaling and HDR conversion. `None` when the shader pipeline could
+    /// not be built, which falls back to the CPU path below — and to 8-bit
+    /// capture, since only the shader can read an HDR frame.
+    gpu: Option<super::gpu_convert::GpuConverter>,
+    /// What the captured display is doing, fixed at open.
+    color: super::gpu_convert::DisplayColor,
     /// Last successfully converted frame, returned when the source is idle.
     ///
     /// WGC delivers nothing while the screen is static, but the encoder needs a
@@ -90,15 +102,44 @@ impl ScreenCapture {
         let (device, context) = create_d3d_device()?;
         let rt_device = direct3d_device_from(&device)?;
 
+        // Output is pinned to the encoder's configured size, not the source's
+        // (which only sized the frame pool below). Content is letterboxed into
+        // it, so a window resize mid-stream changes the bars rather than the
+        // frame size the encoder was built for.
+        let (out_width, out_height) = (max_w.max(2) & !1, max_h.max(2) & !1);
+
+        let gpu =
+            match super::gpu_convert::GpuConverter::new(&device, &context, out_width, out_height) {
+                Ok(g) => Some(g),
+                Err(e) => {
+                    warn!("[video] GPU capture conversion unavailable, scaling on the CPU: {e}");
+                    None
+                }
+            };
+        let color = super::gpu_convert::display_color(target_monitor(target));
+        // An HDR desktop is only right when taken as float scRGB and converted
+        // by the shader; 8-bit capture of it is the washed-out picture.
+        let pixel_format = if color.hdr && gpu.is_some() {
+            DirectXPixelFormat::R16G16B16A16Float
+        } else {
+            DirectXPixelFormat::B8G8R8A8UIntNormalized
+        };
+        info!(
+            "[video] capturing {} display{}, scaling on the {}",
+            if color.hdr { "an HDR" } else { "an SDR" },
+            if color.hdr {
+                format!(" (SDR white {:.0} nits)", color.sdr_white_nits)
+            } else {
+                String::new()
+            },
+            if gpu.is_some() { "GPU" } else { "CPU" },
+        );
+
         // Two buffers: enough to keep the GPU from stalling on us without
         // building a backlog of stale frames, which for realtime video is
         // latency with no upside.
-        let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
-            &rt_device,
-            DirectXPixelFormat::B8G8R8A8UIntNormalized,
-            2,
-            size,
-        )?;
+        let frame_pool =
+            Direct3D11CaptureFramePool::CreateFreeThreaded(&rt_device, pixel_format, 2, size)?;
         let session = frame_pool.CreateCaptureSession(&item)?;
 
         // Best-effort cosmetics: both are only available on newer Windows
@@ -107,12 +148,6 @@ impl ScreenCapture {
         let _ = session.SetIsBorderRequired(false);
 
         session.StartCapture()?;
-
-        // Output is pinned to the encoder's configured size, not the source's
-        // (which only sized the frame pool above). Content is letterboxed into
-        // it, so a window resize mid-stream changes the bars rather than the
-        // frame size the encoder was built for.
-        let (out_width, out_height) = (max_w.max(2) & !1, max_h.max(2) & !1);
 
         Ok(Self {
             _item: item,
@@ -123,6 +158,8 @@ impl ScreenCapture {
             staging: None,
             out_width,
             out_height,
+            gpu,
+            color,
             last: None,
         })
     }
@@ -138,6 +175,20 @@ impl ScreenCapture {
         let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
         // SAFETY: the surface is live for the lifetime of `frame`.
         let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
+
+        if let Some(gpu) = self.gpu.as_mut() {
+            // Already scaled and letterboxed to the output size, so the CPU
+            // step below is a colour-space conversion only.
+            let bgra = gpu.convert(&texture, self.color)?;
+            return Ok(super::scale::bgra_to_i420_letterboxed(
+                &bgra,
+                self.out_width as usize * 4,
+                self.out_width,
+                self.out_height,
+                self.out_width,
+                self.out_height,
+            ));
+        }
 
         // SAFETY: reading a description from a live texture.
         let mut desc = D3D11_TEXTURE2D_DESC::default();
@@ -499,6 +550,23 @@ fn create_capture_item(target: &CaptureTarget) -> anyhow::Result<GraphicsCapture
     Ok(item)
 }
 
+/// The display `target` is shown on: the monitor itself, or the one holding
+/// most of the window.
+fn target_monitor(target: &CaptureTarget) -> windows::Win32::Graphics::Gdi::HMONITOR {
+    use windows::Win32::Graphics::Gdi::{MonitorFromWindow, HMONITOR, MONITOR_DEFAULTTONEAREST};
+    match target {
+        CaptureTarget::Monitor(h) => HMONITOR(*h as *mut std::ffi::c_void),
+        // SAFETY: MonitorFromWindow tolerates a stale handle, returning the
+        // nearest monitor rather than faulting.
+        CaptureTarget::Window(h) => unsafe {
+            MonitorFromWindow(
+                windows::Win32::Foundation::HWND(*h as *mut std::ffi::c_void),
+                MONITOR_DEFAULTTONEAREST,
+            )
+        },
+    }
+}
+
 fn create_d3d_device() -> anyhow::Result<(ID3D11Device, ID3D11DeviceContext)> {
     let mut device: Option<ID3D11Device> = None;
     let mut context: Option<ID3D11DeviceContext> = None;
@@ -597,8 +665,16 @@ mod tests {
         let min = *y.iter().min().unwrap();
         let max = *y.iter().max().unwrap();
         println!(
-            "captured {}x{}, luma range {min}..{max}, {distinct_frames} distinct frames",
-            640, 360
+            "captured {}x{} from {:?} via the {}, luma range {min}..{max}, {distinct_frames} distinct frames",
+            640,
+            360,
+            cap.color,
+            if cap.gpu.is_some() { "GPU" } else { "CPU" },
+        );
+        // On an HDR display the GPU path is the only one that reads it right.
+        assert!(
+            !cap.color.hdr || cap.gpu.is_some(),
+            "an HDR display fell back to 8-bit capture"
         );
         // A desktop has contrast. An all-identical luma plane means we captured
         // a blank surface — the classic symptom of the GDI path or a failed

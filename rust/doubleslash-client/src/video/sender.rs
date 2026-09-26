@@ -548,6 +548,167 @@ const ABR_BACKOFF_LOSS_PCT: f32 = 10.0;
 /// Loss below which the encoder may climb again.
 const ABR_RECOVER_LOSS_PCT: f32 = 4.0;
 
+/// Oversized keyframes in a row before the bitrate is capped.
+///
+/// Two, not one: libvpx sizes the very first keyframe before rate control has
+/// seen any content, and on a detailed desktop that one frame can overshoot
+/// badly while every keyframe after it fits. A second oversized keyframe means
+/// the encoder is doing it with full knowledge of the picture.
+const OVERSIZE_KEYFRAMES_BEFORE_CAP: u32 = 2;
+
+/// Share of the transport ceiling a capped encoder aims its keyframes at.
+const OVERSIZE_CAP_HEADROOM: f64 = 0.7;
+
+/// What to do with one encoded frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SizeVerdict {
+    Send,
+    /// Too large to fragment; `capped_bps` is set when this frame also
+    /// lowered the bitrate cap.
+    Drop {
+        capped_bps: Option<u32>,
+    },
+}
+
+/// Keeps frames the transport cannot carry off the wire, and stops them
+/// recurring.
+///
+/// A frame over [`MAX_ENCODED_FRAME_BYTES`](super::fragment::MAX_ENCODED_FRAME_BYTES)
+/// is dropped by the fragmenter anyway. Dropping it here instead means the
+/// encoder can be told at once to start receivers over with a keyframe, and
+/// that if its keyframes keep coming out too large, the rate it is running at
+/// is the problem: a keyframe's size follows the bitrate, so the cap is
+/// lowered in proportion to the overshoot. Without this a hardware encoder
+/// that ignored its buffer bound made every keyframe too large, and a viewer
+/// saw a picture only when an inter frame happened to decode.
+#[derive(Debug, Default)]
+struct FrameSizeGuard {
+    oversize_keyframes: u32,
+    cap_bps: Option<u32>,
+}
+
+impl FrameSizeGuard {
+    /// `want_bps` held under the cap, if one is in force.
+    fn limit(&self, want_bps: u32) -> u32 {
+        self.cap_bps.map_or(want_bps, |cap| want_bps.min(cap))
+    }
+
+    fn check(&mut self, len: usize, keyframe: bool, current_bps: u32) -> SizeVerdict {
+        let ceiling = super::fragment::MAX_ENCODED_FRAME_BYTES;
+        if len <= ceiling {
+            if keyframe {
+                self.oversize_keyframes = 0;
+            }
+            return SizeVerdict::Send;
+        }
+        if !keyframe {
+            return SizeVerdict::Drop { capped_bps: None };
+        }
+        self.oversize_keyframes += 1;
+        if self.oversize_keyframes < OVERSIZE_KEYFRAMES_BEFORE_CAP {
+            return SizeVerdict::Drop { capped_bps: None };
+        }
+        let scale = ceiling as f64 * OVERSIZE_CAP_HEADROOM / len as f64;
+        let capped = ((f64::from(current_bps) * scale) as u32)
+            .max(MIN_VIDEO_BITRATE_BPS)
+            .min(self.limit(current_bps));
+        self.cap_bps = Some(capped);
+        SizeVerdict::Drop {
+            capped_bps: Some(capped),
+        }
+    }
+}
+
+/// How often the capture loop reports what it achieved.
+const STATS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Rolling counters for the capture loop's periodic log line.
+///
+/// "Slideshow" can mean capture, encode, the network or the viewer's decoder.
+/// This separates the first two from the rest: if the sender is producing its
+/// frame rate in its frame budget, the stall is downstream.
+struct LoopStats {
+    since: std::time::Instant,
+    captured: u32,
+    capture_time: std::time::Duration,
+    encoded: u32,
+    encode_time: std::time::Duration,
+    encode_max: std::time::Duration,
+    sent: u32,
+    sent_bytes: u64,
+    largest_keyframe: usize,
+    oversized: u32,
+}
+
+impl LoopStats {
+    fn new(now: std::time::Instant) -> Self {
+        Self {
+            since: now,
+            captured: 0,
+            capture_time: std::time::Duration::ZERO,
+            encoded: 0,
+            encode_time: std::time::Duration::ZERO,
+            encode_max: std::time::Duration::ZERO,
+            sent: 0,
+            sent_bytes: 0,
+            largest_keyframe: 0,
+            oversized: 0,
+        }
+    }
+
+    fn captured(&mut self, took: std::time::Duration) {
+        self.captured += 1;
+        self.capture_time += took;
+    }
+
+    fn encoded(&mut self, took: std::time::Duration) {
+        self.encoded += 1;
+        self.encode_time += took;
+        self.encode_max = self.encode_max.max(took);
+    }
+
+    fn sent(&mut self, len: usize, keyframe: bool) {
+        self.sent += 1;
+        self.sent_bytes += len as u64;
+        if keyframe {
+            self.largest_keyframe = self.largest_keyframe.max(len);
+        }
+    }
+
+    fn oversized(&mut self) {
+        self.oversized += 1;
+    }
+
+    fn maybe_log(&mut self, kind: &str, codec: VideoCodec, target_fps: u32, bitrate_bps: u32) {
+        let elapsed = self.since.elapsed();
+        if elapsed < STATS_INTERVAL {
+            return;
+        }
+        let secs = elapsed.as_secs_f64();
+        let mean_ms = |total: std::time::Duration, n: u32| {
+            if n == 0 {
+                0.0
+            } else {
+                total.as_secs_f64() * 1000.0 / f64::from(n)
+            }
+        };
+        info!(
+            "[video] {kind} {}: sent {:.1}/{target_fps} fps, capture {:.1} ms, encode {:.1} ms \
+             (max {:.1}), {:.0} kbps of {} kbps target, largest keyframe {} B, {} oversized",
+            codec.as_str(),
+            f64::from(self.sent) / secs,
+            mean_ms(self.capture_time, self.captured),
+            mean_ms(self.encode_time, self.encoded),
+            self.encode_max.as_secs_f64() * 1000.0,
+            self.sent_bytes as f64 * 8.0 / secs / 1000.0,
+            bitrate_bps / 1000,
+            self.largest_keyframe,
+            self.oversized,
+        );
+        *self = Self::new(std::time::Instant::now());
+    }
+}
+
 /// Why a capture thread stopped, reported to `on_ended`.
 ///
 /// The distinction is the whole point: [`Stopped`](Self::Stopped) is the user
@@ -678,6 +839,8 @@ impl VideoSender {
                     std::time::Duration::from_micros(1_000_000 / quality.fps.max(1) as u64);
                 let mut consecutive_errors = 0u32;
                 let mut applied_bitrate = quality.bitrate_bps;
+                let mut size_guard = FrameSizeGuard::default();
+                let mut stats = LoopStats::new(std::time::Instant::now());
                 // Overwritten only by the give-up path below; reaching the end
                 // of the loop any other way means `stop` was set.
                 let mut ended = CaptureEnd::Stopped;
@@ -688,7 +851,7 @@ impl VideoSender {
                     // Apply adaptation on the capture thread, which is the only
                     // thread allowed to touch the encoder — MFTs have thread
                     // affinity, so the ABR caller cannot do this itself.
-                    let want_bitrate = bitrate_t.load(Ordering::Relaxed);
+                    let want_bitrate = size_guard.limit(bitrate_t.load(Ordering::Relaxed));
                     if want_bitrate != applied_bitrate {
                         if let Err(e) = encoder.set_bitrate(want_bitrate) {
                             debug!("[video] bitrate {want_bitrate} rejected: {e}");
@@ -702,6 +865,7 @@ impl VideoSender {
                     let frame = match camera.next_frame() {
                         Ok(f) => {
                             consecutive_errors = 0;
+                            stats.captured(started.elapsed());
                             f
                         }
                         Err(e) => {
@@ -751,10 +915,36 @@ impl VideoSender {
                         encoder.request_keyframe();
                     }
 
-                    match encoder.encode(&frame) {
+                    let encode_started = std::time::Instant::now();
+                    let encoded = encoder.encode(&frame);
+                    stats.encoded(encode_started.elapsed());
+                    match encoded {
                         Ok((data, keyframe)) if !data.is_empty() => {
-                            count_t.fetch_add(1, Ordering::Relaxed);
-                            sink.send(data, keyframe, encoder.codec(), pts_us);
+                            match size_guard.check(data.len(), keyframe, applied_bitrate) {
+                                SizeVerdict::Send => {
+                                    stats.sent(data.len(), keyframe);
+                                    count_t.fetch_add(1, Ordering::Relaxed);
+                                    sink.send(data, keyframe, encoder.codec(), pts_us);
+                                }
+                                SizeVerdict::Drop { capped_bps } => {
+                                    stats.oversized();
+                                    warn!(
+                                        "[video] {} {} frame of {} B exceeds the {} B transport \
+                                         ceiling; dropped, asking for a new keyframe{}",
+                                        encoder.codec().as_str(),
+                                        if keyframe { "key" } else { "inter" },
+                                        data.len(),
+                                        super::fragment::MAX_ENCODED_FRAME_BYTES,
+                                        capped_bps
+                                            .map(|b| format!(", bitrate capped at {b} bps"))
+                                            .unwrap_or_default(),
+                                    );
+                                    // Every receiver lost its reference with
+                                    // this frame; the next one must restart
+                                    // them rather than wait for them to ask.
+                                    encoder.request_keyframe();
+                                }
+                            }
                         }
                         // Empty output is normal while a pipelined encoder
                         // fills; it is not an error and must not be logged per
@@ -762,6 +952,8 @@ impl VideoSender {
                         Ok(_) => {}
                         Err(e) => debug!("[video] encode failed: {e}"),
                     }
+
+                    stats.maybe_log(&kind, encoder.codec(), quality.fps, applied_bitrate);
 
                     if let Some(rest) = frame_interval.checked_sub(started.elapsed()) {
                         std::thread::sleep(rest);
@@ -1588,6 +1780,74 @@ mod tests {
                 "{name} preset must be able to back off"
             );
         }
+    }
+
+    const CEILING: usize = super::super::fragment::MAX_ENCODED_FRAME_BYTES;
+
+    #[test]
+    fn frames_the_transport_carries_are_sent() {
+        let mut g = FrameSizeGuard::default();
+        assert_eq!(g.check(CEILING, true, 5_000_000), SizeVerdict::Send);
+        assert_eq!(g.check(10_000, false, 5_000_000), SizeVerdict::Send);
+        assert_eq!(g.limit(5_000_000), 5_000_000, "nothing capped");
+    }
+
+    /// libvpx's first keyframe is sized blind and can overshoot once; the
+    /// informed ones after it fit. That alone must not cost the session its
+    /// bitrate.
+    #[test]
+    fn one_oversized_keyframe_is_dropped_without_a_cap() {
+        let mut g = FrameSizeGuard::default();
+        assert_eq!(
+            g.check(CEILING + 1, true, 5_000_000),
+            SizeVerdict::Drop { capped_bps: None }
+        );
+        assert_eq!(g.check(80_000, true, 5_000_000), SizeVerdict::Send);
+        // A fitting keyframe resets the count.
+        assert_eq!(
+            g.check(CEILING + 1, true, 5_000_000),
+            SizeVerdict::Drop { capped_bps: None }
+        );
+        assert_eq!(g.limit(5_000_000), 5_000_000);
+    }
+
+    /// The hardware H.264 case: every keyframe too large. The cap scales the
+    /// rate by the overshoot, so the next keyframe lands under the ceiling.
+    #[test]
+    fn repeated_oversized_keyframes_cap_the_bitrate() {
+        let mut g = FrameSizeGuard::default();
+        let _ = g.check(CEILING * 2, true, 5_000_000);
+        let SizeVerdict::Drop {
+            capped_bps: Some(cap),
+        } = g.check(CEILING * 2, true, 5_000_000)
+        else {
+            panic!("a second oversized keyframe must cap the rate");
+        };
+        assert!(
+            cap < 2_500_000,
+            "halving the overshoot, with headroom: {cap}"
+        );
+        assert!(cap >= MIN_VIDEO_BITRATE_BPS);
+        assert_eq!(g.limit(5_000_000), cap);
+        assert_eq!(g.limit(1_000_000), 1_000_000, "a cap never raises a rate");
+
+        // A later overshoot can only tighten it.
+        let _ = g.check(CEILING * 2, true, cap);
+        assert!(g.limit(5_000_000) <= cap);
+    }
+
+    /// An inter frame over the ceiling is dropped, but says nothing about
+    /// keyframes and does not count toward the cap.
+    #[test]
+    fn an_oversized_inter_frame_is_dropped_uncapped() {
+        let mut g = FrameSizeGuard::default();
+        for _ in 0..5 {
+            assert_eq!(
+                g.check(CEILING + 1, false, 5_000_000),
+                SizeVerdict::Drop { capped_bps: None }
+            );
+        }
+        assert_eq!(g.limit(5_000_000), 5_000_000);
     }
 
     /// A handle with no capture thread behind it, so the rate-control state
