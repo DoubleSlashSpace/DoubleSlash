@@ -85,11 +85,15 @@ a {
   background: #111823;
 }
 .brand {
-  color: var(--mint);
-  text-decoration: none;
-  font-size: 23px;
-  font-weight: 900;
-  letter-spacing: -2px;
+  display: inline-flex;
+  flex: none;
+  color: #ff2b40;
+}
+.brand svg {
+  display: block;
+  width: 48px;
+  height: 22px;
+  fill: currentColor;
 }
 .app-heading {
   flex: 1;
