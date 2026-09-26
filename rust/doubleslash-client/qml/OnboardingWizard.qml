@@ -1,4 +1,8 @@
 // OnboardingWizard.qml - first-run setup for the native client.
+//
+// Pages: display name, then connect (paste an invite, usually a supernode's),
+// then local integration on Windows only. Connectivity keeps the Settings
+// defaults; port and firewall choices live in Settings, not here.
 
 import QtQuick
 import QtQuick.Controls.Material
@@ -12,40 +16,18 @@ Dialog {
     required property var appBackend
 
     property int step: 0
-    readonly property int stepCount: 5
     readonly property bool isWindows: Qt.platform.os === "windows"
+    readonly property int stepCount: isWindows ? 3 : 2
     property string generatedInvite: ""
-    property bool copiedPublicId: false
     property bool copiedInvite: false
-    property string setupStatus: ""
+    property bool inviteSent: false
 
     title: "Welcome to DoubleSlash"
     modal: true
     closePolicy: Dialog.NoAutoClose
-    width: 680
-    height: 580
+    width: 600
+    height: 480
     padding: 0
-
-    function publicIdText() {
-        return root.appBackend && root.appBackend.public_id ? String(root.appBackend.public_id) : ""
-    }
-
-    function shortPublicId() {
-        var id = root.publicIdText()
-        if (id.length <= 18) return id
-        return id.substring(0, 10) + "..." + id.substring(id.length - 8)
-    }
-
-    function identityPreview() {
-        var id = root.publicIdText()
-        if (id.length === 0) return "Identity loading"
-        var clean = id.replace(/[^A-Za-z0-9]/g, "")
-        var max = Math.min(clean.length, 32)
-        var parts = []
-        for (var i = 0; i < max; i += 4)
-            parts.push(clean.substring(i, Math.min(i + 4, max)))
-        return parts.join(" ")
-    }
 
     function saveHandle() {
         if (!root.settingsModel) return
@@ -53,38 +35,21 @@ Dialog {
         root.settingsModel.save()
     }
 
-    function saveConnectivity() {
-        if (!root.settingsModel) return
-        var selectedPort = parseInt(p2pPortField.text, 10)
-        if (isNaN(selectedPort) || selectedPort < 1 || selectedPort > 65535)
-            selectedPort = 61045
-        root.settingsModel.direct_p2p_enabled = directP2pOption.checked
-        root.settingsModel.direct_p2p_port = selectedPort
-        root.settingsModel.save()
-        if (root.appBackend)
-            root.appBackend.configureDirectP2p(directP2pOption.checked, selectedPort)
+    function acceptInvite() {
+        var invite = incomingInviteField.text.trim()
+        if (invite.length === 0 || !root.appBackend) return
+        root.appBackend.pasteInvite(invite)
+        incomingInviteField.text = ""
+        root.inviteSent = true
     }
 
     function finishWizard() {
         root.saveHandle()
-        root.saveConnectivity()
-
-        var invite = incomingInviteField.text.trim()
-        if (invite.length > 0 && root.appBackend) {
-            root.appBackend.pasteInvite(invite)
-        }
+        root.acceptInvite()
 
         if (root.isWindows && root.appBackend) {
-            var actions = []
-            if (uriOption.checked) {
-                root.appBackend.registerUriScheme()
-                actions.push("links")
-            }
-            if (shortcutOption.checked) {
-                root.appBackend.createDesktopShortcuts()
-                actions.push("shortcuts")
-            }
-            root.setupStatus = actions.length > 0 ? "Applied " + actions.join(" and ") : ""
+            if (uriOption.checked) root.appBackend.registerUriScheme()
+            if (shortcutOption.checked) root.appBackend.createDesktopShortcuts()
         }
 
         if (root.settingsModel) {
@@ -107,7 +72,7 @@ Dialog {
 
         Rectangle {
             Layout.fillWidth: true
-            height: 72
+            height: 64
             color: Theme.bg0
 
             RowLayout {
@@ -118,33 +83,21 @@ Dialog {
 
                 Image {
                     source: "qrc:/qt/qml/DoubleSlash/Client/icons/logo.svg"
-                    sourceSize.width: 36
-                    sourceSize.height: 36
-                    Layout.preferredWidth: 36
-                    Layout.preferredHeight: 36
+                    sourceSize.width: 32
+                    sourceSize.height: 32
+                    Layout.preferredWidth: 32
+                    Layout.preferredHeight: 32
                     fillMode: Image.PreserveAspectFit
                 }
 
-                ColumnLayout {
+                Text {
+                    text: root.step === 0 ? "Welcome"
+                        : root.step === 1 ? "Get connected"
+                        : "Finishing touches"
+                    color: Theme.text
+                    font.pixelSize: Theme.fontSizeTitle
+                    font.bold: true
                     Layout.fillWidth: true
-                    spacing: 2
-
-                    Text {
-                        text: "Set Up DoubleSlash"
-                        color: Theme.text
-                        font.pixelSize: Theme.fontSizeTitle
-                        font.bold: true
-                    }
-
-                    Text {
-                        text: root.step === 0 ? "Choose your local display name"
-                            : root.step === 1 ? "Review this device identity"
-                            : root.step === 2 ? "Choose direct or supernode connectivity"
-                            : root.step === 3 ? "Connect now or create an invite"
-                            : "Finish local integration"
-                        color: Theme.muted
-                        font.pixelSize: Theme.fontSizeCaption
-                    }
                 }
 
                 Text {
@@ -169,13 +122,11 @@ Dialog {
 
                 Item { Layout.fillHeight: true }
 
-                Image {
-                    source: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg"
-                    sourceSize.width: 52
-                    sourceSize.height: 52
-                    Layout.preferredWidth: 52
-                    Layout.preferredHeight: 52
-                    fillMode: Image.PreserveAspectFit
+                Avatar {
+                    peerId: root.appBackend && root.appBackend.public_id
+                        ? String(root.appBackend.public_id) : ""
+                    size: 72
+                    showRing: true
                     Layout.alignment: Qt.AlignHCenter
                 }
 
@@ -188,13 +139,13 @@ Dialog {
                 }
 
                 Text {
-                    text: "Your identity stays on this device. Peers are added with signed invite links."
+                    text: "Your identity stays on this device. You add people with invite links."
                     color: Theme.muted
                     font.pixelSize: Theme.fontSizeBody
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
-                    Layout.maximumWidth: 460
+                    Layout.maximumWidth: 440
                     Layout.alignment: Qt.AlignHCenter
                 }
 
@@ -213,8 +164,9 @@ Dialog {
                     StyledTextField {
                         id: handleField
                         Layout.fillWidth: true
-                        placeholderText: "Enter your display name"
+                        placeholderText: "What should people call you?"
                         maximumLength: 64
+                        focus: true
                         text: root.settingsModel ? root.settingsModel.local_handle : ""
                         onTextChanged: if (root.settingsModel) root.settingsModel.local_handle = text
                         Keys.onReturnPressed: if (text.trim().length > 0) nextBtn.clicked()
@@ -224,7 +176,7 @@ Dialog {
                 Item { Layout.fillHeight: true }
             }
 
-            // Step 1: Identity.
+            // Step 1: Get connected.
             ColumnLayout {
                 spacing: Theme.spacingMd
                 Layout.fillWidth: true
@@ -232,325 +184,94 @@ Dialog {
                 Layout.margins: Theme.spacingXl
 
                 Text {
-                    text: "Your Identity"
+                    text: "Paste the invite link you were given. Most people start with a supernode's invite, which gives you rooms and keeps you reachable."
                     color: Theme.text
-                    font.pixelSize: Theme.fontSizeBody + 4
-                    font.bold: true
-                }
-
-                Text {
-                    text: "This public ID is what other trusted peers see when you connect."
-                    color: Theme.muted
                     font.pixelSize: Theme.fontSizeBody
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
                 }
 
-                Rectangle {
+                RowLayout {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 156
-                    color: Theme.bg2
-                    border.color: Theme.bg3
-                    border.width: 1
+                    spacing: Theme.spacingSm
 
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: Theme.spacingMd
-                        spacing: Theme.spacingMd
+                    StyledTextField {
+                        id: incomingInviteField
+                        Layout.fillWidth: true
+                        placeholderText: "https://doubleslash.space/i#..."
+                        onTextChanged: if (text.length > 0) root.inviteSent = false
+                        Keys.onReturnPressed: root.acceptInvite()
+                    }
 
-                        Avatar {
-                            peerId: root.publicIdText()
-                            size: 86
-                            showRing: true
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingSm
-
-                            Text {
-                                text: root.shortPublicId()
-                                color: Theme.text
-                                font.pixelSize: Theme.fontSizeBody
-                                font.bold: true
-                                elide: Text.ElideMiddle
-                                Layout.fillWidth: true
-                            }
-
-                            Text {
-                                text: root.identityPreview()
-                                color: Theme.accent
-                                font.family: "Consolas"
-                                font.pixelSize: Theme.fontSizeCaption
-                                wrapMode: Text.WrapAnywhere
-                                Layout.fillWidth: true
-                            }
-
-                            TextArea {
-                                text: root.publicIdText()
-                                readOnly: true
-                                selectByMouse: true
-                                wrapMode: Text.WrapAnywhere
-                                color: Theme.text
-                                font.family: "Consolas"
-                                font.pixelSize: Theme.fontSizeCaption
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 54
-                                background: Rectangle {
-                                    color: Theme.bg0
-                                    border.color: Theme.bg3
-                                    border.width: 1
-                                }
-                            }
-                        }
-
-                        StyledButton {
-                            text: root.copiedPublicId ? "Copied" : "Copy"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
-                            success: root.copiedPublicId
-                            Layout.alignment: Qt.AlignTop
-                            onClicked: {
-                                if (root.appBackend) root.appBackend.copyToClipboard(root.publicIdText())
-                                root.copiedPublicId = true
-                            }
-                        }
+                    StyledButton {
+                        text: "Join"
+                        primary: true
+                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/connect.svg"
+                        enabled: incomingInviteField.text.trim().length > 0
+                        onClicked: root.acceptInvite()
                     }
                 }
 
-                Item { Layout.fillHeight: true }
-            }
-
-            // Step 2: Direct P2P connectivity.
-            ColumnLayout {
-                spacing: Theme.spacingMd
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                Layout.margins: Theme.spacingXl
-
                 Text {
-                    text: "Direct P2P Connectivity"
-                    color: Theme.text
-                    font.pixelSize: Theme.fontSizeBody + 4
-                    font.bold: true
-                }
-
-                Text {
-                    text: "Choose how this device should accept peer connections. Supernodes are optional and never act as identity authorities."
-                    color: Theme.muted
-                    font.pixelSize: Theme.fontSizeBody
-                    wrapMode: Text.WordWrap
-                    Layout.fillWidth: true
-                }
-
-                ButtonGroup { id: connectivityGroup }
-
-                RadioButton {
-                    id: directP2pOption
-                    text: "Enable direct peer-to-peer connections"
-                    checked: root.settingsModel ? root.settingsModel.direct_p2p_enabled : true
-                    ButtonGroup.group: connectivityGroup
-                    font.pixelSize: Theme.fontSizeBody
-                    Material.foreground: Theme.text
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: directP2pOption.checked ? 190 : 0
-                    visible: directP2pOption.checked
-                    color: Theme.bg2
-                    border.color: Theme.bg3
-                    border.width: 1
-
-                    ColumnLayout {
-                        anchors.fill: parent
-                        anchors.margins: Theme.spacingMd
-                        spacing: Theme.spacingSm
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.spacingSm
-
-                            Text {
-                                text: "Preferred UDP port"
-                                color: Theme.text
-                                font.pixelSize: Theme.fontSizeBody
-                                font.bold: true
-                            }
-
-                            Item { Layout.fillWidth: true }
-
-                            StyledTextField {
-                                id: p2pPortField
-                                Layout.preferredWidth: 110
-                                text: root.settingsModel ? String(root.settingsModel.direct_p2p_port) : "61045"
-                                horizontalAlignment: TextInput.AlignHCenter
-                                validator: IntValidator { bottom: 1; top: 65535 }
-                                inputMethodHints: Qt.ImhDigitsOnly
-                            }
-                        }
-
-                        Text {
-                            text: "DoubleSlash reuses this port when available and tries the next port if another local client already uses it."
-                            color: Theme.muted
-                            font.pixelSize: Theme.fontSizeCaption
-                            wrapMode: Text.WordWrap
-                            Layout.fillWidth: true
-                        }
-
-                        Text {
-                            text: "Firewall: allow DoubleSlash, or allow inbound and outbound UDP on this port. Prefer Private networks on a trusted LAN."
-                            color: Theme.text
-                            font.pixelSize: Theme.fontSizeCaption
-                            wrapMode: Text.WordWrap
-                            Layout.fillWidth: true
-                        }
-
-                        Text {
-                            text: "Internet P2P: forward the same UDP port on your router to this computer and reserve its LAN address. Carrier-grade NAT may still require a supernode."
-                            color: Theme.warn
-                            font.pixelSize: Theme.fontSizeCaption
-                            wrapMode: Text.WordWrap
-                            Layout.fillWidth: true
-                        }
-                    }
-                }
-
-                RadioButton {
-                    id: supernodeOption
-                    text: "I plan to connect through a supernode — skip port setup"
-                    checked: root.settingsModel ? !root.settingsModel.direct_p2p_enabled : false
-                    ButtonGroup.group: connectivityGroup
-                    font.pixelSize: Theme.fontSizeBody
-                    Material.foreground: Theme.text
-                }
-
-                Text {
-                    visible: supernodeOption.checked
-                    text: "No router or inbound-firewall changes are needed for the onboarding flow. You can enable direct P2P later."
-                    color: Theme.muted
+                    visible: root.inviteSent
+                    text: "Invite accepted. You can add more later from the sidebar."
+                    color: Theme.online
                     font.pixelSize: Theme.fontSizeCaption
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
                 }
 
-                Item { Layout.fillHeight: true }
-            }
-
-            // Step 3: Get connected.
-            ColumnLayout {
-                spacing: Theme.spacingMd
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                Layout.margins: Theme.spacingXl
-
-                Text {
-                    text: "Get Connected"
-                    color: Theme.text
-                    font.pixelSize: Theme.fontSizeBody + 4
-                    font.bold: true
-                }
-
-                Text {
-                    text: "Paste an invite from a peer or supernode, or create one to send out."
-                    color: Theme.muted
-                    font.pixelSize: Theme.fontSizeBody
-                    wrapMode: Text.WordWrap
-                    Layout.fillWidth: true
-                }
-
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingXs
-
-                    Text {
-                        text: "Invite to accept"
-                        color: Theme.muted
-                        font.pixelSize: Theme.fontSizeCaption
-                        font.bold: true
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingSm
-
-                        StyledTextField {
-                            id: incomingInviteField
-                            Layout.fillWidth: true
-                            placeholderText: "https://doubleslash.space/i#..."
-                            Keys.onReturnPressed: if (text.trim().length > 0 && root.appBackend) root.appBackend.pasteInvite(text.trim())
-                        }
-
-                        StyledButton {
-                            text: "Accept"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/connect.svg"
-                            enabled: incomingInviteField.text.trim().length > 0
-                            onClicked: {
-                                if (root.appBackend) root.appBackend.pasteInvite(incomingInviteField.text.trim())
-                                incomingInviteField.text = ""
-                            }
-                        }
-                    }
-                }
-
                 Rectangle {
                     Layout.fillWidth: true
+                    Layout.topMargin: Theme.spacingSm
                     height: 1
                     color: Theme.bg3
                 }
 
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.spacingXs
+                Text {
+                    text: "Or invite a friend"
+                    color: Theme.muted
+                    font.pixelSize: Theme.fontSizeCaption
+                    font.bold: true
+                }
 
-                    Text {
-                        text: "Invite to share"
-                        color: Theme.muted
-                        font.pixelSize: Theme.fontSizeCaption
-                        font.bold: true
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacingSm
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Theme.touchTarget
+                        color: Theme.bg2
+                        border.color: Theme.bg3
+                        border.width: 1
+
+                        Text {
+                            anchors.fill: parent
+                            anchors.leftMargin: Theme.spacingSm
+                            anchors.rightMargin: Theme.spacingSm
+                            verticalAlignment: Text.AlignVCenter
+                            color: root.generatedInvite !== "" ? Theme.text : Theme.muted
+                            font.pixelSize: Theme.fontSizeCaption
+                            text: root.generatedInvite !== "" ? root.generatedInvite : "Create a link to send them"
+                            elide: Text.ElideMiddle
+                        }
                     }
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Theme.spacingSm
-
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: Theme.touchTarget
-                            color: Theme.bg2
-                            border.color: Theme.bg3
-                            border.width: 1
-
-                            Text {
-                                anchors.fill: parent
-                                anchors.leftMargin: Theme.spacingSm
-                                anchors.rightMargin: Theme.spacingSm
-                                verticalAlignment: Text.AlignVCenter
-                                color: root.generatedInvite !== "" ? Theme.text : Theme.muted
-                                font.pixelSize: Theme.fontSizeCaption
-                                text: root.generatedInvite !== "" ? root.generatedInvite : "Generate an invite link"
-                                elide: Text.ElideMiddle
-                            }
-                        }
-
-                        StyledButton {
-                            text: "Generate"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
-                            onClicked: {
-                                if (root.appBackend) {
-                                    root.generatedInvite = root.appBackend.generateInvite()
-                                    root.copiedInvite = false
-                                }
-                            }
-                        }
-
-                        StyledButton {
-                            text: root.copiedInvite ? "Copied" : "Copy"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
-                            enabled: root.generatedInvite !== ""
-                            success: root.copiedInvite
-                            onClicked: {
-                                if (root.appBackend) root.appBackend.copyToClipboard(root.generatedInvite)
+                    StyledButton {
+                        text: root.generatedInvite === "" ? "Create"
+                            : root.copiedInvite ? "Copied" : "Copy"
+                        icon.source: root.generatedInvite === ""
+                            ? "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
+                            : "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
+                        success: root.copiedInvite
+                        onClicked: {
+                            if (!root.appBackend) return
+                            if (root.generatedInvite === "") {
+                                root.generatedInvite = root.appBackend.generateInvite()
+                                root.copiedInvite = false
+                            } else {
+                                root.appBackend.copyToClipboard(root.generatedInvite)
                                 root.copiedInvite = true
                             }
                         }
@@ -558,9 +279,17 @@ Dialog {
                 }
 
                 Item { Layout.fillHeight: true }
+
+                Text {
+                    text: "No invite yet? Skip this; you can paste one any time."
+                    color: Theme.muted
+                    font.pixelSize: Theme.fontSizeCaption
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
             }
 
-            // Step 4: System integration.
+            // Step 2 (Windows only): local integration.
             ColumnLayout {
                 spacing: Theme.spacingMd
                 Layout.fillWidth: true
@@ -568,59 +297,27 @@ Dialog {
                 Layout.margins: Theme.spacingXl
 
                 Text {
-                    text: "System Integration"
-                    color: Theme.text
-                    font.pixelSize: Theme.fontSizeBody + 4
-                    font.bold: true
-                }
-
-                Text {
-                    text: root.isWindows
-                        ? "These local Windows settings can be changed later."
-                        : "System integration is currently Windows-only."
+                    text: "You can change these later in Settings."
                     color: Theme.muted
                     font.pixelSize: Theme.fontSizeBody
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
                 }
 
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 132
-                    color: Theme.bg2
-                    border.color: Theme.bg3
-                    border.width: 1
+                CheckBox {
+                    id: uriOption
+                    text: "Open DoubleSlash invite links in the app"
+                    checked: root.isWindows
+                    font.pixelSize: Theme.fontSizeBody
+                    Material.foreground: Theme.text
+                }
 
-                    ColumnLayout {
-                        anchors.fill: parent
-                        anchors.margins: Theme.spacingMd
-                        spacing: Theme.spacingSm
-
-                        CheckBox {
-                            id: uriOption
-                            text: "Open DoubleSlash invite links in the app"
-                            checked: root.isWindows
-                            enabled: root.isWindows
-                            font.pixelSize: Theme.fontSizeBody
-                            Material.foreground: enabled ? Theme.text : Theme.muted
-                        }
-
-                        CheckBox {
-                            id: shortcutOption
-                            text: "Create Desktop and Start Menu shortcuts"
-                            checked: root.isWindows
-                            enabled: root.isWindows
-                            font.pixelSize: Theme.fontSizeBody
-                            Material.foreground: enabled ? Theme.text : Theme.muted
-                        }
-
-                        Text {
-                            text: root.setupStatus
-                            visible: root.setupStatus !== ""
-                            color: Theme.online
-                            font.pixelSize: Theme.fontSizeCaption
-                        }
-                    }
+                CheckBox {
+                    id: shortcutOption
+                    text: "Create Desktop and Start Menu shortcuts"
+                    checked: root.isWindows
+                    font.pixelSize: Theme.fontSizeBody
+                    Material.foreground: Theme.text
                 }
 
                 Item { Layout.fillHeight: true }
@@ -666,12 +363,15 @@ Dialog {
 
             StyledButton {
                 id: nextBtn
-                text: root.step === root.stepCount - 1 ? "Finish" : "Next"
+                text: root.step === root.stepCount - 1 ? "Finish"
+                    : root.step === 1 && !root.inviteSent && root.generatedInvite === ""
+                        && incomingInviteField.text.trim().length === 0 ? "Skip"
+                    : "Next"
                 primary: true
                 enabled: root.step !== 0 || handleField.text.trim().length > 0
                 onClicked: {
                     if (root.step === 0) root.saveHandle()
-                    if (root.step === 2) root.saveConnectivity()
+                    if (root.step === 1) root.acceptInvite()
                     if (root.step < root.stepCount - 1) {
                         root.step += 1
                     } else {
