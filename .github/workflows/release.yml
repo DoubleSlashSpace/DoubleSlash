@@ -6,7 +6,7 @@
 #   - Push to develop or daily schedule → nightly/dev build (prerelease "nightly" tag, unsigned manifest)
 #   - workflow_dispatch for manual runs
 #
-# Builds DoubleSlash for Windows, macOS, and Linux, applies code signing (when configured),
+# Builds DoubleSlash for Windows, macOS, and Linux, applies code signing to pushed v* tags (when configured),
 # then creates GitHub Releases with the 7z/dmg/AppImage + standalone installer + manifest.
 #
 # Code Signing Setup:
@@ -50,7 +50,7 @@
 #     - Add secret: RELEASE_SIGNER_PRIVATE_PEM (same value as above)
 #     - Then declare the environment on the publish-release job below.
 #
-#   The workflow only uses the secret in the publish step and never logs it.
+#   Only pushed v* tags can use the key (Windows build attestation and release publication).
 #   The signed releases_manifest.json is attached to the release.
 #
 #   When you later get binary code signing, you can still keep using this for the
@@ -61,6 +61,7 @@
 #   - Produces "nightly" prerelease on GitHub (tag `nightly`, updated in place).
 #   - Binaries use DOUBLESLASH_BUILD_ID = nightly-<sha>-<run>
 #   - Manifest is generated unsigned (for dev use; the updater will still work with sha256 fallback).
+#   - No SignPath requests, Apple signing/notarization, or signed Windows build attestation.
 #   - No environment protection / signing key required.
 #
 # ============================================================================
@@ -130,7 +131,7 @@ jobs:
     # preflight is only required for tagged releases. Develop/nightly builds run independently.
     runs-on: windows-2022
     env:
-      RELEASE_SIGNER_PRIVATE_PEM: ${{ secrets.RELEASE_SIGNER_PRIVATE_PEM }}
+      RELEASE_SIGNER_PRIVATE_PEM: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.RELEASE_SIGNER_PRIVATE_PEM || '' }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -256,7 +257,8 @@ jobs:
   sign-windows:
     needs: build-windows
     runs-on: ubuntu-22.04
-    if: vars.SIGNPATH_ORGANIZATION_ID != ''
+    # Nightlies publish windows-unsigned directly, even when SignPath is configured.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.SIGNPATH_ORGANIZATION_ID != ''
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -306,7 +308,7 @@ jobs:
   windows-unsigned-fallback:
     needs: build-windows
     runs-on: ubuntu-22.04
-    if: vars.SIGNPATH_ORGANIZATION_ID == ''
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.SIGNPATH_ORGANIZATION_ID == ''
     steps:
       - name: Download unsigned artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -330,12 +332,13 @@ jobs:
     # preflight is only required for tagged releases. Develop/nightly builds run independently.
     runs-on: macos-14
     env:
-      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
-      APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-      APPLE_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
+      # Empty credentials keep both build_macos.sh and notarization unsigned on nightlies.
+      APPLE_CERTIFICATE_P12: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_P12 || '' }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+      APPLE_SIGNING_IDENTITY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_SIGNING_IDENTITY || '' }}
+      APPLE_NOTARY_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_NOTARY_KEY || '' }}
+      APPLE_NOTARY_KEY_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_NOTARY_KEY_ID || '' }}
+      APPLE_NOTARY_ISSUER: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_NOTARY_ISSUER || '' }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -442,7 +445,7 @@ jobs:
       - name: Build (build_macos.sh)
         env:
           DOUBLESLASH_RELEASE: "1"
-          DOUBLESLASH_SIGN_ID: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          DOUBLESLASH_SIGN_ID: ${{ env.APPLE_SIGNING_IDENTITY }}
           DOUBLESLASH_BUILD_ID: ${{ steps.meta.outputs.build_id }}
         run: bash build_macos.sh
 
