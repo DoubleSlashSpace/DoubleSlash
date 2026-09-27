@@ -616,16 +616,16 @@ impl ConnectionManager {
             .cloned()
     }
 
-    /// A connected session for a verified cluster sibling of `offline_id`, if any.
-    fn live_cluster_sibling_session(&self, offline_id: &str) -> Option<String> {
-        let offline_bare = offline_id.trim_end_matches('=');
+    /// Every verified cluster member related to `id`, from each roster that
+    /// names it. Empty when `id` belongs to no known cluster.
+    fn cluster_member_ids(&self, id: &str) -> Vec<String> {
+        let bare = id.trim_end_matches('=');
         let mut member_ids: Vec<String> = Vec::new();
         for (key, members) in &self.cluster_members {
-            let key_bare = key.trim_end_matches('=');
-            let related = key_bare == offline_bare
+            let related = key.trim_end_matches('=') == bare
                 || members
                     .iter()
-                    .any(|m| m.identity_pub.trim_end_matches('=') == offline_bare);
+                    .any(|m| m.identity_pub.trim_end_matches('=') == bare);
             if !related {
                 continue;
             }
@@ -634,6 +634,37 @@ impl ConnectionManager {
                 member_ids.push(m.identity_pub.clone());
             }
         }
+        member_ids
+    }
+
+    /// The connected sessions of `supernode_id` and of every verified cluster
+    /// sibling, sorted. Room state lives per node, so anything that must reach
+    /// whichever member holds it goes to all of these.
+    pub(super) fn connected_cluster_sessions(&self, supernode_id: &str) -> Vec<String> {
+        let origin = self
+            .resolve_supernode_session_key(supernode_id)
+            .unwrap_or_else(|| supernode_id.to_owned());
+        let mut wanted = self.cluster_member_ids(&origin);
+        wanted.push(origin);
+        let mut out: Vec<String> = self
+            .supernodes
+            .iter()
+            .filter(|(sid, sn)| {
+                sn.connected
+                    && wanted
+                        .iter()
+                        .any(|w| w.trim_end_matches('=') == sid.trim_end_matches('='))
+            })
+            .map(|(sid, _)| sid.clone())
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// A connected session for a verified cluster sibling of `offline_id`, if any.
+    fn live_cluster_sibling_session(&self, offline_id: &str) -> Option<String> {
+        let offline_bare = offline_id.trim_end_matches('=');
+        let member_ids = self.cluster_member_ids(offline_id);
         if member_ids.is_empty() {
             return None;
         }

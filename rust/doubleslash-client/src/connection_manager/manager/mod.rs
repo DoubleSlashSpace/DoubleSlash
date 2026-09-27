@@ -1173,45 +1173,7 @@ impl ConnectionManager {
                             supernode_id,
                             room_id,
                         } => {
-                            // Voice leave only — do not tear down multi-room text
-                            // chat. Clear voice routing scope only when it matches
-                            // the room being left.
-                            if self.current_room_id == room_id
-                                && self.current_supernode_id == supernode_id
-                            {
-                                self.current_room_id.clear();
-                                self.current_supernode_id.clear();
-                                // Video state is per *stream*, and every stream
-                                // in that room just ended. Keeping the
-                                // completed-frame history would judge the next
-                                // session's numbering against this one's.
-                                self.video_reassembler.clear();
-                            }
-                            // An intentional leave outranks any in-flight
-                            // `room_absent` retry for this room — don't let the
-                            // retry timer rejoin a room we just walked away from.
-                            self.pending_room_join_retries
-                                .retain(|(_, r), _| r != &room_id);
-                            let room_key = room_scope_key(&supernode_id, &room_id);
-                            let keep_chat = self.chat_active_rooms.contains(&room_key);
-                            if !keep_chat {
-                                // Fully leaving this room's content surface.
-                                self.group_keys.forget(&room_id);
-                                self.pending_group_key_acks
-                                    .retain(|(r, _), _| r != &room_id);
-                                self.room_group_members.remove(&room_key);
-                                self.room_voice_members.remove(&room_key);
-                                self.forget_room_device_scope(&supernode_id, &room_id);
-                            }
-                            self.send_room_leave(&supernode_id, &room_id).await;
-                            // SfuLeave drops voice participation only; text chat
-                            // requires an explicit subscriber entry once we are
-                            // no longer a participant. Re-subscribe so private
-                            // (and any chat-active) rooms keep receiving messages
-                            // while we voice elsewhere.
-                            if keep_chat {
-                                self.send_room_subscribe(&supernode_id, &room_id).await;
-                            }
+                            self.leave_room_voice(&supernode_id, &room_id).await;
                         }
                         ConnectionCommand::RemoveSupernode { supernode_id } => {
                             self.remove_supernode(&supernode_id).await;

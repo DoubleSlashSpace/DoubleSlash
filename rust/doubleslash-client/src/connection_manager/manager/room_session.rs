@@ -1356,6 +1356,62 @@ impl ConnectionManager {
         self.dispatch_outbound(msg).await;
     }
 
+    /// Leave `room_id`'s voice, keeping its text chat when that is still wanted.
+    ///
+    /// The leave goes to every connected member of the room's cluster, not only
+    /// to today's route. A node lists us in voice until it hears our leave or
+    /// loses our connection, and the join may have gone elsewhere: the route is
+    /// resolved again for the leave, a failover joins every live sibling, and a
+    /// previous run of this client may have joined before it exited. With a
+    /// second device on the identity the connection never drops, and the
+    /// built-in room is never collected, so a missed leave listed us in its
+    /// voice for as long as the node ran. A node that never had us ignores it.
+    pub(super) async fn leave_room_voice(&mut self, supernode_id: &str, room_id: &str) {
+        let mut targets = self.connected_cluster_sessions(supernode_id);
+        let route = self.live_room_route(supernode_id);
+        if !targets.contains(&route) {
+            targets.push(route);
+        }
+        // Voice routing scope names the node that took the join, which is often
+        // a sibling of the one the UI names. Left set, a later drop of that node
+        // would fail over into the room we just left.
+        let joined_here = self.current_room_id == room_id
+            && (self.current_supernode_id == supernode_id
+                || targets.contains(&self.current_supernode_id));
+        if joined_here {
+            self.current_room_id.clear();
+            self.current_supernode_id.clear();
+            // Video state is per *stream*, and every stream in that room just
+            // ended. Keeping the completed-frame history would judge the next
+            // session's numbering against this one's.
+            self.video_reassembler.clear();
+        }
+        // An intentional leave outranks any in-flight `room_absent` retry for
+        // this room — don't let the retry timer rejoin a room we just left.
+        self.pending_room_join_retries
+            .retain(|(_, r), _| r != room_id);
+        let room_key = room_scope_key(supernode_id, room_id);
+        let keep_chat = self.chat_active_rooms.contains(&room_key);
+        if !keep_chat {
+            // Fully leaving this room's content surface.
+            self.group_keys.forget(room_id);
+            self.pending_group_key_acks.retain(|(r, _), _| r != room_id);
+            self.room_group_members.remove(&room_key);
+            self.room_voice_members.remove(&room_key);
+            self.forget_room_device_scope(supernode_id, room_id);
+        }
+        for target in &targets {
+            self.send_room_leave(target, room_id).await;
+        }
+        // SfuLeave drops voice participation only; text chat requires an
+        // explicit subscriber entry once we are no longer a participant.
+        // Re-subscribe so private (and any chat-active) rooms keep receiving
+        // messages while we voice elsewhere.
+        if keep_chat {
+            self.send_room_subscribe(supernode_id, room_id).await;
+        }
+    }
+
     pub(super) async fn send_room_leave(&mut self, supernode_id: &str, room_id: &str) {
         let route = self.live_room_route(supernode_id);
         let sender = self.identity.public_id();
@@ -2665,5 +2721,103 @@ mod tests {
         member.manager.retry_group_key_requests().await;
         assert!(member.outgoing.try_recv().is_err());
         assert!(!member.manager.group_key_requests.contains_key(ROOM));
+    }
+}
+
+#[cfg(test)]
+mod leave_tests {
+    //! A voice leave must reach the node that holds the join, whichever
+    //! cluster member the UI names.
+
+    use super::*;
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+    use tokio_tungstenite::tungstenite::Message;
+
+    use crate::identity::Identity;
+
+    const ROOM: &str = "default";
+    const NODE_A: &str = "node-a";
+    const NODE_B: &str = "node-b";
+    const NODE_C: &str = "node-c";
+    const OUTSIDER: &str = "node-outside";
+
+    fn member(id: &str) -> crate::cluster::ClusterMember {
+        crate::cluster::ClusterMember {
+            identity_pub: id.to_owned(),
+            relay_addr: "127.0.0.1:1".to_owned(),
+            cluster_addr: None,
+            ws_addr: None,
+        }
+    }
+
+    /// Rooms each outbox asked to leave.
+    fn leaves(outgoing: &mut mpsc::Receiver<Message>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(Message::Text(raw)) = outgoing.try_recv() {
+            let message = SignalingMessage::from_json(&raw).unwrap();
+            if message.msg_type == MessageType::SfuLeave {
+                out.push(
+                    message.payload["room_id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                );
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn a_leave_reaches_every_connected_cluster_member() {
+        let profile = tempfile::tempdir().unwrap();
+        let identity = Arc::new(Identity::generate());
+        let store =
+            crate::peer_store::PeerStore::open(&identity, Some(&profile.path().join("peers.dat")))
+                .unwrap();
+        let (mut manager, _events) =
+            ConnectionManager::new_for_test(identity, Arc::new(RwLock::new(store)));
+        let mut a = manager.test_add_supernode_session(NODE_A);
+        let mut b = manager.test_add_supernode_session(NODE_B);
+        let mut c = manager.test_add_supernode_session(NODE_C);
+        let mut outsider = manager.test_add_supernode_session(OUTSIDER);
+        manager.record_cluster_members(NODE_A, &[member(NODE_B), member(NODE_C)]);
+
+        // The join went to C; the UI names the room under A.
+        manager.test_set_room(NODE_C, ROOM);
+        manager.leave_room_voice(NODE_A, ROOM).await;
+
+        assert_eq!(leaves(&mut c), vec![ROOM], "the node holding the join");
+        assert_eq!(leaves(&mut a), vec![ROOM]);
+        assert_eq!(leaves(&mut b), vec![ROOM]);
+        assert!(leaves(&mut outsider).is_empty(), "not in this cluster");
+        assert!(
+            manager.current_room_id.is_empty() && manager.current_supernode_id.is_empty(),
+            "a later drop of C must not fail over into the room we left"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_standalone_node_gets_one_leave() {
+        let profile = tempfile::tempdir().unwrap();
+        let identity = Arc::new(Identity::generate());
+        let store =
+            crate::peer_store::PeerStore::open(&identity, Some(&profile.path().join("peers.dat")))
+                .unwrap();
+        let (mut manager, _events) =
+            ConnectionManager::new_for_test(identity, Arc::new(RwLock::new(store)));
+        let mut a = manager.test_add_supernode_session(NODE_A);
+        let mut outsider = manager.test_add_supernode_session(OUTSIDER);
+
+        manager.test_set_room(OUTSIDER, ROOM);
+        manager.leave_room_voice(NODE_A, ROOM).await;
+
+        assert_eq!(leaves(&mut a), vec![ROOM]);
+        assert!(leaves(&mut outsider).is_empty());
+        assert_eq!(
+            manager.current_supernode_id, OUTSIDER,
+            "voice in another node's room of the same name is untouched"
+        );
     }
 }
