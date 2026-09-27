@@ -197,6 +197,7 @@ impl Session {
             Arc::clone(&chat_store),
             key_dir.clone(),
             Arc::clone(&room_store),
+            Arc::clone(&peer_store),
             Arc::clone(&pending_sub_room_parent),
             Arc::clone(&portal_datagrams),
             Arc::clone(&identity),
@@ -365,6 +366,7 @@ fn spawn_event_pump(
     chat_store: Arc<ChatStore>,
     home_dir: PathBuf,
     room_store: Arc<RwLock<RoomStore>>,
+    peer_store: Arc<RwLock<PeerStore>>,
     pending_sub_room_parent: Arc<RwLock<HashMap<String, String>>>,
     portal_datagrams: Arc<Mutex<VecDeque<Vec<u8>>>>,
     identity: Arc<Identity>,
@@ -410,6 +412,23 @@ fn spawn_event_pump(
                     cluster_members
                         .write()
                         .insert(supernode_id.clone(), members.clone());
+                }
+
+                // Trade rooms with our other devices through each host we
+                // reach; the manager spaces the sends.
+                if let ConnectionEvent::SupernodeConnected(_) = &ev {
+                    sync_own_rooms(&room_store, &cmd_tx, &my_public_id, true);
+                }
+                if merge_if_own_rooms(
+                    &room_store,
+                    &peer_store,
+                    &cluster_members,
+                    &identity,
+                    &cmd_tx,
+                    &my_public_id,
+                    &ev,
+                ) {
+                    sink.emit(&mut guard, r#"{"event":"rooms_synced"}"#);
                 }
 
                 queue_portal_datagram(&portal_datagrams, &ev);
@@ -865,10 +884,11 @@ fn persist_if_room_created(
 
     // The parent we asked for, if this create came from "inside" another
     // room. Removed rather than read: the intent belongs to one create.
-    let parent_node_id = pending_sub_room_parent
-        .write()
-        .remove(&format!("{supernode_id}:{room_name}"))
-        .unwrap_or_default();
+    let parent_node_id = take_pending_parent(
+        &mut pending_sub_room_parent.write(),
+        supernode_id,
+        room_name,
+    );
 
     // Best-effort, exactly as on the desktop: a signing or persist hiccup
     // must not lose the room that was already created server-side.
@@ -894,6 +914,143 @@ fn persist_if_room_created(
         },
         Err(e) => warn!("could not adopt the room into the space tree: {e}"),
     }
+    sync_own_rooms(room_store, cmd_tx, my_public_id, true);
+}
+
+/// Send this device's rooms and Space trees to our other devices, as the
+/// desktop bridge's `sync_own_rooms` does, so a room made on the phone shows
+/// on the desktop. `reply_wanted` asks them to answer with theirs.
+fn sync_own_rooms(
+    room_store: &Arc<RwLock<RoomStore>>,
+    cmd_tx: &mpsc::Sender<ConnectionCommand>,
+    my_public_id: &str,
+    reply_wanted: bool,
+) {
+    let snapshot = room_store.read().own_device_snapshot(my_public_id);
+    let _ = cmd_tx.try_send(ConnectionCommand::SyncOwnRooms {
+        snapshot,
+        reply_wanted,
+    });
+}
+
+/// Merge rooms another of our devices sent. Returns whether the room list
+/// changed, so the UI can reload it.
+///
+/// Announces any Space root the merge had to re-sign, and answers with our own
+/// snapshot when asked or when the sender's tree is behind ours.
+fn merge_if_own_rooms(
+    room_store: &Arc<RwLock<RoomStore>>,
+    peer_store: &Arc<RwLock<PeerStore>>,
+    cluster_members: &Arc<RwLock<HashMap<String, Vec<String>>>>,
+    identity: &Arc<Identity>,
+    cmd_tx: &mpsc::Sender<ConnectionCommand>,
+    my_public_id: &str,
+    event: &ConnectionEvent,
+) -> bool {
+    let ConnectionEvent::OwnRoomsReceived {
+        snapshot,
+        reply_wanted,
+    } = event
+    else {
+        return false;
+    };
+    let issued_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let merged = {
+        let peers = peer_store.read();
+        let clusters = cluster_members.read();
+        room_store.write().merge_own_device_snapshot(
+            snapshot,
+            my_public_id,
+            |id| own_room_host(&peers, &clusters, id),
+            |a, b| same_own_room_host(&clusters, a, b),
+            issued_at,
+            |b| identity.sign(b),
+        )
+    };
+    let merged = match merged {
+        Ok(merged) => merged,
+        Err(e) => {
+            warn!("could not merge rooms from another device: {e}");
+            return false;
+        }
+    };
+    for (supernode_id, root) in &merged.roots {
+        match serde_json::to_string(root) {
+            Ok(root_json) => {
+                let _ = cmd_tx.try_send(ConnectionCommand::AnnounceSpaceRoot {
+                    supernode_id: supernode_id.clone(),
+                    root_json,
+                });
+            }
+            Err(e) => warn!("could not encode a merged space root: {e}"),
+        }
+    }
+    if *reply_wanted || merged.sibling_behind {
+        sync_own_rooms(room_store, cmd_tx, my_public_id, false);
+    }
+    merged.changed
+}
+
+/// The id to file a synced room under, or `None` for a supernode this phone
+/// does not know and so could not list the room for.
+///
+/// A trusted supernode files under its identity, as `RoomCreated` does. A
+/// cluster member learned only from a roster keeps the id it came with.
+fn own_room_host(
+    peers: &PeerStore,
+    clusters: &HashMap<String, Vec<String>>,
+    id: &str,
+) -> Option<String> {
+    if let Some(canon) = peers.resolve_supernode_identity_pub(id) {
+        return Some(canon);
+    }
+    let bare = id.trim_end_matches('=');
+    clusters
+        .iter()
+        .any(|(host, members)| {
+            host.trim_end_matches('=') == bare
+                || members.iter().any(|m| m.trim_end_matches('=') == bare)
+        })
+        .then(|| id.to_owned())
+}
+
+/// Whether two supernode ids name one host: the same node, or two members of
+/// one cluster, under which the same room may be filed.
+fn same_own_room_host(clusters: &HashMap<String, Vec<String>>, a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim_end_matches('='), b.trim_end_matches('='));
+    a == b
+        || clusters.iter().any(|(host, members)| {
+            let set: Vec<&str> = std::iter::once(host)
+                .chain(members)
+                .map(|id| id.trim_end_matches('='))
+                .collect();
+            set.contains(&a) && set.contains(&b)
+        })
+}
+
+/// The parent a sub-room create asked for, keyed `"{supernode_id}:{room_name}"`.
+///
+/// The create names the supernode the way the app spelled it (its hex
+/// `peer_id`), but `RoomCreated` comes back under the node's signing identity
+/// — and in a cluster possibly a sibling's. An exact-key lookup therefore
+/// missed, and the room was filed at the top of the Space instead of under its
+/// parent. Fall back to the room name, which the reply does carry verbatim.
+fn take_pending_parent(
+    pending: &mut HashMap<String, String>,
+    supernode_id: &str,
+    room_name: &str,
+) -> String {
+    if let Some(parent) = pending.remove(&format!("{supernode_id}:{room_name}")) {
+        return parent;
+    }
+    let key = pending
+        .keys()
+        .find(|k| k.split_once(':').is_some_and(|(_, name)| name == room_name))
+        .cloned();
+    key.and_then(|k| pending.remove(&k)).unwrap_or_default()
 }
 
 /// Persist inbound chat to the local history before the UI hears about it.
@@ -957,6 +1114,39 @@ fn persist_if_chat(chat_store: &ChatStore, event: &ConnectionEvent) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_sub_room_keeps_its_parent_when_the_reply_names_the_node_differently() {
+        // The create was keyed by the hex peer id; the reply names the node by
+        // its signing identity. The parent must still be found, once.
+        let mut pending = HashMap::new();
+        pending.insert("0a1b2c:General".to_owned(), "awols-place".to_owned());
+        assert_eq!(
+            super::take_pending_parent(&mut pending, "O6EyR6uleEne", "General"),
+            "awols-place"
+        );
+        assert!(pending.is_empty());
+        assert_eq!(
+            super::take_pending_parent(&mut pending, "O6EyR6uleEne", "General"),
+            ""
+        );
+    }
+
+    #[test]
+    fn an_exact_match_wins_and_other_rooms_are_left_alone() {
+        let mut pending = HashMap::new();
+        pending.insert("node:General".to_owned(), "a".to_owned());
+        pending.insert("node:Lounge".to_owned(), "b".to_owned());
+        assert_eq!(
+            super::take_pending_parent(&mut pending, "node", "General"),
+            "a"
+        );
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            super::take_pending_parent(&mut pending, "node", "Other"),
+            ""
+        );
+    }
     use super::*;
     use doubleslash_client::call_controller::CallCommand;
 
@@ -1132,5 +1322,50 @@ mod tests {
             );
         }
         // Reaching here without blocking is the assertion.
+    }
+
+    fn clusters() -> HashMap<String, Vec<String>> {
+        HashMap::from([(
+            "node-a=".to_owned(),
+            vec!["node-b".to_owned(), "node-c".to_owned()],
+        )])
+    }
+
+    #[test]
+    fn synced_rooms_file_under_known_hosts_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "doubleslash-android-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let identity = Identity::generate();
+        let mut peers = PeerStore::open(&identity, Some(&dir.join("peers.dat"))).unwrap();
+        peers.upsert(doubleslash_client::peer_store::PeerRecord {
+            peer_id: "0a1b".to_owned(),
+            identity_pub: "trusted-node".to_owned(),
+            is_supernode: true,
+            ..Default::default()
+        });
+        let clusters = clusters();
+        assert_eq!(
+            own_room_host(&peers, &clusters, "0a1b").as_deref(),
+            Some("trusted-node"),
+            "a trusted node files under its identity"
+        );
+        assert_eq!(
+            own_room_host(&peers, &clusters, "node-b=").as_deref(),
+            Some("node-b="),
+            "a roster-learned member keeps its id"
+        );
+        assert_eq!(own_room_host(&peers, &clusters, "stranger"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cluster_members_are_one_host_for_synced_rooms() {
+        let clusters = clusters();
+        assert!(same_own_room_host(&clusters, "node-a", "node-c="));
+        assert!(same_own_room_host(&clusters, "node-b", "node-b="));
+        assert!(!same_own_room_host(&clusters, "node-a", "elsewhere"));
     }
 }

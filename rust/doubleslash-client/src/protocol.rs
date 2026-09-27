@@ -155,6 +155,9 @@ pub enum MessageType {
     SfuGroupKeyRequest,
     /// Sealed, challenge-bound room-key handoff between devices of one identity.
     SfuDeviceKeySync,
+    /// Sealed room definitions and Space trees, from one of our devices to the
+    /// others, so a room made on one appears on all of them.
+    DeviceRoomSync,
 
     // Space Merkle tree: owner announces a signed root to its supernode, which
     // stores + cluster-gossips it (authenticated room-set sync).
@@ -274,6 +277,7 @@ impl MessageType {
             Self::SfuGroupKeyAck => "sfu_group_key_ack",
             Self::SfuGroupKeyRequest => "sfu_group_key_request",
             Self::SfuDeviceKeySync => "sfu_device_key_sync",
+            Self::DeviceRoomSync => "device_room_sync",
             Self::SpaceRootAnnounce => "space_root_announce",
             Self::SfuRoomCreate => "sfu_room_create",
             Self::SfuRoomCreated => "sfu_room_created",

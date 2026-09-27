@@ -12,6 +12,9 @@ Rectangle {
     property bool dirty: false
     signal sectionActivated(int index)
     signal saveRequested()
+    /// Leave Settings for the page it was opened from. The title-bar avatar
+    /// is the way in; there is no Chat/Settings switch to toggle back.
+    signal backRequested()
 
     Layout.preferredWidth: Theme.sidebarWidth
     Layout.fillHeight: true
@@ -26,9 +29,27 @@ Rectangle {
             height: Theme.touchTarget
             color: Theme.bg2
 
+            ToolButton {
+                id: backButton
+                anchors.left: parent.left
+                anchors.leftMargin: Theme.spacingXs
+                anchors.verticalCenter: parent.verticalCenter
+                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
+                icon.width: 14
+                icon.height: 14
+                icon.color: Theme.text
+                // The chevron points right; flipped, it reads as "back".
+                rotation: 180
+                flat: true
+                onClicked: root.backRequested()
+                ToolTip.text: qsTr("Back")
+                ToolTip.visible: hovered
+                Accessible.name: qsTr("Back")
+            }
+
             Label {
                 anchors.centerIn: parent
-                text: "Settings"
+                text: qsTr("Settings")
                 color: Theme.text
                 font.pixelSize: Theme.fontSizeBody
                 font.bold: true

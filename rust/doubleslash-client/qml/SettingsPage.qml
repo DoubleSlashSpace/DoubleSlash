@@ -105,6 +105,77 @@ Item {
         return idx >= 0 ? idx : fallback
     }
 
+    // ── Skin ────────────────────────────────────────────────────────────────
+    //
+    // The skin is stored as the portable JSON Theme.qml documents, so what the
+    // editor writes is exactly what "Copy skin" hands to another device.
+
+    function currentSkin() {
+        return Theme.parseSkin(root.settings ? root.settings.skin_json : "")
+    }
+
+    function sameColors(a, b) {
+        var keys = Theme.tokenNames
+        for (var i = 0; i < keys.length; i++) {
+            if ((a[keys[i]] || "").toUpperCase() !== (b[keys[i]] || "").toUpperCase())
+                return false
+        }
+        return true
+    }
+
+    /// Index into Theme.presets of the skin in use, or -1 for a custom one.
+    function skinPresetIndex() {
+        var skin = root.currentSkin()
+        if (!skin || Object.keys(skin.colors).length === 0)
+            return 0
+        for (var i = 1; i < Theme.presets.length; i++) {
+            if (root.sameColors(skin.colors, Theme.presets[i].colors))
+                return i
+        }
+        return -1
+    }
+
+    function applySkinPreset(index) {
+        if (!root.settings) return
+        var preset = Theme.presets[index]
+        if (!preset) return
+        root.settings.skin_json = preset.id === "default"
+            ? "" : Theme.skinJson(preset.name, preset.base, preset.colors)
+        // A skin made for one theme reads badly on the other, so picking it
+        // switches the theme with it.
+        if (preset.base !== "")
+            root.setTheme(preset.base)
+    }
+
+    function setSkinColor(token, hex) {
+        if (!root.settings) return
+        var skin = root.currentSkin() || { name: "", base: "", colors: {} }
+        var colors = {}
+        for (var k in skin.colors) colors[k] = skin.colors[k]
+        colors[token] = hex.toUpperCase()
+        root.settings.skin_json = Theme.skinJson(qsTr("Custom"),
+            skin.base || (Theme.isDark ? "dark" : "light"), colors)
+    }
+
+    /// The skin in use as JSON, the built-in one included, for copying.
+    function exportSkin() {
+        var skin = root.currentSkin()
+        return skin ? Theme.skinJson(skin.name, skin.base, skin.colors)
+                    : Theme.skinJson("DoubleSlash", Theme.isDark ? "dark" : "light", {})
+    }
+
+    /// Apply pasted skin JSON. Returns "" on success or why it was refused.
+    function importSkin(text) {
+        if (!root.settings) return qsTr("Settings are not loaded.")
+        var skin = Theme.parseSkin(text.trim())
+        if (!skin)
+            return qsTr("That is not a DoubleSlash skin.")
+        root.settings.skin_json = Theme.skinJson(skin.name, skin.base, skin.colors)
+        if (skin.base !== "")
+            root.setTheme(skin.base)
+        return ""
+    }
+
     function setTheme(value) {
         if (!settings) return
         settings.theme = value
@@ -1768,20 +1839,172 @@ Item {
                     SettingSwitch { title: "Enable UPnP port mapping"; checked: root.settings ? root.settings.upnp_enabled : true; onChanged: if (root.settings) root.settings.upnp_enabled = checked }
                     SettingSwitch { title: "Verbose debug logging"; description: "Write detailed diagnostic logs for troubleshooting. Applies immediately; a RUST_LOG environment variable overrides this."; checked: root.settings ? root.settings.debug_logging : false; onChanged: if (root.settings) root.settings.debug_logging = checked }
 
-                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.bg3 }
+                }
+
+                SettingsCard {
+                    title: qsTr("Appearance")
+                    subtitle: qsTr("Theme, skin and colours. A skin copied here pastes into the Android app too.")
 
                     GridLayout {
                         Layout.fillWidth: true
                         columns: 2
                         columnSpacing: Theme.spacingXl
-                        Label { text: "Theme"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        rowSpacing: Theme.spacingMd
+
+                        Label { text: qsTr("Theme"); color: Theme.muted; Layout.alignment: Qt.AlignRight }
                         ComboBox {
                             Layout.fillWidth: true
-                            model: ["System", "Dark", "Light"]
+                            model: [qsTr("System"), qsTr("Dark"), qsTr("Light")]
                             property var values: ["system", "dark", "light"]
                             currentIndex: root.indexOf(values, root.settings ? root.settings.theme : "dark", 1)
                             onActivated: root.setTheme(values[currentIndex])
                         }
+
+                        Label { text: qsTr("Skin"); color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        ComboBox {
+                            id: skinCombo
+                            Layout.fillWidth: true
+                            model: Theme.presets.map(function (p) { return p.name })
+                            currentIndex: root.skinPresetIndex()
+                            // -1 is a skin edited by hand or pasted in.
+                            displayText: currentIndex >= 0 ? currentText
+                                : ((root.currentSkin() || {}).name || qsTr("Custom"))
+                            onActivated: {
+                                root.applySkinPreset(currentIndex)
+                                currentIndex = Qt.binding(function () { return root.skinPresetIndex() })
+                            }
+                        }
+                    }
+
+                    Label {
+                        text: qsTr("Colours")
+                        color: Theme.muted
+                        font.pixelSize: Theme.fontSizeCaption
+                    }
+
+                    // Every token a skin can set: click a swatch to change it.
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingSm
+
+                        Repeater {
+                            model: Theme.tokenNames
+
+                            delegate: Rectangle {
+                                id: swatchCell
+                                required property var modelData
+                                readonly property string token: modelData
+                                readonly property bool overridden:
+                                    Theme.skinColors[swatchCell.token] !== undefined
+                                width: 150
+                                height: 36
+                                color: swatchHover.hovered ? Theme.bg3 : "transparent"
+
+                                Row {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    x: Theme.spacingXs
+                                    spacing: Theme.spacingSm
+
+                                    Rectangle {
+                                        width: 26; height: 26
+                                        radius: 13
+                                        color: Theme[swatchCell.token]
+                                        border.color: Theme.divider
+                                        border.width: 1
+                                    }
+                                    Column {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        Text {
+                                            text: Theme.tokenLabels[swatchCell.token] || swatchCell.token
+                                            color: Theme.text
+                                            font.pixelSize: Theme.fontSizeCaption
+                                            font.bold: swatchCell.overridden
+                                        }
+                                        Text {
+                                            text: Theme.toHex(Theme[swatchCell.token]).toUpperCase()
+                                            color: Theme.muted
+                                            font.pixelSize: Theme.fontSizeMicro + 1
+                                            font.family: "monospace"
+                                        }
+                                    }
+                                }
+
+                                HoverHandler { id: swatchHover; cursorShape: Qt.PointingHandCursor }
+                                TapHandler {
+                                    onTapped: {
+                                        skinColorDialog.token = swatchCell.token
+                                        skinColorDialog.selectedColor = Theme[swatchCell.token]
+                                        skinColorDialog.open()
+                                    }
+                                }
+                                Accessible.role: Accessible.Button
+                                Accessible.name: qsTr("Change %1 colour").arg(
+                                    Theme.tokenLabels[swatchCell.token] || swatchCell.token)
+                            }
+                        }
+                    }
+
+                    ColorDialog {
+                        id: skinColorDialog
+                        property string token: ""
+                        title: qsTr("Choose a colour")
+                        onAccepted: root.setSkinColor(token, Theme.toHex(selectedColor))
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingSm
+
+                        StyledButton {
+                            text: qsTr("Reset colours")
+                            enabled: root.settings !== null && root.settings.skin_json !== ""
+                            onClicked: root.settings.skin_json = ""
+                        }
+                        StyledButton {
+                            text: qsTr("Copy skin")
+                            onClicked: {
+                                backend.copyToClipboard(root.exportSkin())
+                                skinNotice.text = qsTr("Skin copied. Paste it into another DoubleSlash to use it there.")
+                                skinNotice.color = Theme.muted
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingSm
+
+                        StyledTextField {
+                            id: skinPasteField
+                            Layout.fillWidth: true
+                            placeholderText: qsTr("Paste a skin…")
+                            Accessible.name: qsTr("Skin to apply")
+                        }
+                        StyledButton {
+                            text: qsTr("Apply")
+                            enabled: skinPasteField.text.trim() !== ""
+                            onClicked: {
+                                var why = root.importSkin(skinPasteField.text)
+                                if (why === "") {
+                                    skinPasteField.text = ""
+                                    skinNotice.text = qsTr("Skin applied. Save to keep it.")
+                                    skinNotice.color = Theme.muted
+                                } else {
+                                    skinNotice.text = why
+                                    skinNotice.color = Theme.warn
+                                }
+                            }
+                        }
+                    }
+
+                    Label {
+                        id: skinNotice
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        wrapMode: Text.WordWrap
+                        color: Theme.muted
+                        font.pixelSize: Theme.fontSizeCaption
                     }
                 }
             }

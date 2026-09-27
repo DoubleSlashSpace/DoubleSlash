@@ -132,6 +132,8 @@ data class AppState(
     val call: CallState? = null,
     /** Show rooms the user hid. Off by default, matching the desktop sidebar. */
     val showHiddenRooms: Boolean = false,
+    /** Show blocked peers, which the Peers list hides by default as the desktop's does. */
+    val showBlockedPeers: Boolean = false,
     /** True while capturing and sending audio into the open room. */
     val roomVoiceActive: Boolean = false,
     /**
@@ -191,7 +193,21 @@ data class AppState(
      * second invite to someone with one waiting.
      */
     val trustInvites: Map<String, String> = emptyMap(),
+    /**
+     * Who in the voice session is talking right now, by [videoKey], ourselves
+     * included. From the call controller's speaking edges, so the Rooms tree
+     * can ring a speaker the way the desktop's does.
+     */
+    val speakingPeers: Set<String> = emptySet(),
+    /**
+     * This listener's mute and volume per member, by [videoKey]. Never sent to
+     * the member; lives for the session, as the desktop's does until saved.
+     */
+    val peerAudio: Map<String, PeerAudioPref> = emptyMap(),
 )
+
+/** One member as this listener hears them: muted for me, and how loud (0-200). */
+data class PeerAudioPref(val muted: Boolean = false, val volume: Int = 100)
 
 /** A room member asked to become trusted peers; accepting redeems [inviteUrl]. */
 data class TrustOffer(
@@ -346,6 +362,8 @@ data class Prefs(
     val frontCamera: Boolean = true,
     val voiceActivation: Boolean = true,
     val theme: String = AppSettings.THEME_SYSTEM,
+    /** Portable skin JSON; empty for the built-in palette. */
+    val skin: String = "",
     val inputGain: Int = 100,
     val outputGain: Int = 100,
     val noiseStrength: Int = 2,
@@ -538,6 +556,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(prefs = it.prefs.copy(theme = theme)) }
     }
 
+    /** Apply and keep a skin (portable JSON, or "" for the built-in palette). */
+    fun setSkin(skin: String) {
+        settings.skin = skin
+        _state.update { it.copy(prefs = it.prefs.copy(skin = skin)) }
+    }
+
     /**
      * Open the identity with a stored key, when the user has asked for that.
      *
@@ -679,6 +703,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         frontCamera = settings.frontCamera,
         voiceActivation = settings.voiceActivation,
         theme = settings.theme,
+        skin = settings.skin,
         inputGain = settings.inputGain,
         outputGain = settings.outputGain,
         noiseStrength = settings.noiseStrength,
@@ -1300,6 +1325,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleShowHiddenRooms() =
         _state.update { it.copy(showHiddenRooms = !it.showHiddenRooms) }
 
+    fun toggleShowBlockedPeers() =
+        _state.update { it.copy(showBlockedPeers = !it.showBlockedPeers) }
+
     /**
      * Show or hide a room in this device's list.
      *
@@ -1402,6 +1430,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun closeRoom() {
+        pendingVoiceJoin = null
         val room = (_state.value.screen as? Screen.RoomChat)?.room
         // Voice deliberately survives closing the view. Reading another room —
         // or none — is navigation, not hanging up, and the persistent rail is
@@ -1447,6 +1476,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * redirects outbound Opus through the supernode instead of to individual
      * peers, and has to be set before capture starts.
      */
+    /** A room whose voice to join once the supernode admits us, by [Room.key]. */
+    private var pendingVoiceJoin: String? = null
+
+    /**
+     * Join [room]'s voice from anywhere — the Rooms tree's Join, or the voice
+     * dock. Voice rides the room's own session, so the room is opened first
+     * and voice joins once the supernode has admitted us, exactly as the room
+     * screen's own button waits for that.
+     */
+    fun joinVoiceIn(room: Room) {
+        val s = _state.value
+        val open = (s.screen as? Screen.RoomChat)?.room
+        if (open?.key == room.key && s.roomJoined) {
+            joinRoomVoice()
+            return
+        }
+        if (open?.key != room.key) openRoom(room)
+        pendingVoiceJoin = room.key
+    }
+
     fun joinRoomVoice() {
         val room = (_state.value.screen as? Screen.RoomChat)?.room ?: return
         CoreService.setMediaActive(getApplication(), microphone = true, camera = false)
@@ -1478,7 +1527,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun leaveRoomVoice() {
-        _state.update { it.copy(roomVoiceActive = false, voiceRoom = null) }
+        // Speaking edges stop with the session; a ring left on would lie.
+        _state.update { it.copy(roomVoiceActive = false, voiceRoom = null, speakingPeers = emptySet()) }
         keepVideoOnlyFor(_state.value.call?.peerId)
         viewModelScope.launch {
             core.command("room.voice.leave")
@@ -1615,6 +1665,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (kept != s.watchedVideo) {
             _state.update { it.copy(watchedVideo = kept) }
             publishWatchedVideo()
+        }
+    }
+
+    /**
+     * Mute a member for this listener only, or set how loud they play.
+     *
+     * The desktop's `setPeerAudioPref`: the mixer applies it and nothing is
+     * sent to the member.
+     */
+    fun setPeerAudio(peerId: String, muted: Boolean, volume: Int) {
+        val key = peerId.videoKey()
+        if (key.isEmpty()) return
+        val pref = PeerAudioPref(muted, volume.coerceIn(0, 200))
+        _state.update { it.copy(peerAudio = it.peerAudio + (key to pref)) }
+        viewModelScope.launch {
+            core.command("audio.peer_pref") {
+                put("peer_id", peerId)
+                put("muted", pref.muted)
+                put("volume", pref.volume)
+            }
         }
     }
 
@@ -1813,6 +1883,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 CoreService.setMediaActive(getApplication(), microphone = false, camera = false)
             }
 
+            // Speaking edges from the call controller: who to ring in the
+            // Rooms tree. Edge-triggered, so these are few, unlike levels.
+            "remote_speaking" -> {
+                val key = event.stringOrEmpty("peer_id").videoKey()
+                if (key.isEmpty()) return@onCoreEvent
+                val speaking = event.boolean("speaking", false)
+                _state.update {
+                    it.copy(
+                        speakingPeers = if (speaking) it.speakingPeers + key else it.speakingPeers - key,
+                    )
+                }
+            }
+
+            "local_speaking" -> {
+                val key = _state.value.identity.publicId.videoKey()
+                if (key.isEmpty()) return@onCoreEvent
+                val speaking = event.boolean("speaking", false)
+                _state.update {
+                    it.copy(
+                        speakingPeers = if (speaking) it.speakingPeers + key else it.speakingPeers - key,
+                    )
+                }
+            }
+
             "peer_video_state" -> {
                 val key = event.stringOrEmpty("peer_id").videoKey()
                 if (key.isEmpty()) return@onCoreEvent
@@ -1936,7 +2030,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
             "handle_updated" -> refreshPeers()
 
-            "room_created", "room_invite_ready" -> refreshRooms()
+            // `rooms_synced`: another of our devices sent rooms this one lacked.
+            "room_created", "room_invite_ready", "rooms_synced" -> refreshRooms()
 
             // Our own offers echo back as events too; only an inbound one is
             // a question for the user.
@@ -2063,10 +2158,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         roomJoined = true,
                     )
                 }
+                val open = (_state.value.screen as? Screen.RoomChat)?.room
+                if (open != null && pendingVoiceJoin == open.key && !_state.value.roomVoiceActive) {
+                    pendingVoiceJoin = null
+                    joinRoomVoice()
+                }
             }
 
             "room_join_rejected" -> {
                 if (!isOpenRoom(event)) return@onCoreEvent
+                pendingVoiceJoin = null
                 _state.update {
                     it.copy(error = event.string("reason") ?: "the room refused the join")
                 }

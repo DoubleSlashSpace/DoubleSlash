@@ -26,6 +26,10 @@ pub fn to_json(event: &ConnectionEvent) -> Option<Value> {
         | E::VideoFrameReceived { .. }
         | E::ContentAudioReceived { .. }
         | E::PortalGameDatagram { .. } => return None,
+        // Merged into the room store by the pump, which then says
+        // `rooms_synced` if the list changed. The snapshot itself carries
+        // invite credentials the UI has no use for.
+        E::OwnRoomsReceived { .. } => return None,
 
         // ── Peers and sessions ────────────────────────────────────────────
         E::PeerConnected(peer_id) => json!({ "event": "peer_connected", "peer_id": peer_id }),

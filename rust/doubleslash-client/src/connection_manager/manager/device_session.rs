@@ -20,6 +20,21 @@ pub(super) struct RoomEndpoint {
     device: Option<DeviceId>,
 }
 
+/// Least time between two own-room snapshots. A burst of supernode connects
+/// (one per cluster member) then sends two, the second once every member is
+/// reachable, instead of one per connect.
+const OWN_ROOM_SYNC_SPACING: Duration = Duration::from_secs(2);
+/// Largest snapshot sent. Sealed and base64-encoded it stays under the
+/// supernode's 256 KiB frame limit.
+const OWN_ROOM_SYNC_MAX_BYTES: usize = 160 * 1024;
+
+/// Outbound own-device room sync. See [`ConnectionManager::queue_own_room_sync`].
+#[derive(Default)]
+pub(super) struct OwnRoomSync {
+    last_sent: Option<Instant>,
+    pending: Option<(crate::room_store::OwnRoomSnapshot, bool)>,
+}
+
 pub(super) struct OwnKeyRound {
     members: BTreeSet<DeviceId>,
     heard: HashSet<DeviceId>,
@@ -293,6 +308,129 @@ impl ConnectionManager {
         if let Some(envelope) = self.seal_signal_to_member(&inner, &self.identity.public_id()) {
             self.dispatch_outbound(envelope).await;
         }
+    }
+
+    /// Queue this device's rooms for our other devices and send if allowed.
+    ///
+    /// Not charged to a feature quota: a snapshot can be larger than a
+    /// one-second quota bucket holds, so it would never pass. The spacing
+    /// bounds the rate instead, and nothing is dropped: a newer snapshot
+    /// replaces the waiting one, and the retry tick sends it.
+    pub(super) async fn queue_own_room_sync(
+        &mut self,
+        snapshot: crate::room_store::OwnRoomSnapshot,
+        reply_wanted: bool,
+    ) {
+        // Without device routing a sibling cannot be told apart from us.
+        if self.device_id.is_none() {
+            return;
+        }
+        let reply_wanted = reply_wanted
+            || self
+                .own_room_sync
+                .pending
+                .as_ref()
+                .is_some_and(|(_, reply)| *reply);
+        self.own_room_sync.pending = Some((snapshot, reply_wanted));
+        self.flush_own_room_sync().await;
+    }
+
+    /// Send the waiting own-room snapshot once spacing and a supernode allow.
+    pub(super) async fn flush_own_room_sync(&mut self) {
+        if self.own_room_sync.pending.is_none()
+            || self
+                .own_room_sync
+                .last_sent
+                .is_some_and(|last| last.elapsed() < OWN_ROOM_SYNC_SPACING)
+            || !self.supernodes.values().any(|sn| sn.connected)
+        {
+            return;
+        }
+        let Some((snapshot, reply_wanted)) = self.own_room_sync.pending.take() else {
+            return;
+        };
+        let value = match serde_json::to_value(&snapshot) {
+            Ok(value) => value,
+            Err(e) => {
+                tracing::warn!("[own-rooms] could not encode the room snapshot: {e}");
+                return;
+            }
+        };
+        let size = value.to_string().len();
+        if size > OWN_ROOM_SYNC_MAX_BYTES {
+            tracing::warn!(
+                "[own-rooms] room snapshot is {size} bytes, over {OWN_ROOM_SYNC_MAX_BYTES}; not sent"
+            );
+            return;
+        }
+        let me = self.identity.public_id();
+        let mut inner = SignalingMessage::new(MessageType::DeviceRoomSync, me.clone());
+        // No target device: the supernode delivers to every endpoint of our
+        // identity, this one included, and each ignores its own.
+        inner.target = Some(me.clone());
+        inner.payload.insert("snapshot".to_owned(), value);
+        inner
+            .payload
+            .insert("reply".to_owned(), Value::Bool(reply_wanted));
+        if self.sign_message_json(&mut inner).is_none() {
+            return;
+        }
+        let Some(envelope) = self.seal_signal_to_member(&inner, &me) else {
+            return;
+        };
+        self.own_room_sync.last_sent = Some(Instant::now());
+        tracing::debug!(
+            "[own-rooms] sending {} room(s), {} space(s) to our other devices (reply={reply_wanted})",
+            snapshot.rooms.len(),
+            snapshot.spaces.len()
+        );
+        self.dispatch_outbound(envelope).await;
+    }
+
+    /// Hand a sibling device's room snapshot to the app layer to merge.
+    ///
+    /// Accepted only sealed (checked by the caller), signed by our own
+    /// identity, and from another device of it.
+    pub(super) fn handle_own_room_sync(&mut self, message: &SignalingMessage) {
+        let Some(me) = self.device_id else {
+            return;
+        };
+        if message.source_device.is_none()
+            || message.source_device == Some(me)
+            || message.target_device.is_some_and(|device| device != me)
+            || message.sender.trim_end_matches('=')
+                != self.identity.public_id().trim_end_matches('=')
+        {
+            return;
+        }
+        let Some(snapshot) = message
+            .payload
+            .get("snapshot")
+            .cloned()
+            .and_then(|value| {
+                serde_json::from_value::<crate::room_store::OwnRoomSnapshot>(value).ok()
+            })
+            .filter(|snapshot| snapshot.within_limits())
+        else {
+            tracing::debug!("[own-rooms] dropping a malformed room snapshot from a sibling");
+            return;
+        };
+        let reply_wanted = message
+            .payload
+            .get("reply")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        tracing::debug!(
+            "[own-rooms] {} room(s), {} space(s) from a sibling device (reply={reply_wanted})",
+            snapshot.rooms.len(),
+            snapshot.spaces.len()
+        );
+        self.emit_event(
+            crate::connection_manager::ConnectionEvent::OwnRoomsReceived {
+                snapshot,
+                reply_wanted,
+            },
+        );
     }
 
     pub(super) async fn handle_own_room_key_sync(&mut self, message: &SignalingMessage) {
@@ -1028,6 +1166,221 @@ mod tests {
                 ConnectionEvent::OwnDeviceOutdated { outdated: true, .. }
             )),
             "rejoining with the old device still signed in must warn again"
+        );
+    }
+
+    fn room_snapshot(identity: &crate::identity::Identity) -> crate::room_store::OwnRoomSnapshot {
+        crate::room_store::OwnRoomSnapshot {
+            v: 1,
+            rooms: vec![crate::room_store::RoomEntry::new("r1", "Phone Lounge")
+                .with_supernode("host")
+                .with_creator(identity.public_id(), true)],
+            spaces: vec![],
+        }
+    }
+
+    fn rooms_received(client: &mut Client) -> Vec<(crate::room_store::OwnRoomSnapshot, bool)> {
+        std::iter::from_fn(|| client.events.try_recv().ok())
+            .filter_map(|event| match event {
+                crate::connection_manager::ConnectionEvent::OwnRoomsReceived {
+                    snapshot,
+                    reply_wanted,
+                } => Some((snapshot, reply_wanted)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Seal `inner` from `from` to our identity and deliver it to `to`.
+    async fn deliver_sealed(
+        from: &mut Client,
+        to: &mut Client,
+        inner: &SignalingMessage,
+        target: &str,
+    ) {
+        let envelope = from.manager.seal_signal_to_member(inner, target).unwrap();
+        assert!(from.manager.dispatch_outbound(envelope).await);
+        let Message::Text(raw) = from.outgoing.try_recv().unwrap() else {
+            panic!("expected an envelope");
+        };
+        to.manager
+            .handle_inbound_from_supernode(
+                "host".into(),
+                SignalingMessage::from_json(&raw).unwrap(),
+            )
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_room_snapshot_reaches_the_other_device_sealed() {
+        let identity = Arc::new(crate::identity::Identity::generate());
+        let mut phone = client(identity.clone(), 1);
+        let mut desktop = client(identity.clone(), 2);
+        phone
+            .manager
+            .queue_own_room_sync(room_snapshot(&identity), true)
+            .await;
+        let Message::Text(raw) = phone.outgoing.try_recv().unwrap() else {
+            panic!("expected a sealed snapshot");
+        };
+        assert!(
+            !raw.contains("Phone Lounge"),
+            "the supernode sees no room names"
+        );
+        let envelope = SignalingMessage::from_json(&raw).unwrap();
+        assert_eq!(envelope.msg_type, MessageType::EncryptedSignal);
+        assert_eq!(
+            envelope.target.as_deref(),
+            Some(identity.public_id().as_str())
+        );
+        assert_eq!(envelope.target_device, None, "every device of ours gets it");
+        for client in [&mut phone, &mut desktop] {
+            client
+                .manager
+                .handle_inbound_from_supernode("host".into(), envelope.clone())
+                .await;
+        }
+        let got = rooms_received(&mut desktop);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].1, "the request for a reply survives the trip");
+        assert_eq!(got[0].0.rooms[0].room_name, "Phone Lounge");
+        assert!(
+            rooms_received(&mut phone).is_empty(),
+            "a device ignores its own"
+        );
+    }
+
+    #[tokio::test]
+    async fn room_snapshots_are_spaced_and_the_latest_one_goes_out() {
+        let identity = Arc::new(crate::identity::Identity::generate());
+        let mut phone = client(identity.clone(), 1);
+        let mut desktop = client(identity.clone(), 2);
+        phone
+            .manager
+            .queue_own_room_sync(room_snapshot(&identity), false)
+            .await;
+        assert!(phone.outgoing.try_recv().is_ok());
+        let mut newer = room_snapshot(&identity);
+        newer.rooms[0].room_name = "Renamed".into();
+        phone
+            .manager
+            .queue_own_room_sync(room_snapshot(&identity), true)
+            .await;
+        phone.manager.queue_own_room_sync(newer, false).await;
+        assert!(
+            phone.outgoing.try_recv().is_err(),
+            "held back by the spacing"
+        );
+        phone.manager.own_room_sync.last_sent = Some(Instant::now() - OWN_ROOM_SYNC_SPACING);
+        phone.manager.flush_own_room_sync().await;
+        let Message::Text(raw) = phone.outgoing.try_recv().unwrap() else {
+            panic!("expected the waiting snapshot");
+        };
+        assert!(phone.outgoing.try_recv().is_err(), "sent once");
+        desktop
+            .manager
+            .handle_inbound_from_supernode(
+                "host".into(),
+                SignalingMessage::from_json(&raw).unwrap(),
+            )
+            .await;
+        let got = rooms_received(&mut desktop);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0.rooms[0].room_name, "Renamed");
+        assert!(got[0].1, "a queued reply request is not lost when replaced");
+    }
+
+    #[tokio::test]
+    async fn room_snapshots_need_our_identity_a_seal_and_a_fresh_signature() {
+        let identity = Arc::new(crate::identity::Identity::generate());
+        let me = identity.public_id();
+        let mut phone = client(identity.clone(), 1);
+        let mut desktop = client(identity.clone(), 2);
+        let snapshot = serde_json::to_value(room_snapshot(&identity)).unwrap();
+        let message = |sender: &str, snapshot: Value| {
+            let mut inner = SignalingMessage::new(MessageType::DeviceRoomSync, sender.to_owned());
+            inner.target = Some(me.clone());
+            inner.payload.insert("snapshot".into(), snapshot);
+            inner
+        };
+
+        // In the clear, correctly signed by our own other device.
+        let mut clear = message(&me, snapshot.clone());
+        phone.manager.sign_message_json(&mut clear).unwrap();
+        desktop
+            .manager
+            .handle_inbound_from_supernode("host".into(), clear)
+            .await;
+        assert!(
+            rooms_received(&mut desktop).is_empty(),
+            "cleartext is refused"
+        );
+
+        // Sealed to us, but from another identity.
+        let stranger_identity = Arc::new(crate::identity::Identity::generate());
+        let mut stranger = client(stranger_identity.clone(), 3);
+        let mut foreign = message(&stranger_identity.public_id(), snapshot.clone());
+        stranger.manager.sign_message_json(&mut foreign).unwrap();
+        deliver_sealed(&mut stranger, &mut desktop, &foreign, &me).await;
+        assert!(
+            rooms_received(&mut desktop).is_empty(),
+            "another identity is refused"
+        );
+
+        // Ours and sealed, but stale.
+        let mut stale = message(&me, snapshot.clone());
+        stale.timestamp -= ConnectionManager::MAX_MESSAGE_AGE_SECS + 60.0;
+        phone.manager.sign_message_json(&mut stale).unwrap();
+        deliver_sealed(&mut phone, &mut desktop, &stale, &me).await;
+        assert!(
+            rooms_received(&mut desktop).is_empty(),
+            "a stale snapshot is refused"
+        );
+
+        // Ours, sealed and fresh, but malformed.
+        let mut bad = message(&me, json!({"v": 1, "rooms": "nope"}));
+        phone.manager.sign_message_json(&mut bad).unwrap();
+        deliver_sealed(&mut phone, &mut desktop, &bad, &me).await;
+        assert!(
+            rooms_received(&mut desktop).is_empty(),
+            "a malformed snapshot is refused"
+        );
+
+        // The same, well formed, is accepted: the refusals above were not luck.
+        let mut good = message(&me, snapshot);
+        phone.manager.sign_message_json(&mut good).unwrap();
+        deliver_sealed(&mut phone, &mut desktop, &good, &me).await;
+        assert_eq!(rooms_received(&mut desktop).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn room_snapshots_wait_for_device_routing_and_a_supernode() {
+        let identity = Arc::new(crate::identity::Identity::generate());
+        let mut legacy = client(identity.clone(), 1);
+        legacy.manager.device_id = None;
+        legacy
+            .manager
+            .queue_own_room_sync(room_snapshot(&identity), true)
+            .await;
+        assert!(legacy.outgoing.try_recv().is_err());
+        assert!(legacy.manager.own_room_sync.pending.is_none());
+
+        let mut phone = client(identity.clone(), 2);
+        for session in phone.manager.supernodes.values_mut() {
+            session.connected = false;
+        }
+        phone
+            .manager
+            .queue_own_room_sync(room_snapshot(&identity), true)
+            .await;
+        assert!(phone.outgoing.try_recv().is_err());
+        for session in phone.manager.supernodes.values_mut() {
+            session.connected = true;
+        }
+        phone.manager.flush_own_room_sync().await;
+        assert!(
+            phone.outgoing.try_recv().is_ok(),
+            "sent once a supernode is up"
         );
     }
 }

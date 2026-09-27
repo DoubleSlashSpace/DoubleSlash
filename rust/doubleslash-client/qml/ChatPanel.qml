@@ -15,7 +15,7 @@ Item {
     property string selectedPeerName: ""
     /// True while a direct call with `selectedPeerId` is already up. Hides the
     /// dial button, exactly as Join Voice hides when voice is already in this
-    /// room: the VoiceRail hang-up is the end control, and a second dial would
+    /// room: the voice dock's hang-up is the end control, and a second dial would
     /// only stack another session on the live one.
     property bool callActiveWithPeer: false
     property var chatModel: null

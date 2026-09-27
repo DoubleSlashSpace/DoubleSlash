@@ -11,7 +11,7 @@ graph TD
             PL[PeerList / SidebarItem]
             CP[ChatPanel]
             CAP[CallPanel]
-            RP[RoomPanel / VoiceRail]
+            RP[RoomPanel / RoomTree / VoiceDock]
             SP[SettingsPage]
             BW[BackupWizard]
             BP[BrowserPanel]

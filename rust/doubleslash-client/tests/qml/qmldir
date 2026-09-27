@@ -5,3 +5,10 @@ StyledTextField 1.0 StyledTextField.qml
 JumpToCurrentButton 1.0 JumpToCurrentButton.qml
 HistoryAnchor 1.0 HistoryAnchor.qml
 BackupWizard 1.0 BackupWizard.qml
+singleton RoomTree 1.0 RoomTree.qml
+RoomTreeMember 1.0 RoomTreeMember.qml
+TreeGuides 1.0 TreeGuides.qml
+CountPill 1.0 CountPill.qml
+VoiceDock 1.0 VoiceDock.qml
+SidebarToggle 1.0 SidebarToggle.qml
+Avatar 1.0 Avatar.qml

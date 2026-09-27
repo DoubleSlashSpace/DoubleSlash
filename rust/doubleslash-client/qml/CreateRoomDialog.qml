@@ -13,6 +13,9 @@ Dialog {
 
     // The live node list model from MainWindow (used when no supernode is preset).
     required property ListModel nodeListModel
+    /// Offer hidden rooms as parents too. Follows the Rooms list: a room the
+    /// sidebar is not showing is not offered to nest under.
+    property bool includeHidden: false
 
     // When set, the supernode picker is hidden and this node is used on accept.
     property string targetSupernodeId: ""
@@ -22,13 +25,29 @@ Dialog {
     property string parentRoomId: ""
     // Display name of the parent room, shown as a subtitle.
     property string parentRoomName: ""
+    // The title-bar + : one dialog with a private checkbox, an optional
+    // parent, and a host picker only when there is more than one supernode.
+    // Context-menu creates leave this false and keep the preset type.
+    property bool compose: false
 
     readonly property bool supernodePreset: targetSupernodeId !== ""
     readonly property bool isSubRoom: parentRoomId !== ""
+    readonly property bool privateRoom: compose ? privateSwitch.checked : roomType === "private"
+    readonly property string resolvedSupernodeId: {
+        if (targetSupernodeId !== "")
+            return targetSupernodeId
+        if (nodeListModel.count === 1)
+            return nodeListModel.get(0).node_id || ""
+        if (supernodeBox.currentIndex >= 0 && nodeListModel.count > 0)
+            return nodeListModel.get(supernodeBox.currentIndex).node_id || ""
+        return ""
+    }
 
-    title: isSubRoom
-        ? qsTr("Create Sub-room")
-        : (roomType === "private" ? qsTr("Create Private Room") : qsTr("Create Public Room"))
+    title: compose
+        ? qsTr("New room")
+        : (isSubRoom
+            ? qsTr("Create Sub-room")
+            : (roomType === "private" ? qsTr("Create Private Room") : qsTr("Create Public Room")))
     modal: true
     standardButtons: Dialog.Ok | Dialog.Cancel
     closePolicy: Dialog.CloseOnEscape
@@ -37,7 +56,17 @@ Dialog {
     implicitHeight: header.height + contentColumn.implicitHeight + buttonBox.implicitHeight
                     + topPadding + bottomPadding
 
+    function openNew() {
+        compose = true
+        targetSupernodeId = ""
+        roomType = "public"
+        parentRoomId = ""
+        parentRoomName = ""
+        open()
+    }
+
     function openForNode(supernodeId, type) {
+        compose = false
         targetSupernodeId = supernodeId || ""
         roomType = (type === "private") ? "private" : "public"
         parentRoomId = ""
@@ -47,6 +76,7 @@ Dialog {
 
     // Open to create a sub-room nested under `parentId` on `supernodeId`.
     function openForParent(supernodeId, type, parentId, parentName) {
+        compose = false
         targetSupernodeId = supernodeId || ""
         roomType = (type === "private") ? "private" : "public"
         parentRoomId = parentId || ""
@@ -54,29 +84,61 @@ Dialog {
         open()
     }
 
+    // Rooms on the chosen host, for the "Inside" picker. The first row is
+    // always "top level".
+    function refillParents() {
+        parentChoices.clear()
+        parentChoices.append({ room_id: "", name: qsTr("Nothing — top level") })
+        var snId = resolvedSupernodeId
+        if (snId === "")
+            return
+        for (var i = 0; i < nodeListModel.count; i++) {
+            var node = nodeListModel.get(i)
+            if ((node.node_id || "") !== snId)
+                continue
+            var rooms = []
+            try { rooms = JSON.parse(node.rooms_json || "[]") } catch (e) { rooms = [] }
+            for (var r = 0; r < rooms.length; r++) {
+                var room = rooms[r]
+                if (!room || !room.room_id)
+                    continue
+                if (room.hidden && !root.includeHidden)
+                    continue
+                parentChoices.append({
+                    room_id: room.room_id,
+                    name: room.name || room.room_name || room.room_id
+                })
+            }
+            break
+        }
+    }
+
     onOpened: {
         roomNameField.text = ""
         membersCanInviteSwitch.checked = false
-        if (!supernodePreset)
+        privateSwitch.checked = false
+        if (!supernodePreset && nodeListModel.count > 1)
             supernodeBox.currentIndex = 0
+        if (compose)
+            refillParents()
         roomNameField.forceActiveFocus()
     }
 
     onAccepted: {
         var name = roomNameField.text.trim()
         if (name === "") return
-        var snId = supernodePreset
-            ? targetSupernodeId
-            : (supernodeBox.currentIndex >= 0
-                ? (nodeListModel.get(supernodeBox.currentIndex).node_id || "")
-                : "")
+        var snId = resolvedSupernodeId
         if (snId === "") return
-        var invitePolicy = (roomType === "private" && membersCanInviteSwitch.checked)
+        var type = privateRoom ? "private" : "public"
+        var invitePolicy = (privateRoom && membersCanInviteSwitch.checked)
             ? "members" : "owner"
-        if (isSubRoom)
-            backend.createSubRoom(snId, name, roomType, parentRoomId, invitePolicy)
+        var parentId = parentRoomId
+        if (compose && parentBox.currentIndex > 0 && parentChoices.count > parentBox.currentIndex)
+            parentId = parentChoices.get(parentBox.currentIndex).room_id || ""
+        if (parentId !== "")
+            backend.createSubRoom(snId, name, type, parentId, invitePolicy)
         else
-            backend.createRoom(snId, name, roomType, invitePolicy)
+            backend.createRoom(snId, name, type, invitePolicy)
     }
 
     background: Rectangle {
@@ -112,8 +174,39 @@ Dialog {
             Layout.fillWidth: true
         }
 
+        RowLayout {
+            visible: root.compose
+            Layout.fillWidth: true
+            spacing: Theme.spacingSm
+
+            ColumnLayout {
+                spacing: 2
+                Layout.fillWidth: true
+
+                Text {
+                    text: qsTr("Private")
+                    color: Theme.text
+                    font.pixelSize: Theme.fontSizeBody
+                }
+                Text {
+                    text: root.privateRoom
+                        ? qsTr("Only people you invite can join.")
+                        : qsTr("Anyone on this supernode can find and join it.")
+                    color: Theme.muted
+                    font.pixelSize: Theme.fontSizeCaption
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                }
+            }
+
+            Switch {
+                id: privateSwitch
+                checked: false
+            }
+        }
+
         Text {
-            visible: roomType === "private"
+            visible: root.privateRoom && !root.compose
             text: qsTr("Private rooms require an invite token to join. You'll receive one after creation.")
             color: Theme.muted
             font.pixelSize: Theme.fontSizeCaption
@@ -122,7 +215,7 @@ Dialog {
         }
 
         RowLayout {
-            visible: roomType === "private"
+            visible: root.privateRoom
             Layout.fillWidth: true
             spacing: Theme.spacingSm
 
@@ -179,7 +272,50 @@ Dialog {
         }
 
         ColumnLayout {
-            visible: !root.supernodePreset
+            visible: root.compose && parentChoices.count > 1
+            spacing: 4
+            Layout.fillWidth: true
+
+            Text {
+                text: qsTr("Inside")
+                color: Theme.muted
+                font.pixelSize: Theme.fontSizeCaption
+            }
+
+            ComboBox {
+                id: parentBox
+                Layout.fillWidth: true
+                Layout.preferredHeight: Theme.controlHeight
+                model: parentChoices
+                textRole: "name"
+
+                background: Rectangle {
+                    color: Theme.bg2
+                    radius: 0
+                    border.color: parentBox.activeFocus ? Theme.accent : Theme.bg3
+                    border.width: 1
+                }
+
+                contentItem: Text {
+                    leftPadding: 8
+                    text: {
+                        if (parentBox.currentIndex < 0 || parentBox.currentIndex >= parentChoices.count)
+                            return ""
+                        var row = parentChoices.get(parentBox.currentIndex)
+                        return row ? (row.name || "") : ""
+                    }
+                    color: Theme.text
+                    font.pixelSize: Theme.fontSizeBody
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                }
+            }
+        }
+
+        ListModel { id: parentChoices }
+
+        ColumnLayout {
+            visible: root.compose ? root.nodeListModel.count > 1 : !root.supernodePreset
             spacing: 4
             Layout.fillWidth: true
 
@@ -195,6 +331,7 @@ Dialog {
                 Layout.preferredHeight: Theme.controlHeight
                 model: root.nodeListModel
                 textRole: "title"
+                onCurrentIndexChanged: if (root.compose && root.opened) root.refillParents()
 
                 background: Rectangle {
                     color: Theme.bg2
@@ -278,9 +415,7 @@ Dialog {
         }
         delegate: Button {
             enabled: DialogButtonBox.buttonRole !== DialogButtonBox.AcceptRole
-                  || (roomNameField.text.trim() !== ""
-                      && (root.supernodePreset
-                          || (supernodeBox.currentIndex >= 0 && root.nodeListModel.count > 0)))
+                  || (roomNameField.text.trim() !== "" && root.resolvedSupernodeId !== "")
         }
     }
 }

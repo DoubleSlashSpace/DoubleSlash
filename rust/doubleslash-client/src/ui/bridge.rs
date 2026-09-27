@@ -416,6 +416,23 @@ pub mod ffi {
         #[rust_name = "remove_room"]
         fn removeRoom(self: Pin<&mut AppBridge>, supernode_id: &QString, room_id: &QString);
 
+        /// Put a locally hidden room back in the Rooms list.
+        #[qinvokable]
+        #[rust_name = "unhide_room"]
+        fn unhideRoom(self: Pin<&mut AppBridge>, supernode_id: &QString, room_id: &QString);
+
+        /// Ask each known supernode for its room list again, and re-read the
+        /// local store so a hide or unhide shows up without waiting for that.
+        #[qinvokable]
+        #[rust_name = "refresh_rooms"]
+        fn refreshRooms(self: Pin<&mut AppBridge>);
+
+        /// Re-send the Peers list from the peer store, with current presence —
+        /// the Peers "+" menu's Refresh, as the phone's re-lists `peer.list`.
+        #[qinvokable]
+        #[rust_name = "refresh_peers"]
+        fn refreshPeers(self: Pin<&mut AppBridge>);
+
         /// Emitted when a room is hidden from the local Rooms sidebar.
         #[qsignal]
         #[rust_name = "room_removed"]
@@ -1420,10 +1437,13 @@ pub struct AppBridgeRust {
     /// text chat never overwrites who is in the call.
     room_participant_ids: Vec<String>,
 
-    /// Per-room **voice** participant IDs for sidebar peer counts.
-    /// Key: `supernode_id:room_id`. Value: voice `members` only — never text
-    /// chat subscribers. Each room's headphone count is derived from this
-    /// roster (or from `SfuRoomList.participant_ids` when no live roster yet).
+    /// Per-node **voice** participant IDs.
+    /// Key: `supernode_id:room_id` — the node that reported the list, not the
+    /// sidebar's cluster representative. Value: that node's voice `members`
+    /// only, never text-chat subscribers. A node lists the peers attached to
+    /// it, so the sidebar and the live rail show the union across the cluster.
+    /// Keying a sibling's room list under the representative used to let an
+    /// empty snapshot replace everyone else's.
     room_voice_rosters: std::collections::HashMap<String, Vec<String>>,
 
     /// Local cache of the **selected text room** chat members (members panel).
@@ -4426,6 +4446,50 @@ impl ffi::AppBridge {
             .room_removed(QString::from(sid.as_str()), QString::from(rid.as_str()));
     }
 
+    fn unhide_room(self: Pin<&mut Self>, supernode_id: &QString, room_id: &QString) {
+        let Some(sid) = self
+            .rust()
+            .resolve_supernode_node_id_str(&supernode_id.to_string())
+        else {
+            return;
+        };
+        let rid = room_id.to_string();
+        if sid.is_empty() || rid.is_empty() {
+            return;
+        }
+        if let Some(ref rs) = self.rust().room_store {
+            if let Err(e) = rs.write().unhide_from_sidebar(&sid, &rid) {
+                warn!("room_store unhide_from_sidebar error: {e}");
+            }
+        }
+    }
+
+    fn refresh_peers(self: Pin<&mut Self>) {
+        emit_peers_updated(self);
+    }
+
+    fn refresh_rooms(mut self: Pin<&mut Self>) {
+        emit_local_rooms_for_all_supernodes(self.as_mut());
+        let ids: Vec<String> = self
+            .rust()
+            .peer_store
+            .as_ref()
+            .map(|ps| {
+                ps.read()
+                    .supernodes()
+                    .iter()
+                    .map(|p| p.identity_pub.clone())
+                    .filter(|id| !id.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            for supernode_id in ids {
+                let _ = tx.try_send(ConnectionCommand::RequestRoomList { supernode_id });
+            }
+        }
+    }
+
     fn create_room(
         self: Pin<&mut Self>,
         supernode_id: &QString,
@@ -6635,7 +6699,6 @@ fn local_rooms_json_for_supernode(
         room_store
             .list_for_supernode_resolved(peer_store, supernode_id)
             .iter()
-            .filter(|e| !room_store.is_hidden_from_sidebar(supernode_id, &e.room_id))
             .map(|e| {
                 serde_json::json!({
                     "room_id": e.room_id,
@@ -6646,6 +6709,10 @@ fn local_rooms_json_for_supernode(
                     // node id, or "" for legacy flat rooms). Drives sidebar indent.
                     "parent_id": e.parent_id,
                     "space_id": e.space_id,
+                    // A local tombstone. The sidebar keeps the row and decides
+                    // whether to draw it; dropping it here would make "show
+                    // hidden" unable to bring it back.
+                    "hidden": room_store.is_hidden_from_sidebar(supernode_id, &e.room_id),
                 })
             })
             .collect(),
@@ -6813,6 +6880,239 @@ fn cluster_chat_counts_from(
         .collect()
 }
 
+/// Cluster-wide chat roster per room id: who is in each room's chat (voice
+/// members included), unioned across every node that reported one.
+fn cluster_chat_rosters(rust: &AppBridgeRust) -> std::collections::HashMap<String, Vec<String>> {
+    cluster_chat_rosters_from(&rust.chat_roster_by_node)
+}
+
+/// The union, split out for tests. A member heard from two nodes appears once,
+/// and nodes are visited in key order so the list does not reshuffle between
+/// emissions.
+fn cluster_chat_rosters_from(
+    rosters: &std::collections::HashMap<String, Vec<String>>,
+) -> std::collections::HashMap<String, Vec<String>> {
+    let mut keys: Vec<&String> = rosters.keys().collect();
+    keys.sort();
+    let mut per_room: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for key in keys {
+        let Some((_, room_id)) = key.split_once(':') else {
+            continue;
+        };
+        let entry = per_room.entry(room_id.to_owned()).or_default();
+        for m in &rosters[key] {
+            if !entry.iter().any(|e| pub_id_eq(e, m)) {
+                entry.push(m.clone());
+            }
+        }
+    }
+    per_room
+}
+
+/// Voice participants of one room, unioned across every node that has reported
+/// a roster for it.
+///
+/// `None` when no node has reported one, which is different from "reported,
+/// and it was empty": an absent roster must not clear the sidebar's last list,
+/// while an explicit empty list means nobody is in voice on the nodes we have
+/// heard from. Padded and unpadded spellings of one id count once.
+fn union_voice_ids(
+    rosters: &std::collections::HashMap<String, Vec<String>>,
+    room_id: &str,
+) -> Option<Vec<String>> {
+    let mut keys: Vec<&String> = rosters.keys().collect();
+    keys.sort();
+    let mut found = false;
+    let mut out: Vec<String> = Vec::new();
+    for key in keys {
+        let Some((_, rid)) = key.split_once(':') else {
+            continue;
+        };
+        if rid != room_id {
+            continue;
+        }
+        found = true;
+        for id in &rosters[key] {
+            if !out.iter().any(|existing| pub_id_eq(existing, id)) {
+                out.push(id.clone());
+            }
+        }
+    }
+    found.then_some(out)
+}
+
+fn same_member_set(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .all(|id| b.iter().any(|other| pub_id_eq(id, other)))
+}
+
+/// Replace each room's `participant_ids` with the cluster voice union.
+///
+/// A room-list snapshot carries only the sending node's attachments. Writing
+/// that list straight onto the sidebar is how a sibling with nobody in voice
+/// emptied the voice leaf and left both speakers under text-only: the chat
+/// roster is already the union, so anyone missing from `participant_ids` is
+/// filed as text. Rooms no node has reported are left untouched.
+///
+/// `self_in_room` is `(room_id, my_public_id)` while we are in that room's
+/// voice. Our own id stays in the union even when no snapshot has echoed us
+/// back yet, so we are not filed as text-only in the meantime.
+fn overlay_cluster_voice_ids(
+    rooms: serde_json::Value,
+    rosters: &std::collections::HashMap<String, Vec<String>>,
+    self_in_room: Option<(&str, &str)>,
+) -> serde_json::Value {
+    let Some(arr) = rooms.as_array() else {
+        return rooms;
+    };
+    let out = arr
+        .iter()
+        .map(|room| {
+            let Some(room_id) = room.get("room_id").and_then(|v| v.as_str()) else {
+                return room.clone();
+            };
+            let stored = union_voice_ids(rosters, room_id);
+            let mut known = stored.is_some();
+            let mut list = stored.unwrap_or_default();
+            if let Some((active_room, me)) = self_in_room {
+                if active_room == room_id && !me.is_empty() {
+                    known = true;
+                    if !list.iter().any(|id| pub_id_eq(id, me)) {
+                        list.insert(0, me.to_owned());
+                    }
+                }
+            }
+            if !known {
+                return room.clone();
+            }
+            let mut room = room.clone();
+            if let Some(obj) = room.as_object_mut() {
+                obj.insert(
+                    "participant_ids".to_owned(),
+                    serde_json::Value::Array(
+                        list.into_iter().map(serde_json::Value::String).collect(),
+                    ),
+                );
+            }
+            room
+        })
+        .collect();
+    serde_json::Value::Array(out)
+}
+
+/// Who the voice leaf and the live rail should name for `room_id`.
+///
+/// The stored union, plus ourselves when this is the room we are in voice
+/// for and a snapshot has not listed us yet.
+fn displayed_voice_ids(bridge: &AppBridgeRust, room_id: &str) -> Vec<String> {
+    let mut ids = union_voice_ids(&bridge.room_voice_rosters, room_id).unwrap_or_default();
+    if is_active_voice_room(bridge, &bridge.voice_supernode_id, room_id) {
+        let me = bridge.my_public_id.as_str();
+        if !me.is_empty() && !ids.iter().any(|id| pub_id_eq(id, me)) {
+            ids.insert(0, me.to_owned());
+        }
+    }
+    ids
+}
+
+/// What the sidebar needs to name a room member without holding a lock.
+struct RoomMemberLabels<'a> {
+    peer_store: Option<&'a crate::peer_store::PeerStore>,
+    display_handles: &'a std::collections::HashMap<String, String>,
+    my_peer_id: &'a str,
+    my_public_id: &'a str,
+}
+
+impl RoomMemberLabels<'_> {
+    /// One member as the room tree shows them.
+    ///
+    /// `list_peer_id` follows the members list: a room member is only offered
+    /// a chat when we already trust them, and never becomes a peer by being in
+    /// a room.
+    fn entry(&self, id: &str) -> serde_json::Value {
+        let is_self =
+            id == self.my_public_id || id == self.my_peer_id || pub_id_eq(id, self.my_public_id);
+        let list_peer_id = if is_self {
+            String::new()
+        } else {
+            self.peer_store
+                .and_then(|s| s.find_identity(id))
+                .filter(|r| !r.blocked && !r.revoked && !r.is_supernode)
+                .map(|r| r.peer_id.clone())
+                .unwrap_or_default()
+        };
+        serde_json::json!({
+            "id": id,
+            "name": room_participant_label(
+                self.peer_store,
+                Some(self.display_handles),
+                id,
+                self.my_peer_id,
+                self.my_public_id,
+            ),
+            "trusted": !list_peer_id.is_empty(),
+            "list_peer_id": list_peer_id,
+            "is_self": is_self,
+        })
+    }
+}
+
+/// Add each room's `voice_members` and `text_members` for the sidebar tree.
+///
+/// Voice members come from the voice roster (`participant_ids`) and are only
+/// written when the entry carries one. Text members are the room's chat roster
+/// minus its voice members, and are only written when some node has reported
+/// that roster: an absent key tells the sidebar to keep what it last knew,
+/// where an empty list would wrongly say the room's chat is empty.
+fn annotate_room_members(
+    rooms: serde_json::Value,
+    labels: &RoomMemberLabels<'_>,
+    chat_rosters: &std::collections::HashMap<String, Vec<String>>,
+) -> serde_json::Value {
+    let serde_json::Value::Array(arr) = rooms else {
+        return rooms;
+    };
+    let out = arr
+        .into_iter()
+        .map(|room| {
+            let serde_json::Value::Object(mut obj) = room else {
+                return room;
+            };
+            let voice_ids: Option<Vec<String>> = obj
+                .get("participant_ids")
+                .and_then(|v| v.as_array())
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                });
+            if let Some(ids) = &voice_ids {
+                obj.insert(
+                    "voice_members".to_owned(),
+                    serde_json::Value::Array(ids.iter().map(|id| labels.entry(id)).collect()),
+                );
+            }
+            let chat = obj
+                .get("room_id")
+                .and_then(|v| v.as_str())
+                .and_then(|rid| chat_rosters.get(rid));
+            if let Some(chat) = chat {
+                let voice = voice_ids.as_deref().unwrap_or(&[]);
+                let text: Vec<serde_json::Value> = chat
+                    .iter()
+                    .filter(|id| !voice.iter().any(|v| pub_id_eq(v, id)))
+                    .map(|id| labels.entry(id))
+                    .collect();
+                obj.insert("text_members".to_owned(), serde_json::Value::Array(text));
+            }
+            serde_json::Value::Object(obj)
+        })
+        .collect();
+    serde_json::Value::Array(out)
+}
+
 fn room_roster_key(supernode_id: &str, room_id: &str) -> String {
     format!("{supernode_id}:{room_id}")
 }
@@ -6928,11 +7228,42 @@ fn selected_room_voice_ids(bridge: &AppBridgeRust) -> Vec<String> {
 /// Re-emit the members list after a trust change, so a member who just became
 /// (or stopped being) a peer is offered the right actions.
 fn refresh_members_trust(bridge: &mut Pin<&mut ffi::AppBridge>) {
+    refresh_sidebar_members(bridge);
     if bridge.rust().text_member_ids.is_empty() {
         return;
     }
     let ids = bridge.rust().text_member_ids.clone();
     emit_member_list_json(bridge, &ids, false);
+}
+
+/// Re-send every room the sidebar has a voice roster for, so its member leaves
+/// pick up a trust change: whether a member is offered a chat or an invite is
+/// decided by the entry, and nothing else would refresh a quiet room's.
+fn refresh_sidebar_members(bridge: &mut Pin<&mut ffi::AppBridge>) {
+    let rooms: Vec<(String, String)> = bridge
+        .rust()
+        .room_voice_rosters
+        .keys()
+        .filter_map(|key| {
+            key.split_once(':')
+                .map(|(sn, rid)| (sn.to_owned(), rid.to_owned()))
+        })
+        .collect();
+    // One patch per room: every node entry would otherwise resend only its own
+    // attachments, and the last of those would win on the shared sidebar row.
+    let mut seen_rooms = std::collections::HashSet::new();
+    for (supernode_id, room_id) in rooms {
+        if !seen_rooms.insert(room_id.clone()) {
+            continue;
+        }
+        let ids = displayed_voice_ids(bridge.rust(), &room_id);
+        if let Some(patch) = room_voice_sidebar_patch(bridge.rust(), &supernode_id, &room_id, &ids)
+        {
+            bridge
+                .as_mut()
+                .sfu_rooms_updated(QString::from(patch.as_str()));
+        }
+    }
 }
 
 /// Re-emit the members list when a voice roster changed for the room it shows,
@@ -7050,8 +7381,23 @@ fn seed_voice_participants_self(bridge: &mut Pin<&mut ffi::AppBridge>) {
     if my_public_id.is_empty() {
         return;
     }
-    bridge.as_mut().rust_mut().room_participant_ids = vec![my_public_id];
-    let ids = bridge.rust().room_participant_ids.clone();
+    // Re-joining the room we are already in voice for must not shrink the rail
+    // back to just us. Until a snapshot arrives there is no union, and the
+    // rail is us alone — the same optimistic seed as before.
+    let room_id = bridge.rust().voice_room_id.clone();
+    let ids = if !room_id.is_empty()
+        && is_active_voice_room(bridge.rust(), &bridge.rust().voice_supernode_id, &room_id)
+    {
+        let ids = displayed_voice_ids(bridge.rust(), &room_id);
+        if ids.is_empty() {
+            vec![my_public_id]
+        } else {
+            ids
+        }
+    } else {
+        vec![my_public_id]
+    };
+    bridge.as_mut().rust_mut().room_participant_ids = ids.clone();
     emit_member_list_json(bridge, &ids, true);
 }
 
@@ -7079,12 +7425,24 @@ fn apply_room_roster_to_bridge(
     room_id: &str,
     emit_participants: bool,
 ) {
-    bridge.as_mut().rust_mut().room_participant_ids = members.to_vec();
+    // `members` is this node's attachments. The rail shows the cluster union,
+    // which `update_room_voice_count` publishes after storing this node.
+    update_room_voice_count(bridge, supernode_id, room_id, members);
+    let shown = bridge.rust().room_participant_ids.clone();
+    show_voice_rail(bridge, &shown, emit_participants);
+}
 
+/// Point the live voice rail at `members`: open a peer session to each of
+/// them, refresh presence, and optionally repaint the session row.
+fn show_voice_rail(
+    bridge: &mut Pin<&mut ffi::AppBridge>,
+    members: &[String],
+    emit_participants: bool,
+) {
     let my_public_id = bridge.rust().my_public_id.clone();
     if let Some(ref tx) = bridge.rust().call_cmd_tx {
         for peer_id in members {
-            if peer_id != &my_public_id {
+            if !pub_id_eq(peer_id, &my_public_id) {
                 let _ = tx.try_send(CallCommand::InitiatePeer {
                     peer_id: peer_id.clone(),
                     host: None,
@@ -7100,14 +7458,14 @@ fn apply_room_roster_to_bridge(
     if emit_participants {
         emit_member_list_json(bridge, members, true);
     }
-
-    // Voice rail + per-room sidebar count both track the voice roster only.
-    update_room_voice_count(bridge, supernode_id, room_id, members);
 }
 
-/// Store the authoritative **voice** roster for one room and push a sidebar
-/// patch so that room's peer count reflects only voice participants — never
-/// text-chat subscribers, and never a different room's membership.
+/// Store this node's voice roster, then publish the cluster union.
+///
+/// The sidebar row and, when this is the room we are in, the live rail both
+/// follow the union. Publishing `voice_members` alone put the peer attached to
+/// another node under text-only, and an empty list from that node cleared the
+/// voice leaf while the two of them could still hear each other.
 fn update_room_voice_count(
     bridge: &mut Pin<&mut ffi::AppBridge>,
     supernode_id: &str,
@@ -7123,9 +7481,17 @@ fn update_room_voice_count(
         .rust_mut()
         .room_voice_rosters
         .insert(key, voice_members.to_vec());
-    if let Some(patch) =
-        room_voice_sidebar_patch(bridge.rust(), supernode_id, room_id, voice_members)
-    {
+    publish_cluster_voice(bridge, supernode_id, room_id);
+}
+
+/// Push the cluster voice union for `room_id` to the sidebar, and adopt it as
+/// the live rail when we are in that room's voice.
+fn publish_cluster_voice(bridge: &mut Pin<&mut ffi::AppBridge>, supernode_id: &str, room_id: &str) {
+    let ids = displayed_voice_ids(bridge.rust(), room_id);
+    if is_active_voice_room(bridge.rust(), supernode_id, room_id) {
+        bridge.as_mut().rust_mut().room_participant_ids = ids.clone();
+    }
+    if let Some(patch) = room_voice_sidebar_patch(bridge.rust(), supernode_id, room_id, &ids) {
         bridge
             .as_mut()
             .sfu_rooms_updated(QString::from(patch.as_str()));
@@ -7133,9 +7499,9 @@ fn update_room_voice_count(
     refresh_members_for_voice_change(bridge, supernode_id, room_id);
 }
 
-/// Mutate the cached voice roster for a room (join/leave of a single peer)
-/// and refresh that room's sidebar count. No-op when we have no roster yet
-/// (full `SfuMembers` / `SfuRoomList` will seed it).
+/// Mutate one node's cached voice roster (join/leave of a single peer) and
+/// republish the cluster union. No-op when that node has no roster yet
+/// (a full `SfuMembers` / `SfuRoomList` seeds it).
 fn adjust_room_voice_member(
     bridge: &mut Pin<&mut ffi::AppBridge>,
     supernode_id: &str,
@@ -7147,29 +7513,26 @@ fn adjust_room_voice_member(
         return;
     }
     let key = room_roster_key(supernode_id, room_id);
-    let members = {
+    {
         let rosters = &mut bridge.as_mut().rust_mut().room_voice_rosters;
         let Some(roster) = rosters.get_mut(&key) else {
             return;
         };
         if joining {
-            if !roster.iter().any(|id| id == peer_id) {
+            if !roster.iter().any(|id| pub_id_eq(id, peer_id)) {
                 roster.push(peer_id.to_owned());
             }
         } else {
-            roster.retain(|id| id != peer_id);
+            roster.retain(|id| !pub_id_eq(id, peer_id));
         }
-        roster.clone()
-    };
-    if let Some(patch) = room_voice_sidebar_patch(bridge.rust(), supernode_id, room_id, &members) {
-        bridge
-            .as_mut()
-            .sfu_rooms_updated(QString::from(patch.as_str()));
     }
-    refresh_members_for_voice_change(bridge, supernode_id, room_id);
+    publish_cluster_voice(bridge, supernode_id, room_id);
 }
 
-/// Seed/refresh per-room voice rosters from an SFU room-list snapshot.
+/// Seed/refresh one node's voice rosters from its SFU room-list snapshot.
+///
+/// `supernode_id` is the node that sent the list, not the sidebar
+/// representative: siblings share a sidebar row but not a roster slot.
 /// `participant_ids` (voice only) win; bare `member_count` without ids still
 /// drives the displayed count via enrich, but cannot seed the join/leave cache.
 fn seed_voice_rosters_from_room_list(
@@ -7528,26 +7891,45 @@ fn rematerialize_rooms_on_live_host(bridge: &mut AppBridgeRust, live_member: &st
     bridge.rematerialized_hosts.insert(host_key);
 }
 
+/// Mark each room `hidden` from the local sidebar tombstone and drop rows
+/// with no id. Hidden rooms stay in the list: the sidebar, not this filter,
+/// decides whether they are drawn.
+fn annotate_sidebar_hidden(
+    rooms: &serde_json::Value,
+    is_hidden: impl Fn(&str) -> bool,
+) -> serde_json::Value {
+    let Some(arr) = rooms.as_array() else {
+        return rooms.clone();
+    };
+    let marked: Vec<serde_json::Value> = arr
+        .iter()
+        .filter_map(|room| {
+            let room_id = room
+                .get("room_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if room_id.is_empty() {
+                return None;
+            }
+            let mut obj = room.as_object().cloned().unwrap_or_default();
+            obj.insert(
+                "hidden".to_owned(),
+                serde_json::Value::Bool(is_hidden(room_id)),
+            );
+            Some(serde_json::Value::Object(obj))
+        })
+        .collect();
+    serde_json::Value::Array(marked)
+}
+
 fn filter_sfu_rooms_for_sidebar(
     room_store: &crate::room_store::RoomStore,
     supernode_id: &str,
     rooms: &serde_json::Value,
 ) -> serde_json::Value {
-    let Some(arr) = rooms.as_array() else {
-        return rooms.clone();
-    };
-    let filtered: Vec<serde_json::Value> = arr
-        .iter()
-        .filter(|r| {
-            let room_id = r
-                .get("room_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            !room_id.is_empty() && !room_store.is_hidden_from_sidebar(supernode_id, room_id)
-        })
-        .cloned()
-        .collect();
-    serde_json::Value::Array(filtered)
+    annotate_sidebar_hidden(rooms, |room_id| {
+        room_store.is_hidden_from_sidebar(supernode_id, room_id)
+    })
 }
 
 /// Re-pad a base64url `public_id` to its canonical padded form. Relay-sourced
@@ -7732,6 +8114,13 @@ fn room_voice_sidebar_patch(
             bridge.my_public_id.as_str(),
             Some(&cluster_chat_counts(bridge)),
         );
+        let labels = RoomMemberLabels {
+            peer_store: Some(&peer_store),
+            display_handles: &bridge.room_display_handles,
+            my_peer_id: &bridge.my_peer_id,
+            my_public_id: &bridge.my_public_id,
+        };
+        let rooms = annotate_room_members(rooms, &labels, &cluster_chat_rosters(bridge));
         return Some(
             serde_json::json!({
                 "supernode_id": sidebar_sn,
@@ -7748,6 +8137,13 @@ fn room_voice_sidebar_patch(
         bridge.my_public_id.as_str(),
         Some(&cluster_chat_counts(bridge)),
     );
+    let labels = RoomMemberLabels {
+        peer_store: None,
+        display_handles: &bridge.room_display_handles,
+        my_peer_id: &bridge.my_peer_id,
+        my_public_id: &bridge.my_public_id,
+    };
+    let rooms = annotate_room_members(rooms, &labels, &cluster_chat_rosters(bridge));
     Some(
         serde_json::json!({
             "supernode_id": sidebar_sn,
@@ -7998,6 +8394,76 @@ fn emit_rooms_sidebar_sync(mut bridge: Pin<&mut ffi::AppBridge>) {
         bridge
             .as_mut()
             .rooms_sidebar_sync(QString::from(json.as_str()));
+    }
+}
+
+/// Send this device's rooms and Space trees to our other devices, so a room
+/// made here appears on the phone too. `reply_wanted` asks them to answer with
+/// theirs.
+fn sync_own_rooms(bridge: &AppBridgeRust, reply_wanted: bool) {
+    let (Some(rs), Some(tx)) = (bridge.room_store.as_ref(), bridge.conn_cmd_tx.as_ref()) else {
+        return;
+    };
+    let snapshot = rs.read().own_device_snapshot(&bridge.my_public_id);
+    let _ = tx.try_send(ConnectionCommand::SyncOwnRooms {
+        snapshot,
+        reply_wanted,
+    });
+}
+
+/// Merge rooms from another of our devices, announce any Space root that had
+/// to be re-signed, redraw the Rooms list, and answer when asked or behind.
+fn merge_own_rooms(
+    mut bridge: Pin<&mut ffi::AppBridge>,
+    snapshot: crate::room_store::OwnRoomSnapshot,
+    reply_wanted: bool,
+) {
+    let merged = {
+        let r = bridge.rust();
+        let (Some(rs), Some(identity)) = (r.room_store.clone(), r.identity.clone()) else {
+            return;
+        };
+        let issued_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let norm = |id: &str| id.trim_end_matches('=').to_owned();
+        let same_host = |a: &str, b: &str| {
+            let (a, b) = (norm(a), norm(b));
+            a == b || cluster_full_set(&r.cluster_siblings, &a).contains(&b)
+        };
+        let result = rs.write().merge_own_device_snapshot(
+            &snapshot,
+            &r.my_public_id,
+            |id| r.cluster_member_key(id),
+            same_host,
+            issued_at,
+            |b| identity.sign(b),
+        );
+        result
+    };
+    let merged = match merged {
+        Ok(merged) => merged,
+        Err(e) => {
+            warn!("room_store merge from a sibling device failed: {e}");
+            return;
+        }
+    };
+    if let Some(tx) = bridge.rust().conn_cmd_tx.as_ref() {
+        for (supernode_id, root) in &merged.roots {
+            if let Ok(root_json) = serde_json::to_string(root) {
+                let _ = tx.try_send(ConnectionCommand::AnnounceSpaceRoot {
+                    supernode_id: supernode_id.clone(),
+                    root_json,
+                });
+            }
+        }
+    }
+    if merged.changed {
+        emit_local_rooms_for_all_supernodes(bridge.as_mut());
+    }
+    if reply_wanted || merged.sibling_behind {
+        sync_own_rooms(bridge.rust(), false);
     }
 }
 
@@ -8407,6 +8873,10 @@ fn dispatch_event(
                 // replayed for peer-store supernodes, so B/C never got private
                 // rooms when A was down (joins → room_absent).
                 rematerialize_rooms_on_live_host(&mut bridge.as_mut().rust_mut(), &id);
+                // Trade rooms with our other devices through this host. Each
+                // connect asks; the manager spaces the sends, so a cluster's
+                // burst of connects costs two snapshots, not one per member.
+                sync_own_rooms(bridge.rust(), true);
             });
         }
         ConnectionEvent::SupernodeDisconnected(id) => {
@@ -8453,6 +8923,14 @@ fn dispatch_event(
             let _ = qt_thread.queue(|mut bridge| {
                 bridge.as_mut().set_session_banner(QString::from(
                     "This node needs an update before it can connect multiple devices using one identity."));
+            });
+        }
+        ConnectionEvent::OwnRoomsReceived {
+            snapshot,
+            reply_wanted,
+        } => {
+            let _ = qt_thread.queue(move |bridge: Pin<&mut ffi::AppBridge>| {
+                merge_own_rooms(bridge, snapshot, reply_wanted);
             });
         }
         ConnectionEvent::OwnDeviceOutdated { room_id, outdated } => {
@@ -8701,6 +9179,7 @@ fn dispatch_event(
                         Err(e) => warn!("space adopt_room_into_space error: {e}"),
                     }
                 }
+                sync_own_rooms(bridge.rust(), true);
                 bridge
                     .as_mut()
                     .set_session_banner(QString::from(banner.as_str()));
@@ -9039,7 +9518,24 @@ fn dispatch_event(
                         }
                     }
 
-                    if !bridge.rust().room_participant_ids.contains(&peer_id) {
+                    // A join is one peer, not a replacement roster. Storing the
+                    // whole rail under this node would forget who is attached
+                    // where; the union is republished from the per-node slots.
+                    let key = room_roster_key(canon.as_str(), room_id.as_str());
+                    if bridge.rust().room_voice_rosters.contains_key(&key) {
+                        adjust_room_voice_member(
+                            &mut bridge,
+                            canon.as_str(),
+                            room_id.as_str(),
+                            &peer_id,
+                            true,
+                        );
+                    } else if !bridge
+                        .rust()
+                        .room_participant_ids
+                        .iter()
+                        .any(|id| pub_id_eq(id, &peer_id))
+                    {
                         bridge
                             .as_mut()
                             .rust_mut()
@@ -9048,13 +9544,7 @@ fn dispatch_event(
                     }
 
                     let ids = bridge.rust().room_participant_ids.clone();
-                    apply_room_roster_to_bridge(
-                        &mut bridge,
-                        &ids,
-                        canon.as_str(),
-                        room_id.as_str(),
-                        true,
-                    );
+                    show_voice_rail(&mut bridge, &ids, true);
                 } else {
                     adjust_room_voice_member(
                         &mut bridge,
@@ -9084,24 +9574,32 @@ fn dispatch_event(
             let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
                 let canon = canon_supernode_id(bridge.rust(), &supernode_id);
                 if should_apply_voice_roster(bridge.rust(), canon.as_str(), room_id.as_str()) {
-                    bridge
-                        .as_mut()
-                        .rust_mut()
-                        .room_participant_ids
-                        .retain(|id| id != &peer_id);
+                    let key = room_roster_key(canon.as_str(), room_id.as_str());
+                    if bridge.rust().room_voice_rosters.contains_key(&key) {
+                        // Drop them from this node only. Another node's roster
+                        // still listing them means they are in the room.
+                        adjust_room_voice_member(
+                            &mut bridge,
+                            canon.as_str(),
+                            room_id.as_str(),
+                            &peer_id,
+                            false,
+                        );
+                    } else {
+                        let ids = displayed_voice_ids(bridge.rust(), room_id.as_str());
+                        bridge.as_mut().rust_mut().room_participant_ids = ids;
+                    }
 
                     let ids = bridge.rust().room_participant_ids.clone();
-                    apply_room_roster_to_bridge(
-                        &mut bridge,
-                        &ids,
-                        canon.as_str(),
-                        room_id.as_str(),
-                        true,
-                    );
+                    let still_here = ids.iter().any(|id| pub_id_eq(id, &peer_id));
+                    show_voice_rail(&mut bridge, &ids, true);
                     // Drop their decoder and blank any tile still showing them.
                     // Without this a departed peer's last frame (and the HW
                     // decoder surfaces behind it) survive until we leave too.
-                    bridge.as_mut().forget_peer_video(&peer_id);
+                    // Someone still attached through another node keeps theirs.
+                    if !still_here {
+                        bridge.as_mut().forget_peer_video(&peer_id);
+                    }
                 } else {
                     adjust_room_voice_member(
                         &mut bridge,
@@ -9460,12 +9958,23 @@ fn dispatch_event(
                 let Some(canon) = sidebar_supernode_id(bridge.rust(), &supernode_id) else {
                     return;
                 };
+                // Voice rosters stay per sending node. The sidebar row is the
+                // representative, but storing this list under that same key let
+                // a sibling's empty `participant_ids` replace the speakers.
+                let node_id = canon_supernode_id(bridge.rust(), &supernode_id);
                 let remote = serde_json::from_str::<serde_json::Value>(&rooms_json)
                     .unwrap_or(serde_json::Value::Array(vec![]));
                 let my_pub = bridge.rust().my_public_id.clone();
+                let my_peer = bridge.rust().my_peer_id.clone();
+                let voice_room = bridge.rust().voice_room_id.clone();
+                let in_this_voice = !my_pub.is_empty()
+                    && is_active_voice_room(bridge.rust(), &node_id, &voice_room);
                 // Snapshot before the borrows below; the union is cheap and the
                 // sidebar needs it for every room in this list.
                 let chat_counts = cluster_chat_counts(bridge.rust());
+                let chat_rosters = cluster_chat_rosters(bridge.rust());
+                let handles = bridge.rust().room_display_handles.clone();
+                let inject = in_this_voice.then_some((voice_room.as_str(), my_pub.as_str()));
                 let rooms = if let (Some(rs), Some(ps)) = (
                     bridge.rust().room_store.clone(),
                     bridge.rust().peer_store.clone(),
@@ -9480,22 +9989,46 @@ fn dispatch_event(
                     };
                     // Seed per-room voice caches from voice participant_ids only
                     // (never chat subscribers) so join/leave can patch counts.
-                    seed_voice_rosters_from_room_list(&mut bridge, &canon, &filtered);
+                    seed_voice_rosters_from_room_list(&mut bridge, &node_id, &filtered);
+                    let filtered = overlay_cluster_voice_ids(
+                        filtered,
+                        &bridge.rust().room_voice_rosters,
+                        inject,
+                    );
                     let peer_store = ps.read();
-                    enrich_room_voice_participants(
+                    let rooms = enrich_room_voice_participants(
                         filtered,
                         Some(&peer_store),
                         my_pub.as_str(),
                         Some(&chat_counts),
-                    )
+                    );
+                    let labels = RoomMemberLabels {
+                        peer_store: Some(&peer_store),
+                        display_handles: &handles,
+                        my_peer_id: &my_peer,
+                        my_public_id: &my_pub,
+                    };
+                    annotate_room_members(rooms, &labels, &chat_rosters)
                 } else {
-                    seed_voice_rosters_from_room_list(&mut bridge, &canon, &remote);
-                    enrich_room_voice_participants(
+                    seed_voice_rosters_from_room_list(&mut bridge, &node_id, &remote);
+                    let remote = overlay_cluster_voice_ids(
+                        remote,
+                        &bridge.rust().room_voice_rosters,
+                        inject,
+                    );
+                    let rooms = enrich_room_voice_participants(
                         remote,
                         None,
                         my_pub.as_str(),
                         Some(&chat_counts),
-                    )
+                    );
+                    let labels = RoomMemberLabels {
+                        peer_store: None,
+                        display_handles: &handles,
+                        my_peer_id: &my_peer,
+                        my_public_id: &my_pub,
+                    };
+                    annotate_room_members(rooms, &labels, &chat_rosters)
                 };
                 let wrapped = serde_json::json!({
                     "supernode_id": canon,
@@ -9506,6 +10039,17 @@ fn dispatch_event(
                 bridge
                     .as_mut()
                     .sfu_rooms_updated(QString::from(wrapped.as_str()));
+                // The session row is roomModel, not the sidebar's voice_members.
+                // A list that changed who is in voice has to repaint it too, or
+                // the leaf still shows whoever we seeded when we joined.
+                if in_this_voice {
+                    let ids = displayed_voice_ids(bridge.rust(), &voice_room);
+                    if !same_member_set(&bridge.rust().room_participant_ids, &ids) {
+                        bridge.as_mut().rust_mut().room_participant_ids = ids.clone();
+                        show_voice_rail(&mut bridge, &ids, true);
+                        refresh_members_for_voice_change(&mut bridge, &node_id, &voice_room);
+                    }
+                }
             });
         }
         // Presence update — reflect in peer list.
@@ -10163,7 +10707,11 @@ fn restart_system_loopback_for_default_output(mut bridge: Pin<&mut ffi::AppBridg
 
 #[cfg(test)]
 mod room_voice_count_tests {
-    use super::{cluster_chat_counts_from, enrich_room_voice_participants, repad_public_id};
+    use super::{
+        annotate_room_members, annotate_sidebar_hidden, cluster_chat_counts_from,
+        cluster_chat_rosters_from, enrich_room_voice_participants, overlay_cluster_voice_ids,
+        repad_public_id, union_voice_ids, RoomMemberLabels,
+    };
 
     #[test]
     fn repad_restores_canonical_padding() {
@@ -10179,6 +10727,21 @@ mod room_voice_count_tests {
         // A value that needs two '=' pads (bare len % 4 == 2).
         assert_eq!(repad_public_id("AB"), "AB==");
         assert_eq!(repad_public_id("AB=="), "AB==");
+    }
+
+    #[test]
+    fn hidden_rooms_stay_in_the_sidebar_list() {
+        let rooms = serde_json::json!([
+            { "room_id": "keep", "room_name": "Keep" },
+            { "room_id": "gone", "room_name": "Gone" },
+            { "room_name": "no id" }
+        ]);
+        let out = annotate_sidebar_hidden(&rooms, |id| id == "gone");
+        let arr = out.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["hidden"], serde_json::json!(false));
+        assert_eq!(arr[1]["room_id"], "gone");
+        assert_eq!(arr[1]["hidden"], serde_json::json!(true));
     }
 
     #[test]
@@ -10300,6 +10863,198 @@ mod room_voice_count_tests {
         let room = &out.as_array().unwrap()[0];
         assert_eq!(room.get("voice_count").and_then(|v| v.as_u64()), Some(1));
         assert_eq!(room.get("chat_count").and_then(|v| v.as_u64()), Some(3));
+    }
+
+    fn member_ids(room: &serde_json::Value, key: &str) -> Option<Vec<String>> {
+        room.get(key).and_then(|v| v.as_array()).map(|list| {
+            list.iter()
+                .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_owned))
+                .collect()
+        })
+    }
+
+    #[test]
+    fn chat_rosters_union_once_per_member() {
+        let mut rosters = std::collections::HashMap::new();
+        rosters.insert(
+            "nodeA:room1".to_owned(),
+            vec!["desktop".to_owned(), "phone".to_owned()],
+        );
+        rosters.insert("nodeB:room1".to_owned(), vec!["phone".to_owned()]);
+        rosters.insert("nodeB:room2".to_owned(), vec!["other".to_owned()]);
+        let union = cluster_chat_rosters_from(&rosters);
+        assert_eq!(
+            union["room1"],
+            vec!["desktop".to_owned(), "phone".to_owned()]
+        );
+        assert_eq!(union["room2"], vec!["other".to_owned()]);
+    }
+
+    #[test]
+    fn annotate_splits_voice_and_text_members() {
+        // The tree shows one Voice leaf and one Text-only leaf per room: a chat
+        // member who is also in voice belongs to the Voice leaf only.
+        let rooms = serde_json::json!([{
+            "room_id": "room1",
+            "participant_ids": ["speaker"],
+        }]);
+        let mut chat = std::collections::HashMap::new();
+        chat.insert(
+            "room1".to_owned(),
+            vec!["speaker".to_owned(), "reader".to_owned(), "me".to_owned()],
+        );
+        let handles = std::collections::HashMap::new();
+        let labels = RoomMemberLabels {
+            peer_store: None,
+            display_handles: &handles,
+            my_peer_id: "my-peer",
+            my_public_id: "me",
+        };
+        let out = annotate_room_members(rooms, &labels, &chat);
+        let room = &out.as_array().unwrap()[0];
+        assert_eq!(
+            member_ids(room, "voice_members"),
+            Some(vec!["speaker".to_owned()])
+        );
+        assert_eq!(
+            member_ids(room, "text_members"),
+            Some(vec!["reader".to_owned(), "me".to_owned()])
+        );
+        let me = &room["text_members"][1];
+        assert_eq!(me["is_self"], serde_json::Value::Bool(true));
+        // Nobody is trusted without a peer store, so nobody is offered a chat.
+        assert_eq!(
+            room["voice_members"][0]["trusted"],
+            serde_json::Value::Bool(false)
+        );
+        assert_eq!(room["voice_members"][0]["list_peer_id"], "");
+    }
+
+    #[test]
+    fn annotate_leaves_unknown_rosters_absent() {
+        // No voice roster and no chat roster reported: the keys stay absent so
+        // the sidebar keeps what it last knew rather than emptying the leaves.
+        let rooms = serde_json::json!([{ "room_id": "room1", "member_count": 2 }]);
+        let handles = std::collections::HashMap::new();
+        let labels = RoomMemberLabels {
+            peer_store: None,
+            display_handles: &handles,
+            my_peer_id: "",
+            my_public_id: "me",
+        };
+        let out = annotate_room_members(rooms, &labels, &std::collections::HashMap::new());
+        let room = &out.as_array().unwrap()[0];
+        assert!(room.get("voice_members").is_none());
+        assert!(room.get("text_members").is_none());
+    }
+
+    #[test]
+    fn annotate_matches_padded_and_unpadded_ids() {
+        // Voice rosters and chat rosters can spell the same key with and
+        // without base64 padding; one person must not land in both leaves.
+        let rooms = serde_json::json!([{
+            "room_id": "room1",
+            "participant_ids": ["AB"],
+        }]);
+        let mut chat = std::collections::HashMap::new();
+        chat.insert("room1".to_owned(), vec!["AB==".to_owned()]);
+        let handles = std::collections::HashMap::new();
+        let labels = RoomMemberLabels {
+            peer_store: None,
+            display_handles: &handles,
+            my_peer_id: "",
+            my_public_id: "me",
+        };
+        let out = annotate_room_members(rooms, &labels, &chat);
+        let room = &out.as_array().unwrap()[0];
+        assert_eq!(member_ids(room, "text_members"), Some(Vec::new()));
+    }
+
+    #[test]
+    fn union_voice_ids_merges_nodes_and_padding() {
+        let mut rosters = std::collections::HashMap::new();
+        rosters.insert("nodeA:room1".to_owned(), vec!["desktop".to_owned()]);
+        rosters.insert(
+            "nodeB:room1".to_owned(),
+            vec!["desktop=".to_owned(), "phone".to_owned()],
+        );
+        rosters.insert("nodeB:room2".to_owned(), vec!["other".to_owned()]);
+        assert_eq!(
+            union_voice_ids(&rosters, "room1"),
+            Some(vec!["desktop".to_owned(), "phone".to_owned()])
+        );
+        assert_eq!(
+            union_voice_ids(&rosters, "room2"),
+            Some(vec!["other".to_owned()])
+        );
+        assert_eq!(union_voice_ids(&rosters, "missing"), None);
+    }
+
+    #[test]
+    fn empty_sibling_snapshot_does_not_file_speakers_as_text() {
+        // The desktop bug: node A has us, node B has the phone, and a room
+        // list from a node with no local voice peers says participant_ids: [].
+        // Chat is already the cluster union, so filing voice from that empty
+        // list put both speakers under text-only while audio still worked.
+        let mut rosters = std::collections::HashMap::new();
+        rosters.insert("nodeA:room1".to_owned(), vec!["desktop".to_owned()]);
+        rosters.insert("nodeB:room1".to_owned(), vec!["phone".to_owned()]);
+        rosters.insert("nodeC:room1".to_owned(), Vec::new());
+        let snapshot = serde_json::json!([{
+            "room_id": "room1",
+            "participant_ids": [],
+            "member_count": 0,
+        }]);
+        let overlaid = overlay_cluster_voice_ids(snapshot, &rosters, Some(("room1", "desktop")));
+        let mut chat = std::collections::HashMap::new();
+        chat.insert(
+            "room1".to_owned(),
+            vec![
+                "desktop".to_owned(),
+                "phone".to_owned(),
+                "reader".to_owned(),
+            ],
+        );
+        let handles = std::collections::HashMap::new();
+        let labels = RoomMemberLabels {
+            peer_store: None,
+            display_handles: &handles,
+            my_peer_id: "desktop-peer",
+            my_public_id: "desktop",
+        };
+        let out = annotate_room_members(overlaid, &labels, &chat);
+        let room = &out.as_array().unwrap()[0];
+        assert_eq!(
+            member_ids(room, "voice_members"),
+            Some(vec!["desktop".to_owned(), "phone".to_owned()])
+        );
+        assert_eq!(
+            member_ids(room, "text_members"),
+            Some(vec!["reader".to_owned()])
+        );
+    }
+
+    #[test]
+    fn overlay_leaves_an_unreported_room_alone() {
+        let rooms = serde_json::json!([{ "room_id": "room1", "member_count": 2 }]);
+        let out = overlay_cluster_voice_ids(rooms, &std::collections::HashMap::new(), None);
+        assert!(out.as_array().unwrap()[0].get("participant_ids").is_none());
+    }
+
+    #[test]
+    fn overlay_keeps_self_in_voice_before_any_snapshot_echoes_us() {
+        let rooms = serde_json::json!([{
+            "room_id": "room1",
+            "participant_ids": [],
+        }]);
+        let mut rosters = std::collections::HashMap::new();
+        rosters.insert("nodeB:room1".to_owned(), Vec::new());
+        let out = overlay_cluster_voice_ids(rooms, &rosters, Some(("room1", "desktop")));
+        let ids = out.as_array().unwrap()[0]["participant_ids"]
+            .as_array()
+            .unwrap();
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0].as_str(), Some("desktop"));
     }
 }
 

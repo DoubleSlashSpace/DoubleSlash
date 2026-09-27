@@ -177,6 +177,23 @@ roster. Malformed, stale, or unencrypted replies cannot authorize key creation.
 Equal-epoch key conflicts fail closed. Leaving a host clears its roster and pending
 handoff; late replies cannot reinstall a key after leaving the last host.
 
+Room definitions and Space trees are shared between own devices, so a room
+created on the phone appears on the desktop and the reverse. Each client sends a
+`DeviceRoomSync` snapshot of its non-hidden rooms and owned Space trees when it
+connects to a supernode and after it creates a room, and asks for one back. The
+snapshot is signed and sealed to our own identity, with no target device, so the
+supernode delivers it to every endpoint of the identity. A receiver accepts it
+only from another device of the same identity, and only sealed and fresh. The
+manager spaces sends by two seconds, and a newer snapshot replaces a waiting one.
+
+Merging (`room_store/own_sync.rs`) only adds. Unknown rooms are added when their
+supernode is known here; stored rooms only have empty fields filled. A room
+hidden on the receiving device stays hidden, and hidden rooms are left out of a
+snapshot. Space trees are merged by node; when the union matches neither copy,
+the receiver signs it at an epoch above both and announces the root, so the two
+devices converge instead of announcing different roots for one epoch. Deleting
+or renaming a room does not propagate.
+
 `manager/device_calls.rs` selects one answering endpoint, confirms that selection
 with bounded retries, dismisses sibling ringing, and binds direct media and
 reconnect fallback to the selected endpoint. Reliable chat/control delivery also
@@ -191,7 +208,7 @@ Installed desktop/phone acceptance has partly passed; see
 [Simultaneous-identity preview testing](#simultaneous-identity-preview-testing).
 Remaining work includes device endpoint discovery, device-scoped
 file/room-media/game state, and coordinated cluster device rosters.
-Continuous history sync and delegated device revocation remain separate unfinished
+Room definitions sync between own devices (above); continuous history sync and delegated device revocation remain separate unfinished
 parts of the linking workflow. Do not enable the release gate on the strength of
 room-chat tests alone.
 

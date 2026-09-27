@@ -22,10 +22,9 @@ Item {
     property bool youtubePreviewEnabled: true
     property bool youtubeInlineAck: false
 
-    // Whether the room's member list is shown. The list itself lives in the
-    // voice rail — one roster for voice and text — which MainWindow opens
-    // while this is true.
-    property bool membersOpen: true
+    // The room's members live in the Rooms tree, under its Voice and
+    // Text-only leaves. The header's count asks MainWindow to show them there.
+    signal membersRequested()
 
     // True when voice is already live for *this* room, so the header's Join
     // Voice control hides instead of re-joining what you are already in.
@@ -462,15 +461,14 @@ Item {
                     ToolTip.visible: joinVoiceHover.hovered
                 }
 
-                // Members toggle — shows the room population and opens/closes
-                // the presence sidebar.
+                // Member count — the room's population. Clicking it reveals the
+                // members in the Rooms tree, where their actions are.
                 Rectangle {
                     Layout.alignment: Qt.AlignVCenter
                     implicitHeight: 28
                     implicitWidth: membersToggleRow.implicitWidth + Theme.spacingSm * 2
                     radius: Theme.radiusPill
-                    color: root.membersOpen ? Theme.selectedFill()
-                         : (membersToggleHover.hovered ? Theme.bg3 : "transparent")
+                    color: membersToggleHover.hovered ? Theme.bg3 : "transparent"
                     visible: root.participantCount > 0
 
                     RowLayout {
@@ -497,9 +495,9 @@ Item {
                     }
 
                     HoverHandler { id: membersToggleHover }
-                    TapHandler { onTapped: root.membersOpen = !root.membersOpen }
+                    TapHandler { onTapped: root.membersRequested() }
 
-                    ToolTip.text: root.membersOpen ? "Hide members" : "Show members"
+                    ToolTip.text: qsTr("Show members")
                     ToolTip.visible: membersToggleHover.hovered
                 }
             }

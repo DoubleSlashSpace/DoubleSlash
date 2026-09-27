@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Traced from the desktop client's rust/doubleslash-client/qml/icons/x-circle.svg
+  so both clients draw the same shape.
+  Stroked white; tint it (Compose Icon) to colour it from the active skin.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="20"
+    android:viewportHeight="20">
+    <path
+        android:pathData="M5,2.5 L15,2.5 L17.5,5 L17.5,15 L15,17.5 L5,17.5 L2.5,15 L2.5,5 Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.4"
+        android:strokeLineJoin="miter"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M6.5,6.5 L13.5,13.5"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.5"
+        android:strokeLineJoin="miter"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M13.5,6.5 L6.5,13.5"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.5"
+        android:strokeLineJoin="miter"
+        android:fillColor="#00000000" />
+</vector>

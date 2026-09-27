@@ -33,7 +33,8 @@ Direct video negotiates a common codec. Rooms default to VP9, which every build 
 - Supernodes host SFU (Selective Forwarding Unit) rooms for voice, chat, files, and video. The local room limit is 32 participants.
 - Clients save room definitions in encrypted `my_rooms.dat` and replay them when reconnecting. Supernode room state is held in memory; user-created rooms are removed after about 15 minutes without voice participants or text subscribers. The built-in `default` room is retained.
 - The Rooms sidebar supports nested rooms and private-room invitations, including a “Members can invite” option. Removing a room from the sidebar hides it locally. Leaving voice keeps the text room selected.
-- A room has one member list: the right-hand rail on desktop, the Members sheet on Android. Voice members are listed first; text-only members follow, dimmed. Selecting a member opens a menu. From it you can watch their video (only while you are in that room's voice), message them if they are a trusted peer, or invite them to become one. The invite is encrypted to that member, so the supernode cannot use it. They must accept before either side trusts the other.
+- A room's members are listed in the Rooms tree on both clients. Under each room come its Voice leaf and its Text-only leaf, then its sub-rooms; a folded room shows who is inside as stacked avatars and counts. Android's room screen opens the same leaves as its Members sheet. Selecting a member opens their actions under their row. While you are in that room's voice, you can watch their video or set their volume and mute them for yourself. You can message them if they are a trusted peer, or, from a room you are in, invite them to become one. The invite is encrypted to that member, so the supernode cannot use it. They must accept before either side trusts the other.
+- A live call stays at the foot of the screen: under the sidebar on desktop, under every screen on Android. It shows the room, the connection and a timer, anyone sharing video you are not watching, and the mute, video and leave controls. Watched video sits above the room's chat; on Android it floats when you leave the room.
 - Public user-created rooms are disabled by default. The `room.audio.sfu` capability's room-creation policy controls this; operators can enable them.
 - Signed Space trees and membership proofs support private-room admission across a supernode cluster. Cluster forwarding carries room chat, audio, and camera/screen on-off announcements between nodes.
 
@@ -50,6 +51,8 @@ Seven demos are bundled: Presence Playground, Brick Breaker, Shared Canvas, Task
 The desktop UI uses Rust, Qt 6/QML, and CXX-Qt. It includes onboarding, invite links and QR codes, tray notifications, privacy controls, and an optional Ollama assistant (`x.ollama.v1`). Qt WebEngine enables the portal and inline video playback.
 
 Android uses Kotlin/Compose with the same Rust core through JNI. It includes peer and room chat, voice, files, portal access, backups, and camera sending. An unlocked session runs a foreground service with a Disconnect notification action; incoming calls have notification controls. See [Android development](docs/ANDROID.md).
+
+Both clients share one layout. A Peers | Rooms toggle sits beside the D:// logo at the top, and there is no tab bar at the bottom. Your avatar opens Settings on Identity. The "+" beside it follows the list on screen: invites, blocked peers (hidden until "Show blocked") and Refresh for Peers; creating, joining, hidden rooms and Refresh for Rooms. They also share one palette and skin format: Settings › Appearance offers the built-in skins (DoubleSlash, Midnight, Slate, Forest, High contrast, Paper), per-colour editing, and Copy and Paste of a skin as JSON that either client reads. Android uses this palette rather than the phone's wallpaper colours.
 
 ### Known limitations
 
@@ -246,6 +249,8 @@ These are selected **desktop** defaults from [SettingsModel](rust/doubleslash-cl
 | `ollama_share_folder` | empty | Folder the assistant may send files from; empty means attachments only |
 | `youtube_preview_enabled` | `true` | Local link-preview cards; playback contacts the host |
 | `debug_logging` | `false` | Verbose diagnostics |
+| `theme` | `dark` | `system`, `dark` or `light` base palette |
+| `skin_json` | empty | Built-in palette; otherwise the portable skin JSON (`{"v":1,"name","base","colors":{…}}`) shared with Android |
 
 ## Data and Files
 
@@ -329,7 +334,7 @@ cargo build --manifest-path rust/doubleslash-client/Cargo.toml --features qt-ui,
 cargo build --manifest-path rust/Cargo.toml --release -p doubleslash-supernode -p doubleslash-installer
 ```
 
-For Windows debug UI builds, put the matching Qt `bin` directory on `PATH` and run `rust\doubleslash-client\target\debug\doubleslash-client.exe`. On Linux/macOS the corresponding binary has no `.exe` suffix.
+For Windows debug UI builds, put the matching Qt `bin` directory on `PATH` and run `rust\target\debug\doubleslash-client.exe`. `rust/doubleslash-client/.cargo/config.toml` sets `target-dir` to `../target`, so the binary is not under `rust/doubleslash-client/target/`. On Linux/macOS the corresponding binary has no `.exe` suffix.
 
 Packaging entry points:
 
@@ -342,7 +347,7 @@ Packaging entry points:
 | Linux/macOS supernode | `bash scripts/build_supernode.sh` |
 | Android debug APK | From `android/`: `./gradlew assembleDebug` (`.\gradlew.bat assembleDebug` on Windows) |
 
-Windows desktop packaging writes `dist/DoubleSlash/` and a versioned `.7z`. Set `QT_DIR` if the script cannot find Qt. `run_client.bat` currently launches the packaged `dist/DoubleSlash/DoubleSlash.exe` with the repository's `.clientA` profile; it is not a debug-build launcher or a general profile selector.
+Windows desktop packaging writes `dist/DoubleSlash/` and a versioned `.7z`. Set `QT_DIR` if the script cannot find Qt. `run_client.bat` launches the packaged `dist\DoubleSlash\DoubleSlash.exe` with the repository's `.clientA` profile. That folder carries Qt and WebEngine beside the executable. A Cargo binary under `rust\target` is used only when the package is absent, and it is not a general profile selector. Refresh the package with `build_win64.ps1` after UI changes.
 
 ### Two-Client Local Testing
 

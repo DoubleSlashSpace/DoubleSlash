@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Traced from the desktop client's rust/doubleslash-client/qml/icons/lock.svg
+  so both clients draw the same shape.
+  Stroked white; tint it (Compose Icon) to colour it from the active skin.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="20"
+    android:viewportHeight="20">
+    <path
+        android:pathData="M6.5,9 L6.5,6 L7.5,4 L10,3.5 L12.5,4 L13.5,6 L13.5,9"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.4"
+        android:strokeLineJoin="miter"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M3.5,9 L16.5,9 L16.5,18 L3.5,18 Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.4"
+        android:strokeLineJoin="miter"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M10,12 L11.5,13.5 L10,15 L8.5,13.5 Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.2"
+        android:strokeLineJoin="miter"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M10,15 L10,16.5"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.2"
+        android:strokeLineJoin="miter"
+        android:fillColor="#00000000" />
+</vector>

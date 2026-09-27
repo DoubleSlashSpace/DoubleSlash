@@ -12,6 +12,11 @@ Rectangle {
     property int peerCount: 0
     property var peerModel: null
     property string selectedPeerId: ""
+    /// Blocked peers are hidden unless this is on — the Peers "+" menu's
+    /// "Show N blocked", matching the phone.
+    property bool showBlocked: false
+    /// How many peers are blocked, so an all-blocked list can say so.
+    property int blockedCount: 0
     signal peerSelected(string peerId, string handle)
     signal startCallRequested(string peerId)
     signal removePeerRequested(string peerId)
@@ -23,27 +28,6 @@ Rectangle {
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
-
-        // Header
-        Rectangle {
-            Layout.fillWidth: true
-            height: 36
-            color: Theme.bg2
-
-            Text {
-                anchors {
-                    verticalCenter: parent.verticalCenter
-                    left: parent.left
-                    leftMargin: Theme.spacingMd
-                }
-                text: "Peers (" + peerListView.count + ")"
-                color: Theme.muted
-                font.pixelSize: Theme.fontSizeCaption
-                font.capitalization: Font.AllUppercase
-                font.letterSpacing: 1.2
-                font.bold: true
-            }
-        }
 
         // Peer list backed by PeerListModel — with section grouping by online status
         ListView {
@@ -78,18 +62,23 @@ Rectangle {
 
             EmptyState {
                 anchors.centerIn: parent
-                visible: peerListView.count === 0
+                readonly property bool allHidden: !root.showBlocked
+                    && peerListView.count > 0 && root.blockedCount >= peerListView.count
+                visible: peerListView.count === 0 || allHidden
                 width: Math.min(parent.width - Theme.spacingXl, 170)
                 iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/peers.svg"
                 iconSize: 32
-                title: "No peers yet"
-                subtitle: "Paste an invite above to add a trusted peer."
+                title: allHidden ? qsTr("All peers are blocked") : qsTr("No peers yet")
+                subtitle: allHidden ? qsTr("Use + to show them.")
+                                    : qsTr("Paste an invite above to add a trusted peer.")
             }
 
             delegate: Rectangle {
                 id: delegateItem
                 width: ListView.view.width
-                height: 56
+                // Blocked peers leave the list until "Show blocked" is on.
+                visible: !delegateItem.blocked || root.showBlocked
+                height: visible ? 56 : 0
                 color: delegateItem.selected
                     ? Theme.selectedFill()
                     : (mouseArea.containsMouse ? Theme.bg3 : "transparent")

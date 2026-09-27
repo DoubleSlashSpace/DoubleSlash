@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Drawn in the desktop icon set's style (20x20, square strokes).
+  Stroked white; tint it (Compose Icon) to colour it from the active skin.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="20"
+    android:viewportHeight="20">
+    <path
+        android:pathData="M3,8 L6,8 L10,4 L10,16 L6,12 L3,12 Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.4"
+        android:strokeLineJoin="miter"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M13,7 Q15,10 13,13"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.4"
+        android:strokeLineJoin="miter"
+        android:fillColor="#00000000" />
+</vector>

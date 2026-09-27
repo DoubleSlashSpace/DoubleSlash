@@ -369,6 +369,7 @@ fn build_qt_ui() {
 
     let qml_files: Vec<QmlFile> = vec![
         QmlFile::from("qml/Theme.qml").singleton(true),
+        QmlFile::from("qml/RoomTree.qml").singleton(true),
         QmlFile::from("qml/MainWindow.qml"),
         QmlFile::from("qml/ChatPanel.qml"),
         QmlFile::from("qml/ChatRichMessageDelegate.qml"),
@@ -396,13 +397,15 @@ fn build_qt_ui() {
         QmlFile::from("qml/OnboardingWizard.qml"),
         QmlFile::from("qml/BackupWizard.qml"),
         QmlFile::from("qml/SidebarItem.qml"),
-        QmlFile::from("qml/MemberRow.qml"),
+        QmlFile::from("qml/RoomTreeMember.qml"),
+        QmlFile::from("qml/TreeGuides.qml"),
+        QmlFile::from("qml/CountPill.qml"),
+        QmlFile::from("qml/SidebarToggle.qml"),
         QmlFile::from("qml/TrustInviteDialog.qml"),
         QmlFile::from("qml/StatsPanel.qml"),
         QmlFile::from("qml/ConnectionStatsChip.qml"),
-        QmlFile::from("qml/VoiceRail.qml"),
+        QmlFile::from("qml/VoiceDock.qml"),
         QmlFile::from("qml/Avatar.qml"),
-        QmlFile::from("qml/PeerVolumePopup.qml"),
     ];
     #[cfg(feature = "webengine")]
     let qml_files: Vec<QmlFile> = {

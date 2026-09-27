@@ -248,13 +248,16 @@ cpal's Oboe backend panics and takes the call controller with it.
 Same audio pipeline, fanned out by the supernode's SFU instead of sent
 peer-to-peer, sealed under the room sender key.
 
-* **Desktop** — `joinRoomWithVoice`, and the `VoiceRail` and `MemberRow` UI.
-  While a room is open, the rail lists the whole room from `textMembersUpdated`,
-  each row marked `in_voice`, `trusted` and `list_peer_id`. Otherwise it lists
-  the live voice session.
-* **Android** — `room.voice.join`, `room.voice.leave`, and a voice strip shown
-  over every screen. The room screen's Members sheet lists everyone in the room.
-  The strip and the sheet share one member menu.
+* **Desktop** — `joinRoomWithVoice`, the Rooms tree (`RoomTree.qml`,
+  `RoomTreeMember.qml`) and `VoiceDock`. Each room lists a Voice leaf and a
+  Text-only leaf from the `voice_members` / `text_members` the bridge adds to
+  its sidebar entry. The live session's leaf is drawn from `roomModel`, so it
+  carries levels and per-member mute and volume.
+* **Android** — `room.voice.join`, `room.voice.leave`, the same tree
+  (`ui/RoomTree.kt`), and `VoiceDock` at the foot of every screen. The room
+  screen's Members sheet shows that room's two leaves with the same rows.
+  Speaking rings come from `remote_speaking` / `local_speaking`; per-member
+  mute and volume go through `audio.peer_pref`.
 
 ### 9. Video
 
@@ -266,8 +269,8 @@ peer-to-peer, sealed under the room sender key.
   `listVideoCodecs`, `setVideoAdaptiveBitrate`, `setVideoSubscriptions`, plus
   screen share and a pop-out video window.
 * **Android** — `video.start`, `video.stop`, with CameraX capture feeding
-  `nativeSubmitCameraFrame`. Receiving is opt-in per peer from the voice rail or
-  call card menu: `video.watch` sets which senders are forwarded and decoded,
+  `nativeSubmitCameraFrame`. Receiving is opt-in per peer from the Rooms tree or
+  call card: `video.watch` sets which senders are forwarded and decoded,
   and frames are drawn into a `TextureView` through
   `nativeAttachVideoSurface`. Sends VP9 into rooms and negotiates direct calls;
   decodes VP9 and VP8, so only a desktop that chose H.264 shows no picture.
@@ -456,7 +459,7 @@ update checks, and onboarding state. Empty `audio_input_device` /
 a call; a named device stays pinned.
 
 **Android persists a deliberate handful.** `AppSettings` (SharedPreferences)
-holds camera facing, voice activation and theme; the display name is *not*
+holds camera facing, voice activation, theme and skin; the display name is *not*
 there — it lives on the identity's own peer record via `identity.set_handle`,
 because peers cache their copy of it and every outbound message already reads
 the sender handle from that record. The rest of the desktop's list is device
@@ -497,7 +500,7 @@ Android yet) or is purely local (theme, camera choice).
 | Plugins (`x.*`) | Yes | **No** |
 | Ollama | Yes | **No** |
 | Avatars / handles | Yes, editable | Yes, editable |
-| Settings | ~60 persisted | Name, avatar, camera, voice tuning, history, theme |
+| Settings | ~60 persisted | Name, avatar, camera, voice tuning, history, theme, skin |
 
 ---
 

@@ -943,6 +943,14 @@ async fn handle_event(
                 info!("Room {room_id} is no longer paused on an outdated device");
             }
         }
+        ConnectionEvent::OwnRoomsReceived { snapshot, .. } => {
+            // Headless profiles are test and bot identities with no device to
+            // mirror rooms to, so they neither merge nor answer.
+            info!(
+                "[headless] ignoring {} room(s) from another device",
+                snapshot.rooms.len()
+            );
+        }
         ConnectionEvent::SupernodeConnected(u) => {
             info!("Supernode connected: {}", u);
             let host_key = u.trim_end_matches('=').to_owned();

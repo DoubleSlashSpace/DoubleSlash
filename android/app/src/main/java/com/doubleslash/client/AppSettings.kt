@@ -27,6 +27,7 @@ class AppSettings(context: Context) {
         put("noise_strength", noiseStrength)
         put("voice_bitrate", voiceBitrate)
         put("theme", theme)
+        put("skin", skin)
     }
 
     fun restoreValues(values: JsonObject) {
@@ -36,6 +37,7 @@ class AppSettings(context: Context) {
         (values["noise_strength"] as? JsonPrimitive)?.intOrNull?.let { noiseStrength = it }
         (values["voice_bitrate"] as? JsonPrimitive)?.intOrNull?.let { voiceBitrate = it }
         (values["theme"] as? JsonPrimitive)?.contentOrNull?.takeIf { it in listOf(THEME_SYSTEM, THEME_LIGHT, THEME_DARK) }?.let { theme = it }
+        (values["skin"] as? JsonPrimitive)?.contentOrNull?.let { skin = it }
     }
 
     private val prefs =
@@ -101,6 +103,14 @@ class AppSettings(context: Context) {
         set(value) = prefs.edit().putString(KEY_THEME, value).apply()
 
     /**
+     * The skin: colour overrides on the theme, as the portable skin JSON the
+     * desktop reads too (see `ui/Skin.kt`). Empty means the built-in palette.
+     */
+    var skin: String
+        get() = prefs.getString(KEY_SKIN, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_SKIN, value).apply()
+
+    /**
      * The [Legal.TERMS_VERSION] last accepted on this device, or 0.
      *
      * Play requires terms before user-generated content. Bumping
@@ -128,6 +138,7 @@ class AppSettings(context: Context) {
         private const val KEY_FRONT_CAMERA = "front_camera"
         private const val KEY_VOICE_ACTIVATION = "voice_activation"
         private const val KEY_THEME = "theme"
+        private const val KEY_SKIN = "skin"
         private const val KEY_INPUT_GAIN = "input_gain"
         private const val KEY_OUTPUT_GAIN = "output_gain"
         private const val KEY_NOISE_STRENGTH = "noise_strength"

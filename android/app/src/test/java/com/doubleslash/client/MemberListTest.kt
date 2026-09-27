@@ -1,6 +1,8 @@
 package com.doubleslash.client
 
-import com.doubleslash.client.ui.memberView
+import com.doubleslash.client.ui.TreeFold
+import com.doubleslash.client.ui.TreeRow
+import com.doubleslash.client.ui.buildRoomTree
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -8,9 +10,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Covers what the room's member list says about each person: in voice or not,
- * whether their video is ours to watch, and whether the menu offers a chat or
- * a trust invite.
+ * Covers what the Rooms tree says about each member: in voice or not, whether
+ * their video is ours to watch, and whether their actions offer a chat or a
+ * trust invite.
  *
  * Rosters carry base64 `public_id`s, padded on some paths and not on others,
  * while the peer list is keyed by hex id. A miss in either direction offers an
@@ -40,23 +42,61 @@ class MemberListTest {
         assertNull(state.trustedPeer("U3RyYW5nZXI"))
     }
 
+    private val room = Room(roomId = "room", roomName = "Room", supernodeId = "nodeA")
+
+    /** The member rows the tree shows for [room], with the text leaf open. */
+    private fun members(
+        voice: List<String>,
+        text: List<String>,
+        voiceRoom: VoiceRoom?,
+    ): List<TreeRow.Member> = buildRoomTree(
+        rooms = listOf(room),
+        voiceRosters = mapOf("nodeA:room" to voice),
+        textRosters = mapOf("nodeA:room" to text),
+        reading = room,
+        voiceRoom = voiceRoom,
+        fold = TreeFold(expanded = setOf(room.key)),
+    ).filterIsInstance<TreeRow.Member>()
+
     @Test
-    fun `a text-only member cannot be watched even with the camera on`() {
-        val s = state.copy(streamingPeers = setOf("RnJpZW5k"))
-        val m = s.memberView("RnJpZW5k", "room", voiceMembers = emptyList(), voiceHere = true)
-        assertFalse(m.inVoice)
+    fun `a text-only member is listed apart and is not in our session`() {
+        val rows = members(voice = emptyList(), text = listOf("RnJpZW5k"), voiceRoom = VoiceRoom("nodeA", "room", "Room"))
+        val m = rows.single()
+        assertFalse(m.voice)
         assertFalse(m.inSession)
-        assertTrue(m.cameraOn)
     }
 
     @Test
-    fun `a voice member is watchable only when our voice is in that room`() {
+    fun `a voice member is in our session only when our voice is in that room`() {
         val voice = listOf("RnJpZW5k==")
-        val here = state.memberView("RnJpZW5k", "room", voice, voiceHere = true)
-        val reading = state.memberView("RnJpZW5k", "room", voice, voiceHere = false)
-        assertTrue(here.inVoice && here.inSession)
-        assertTrue(reading.inVoice)
+        val here = members(voice, voice, VoiceRoom("nodeA", "room", "Room")).single()
+        val reading = members(voice, voice, voiceRoom = null).single()
+        assertTrue(here.voice && here.inSession)
+        assertTrue(reading.voice)
         assertFalse(reading.inSession)
+    }
+
+    @Test
+    fun `someone in voice is not listed again under text only`() {
+        // The chat roster carries voice members too, padded differently here.
+        val rows = members(voice = listOf("RnJpZW5k=="), text = listOf("RnJpZW5k", "UmVhZGVy"), voiceRoom = null)
+        assertEquals(listOf(true, false), rows.map { it.voice })
+        assertEquals("UmVhZGVy", rows.last().id)
+    }
+
+    @Test
+    fun `invites are offered only from a room we are in`() {
+        val rows = members(voice = listOf("U3RyYW5nZXI"), text = emptyList(), voiceRoom = null)
+        assertTrue(rows.single().canInvite)
+        val elsewhere = buildRoomTree(
+            rooms = listOf(room),
+            voiceRosters = mapOf("nodeA:room" to listOf("U3RyYW5nZXI")),
+            textRosters = emptyMap(),
+            reading = null,
+            voiceRoom = null,
+            fold = TreeFold(expanded = setOf(room.key)),
+        ).filterIsInstance<TreeRow.Member>().single()
+        assertFalse(elsewhere.canInvite)
     }
 
     @Test
@@ -74,11 +114,8 @@ class MemberListTest {
     }
 
     @Test
-    fun `our own row is marked as us and our invite state is carried`() {
-        val s = state.copy(trustInvites = mapOf("U3RyYW5nZXI" to "sent"))
-        assertTrue(s.memberView("TWU", "room", emptyList(), false).isSelf)
-        val stranger = s.memberView("U3RyYW5nZXI=", "room", emptyList(), false)
-        assertNull(stranger.trustedPeer)
-        assertEquals("sent", stranger.inviteState)
+    fun `a stranger is not trusted whatever the padding`() {
+        assertNull(state.trustedPeer("U3RyYW5nZXI="))
+        assertNull(state.trustedPeer("U3RyYW5nZXI"))
     }
 }

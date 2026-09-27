@@ -22,6 +22,10 @@ use crate::crypto::{decrypt_blob, encrypt_blob};
 use crate::error::Result;
 use crate::identity::Identity;
 
+mod own_sync;
+
+pub use own_sync::{OwnRoomMerge, OwnRoomSnapshot};
+
 pub const ROOM_STORE_FILE: &str = "my_rooms.dat";
 pub const ROOM_STORE_LABEL: &str = "doubleslash-store/rooms/v1";
 

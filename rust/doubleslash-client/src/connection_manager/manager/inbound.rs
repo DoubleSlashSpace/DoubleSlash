@@ -238,6 +238,11 @@ impl ConnectionManager {
                     self.handle_own_room_key_sync(&msg).await;
                 }
             }
+            MessageType::DeviceRoomSync => {
+                if encrypted {
+                    self.handle_own_room_sync(&msg);
+                }
+            }
             // Supernode-relay E2E envelope: decrypt with the pairwise key derived
             // from our identity + the envelope sender's identity (`msg.sender`),
             // then re-dispatch the inner message through the full pipeline (its

@@ -24,6 +24,13 @@ pub enum ConnectionEvent {
     /// room's rosters are dropped (leave, disconnect), so a later rejoin warns
     /// again.
     OwnDeviceOutdated { room_id: String, outdated: bool },
+    /// Another of our devices sent its rooms and Space trees. The app layer
+    /// merges them into its room store, and when `reply_wanted` answers with
+    /// its own through `ConnectionCommand::SyncOwnRooms`.
+    OwnRoomsReceived {
+        snapshot: crate::room_store::OwnRoomSnapshot,
+        reply_wanted: bool,
+    },
     /// An inbound signaling message for the app layer to handle.
     SignalingMessage(SignalingMessage),
     /// A text chat message arrived.
@@ -700,6 +707,14 @@ pub enum ConnectionCommand {
     AnnounceSpaceRoot {
         supernode_id: String,
         root_json: String,
+    },
+    /// Send this device's rooms and Space trees to our other devices, sealed
+    /// to our own identity. `reply_wanted` asks them to answer with theirs.
+    /// Sends are spaced, and a snapshot queued meanwhile replaces the waiting
+    /// one, so the latest state is what goes out.
+    SyncOwnRooms {
+        snapshot: crate::room_store::OwnRoomSnapshot,
+        reply_wanted: bool,
     },
     /// Fetch an in-app portal asset (`web.host.app.v1`) from a supernode
     /// over the cached QUIC relay connection. The reply is delivered on

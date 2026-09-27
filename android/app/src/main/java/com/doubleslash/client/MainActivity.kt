@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
                     AppSettings.THEME_LIGHT -> false
                     else -> isSystemInDarkTheme()
                 },
+                skinJson = state.prefs.skin,
             ) {
                 AppRoot(viewModel = viewModel)
             }

@@ -73,6 +73,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "audio.start",
     "audio.stop",
     "audio.set_muted",
+    "audio.peer_pref",
     "audio.tune",
     "file.send",
     "file.accept",
@@ -1281,6 +1282,37 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                     ))
                     .is_ok(),
             )
+        }
+        // This listener's own mute and volume for one room member — the
+        // desktop's `setPeerAudioPref`. Never sent to the peer.
+        "audio.peer_pref" => {
+            let Some(peer_id) = arg_str(&parsed, "peer_id")
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+            else {
+                return err("audio.peer_pref requires \"peer_id\"");
+            };
+            let muted = parsed
+                .get("muted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let pct = parsed
+                .get("volume")
+                .and_then(Value::as_u64)
+                .unwrap_or(100)
+                .min(200) as u32;
+            let muted_sent = session
+                .call_tx
+                .try_send(CallCommand::SetPeerMuted {
+                    peer_id: peer_id.clone(),
+                    muted,
+                })
+                .is_ok();
+            let volume_sent = session
+                .call_tx
+                .try_send(CallCommand::SetPeerVolume { peer_id, pct })
+                .is_ok();
+            queued(muted_sent && volume_sent)
         }
 
         // Listing the surface here turns a missing match arm - which is

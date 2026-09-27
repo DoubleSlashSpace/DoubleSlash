@@ -12,7 +12,9 @@ try {
     # Every component the tests in tests/qml instantiate. The directory is run
     # as a whole, so a component missing here fails as "not a type".
     foreach ($component in @("Theme", "StyledButton", "StyledTextField",
-                             "JumpToCurrentButton", "HistoryAnchor", "BackupWizard")) {
+                             "JumpToCurrentButton", "HistoryAnchor", "BackupWizard",
+                             "RoomTree", "RoomTreeMember", "TreeGuides", "CountPill",
+                             "VoiceDock", "SidebarToggle", "Avatar")) {
         Copy-Item (Join-Path $clientRoot "qml/$component.qml") $moduleRoot
     }
     $env:QT_QUICK_CONTROLS_STYLE = "Material"

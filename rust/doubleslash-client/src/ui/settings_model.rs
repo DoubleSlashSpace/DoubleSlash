@@ -116,6 +116,10 @@ pub mod ffi {
         #[qproperty(QString, noise_strength)]
         /// UI theme: "system" | "dark" | "light".
         #[qproperty(QString, theme)]
+        /// Skin: colour overrides on top of the theme, as the portable skin
+        /// JSON both clients read (`{"v":1,"name":…,"base":…,"colors":{…}}`).
+        /// Empty means the built-in palette.
+        #[qproperty(QString, skin_json)]
         /// Allow relay-gated (non-direct) connections.
         #[qproperty(bool, relay_allow_gated)]
         /// Auto-renew relay tickets before they expire.
@@ -315,6 +319,8 @@ struct SettingsSnapshot {
     noise_strength: String,
     #[serde(default = "default_theme")]
     theme: String,
+    #[serde(default)]
+    skin_json: String,
     #[serde(default = "default_true")]
     relay_allow_gated: bool,
     #[serde(default = "default_true")]
@@ -475,6 +481,7 @@ impl Default for SettingsSnapshot {
             ollama_share_folder: String::new(),
             noise_strength: default_noise_strength(),
             theme: default_theme(),
+            skin_json: String::new(),
             relay_allow_gated: true,
             relay_auto_renew: true,
             upnp_enabled: true,
@@ -554,6 +561,7 @@ pub struct SettingsModelRust {
     onboarding_complete: bool,
     noise_strength: QString,
     theme: QString,
+    skin_json: QString,
     relay_allow_gated: bool,
     relay_auto_renew: bool,
     upnp_enabled: bool,
@@ -630,6 +638,7 @@ impl Default for SettingsModelRust {
             onboarding_complete: s.onboarding_complete,
             noise_strength: QString::from(s.noise_strength.as_str()),
             theme: QString::from(s.theme.as_str()),
+            skin_json: QString::from(s.skin_json.as_str()),
             relay_allow_gated: s.relay_allow_gated,
             relay_auto_renew: s.relay_auto_renew,
             upnp_enabled: s.upnp_enabled,
@@ -798,6 +807,7 @@ impl ffi::SettingsModel {
             onboarding_complete: r.onboarding_complete,
             noise_strength: r.noise_strength.to_string(),
             theme: r.theme.to_string(),
+            skin_json: r.skin_json.to_string(),
             relay_allow_gated: r.relay_allow_gated,
             relay_auto_renew: r.relay_auto_renew,
             upnp_enabled: r.upnp_enabled,
@@ -1049,6 +1059,8 @@ impl ffi::SettingsModel {
             .set_window_position_saved(snap.window_position_saved);
         self.as_mut().set_window_maximized(snap.window_maximized);
         self.as_mut().set_theme(QString::from(snap.theme.as_str()));
+        self.as_mut()
+            .set_skin_json(QString::from(snap.skin_json.as_str()));
         self.as_mut().set_relay_allow_gated(snap.relay_allow_gated);
         self.as_mut().set_relay_auto_renew(snap.relay_auto_renew);
         self.as_mut().set_upnp_enabled(snap.upnp_enabled);

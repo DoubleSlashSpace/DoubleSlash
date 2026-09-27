@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -74,6 +75,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
@@ -86,6 +89,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -96,6 +100,8 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -103,6 +109,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -180,49 +188,66 @@ fun AppRoot(viewModel: AppViewModel) {
         )
     }
 
+    // The Rooms tree's fold state, above the screens so it survives leaving
+    // the list and is shared with a room's members sheet.
+    var treeFold by remember { mutableStateOf(TreeFold()) }
+    // Joining a voice room opens its voice list once. A fold after that stays
+    // shut until the user leaves that room and joins again.
+    var releasedVoiceKey by remember { mutableStateOf("") }
+    val voice = state.voiceRoom
+    val voiceKey = if (voice == null) "" else "${voice.supernodeId}/${voice.roomId}"
+    LaunchedEffect(voiceKey) {
+        if (voiceKey.isEmpty()) {
+            releasedVoiceKey = ""
+            return@LaunchedEffect
+        }
+        if (voiceKey == releasedVoiceKey) return@LaunchedEffect
+        releasedVoiceKey = voiceKey
+        if (voiceKey in treeFold.collapsed) {
+            treeFold = treeFold.copy(collapsed = treeFold.collapsed - voiceKey)
+        }
+    }
+    // Joining voice from the tree asks for the microphone first, as the room
+    // screen's own Join does.
+    var pendingVoiceJoin by remember { mutableStateOf<Room?>(null) }
+    val requestMicForJoin = rememberExplainedPermission(
+        permission = Manifest.permission.RECORD_AUDIO,
+        title = MicRationaleTitle,
+        body = MicRationaleBody,
+        onGranted = {
+            pendingVoiceJoin?.let(viewModel::joinVoiceIn)
+            pendingVoiceJoin = null
+        },
+    )
+    // One set of tree actions for the list and the members sheet; only what a
+    // long-press "Report" opens differs between them.
+    val treeActionsFor: ((Room) -> Unit) -> RoomTreeActions = { onCreateSubRoom ->
+        RoomTreeActions(
+            onFold = { treeFold = it },
+            onOpenRoom = { room ->
+                // Selecting the chat opens this room only while it stays open.
+                if (room.key in treeFold.collapsed) {
+                    treeFold = treeFold.copy(collapsed = treeFold.collapsed - room.key)
+                }
+                viewModel.openRoom(room)
+            },
+            onJoinVoice = { room ->
+                pendingVoiceJoin = room
+                requestMicForJoin()
+            },
+            onSetHidden = viewModel::setRoomHidden,
+            onCreateSubRoom = onCreateSubRoom,
+            members = memberActions,
+            onPeerAudio = viewModel::setPeerAudio,
+        )
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbars) },
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            // Voice outlives the room view it was started from, so the rail
-            // lives above the navigating content rather than inside any one
-            // screen. Without this a live call is only reachable — and only
-            // visible — from the room it began in.
-            state.voiceRoom?.let { voice ->
-                // The room voice is actually in, not whatever room is on
-                // screen — and every node's roster for it, since a cluster
-                // member knows only the peers attached to itself.
-                val voiceMembers = state.roomVoiceRosters.roomMembersUnion(voice.roomId)
-                VoiceRail(
-                    roomName = voice.roomName,
-                    members = voiceMembers,
-                    peers = state.peers,
-                    avatars = state.avatars,
-                    muted = state.muted,
-                    videoActive = state.videoActive,
-                    speakerphone = state.speakerphone,
-                    headsetAttached = state.headsetAttached,
-                    myId = state.identity.publicId,
-                    cameraOn = state::cameraOn,
-                    watching = state::watching,
-                    videoSizes = state.videoSizes,
-                    stalledVideo = state.stalledVideo,
-                    memberView = { id ->
-                        state.memberView(id, voice.roomId, voiceMembers, voiceHere = true)
-                    },
-                    memberActions = memberActions,
-                    onToggleMute = viewModel::toggleMute,
-                    onToggleSpeaker = { viewModel.setSpeakerphone(!state.speakerphone) },
-                    onToggleVideo = {
-                        if (state.videoActive) {
-                            viewModel.stopVideo(null)
-                            CameraCapture.stop()
-                        }
-                    },
-                    onLeave = viewModel::leaveRoomVoice,
-                )
-            }
             Surface(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            Box(Modifier.fillMaxSize()) {
             when (val screen = state.screen) {
                 Screen.Unlock -> UnlockScreen(
                     busy = state.busy,
@@ -236,7 +261,11 @@ fun AppRoot(viewModel: AppViewModel) {
                     onDecline = viewModel::declineTerms,
                 )
 
-                Screen.Home -> HomeScreen(viewModel = viewModel)
+                Screen.Home -> HomeScreen(
+                    viewModel = viewModel,
+                    treeFold = treeFold,
+                    treeActionsFor = treeActionsFor,
+                )
 
                 is Screen.Portal -> PortalScreen(
                     supernodeId = screen.supernodeId,
@@ -263,6 +292,10 @@ fun AppRoot(viewModel: AppViewModel) {
                     onSetVoiceBitrate = viewModel::setVoiceBitrate,
                     onRemoveSupernode = viewModel::removeSupernode,
                     onOpenPortal = viewModel::openPortal,
+                    onSetSkin = viewModel::setSkin,
+                    onSetStayUnlocked = viewModel::setStayUnlocked,
+                    onLock = viewModel::lockAndForget,
+                    version = viewModel.coreVersion,
                 )
 
                 is Screen.Chat -> ChatScreen(
@@ -306,26 +339,57 @@ fun AppRoot(viewModel: AppViewModel) {
                     transfers = state.transfers,
                     onSendFile = viewModel::sendRoomFile,
                     onShare = viewModel::generateRoomInvite,
-                    memberViews = run {
-                        val room = screen.room
-                        val voiceHere = state.roomVoiceActive &&
-                            state.voiceRoom?.roomId == room.roomId
-                        // Unioned across nodes, as the voice strip is: the
-                        // open-room fields hold whichever node reported last.
-                        val voice = state.roomVoiceRosters.roomMembersUnion(room.roomId)
-                        // Voice members are folded in as well as marked, so
-                        // someone in voice before the chat roster caught up
-                        // still shows.
-                        val everyone = (
-                            state.roomTextRosters.roomMembersUnion(room.roomId) + voice
-                        ).distinctBy { it.videoKey() }
-                        everyone.map {
-                            state.memberView(it, room.roomId, voice, voiceHere)
-                        }
-                    },
-                    memberActions = memberActions,
+                    state = state,
+                    sheetRows = buildRoomLeaves(
+                        room = screen.room,
+                        voiceRosters = state.roomVoiceRosters,
+                        textRosters = state.roomTextRosters,
+                        voiceRoom = state.voiceRoom,
+                        fold = treeFold,
+                    ),
+                    treeFold = treeFold,
+                    treeActions = treeActionsFor { },
                 )
             }
+            // A stream you opened stays on screen when you leave its room.
+            FloatingVideo(
+                state = state,
+                onOpen = { state.voiceRoomEntry()?.let(viewModel::openRoom) },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+            )
+            }
+            }
+            // The live call, at the foot of every screen, as the desktop keeps
+            // it at the foot of its list pane.
+            state.voiceRoom?.let { voice ->
+                if (state.screen != Screen.Unlock && state.screen != Screen.Terms) {
+                    val myKey = state.identity.publicId.videoKey()
+                    val unwatched = state.roomVoiceRosters.roomMembersUnion(voice.roomId)
+                        .filter { it.videoKey() != myKey && state.cameraOn(it) && !state.watching(it) }
+                    VoiceDock(
+                        roomName = voice.roomName.ifBlank { "Voice" },
+                        connectionMode = state.connectionMode,
+                        muted = state.muted,
+                        speakerphone = state.speakerphone,
+                        headsetAttached = state.headsetAttached,
+                        videoActive = state.videoActive,
+                        unwatchedStreamers = unwatched.map { state.peers.roomSenderName(it, "") },
+                        onOpen = {
+                            val open = (state.screen as? Screen.RoomChat)?.room?.roomId == voice.roomId
+                            if (!open) state.voiceRoomEntry()?.let(viewModel::openRoom)
+                        },
+                        onToggleMute = viewModel::toggleMute,
+                        onToggleSpeaker = { viewModel.setSpeakerphone(!state.speakerphone) },
+                        // No peer id: the supernode fans room video out.
+                        onStartVideo = { viewModel.startVideo(null) },
+                        onStopVideo = {
+                            viewModel.stopVideo(null)
+                            CameraCapture.stop()
+                        },
+                        onWatchStreamers = { unwatched.forEach(viewModel::toggleWatchVideo) },
+                        onLeave = viewModel::leaveRoomVoice,
+                    )
+                }
             }
         }
     }
@@ -734,15 +798,20 @@ private fun UnlockScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HomeScreen(viewModel: AppViewModel) {
+private fun HomeScreen(
+    viewModel: AppViewModel,
+    treeFold: TreeFold,
+    treeActionsFor: ((Room) -> Unit) -> RoomTreeActions,
+) {
     val state by viewModel.state.collectAsState()
     var showAccept by remember { mutableStateOf(false) }
-    var showAppMenu by remember { mutableStateOf(false) }
-    var confirmLock by remember { mutableStateOf(false) }
+    var showAddMenu by remember { mutableStateOf(false) }
     var confirmRemovePeer by remember { mutableStateOf<Peer?>(null) }
     var reportPeer by remember { mutableStateOf<Peer?>(null) }
-    var reportRoom by remember { mutableStateOf<Room?>(null) }
     var showCreateRoom by remember { mutableStateOf(false) }
+    // A room long-pressed for "Create room inside": the dialog opens with it
+    // already chosen as the parent.
+    var subRoomParent by remember { mutableStateOf<Room?>(null) }
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
@@ -752,65 +821,124 @@ private fun HomeScreen(viewModel: AppViewModel) {
             // space above the title. These bars live inside the Scaffold body
             // rather than its topBar slot, so the inset is not theirs to add.
             windowInsets = WindowInsets(0, 0, 0, 0),
-            title = { Text(if (state.tab == HomeTab.PEERS) "Peers" else "Rooms") },
             navigationIcon = {
-                // The mark doubles as the app menu, the way a desktop app's
-                // logo opens its application menu. It is the only affordance
-                // in the bar that is not about the current tab, so app-wide
-                // things - what this build is, who I am, signing out - belong
-                // behind it rather than competing with Refresh and Add.
-                Box {
-                    IconButton(onClick = { showAppMenu = true }) {
-                        Image(
-                            painter = painterResource(R.drawable.ic_logo),
-                            contentDescription = "App menu",
-                            modifier = Modifier.width(36.dp).height(17.dp),
-                        )
-                    }
-                    AppMenu(
-                        expanded = showAppMenu,
-                        state = state,
-                        version = viewModel.coreVersion,
-                        onDismiss = { showAppMenu = false },
-                        onSetStayUnlocked = viewModel::setStayUnlocked,
-                        onRequestLock = {
-                            showAppMenu = false
-                            confirmLock = true
-                        },
-                        onOpenSettings = viewModel::openSettings,
+                Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    Image(
+                        painter = painterResource(R.drawable.ic_logo),
+                        contentDescription = "DoubleSlash",
+                        modifier = Modifier.width(34.dp).height(16.dp),
                     )
                 }
             },
-            actions = {
-                IconButton(
-                    onClick = {
-                        if (state.tab == HomeTab.PEERS) {
-                            viewModel.refreshPeers()
-                        } else {
-                            viewModel.refreshRooms()
-                        }
+            // Peers | Rooms beside the logo: the one switch between the two
+            // lists, where the desktop's title bar has it too. There is no tab
+            // bar at the bottom any more.
+            title = {
+                ListToggle(
+                    rooms = state.tab == HomeTab.ROOMS,
+                    onSelect = { rooms ->
+                        viewModel.selectTab(if (rooms) HomeTab.ROOMS else HomeTab.PEERS)
                     },
-                ) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
-                }
-                if (state.tab == HomeTab.PEERS) {
-                    IconButton(onClick = { viewModel.generateInvite() }) {
-                        Icon(Icons.Filled.Add, contentDescription = "Create invite")
+                )
+            },
+            actions = {
+                Box {
+                    IconButton(onClick = { showAddMenu = true }) {
+                        Icon(
+                            Icons.Filled.Add,
+                            contentDescription = if (state.tab == HomeTab.PEERS) {
+                                "Add a peer"
+                            } else {
+                                "Create or join a room"
+                            },
+                        )
                     }
-                } else {
-                    IconButton(
-                        onClick = { showCreateRoom = true },
-                        enabled = state.supernodes.isNotEmpty(),
-                    ) {
-                        Icon(Icons.Filled.Add, contentDescription = "Create room")
-                    }
-                    val hiddenCount = state.rooms.count { it.hidden }
-                    if (hiddenCount > 0) {
-                        TextButton(onClick = { viewModel.toggleShowHiddenRooms() }) {
-                            Text(
-                                if (state.showHiddenRooms) "Hide $hiddenCount" else "Show $hiddenCount",
+                    DropdownMenu(expanded = showAddMenu, onDismissRequest = { showAddMenu = false }) {
+                        if (state.tab == HomeTab.PEERS) {
+                            DropdownMenuItem(
+                                text = { Text("Create an invite") },
+                                onClick = {
+                                    showAddMenu = false
+                                    viewModel.generateInvite()
+                                },
+                            )
+                        } else {
+                            DropdownMenuItem(
+                                text = { Text("Create a room...") },
+                                enabled = state.supernodes.isNotEmpty(),
+                                onClick = {
+                                    showAddMenu = false
+                                    showCreateRoom = true
+                                },
                             )
                         }
+                        DropdownMenuItem(
+                            text = { Text("Join with an invite...") },
+                            onClick = {
+                                showAddMenu = false
+                                showAccept = true
+                            },
+                        )
+                        val blockedCount = state.peers.count { it.blocked }
+                        if (state.tab == HomeTab.PEERS && blockedCount > 0) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (state.showBlockedPeers) {
+                                            "Hide $blockedCount blocked"
+                                        } else {
+                                            "Show $blockedCount blocked"
+                                        },
+                                    )
+                                },
+                                onClick = {
+                                    showAddMenu = false
+                                    viewModel.toggleShowBlockedPeers()
+                                },
+                            )
+                        }
+                        val hiddenCount = state.rooms.count { it.hidden }
+                        if (state.tab == HomeTab.ROOMS && hiddenCount > 0) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (state.showHiddenRooms) {
+                                            "Hide $hiddenCount hidden"
+                                        } else {
+                                            "Show $hiddenCount hidden"
+                                        },
+                                    )
+                                },
+                                onClick = {
+                                    showAddMenu = false
+                                    viewModel.toggleShowHiddenRooms()
+                                },
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text("Refresh") },
+                            onClick = {
+                                showAddMenu = false
+                                if (state.tab == HomeTab.PEERS) {
+                                    viewModel.refreshPeers()
+                                } else {
+                                    viewModel.refreshRooms()
+                                }
+                            },
+                        )
+                    }
+                }
+                // Your avatar opens Settings on Identity, as the desktop's
+                // title-bar avatar does. The logo's old app menu lives there.
+                IconButton(
+                    onClick = viewModel::openSettings,
+                    modifier = Modifier.semantics { contentDescription = "Your identity" },
+                ) {
+                    val me = state.avatars[state.identity.peerId]
+                    if (me != null) {
+                        Box(Modifier.size(30.dp).clip(CircleShape)) { Avatar(me, Modifier.size(30.dp)) }
+                    } else {
+                        Icon(Icons.Filled.Person, contentDescription = null)
                     }
                 }
             },
@@ -832,31 +960,47 @@ private fun HomeScreen(viewModel: AppViewModel) {
                     onReport = { peer -> reportPeer = peer },
                 )
 
-                HomeTab.ROOMS -> RoomsList(
-                    rooms = state.rooms,
-                    showHidden = state.showHiddenRooms,
-                    voiceRosters = state.roomVoiceRosters,
-                    textRosters = state.roomTextRosters,
-                    onOpenRoom = viewModel::openRoom,
-                    onSetHidden = viewModel::setRoomHidden,
-                    onReport = { room -> reportRoom = room },
-                )
+                HomeTab.ROOMS -> {
+                    // Hidden is per-profile local state, so the desktop's
+                    // choices arrive with the room list and are honoured here.
+                    val visible = state.rooms.filter { state.showHiddenRooms || !it.hidden }
+                    if (visible.isEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxSize().padding(32.dp),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Text(
+                                if (state.rooms.isEmpty()) "No rooms yet" else "All rooms are hidden",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                if (state.rooms.isEmpty()) {
+                                    "Rooms you create or are invited to appear here."
+                                } else {
+                                    "Use + to show them."
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else {
+                        val treeActions = treeActionsFor { room -> subRoomParent = room }
+                        val rows = buildRoomTree(
+                            rooms = visible,
+                            voiceRosters = state.roomVoiceRosters,
+                            textRosters = state.roomTextRosters,
+                            reading = (state.screen as? Screen.RoomChat)?.room,
+                            voiceRoom = state.voiceRoom,
+                            fold = treeFold,
+                        )
+                        LazyColumn(Modifier.fillMaxSize()) {
+                            roomTreeItems(rows, state, treeFold, treeActions)
+                        }
+                    }
+                }
             }
-        }
-
-        NavigationBar(windowInsets = WindowInsets(0, 0, 0, 0)) {
-            NavigationBarItem(
-                selected = state.tab == HomeTab.PEERS,
-                onClick = { viewModel.selectTab(HomeTab.PEERS) },
-                icon = { Icon(Icons.Filled.Person, contentDescription = null) },
-                label = { Text("Peers") },
-            )
-            NavigationBarItem(
-                selected = state.tab == HomeTab.ROOMS,
-                onClick = { viewModel.selectTab(HomeTab.ROOMS) },
-                icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
-                label = { Text("Rooms") },
-            )
         }
     }
 
@@ -891,20 +1035,12 @@ private fun HomeScreen(viewModel: AppViewModel) {
         )
     }
 
-    reportRoom?.let { room ->
-        ReportDialog(
-            kind = "room",
-            targetId = "${room.supernodeId}:${room.roomId}",
-            targetLabel = room.roomName.ifBlank { room.roomId.take(12) },
-            onBlock = null,
-            onDismiss = { reportRoom = null },
-        )
-    }
-
     if (showCreateRoom) {
         CreateRoomDialog(
             supernodes = state.supernodes,
-            rooms = state.rooms,
+            // Parents follow the Rooms list: a hidden room is not offered to
+            // nest under unless hidden rooms are being shown.
+            rooms = state.rooms.filter { state.showHiddenRooms || !it.hidden },
             onDismiss = { showCreateRoom = false },
             onCreate = { supernodeId, name, isPrivate, parentRoomId ->
                 showCreateRoom = false
@@ -913,16 +1049,19 @@ private fun HomeScreen(viewModel: AppViewModel) {
         )
     }
 
-    if (confirmLock) {
-        LockIdentityDialog(
-            stayUnlocked = state.stayUnlocked,
-            onDismiss = { confirmLock = false },
-            onConfirm = {
-                confirmLock = false
-                viewModel.lockAndForget()
+    subRoomParent?.let { parent ->
+        CreateRoomDialog(
+            supernodes = state.supernodes,
+            rooms = emptyList(),
+            fixedParent = parent,
+            onDismiss = { subRoomParent = null },
+            onCreate = { supernodeId, name, isPrivate, parentRoomId ->
+                subRoomParent = null
+                viewModel.createRoom(supernodeId, name, isPrivate, parentRoomId)
             },
         )
     }
+
 }
 
 @Composable
@@ -939,9 +1078,28 @@ private fun PeersList(
         EmptyPeers(onCreateInvite = onCreateInvite, onAcceptInvite = onAcceptInvite)
         return
     }
+    // Blocked peers are the list's hidden ones, as on the desktop: out of the
+    // way until the + menu's "Show blocked".
+    val shown = state.peers.filter { state.showBlockedPeers || !it.blocked }
+    if (shown.isEmpty()) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("All peers are blocked", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Use + to show them.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
 
     LazyColumn(Modifier.fillMaxSize()) {
-        items(state.peers, key = { it.peerId }) { peer ->
+        items(shown, key = { it.peerId }) { peer ->
             PeerRow(
                 peer = peer,
                 online = peer.peerId in state.onlinePeers,
@@ -960,207 +1118,6 @@ private fun PeersList(
             ) { Text("Accept an invite") }
         }
     }
-}
-
-/**
- * The two room-occupancy pills, matching the desktop sidebar's bubbles.
- *
- * Voice and text are separate populations - a peer reading a room over text
- * never appears in the voice roster - so one number cannot stand for both.
- * A room no node has reported on yet shows nothing rather than a
- * possibly-wrong zero, which is the desktop's "-" placeholder in spirit.
- */
-@Composable
-private fun RoomCountBadges(voice: Int, text: Int) {
-    if (voice == 0 && text == 0) return
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (voice > 0) {
-            CountPill(Icons.Filled.Phone, "in voice", voice, MaterialTheme.colorScheme.primary)
-        }
-        if (text > 0) {
-            CountPill(Icons.Filled.Person, "in room", text, MaterialTheme.colorScheme.secondary)
-        }
-    }
-}
-
-@Composable
-private fun CountPill(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    description: String,
-    count: Int,
-    tint: Color,
-) {
-    Surface(
-        shape = RoundedCornerShape(11.dp),
-        color = tint.copy(alpha = 0.16f),
-        contentColor = tint,
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-        ) {
-            Icon(icon, contentDescription = description, modifier = Modifier.size(13.dp))
-            Text("$count", style = MaterialTheme.typography.labelSmall)
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun RoomsList(
-    rooms: List<Room>,
-    showHidden: Boolean,
-    /** Per-node voice rosters, unioned per room for the badge. */
-    voiceRosters: Map<String, List<String>>,
-    /** Per-node chat rosters (voice plus text subscribers), same shape. */
-    textRosters: Map<String, List<String>>,
-    onOpenRoom: (Room) -> Unit,
-    onSetHidden: (Room, Boolean) -> Unit,
-    onReport: (Room) -> Unit,
-) {
-    // Hidden is per-profile local state, so the desktop's choices arrive with
-    // the room list and are honoured here rather than re-derived.
-    val visible = remember(rooms, showHidden) {
-        layOutSpaceTree(rooms.filter { showHidden || !it.hidden })
-    }
-
-    if (visible.isEmpty()) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(32.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                if (rooms.isEmpty()) "No rooms yet" else "All rooms are hidden",
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                if (rooms.isEmpty()) {
-                    "Rooms you create or are invited to appear here."
-                } else {
-                    "Use Show above to reveal them."
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        return
-    }
-
-    LazyColumn(Modifier.fillMaxSize()) {
-        items(visible, key = { it.room.key }) { node ->
-            val room = node.room
-            var menuOpen by remember(room.key) { mutableStateOf(false) }
-            Box {
-            ListItem(
-                headlineContent = { Text(room.roomName.ifBlank { room.roomId.take(12) }) },
-                supportingContent = {
-                    Text(
-                        buildString {
-                            append(room.roomType.ifBlank { "room" })
-                            if (room.isCreator) append(" - yours")
-                            if (room.spaceId.isNotBlank()) append(" - in a space")
-                            if (room.hidden) append(" - hidden, long-press for options")
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                },
-                trailingContent = {
-                    RoomCountBadges(
-                        voice = voiceRosters.roomHeadcount(room.roomId),
-                        text = textRosters.roomHeadcount(room.roomId),
-                    )
-                },
-                // Depth is an indent rather than a drawn tree: nesting is
-                // rarely more than two deep, and an indent reads as "inside
-                // that one" without spending phone width on connectors.
-                modifier = Modifier
-                    .padding(start = (node.depth * 20).dp)
-                    .combinedClickable(
-                        onClick = { onOpenRoom(room) },
-                        onLongClick = { menuOpen = true },
-                    ),
-            )
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                DropdownMenuItem(
-                    text = { Text(if (room.hidden) "Show in list" else "Hide from list") },
-                    onClick = {
-                        onSetHidden(room, !room.hidden)
-                        menuOpen = false
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("Report") },
-                    onClick = {
-                        onReport(room)
-                        menuOpen = false
-                    },
-                )
-            }
-            }
-            HorizontalDivider()
-        }
-    }
-}
-
-/** A room placed in the Space tree, with how deep it sits. */
-private data class RoomNode(val room: Room, val depth: Int)
-
-/**
- * Order rooms parent-before-child and record each one's depth.
- *
- * The core hands back a flat list carrying `space_id` and `parent_id`; the
- * nesting is only implied. Rooms whose parent is absent from the list are
- * treated as top-level rather than dropped — a sub-room can outlive the parent
- * in the local store when the parent was hidden or never synced, and a room
- * you cannot see is worse than one shown at the wrong depth.
- */
-private fun layOutSpaceTree(rooms: List<Room>): List<RoomNode> {
-    val byRoomId = rooms.associateBy { it.roomId }
-    val children = rooms.groupBy { room ->
-        val parent = room.parentId
-        // Empty, self-referential, pointing at the space itself, or naming a
-        // room we do not have all mean "top level".
-        if (parent.isBlank() ||
-            parent == room.roomId ||
-            parent == room.spaceId ||
-            parent !in byRoomId
-        ) {
-            ""
-        } else {
-            parent
-        }
-    }
-
-    val ordered = mutableListOf<RoomNode>()
-    val seen = mutableSetOf<String>()
-
-    fun walk(parentId: String, depth: Int) {
-        children[parentId]
-            .orEmpty()
-            .sortedBy { it.roomName.lowercase() }
-            .forEach { room ->
-                // A parent cycle would otherwise recurse forever; the store is
-                // not supposed to contain one, but this list must not hang.
-                if (!seen.add(room.roomId)) return@forEach
-                ordered += RoomNode(room, depth)
-                walk(room.roomId, depth + 1)
-            }
-    }
-
-    walk("", 0)
-
-    // Anything a cycle excluded still gets shown, flat.
-    rooms.filter { it.roomId !in seen }
-        .sortedBy { it.roomName.lowercase() }
-        .forEach { ordered += RoomNode(it, 0) }
-
-    return ordered
 }
 
 @Composable
@@ -1303,6 +1260,11 @@ private fun CreateRoomDialog(
     rooms: List<Room>,
     onDismiss: () -> Unit,
     onCreate: (String, String, Boolean, String) -> Unit,
+    /**
+     * Create inside this room: from a room's own menu, so the parent and its
+     * host are already known and neither picker is shown.
+     */
+    fixedParent: Room? = null,
 ) {
     var name by remember { mutableStateOf("") }
     var isPrivate by remember { mutableStateOf(false) }
@@ -1319,9 +1281,25 @@ private fun CreateRoomDialog(
         rooms.filter { host != null && it.supernodeId == host.peerId }
     }
 
+    // A sub-room lives on its parent's host. The room names it by whichever id
+    // it was filed under, so match the supernode on either spelling.
+    val fixedHostId = fixedParent?.let { p ->
+        val bare = p.supernodeId.trimEnd('=')
+        supernodes.firstOrNull { it.peerId == p.supernodeId || it.identityPub.trimEnd('=') == bare }
+            ?.peerId ?: p.supernodeId
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("New room") },
+        title = {
+            Text(
+                if (fixedParent != null) {
+                    "New room in ${fixedParent.roomName.ifBlank { fixedParent.roomId.take(12) }}"
+                } else {
+                    "New room"
+                },
+            )
+        },
         text = {
             Column {
                 OutlinedTextField(
@@ -1355,7 +1333,7 @@ private fun CreateRoomDialog(
                     }
                 }
 
-                if (candidates.isNotEmpty()) {
+                if (fixedParent == null && candidates.isNotEmpty()) {
                     Spacer(Modifier.height(12.dp))
                     Box {
                         TextButton(onClick = { parentMenuOpen = true }) {
@@ -1385,7 +1363,7 @@ private fun CreateRoomDialog(
                     }
                 }
 
-                if (supernodes.size > 1) {
+                if (fixedParent == null && supernodes.size > 1) {
                     Spacer(Modifier.height(12.dp))
                     Box {
                         TextButton(onClick = { hostMenuOpen = true }) {
@@ -1412,9 +1390,13 @@ private fun CreateRoomDialog(
         confirmButton = {
             TextButton(
                 onClick = {
-                    host?.let { onCreate(it.peerId, name, isPrivate, parent?.roomId.orEmpty()) }
+                    if (fixedParent != null && fixedHostId != null) {
+                        onCreate(fixedHostId, name, isPrivate, fixedParent.roomId)
+                    } else {
+                        host?.let { onCreate(it.peerId, name, isPrivate, parent?.roomId.orEmpty()) }
+                    }
                 },
-                enabled = name.isNotBlank() && host != null,
+                enabled = name.isNotBlank() && (fixedParent != null || host != null),
             ) { Text("Create") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
@@ -1724,9 +1706,11 @@ private fun RoomChatScreen(
     transfers: Map<String, Float>,
     onSendFile: (android.net.Uri) -> Unit,
     onShare: () -> Unit,
-    /** Everyone in the room, each marked in or out of voice, for the sheet. */
-    memberViews: List<MemberView>,
-    memberActions: MemberActions,
+    state: AppState,
+    /** This room's Voice and Text-only leaves, for the members sheet. */
+    sheetRows: List<TreeRow>,
+    treeFold: TreeFold,
+    treeActions: RoomTreeActions,
 ) {
     var draft by remember { mutableStateOf("") }
     var membersOpen by remember { mutableStateOf(false) }
@@ -1768,6 +1752,10 @@ private fun RoomChatScreen(
     )
 
     Column(Modifier.fillMaxSize().imePadding()) {
+        val voiceHere = state.voiceRoom?.roomId == room.roomId
+        val parentName = state.rooms
+            .firstOrNull { room.parentId.isNotBlank() && it.roomId == room.parentId }
+            ?.roomName?.ifBlank { null }
         TopAppBar(
             // The Scaffold above already pays the status-bar inset for this
             // content, and an M3 top bar applies its own by default - which
@@ -1777,16 +1765,20 @@ private fun RoomChatScreen(
             windowInsets = WindowInsets(0, 0, 0, 0),
             title = {
                 Column {
-                    Text(room.roomName.ifBlank { room.roomId.take(12) })
                     Text(
-                        if (joined) {
-                            "${chatMembers.size} " +
-                                if (chatMembers.size == 1) "member" else "members"
-                        } else {
-                            "joining..."
-                        },
+                        room.roomName.ifBlank { room.roomId.take(12) },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        listOfNotNull(
+                            parentName,
+                            if (joined) "${chatMembers.size} here" else "joining...",
+                        ).joinToString(" · "),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             },
@@ -1796,36 +1788,70 @@ private fun RoomChatScreen(
                 }
             },
             actions = {
-                // Who is here, in voice or reading — and the way to watch,
-                // message or invite any of them.
+                // Voice is joined here and left from the dock at the foot of
+                // the screen, where the call lives on every screen.
+                if (joined && state.voiceRoom == null) {
+                    TextButton(onClick = requestMic) { Text("Join voice") }
+                }
+                // Who is here, in voice or reading, and what you can do about
+                // each of them: the same rows as the Rooms tree.
                 IconButton(enabled = joined, onClick = { membersOpen = true }) {
-                    Icon(Icons.Filled.Person, contentDescription = "Members")
+                    Icon(painterResource(R.drawable.ds_peers), contentDescription = "Members")
                 }
                 IconButton(onClick = onShare) {
                     Icon(Icons.Filled.Share, contentDescription = "Share this room")
                 }
-                IconButton(
-                    enabled = joined,
-                    onClick = {
-                        if (voiceActive) {
-                            onLeaveVoice()
-                        } else {
-                            requestMic()
-                        }
-                    },
-                ) {
-                    Icon(
-                        Icons.Filled.Phone,
-                        contentDescription = if (voiceActive) "Leave voice" else "Join voice",
-                        tint = if (voiceActive) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            LocalContentColor.current
-                        },
-                    )
-                }
             },
         )
+
+        // Watched video, full width at the top of the room it comes from.
+        // Elsewhere it floats (FloatingVideo), so it never quietly goes away.
+        if (voiceHere) {
+            val myKey = state.identity.publicId.videoKey()
+            val shown = state.roomVoiceRosters.roomMembersUnion(room.roomId)
+                .filter { it.videoKey() != myKey && state.watching(it) && state.cameraOn(it) }
+            var fullScreen by remember { mutableStateOf<String?>(null) }
+            if (shown.size == 1) {
+                val id = shown[0]
+                VideoTile(
+                    peerId = id,
+                    name = peers.roomSenderName(id, ""),
+                    size = state.videoSizes[id.videoKey()],
+                    stalled = id.videoKey() in state.stalledVideo,
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp),
+                    onClick = { fullScreen = id },
+                )
+            } else if (shown.size > 1) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.Black)
+                        .horizontalScroll(rememberScrollState()),
+                ) {
+                    shown.forEach { id ->
+                        VideoTile(
+                            peerId = id,
+                            name = peers.roomSenderName(id, ""),
+                            size = state.videoSizes[id.videoKey()],
+                            stalled = id.videoKey() in state.stalledVideo,
+                            modifier = Modifier.height(200.dp),
+                            onClick = { fullScreen = id },
+                        )
+                    }
+                }
+            }
+            // Closes itself when its peer stops being shown, rather than
+            // holding a black screen open.
+            fullScreen?.takeIf { it in shown }?.let { id ->
+                FullScreenVideo(
+                    peerId = id,
+                    name = peers.roomSenderName(id, ""),
+                    size = state.videoSizes[id.videoKey()],
+                    stalled = id.videoKey() in state.stalledVideo,
+                    onDismiss = { fullScreen = null },
+                )
+            }
+        }
 
         if (messages.isEmpty()) {
             Column(
@@ -1905,160 +1931,45 @@ private fun RoomChatScreen(
     }
 
     if (membersOpen) {
-        RoomMembersSheet(
-            members = memberViews,
-            avatars = avatars,
-            actions = memberActions,
-            onDismiss = { membersOpen = false },
+        // The room's Voice and Text-only leaves, drawn by the same rows as the
+        // Rooms tree. Watching and messaging close the sheet, since what they
+        // open is behind it; inviting stays.
+        val sheetActions = RoomTreeActions(
+            onFold = treeActions.onFold,
+            onOpenRoom = treeActions.onOpenRoom,
+            onJoinVoice = { r ->
+                membersOpen = false
+                treeActions.onJoinVoice(r)
+            },
+            onSetHidden = treeActions.onSetHidden,
+            onCreateSubRoom = treeActions.onCreateSubRoom,
+            members = MemberActions(
+                onToggleWatch = { id ->
+                    membersOpen = false
+                    treeActions.members.onToggleWatch(id)
+                },
+                onMessage = { peer ->
+                    membersOpen = false
+                    treeActions.members.onMessage(peer)
+                },
+                onInvite = treeActions.members.onInvite,
+            ),
+            onPeerAudio = treeActions.onPeerAudio,
         )
-    }
-}
-
-/**
- * The in-room voice bar: who is present, and the two controls that matter.
- *
- * Participants come from the room roster rather than from audio activity —
- * the core does not surface per-peer speaking state to this layer, so showing
- * a speaking indicator here would be decoration rather than information.
- */
-@Composable
-private fun VoiceRail(
-    roomName: String,
-    members: List<String>,
-    peers: List<Peer>,
-    avatars: Map<String, AvatarArt>,
-    muted: Boolean,
-    videoActive: Boolean,
-    speakerphone: Boolean,
-    headsetAttached: Boolean,
-    myId: String,
-    cameraOn: (String) -> Boolean,
-    watching: (String) -> Boolean,
-    videoSizes: Map<String, VideoSize>,
-    stalledVideo: Set<String>,
-    /** Describe one voice member for the shared member menu. */
-    memberView: (String) -> MemberView,
-    memberActions: MemberActions,
-    onToggleMute: () -> Unit,
-    onToggleSpeaker: () -> Unit,
-    onToggleVideo: () -> Unit,
-    onLeave: () -> Unit,
-) {
-    val myKey = myId.videoKey()
-    // Opened peers whose camera is on right now. A watched peer whose camera
-    // goes off keeps their place and comes back when it returns.
-    val shown = members.filter { it.videoKey() != myKey && watching(it) && cameraOn(it) }
-    var fullScreen by remember { mutableStateOf<String?>(null) }
-
-    Surface(
-        color = MaterialTheme.colorScheme.primaryContainer,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF16A34A)))
-                Spacer(Modifier.width(8.dp))
-                Column(Modifier.weight(1f)) {
-                    // Names the live room: the rail is now visible from any
-                    // screen, so "in voice" alone would not say where.
+        ModalBottomSheet(onDismissRequest = { membersOpen = false }) {
+            LazyColumn(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+                item {
                     Text(
-                        roomName.ifBlank { "Voice" },
-                        style = MaterialTheme.typography.labelLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        "${members.size} " +
-                            if (members.size == 1) "participant" else "participants",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        "${room.roomName.ifBlank { "Room" }} · ${chatMembers.size}",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     )
                 }
-                TextButton(onClick = onToggleMute) {
-                    Text(if (muted) "Unmute" else "Mute")
-                }
-                // A headset takes the audio regardless of this preference, so
-                // the control is disabled rather than silently ignored.
-                TextButton(onClick = onToggleSpeaker, enabled = !headsetAttached) {
-                    Text(
-                        when {
-                            headsetAttached -> "Headset"
-                            speakerphone -> "Speaker"
-                            else -> "Earpiece"
-                        }
-                    )
-                }
-                // Stop only. Starting video needs the camera-permission
-                // flow, which lives on the room screen; offering "Video" here
-                // would be a button that silently does nothing when the rail
-                // is shown over some other screen.
-                if (videoActive) {
-                    TextButton(onClick = onToggleVideo) { Text("Stop video") }
-                }
-                TextButton(onClick = onLeave) { Text("Leave") }
-            }
-
-            if (members.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                // Scrolls rather than wraps: the rail sits above every screen,
-                // so a busy room must not be able to grow it tall enough to
-                // push the content it is floating over off the display.
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    members.forEach { memberId ->
-                        VoiceParticipant(
-                            // Room rosters carry the base64 public_id, which is
-                            // also the spelling avatars are fetched under.
-                            member = memberView(memberId),
-                            avatar = avatars[memberId],
-                            actions = memberActions,
-                        )
-                        Spacer(Modifier.width(10.dp))
-                    }
-                }
-            }
-
-            // Only what the user opened: the rail sits above every screen, so
-            // it grows by a strip of video only on request.
-            if (shown.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    shown.forEach { memberId ->
-                        VideoTile(
-                            peerId = memberId,
-                            name = peers.roomSenderName(memberId, ""),
-                            size = videoSizes[memberId.videoKey()],
-                            stalled = memberId.videoKey() in stalledVideo,
-                            modifier = Modifier.height(VIDEO_TILE_HEIGHT),
-                            onClick = { fullScreen = memberId },
-                        )
-                        Spacer(Modifier.width(8.dp))
-                    }
-                }
+                roomTreeItems(sheetRows, state, treeFold, sheetActions)
             }
         }
     }
-
-    // Closes itself when its peer stops being shown - camera off, left, or
-    // no longer watched - rather than holding a black screen open.
-    fullScreen?.takeIf { it in shown }?.let { memberId ->
-        FullScreenVideo(
-            peerId = memberId,
-            name = peers.roomSenderName(memberId, ""),
-            size = videoSizes[memberId.videoKey()],
-            stalled = memberId.videoKey() in stalledVideo,
-            onDismiss = { fullScreen = null },
-        )
-    }
 }
-
-/** Tall enough to recognise someone, short enough to leave the screen usable. */
-private val VIDEO_TILE_HEIGHT = 140.dp
 
 @Composable
 private fun RoomMessageBubble(
@@ -2131,313 +2042,6 @@ private fun RoomMessageBubble(
             Spacer(Modifier.width(8.dp))
             RoomAvatarSlot(avatar)
         }
-    }
-}
-
-/**
- * One face in the voice rail: avatar beside handle, sized for a dense row.
- *
- * Tapping it opens the same member menu as the room's member sheet and the
- * desktop rail: watch their video, message them or invite them.
- */
-@Composable
-private fun VoiceParticipant(
-    member: MemberView,
-    avatar: AvatarArt?,
-    actions: MemberActions,
-) {
-    var menuOpen by remember { mutableStateOf(false) }
-    Box {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = if (member.isSelf) Modifier else Modifier.clickable { menuOpen = true },
-        ) {
-            if (avatar != null) {
-                Avatar(avatar, Modifier.size(VOICE_AVATAR_SIZE))
-            } else {
-                // Held open so names stay aligned while an avatar is still being
-                // fetched, rather than the row reflowing under them.
-                Spacer(Modifier.size(VOICE_AVATAR_SIZE))
-            }
-            Spacer(Modifier.width(5.dp))
-            Text(
-                member.name,
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (member.cameraOn) {
-                Spacer(Modifier.width(3.dp))
-                Text("\uD83D\uDCF9", style = MaterialTheme.typography.labelSmall)
-            }
-        }
-        MemberMenu(
-            expanded = menuOpen,
-            member = member,
-            actions = actions,
-            onDismiss = { menuOpen = false },
-        )
-    }
-}
-
-/** Smaller than the 32dp message avatar: the rail is a strip, not a list. */
-private val VOICE_AVATAR_SIZE = 20.dp
-
-// ── Room members ───────────────────────────────────────────────────────────
-
-/**
- * One person as the member menu sees them, whichever surface they were reached
- * from — the room's member sheet or the voice strip.
- */
-internal data class MemberView(
-    val id: String,
-    val name: String,
-    val isSelf: Boolean,
-    val inVoice: Boolean,
-    /**
-     * Their voice is part of the session we are in, so watching them is ours to
-     * decide. False for a text-only member, or any member of a room we are only
-     * reading.
-     */
-    val inSession: Boolean,
-    val cameraOn: Boolean,
-    val watching: Boolean,
-    /** Set when they are a trusted peer: the menu offers a chat, not an invite. */
-    val trustedPeer: Peer?,
-    /** `""`, `"pending"` or `"sent"` — our trust invite to them this session. */
-    val inviteState: String,
-    /** The room they were reached through, which a trust invite names. */
-    val roomId: String,
-)
-
-/** What the member menu can do, supplied once by the caller. */
-internal class MemberActions(
-    val onToggleWatch: (String) -> Unit,
-    val onMessage: (Peer) -> Unit,
-    val onInvite: (roomId: String, memberId: String) -> Unit,
-)
-
-/**
- * Describe [id], a member of [roomId], for the member menu.
- *
- * [voiceMembers] is that room's voice roster, and [voiceHere] whether our own
- * voice is live in it — a room being read is not a session we can watch in.
- */
-internal fun AppState.memberView(
-    id: String,
-    roomId: String,
-    voiceMembers: List<String>,
-    voiceHere: Boolean,
-): MemberView {
-    val key = id.videoKey()
-    val inVoice = voiceMembers.any { it.videoKey() == key }
-    return MemberView(
-        id = id,
-        name = peers.roomSenderName(id, ""),
-        isSelf = key == identity.publicId.videoKey(),
-        inVoice = inVoice,
-        inSession = voiceHere && inVoice,
-        cameraOn = cameraOn(id),
-        watching = watching(id),
-        trustedPeer = trustedPeer(id),
-        inviteState = trustInvites[key].orEmpty(),
-        roomId = roomId,
-    )
-}
-
-/**
- * Everything you can do about one person, the same wherever they are listed.
- *
- * Video is opt-in, as on the desktop: nothing is received or decoded for a
- * peer until "Watch video" is chosen. A trusted peer can be messaged; anyone
- * else in the room can be offered that relationship instead.
- */
-@Composable
-private fun MemberMenu(
-    expanded: Boolean,
-    member: MemberView,
-    actions: MemberActions,
-    onDismiss: () -> Unit,
-) {
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
-    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        if (!member.isSelf) {
-            DropdownMenuItem(
-                text = {
-                    Text(
-                        when {
-                            member.watching -> "Stop watching"
-                            !member.inSession -> "Join voice to watch"
-                            member.cameraOn -> "Watch video"
-                            else -> "Camera is off"
-                        }
-                    )
-                },
-                // Stopping stays possible with the camera off, or a peer who
-                // turned theirs off could never be un-watched.
-                enabled = member.watching || (member.inSession && member.cameraOn),
-                onClick = {
-                    onDismiss()
-                    actions.onToggleWatch(member.id)
-                },
-            )
-            val peer = member.trustedPeer
-            if (peer != null) {
-                DropdownMenuItem(
-                    text = { Text("Message") },
-                    onClick = {
-                        onDismiss()
-                        actions.onMessage(peer)
-                    },
-                )
-            } else if (member.roomId.isNotEmpty()) {
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            when (member.inviteState) {
-                                "sent" -> "Invite sent"
-                                "pending" -> "Sending invite..."
-                                else -> "Invite to trusted peers"
-                            }
-                        )
-                    },
-                    enabled = member.inviteState.isEmpty(),
-                    onClick = {
-                        onDismiss()
-                        actions.onInvite(member.roomId, member.id)
-                    },
-                )
-            }
-        }
-        DropdownMenuItem(
-            text = { Text("Copy ID") },
-            onClick = {
-                clipboard.setText(androidx.compose.ui.text.AnnotatedString(member.id))
-                onDismiss()
-            },
-        )
-    }
-}
-
-/**
- * Everyone in the open room, in voice first and text-only after.
- *
- * The phone's counterpart to the desktop rail's member list: who can hear you
- * and who is only reading, in one place, with the same menu on every row.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun RoomMembersSheet(
-    members: List<MemberView>,
-    avatars: Map<String, AvatarArt>,
-    actions: MemberActions,
-    onDismiss: () -> Unit,
-) {
-    val inVoice = members.filter { it.inVoice }
-    val textOnly = members.filterNot { it.inVoice }
-    // Watching draws into the voice strip at the top of the screen, which
-    // this sheet covers; staying open made "Watch video" look like it did
-    // nothing. Messaging leaves the room view altogether. Inviting stays.
-    val sheetActions = remember(actions, onDismiss) {
-        MemberActions(
-            onToggleWatch = { id ->
-                onDismiss()
-                actions.onToggleWatch(id)
-            },
-            onMessage = { peer ->
-                onDismiss()
-                actions.onMessage(peer)
-            },
-            onInvite = actions.onInvite,
-        )
-    }
-    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
-        LazyColumn(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
-            item {
-                Text(
-                    "Members · ${members.size}",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                )
-            }
-            if (inVoice.isNotEmpty()) {
-                item { MemberSectionLabel("In voice") }
-                items(inVoice, key = { "v:" + it.id }) {
-                    MemberSheetRow(it, avatars[it.id], sheetActions)
-                }
-            }
-            if (textOnly.isNotEmpty()) {
-                item { MemberSectionLabel("Text only") }
-                items(textOnly, key = { "t:" + it.id }) {
-                    MemberSheetRow(it, avatars[it.id], sheetActions)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MemberSectionLabel(text: String) {
-    Text(
-        text.uppercase(),
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp),
-    )
-}
-
-@Composable
-private fun MemberSheetRow(member: MemberView, avatar: AvatarArt?, actions: MemberActions) {
-    var menuOpen by remember { mutableStateOf(false) }
-    Box {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { menuOpen = true }
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-        ) {
-            // Text-only members recede: still in the room, but they cannot
-            // hear you, and that is the first thing this list has to say.
-            val alpha = if (member.inVoice) 1f else 0.6f
-            Box(Modifier.alpha(alpha)) { RoomAvatarSlot(avatar) }
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f).alpha(alpha)) {
-                Text(
-                    if (member.isSelf) "${member.name} (you)" else member.name,
-                    style = MaterialTheme.typography.bodyLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    when {
-                        member.inviteState == "sent" -> "Invite sent"
-                        member.inviteState == "pending" -> "Sending invite..."
-                        member.inVoice -> "In voice"
-                        else -> "Text only"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (member.inviteState.isNotEmpty()) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-            }
-            if (member.cameraOn && member.inVoice) {
-                Text(
-                    "📹",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.alpha(if (member.watching) 1f else 0.6f),
-                )
-            }
-        }
-        MemberMenu(
-            expanded = menuOpen,
-            member = member,
-            actions = actions,
-            onDismiss = { menuOpen = false },
-        )
     }
 }
 
@@ -2520,113 +2124,6 @@ private fun RoomAvatarSlot(avatar: AvatarArt?) {
 
 /** Matches the desktop's 32px room avatar. */
 private val ROOM_AVATAR_SIZE = 32.dp
-
-// ── App menu ───────────────────────────────────────────────────────────────
-
-/**
- * What this build is, who I am here, and the app-wide switches.
- *
- * Deliberately short: a phone menu that lists everything is a menu nobody
- * reads. Identity and version are here because they are what you need when
- * something is wrong and someone asks you what you are running.
- */
-@Composable
-private fun AppMenu(
-    expanded: Boolean,
-    state: AppState,
-    version: String,
-    onDismiss: () -> Unit,
-    onSetStayUnlocked: (Boolean) -> Unit,
-    onRequestLock: () -> Unit,
-    onOpenSettings: () -> Unit,
-) {
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
-
-    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-            Image(
-                painter = painterResource(R.drawable.ic_logo_full),
-                contentDescription = null,
-                modifier = Modifier.width(140.dp).height(26.dp),
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "core $version",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (state.identity.fingerprint.isNotBlank()) {
-                Text(
-                    state.identity.fingerprint,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-
-        HorizontalDivider()
-
-        DropdownMenuItem(
-            text = { Text("Settings") },
-            leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-            onClick = {
-                onOpenSettings()
-                onDismiss()
-            },
-        )
-
-        DropdownMenuItem(
-            text = { Text("Copy my peer ID") },
-            leadingIcon = { Icon(Icons.Filled.Person, contentDescription = null) },
-            enabled = state.identity.publicId.isNotBlank(),
-            onClick = {
-                clipboard.setText(
-                    androidx.compose.ui.text.AnnotatedString(state.identity.publicId),
-                )
-                onDismiss()
-            },
-        )
-
-        HorizontalDivider()
-
-        // The same choice as the unlock screen, reachable after the fact:
-        // changing your mind should not require locking yourself out first.
-        DropdownMenuItem(
-            text = {
-                Column {
-                    Text("Stay unlocked on this device")
-                    Text(
-                        if (state.stayUnlocked) {
-                            "On — opens without your passphrase"
-                        } else {
-                            "Off — asks for your passphrase each launch"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            },
-            trailingIcon = {
-                Switch(checked = state.stayUnlocked, onCheckedChange = null)
-            },
-            onClick = { onSetStayUnlocked(!state.stayUnlocked) },
-        )
-
-        HorizontalDivider()
-
-        DropdownMenuItem(
-            text = { Text("Lock identity", color = MaterialTheme.colorScheme.error) },
-            leadingIcon = {
-                Icon(
-                    Icons.Filled.Lock,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                )
-            },
-            onClick = onRequestLock,
-        )
-    }
-}
 
 /**
  * Confirm before locking.
@@ -2865,12 +2362,35 @@ private fun SettingsScreen(
     onSetVoiceBitrate: (Int) -> Unit,
     onRemoveSupernode: (String) -> Unit,
     onOpenPortal: (SupernodeInfo) -> Unit,
+    onSetSkin: (String) -> Unit,
+    onSetStayUnlocked: (Boolean) -> Unit,
+    onLock: () -> Unit,
+    version: String,
 ) {
     var handle by remember(state.identity.handle) { mutableStateOf(state.identity.handle) }
     var showAvatarEditor by remember { mutableStateOf(false) }
     var confirmPurge by remember { mutableStateOf(false) }
     var showLicenses by remember { mutableStateOf(false) }
     var confirmRemoveNode by remember { mutableStateOf<SupernodeInfo?>(null) }
+
+    var confirmLock by remember { mutableStateOf(false) }
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val scroll = rememberScrollState()
+    val scope = rememberCoroutineScope()
+    // Where each section starts in the scrolling column, for the chips.
+    val anchors = remember { mutableStateMapOf<String, Int>() }
+    val sections = listOf("Identity", "Voice", "Appearance", "Network", "Privacy", "About")
+
+    @Composable
+    fun SectionTitle(name: String) {
+        Text(
+            name,
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier
+                .padding(top = 8.dp, bottom = 8.dp)
+                .onGloballyPositioned { anchors[name] = it.positionInParent().y.toInt() },
+        )
+    }
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
@@ -2883,12 +2403,60 @@ private fun SettingsScreen(
             },
         )
 
+        // The desktop's settings sections, a tap away. The avatar opens this
+        // screen at Identity; every other section is one chip along.
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            sections.forEach { name ->
+                FilterChip(
+                    selected = false,
+                    onClick = { scope.launch { scroll.animateScrollTo(anchors[name] ?: 0) } },
+                    label = { Text(name) },
+                )
+            }
+        }
+        HorizontalDivider()
+
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scroll)
                 .padding(16.dp),
         ) {
+            // ── Identity ──────────────────────────────────────────────────
+            SectionTitle("Identity")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                state.avatars[state.identity.peerId]?.let { art ->
+                    Avatar(art, Modifier.size(56.dp))
+                    Spacer(Modifier.width(12.dp))
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        state.identity.handle.ifBlank { "No name set" },
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        state.identity.publicId,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                TextButton(
+                    enabled = state.identity.publicId.isNotBlank(),
+                    onClick = {
+                        clipboard.setText(androidx.compose.ui.text.AnnotatedString(state.identity.publicId))
+                    },
+                ) { Text("Copy ID") }
+            }
+
+            Spacer(Modifier.height(16.dp))
             Text("Your name", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
@@ -2907,12 +2475,45 @@ private fun SettingsScreen(
                 enabled = handle.trim() != state.identity.handle,
             ) { Text("Save name") }
 
+            Spacer(Modifier.height(16.dp))
+            Text("Your avatar", style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Drawn from your identity, so it is the same everywhere.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { showAvatarEditor = true }) { Text("Edit") }
+            }
+
             BackupButton(unlocked = true)
 
-            Spacer(Modifier.height(24.dp))
-            HorizontalDivider()
             Spacer(Modifier.height(16.dp))
+            Text("This device", style = MaterialTheme.typography.titleSmall)
+            // The same choice as the unlock screen, reachable after the fact:
+            // changing your mind should not require locking yourself out.
+            SettingSwitch(
+                title = "Stay unlocked",
+                subtitle = if (state.stayUnlocked) {
+                    "Opens without your passphrase"
+                } else {
+                    "Asks for your passphrase each launch"
+                },
+                checked = state.stayUnlocked,
+                onCheckedChange = onSetStayUnlocked,
+            )
+            TextButton(onClick = { confirmLock = true }) {
+                Text("Lock identity", color = MaterialTheme.colorScheme.error)
+            }
 
+            Spacer(Modifier.height(16.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+
+            // ── Voice ─────────────────────────────────────────────────────
+            SectionTitle("Voice")
             SettingSwitch(
                 title = "Front camera",
                 subtitle = if (state.prefs.frontCamera) {
@@ -2923,7 +2524,6 @@ private fun SettingsScreen(
                 checked = state.prefs.frontCamera,
                 onCheckedChange = onSetFrontCamera,
             )
-
             SettingSwitch(
                 title = "Voice activation",
                 subtitle = if (state.prefs.voiceActivation) {
@@ -2934,55 +2534,7 @@ private fun SettingsScreen(
                 checked = state.prefs.voiceActivation,
                 onCheckedChange = onSetVoiceActivation,
             )
-
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(16.dp))
-
-            Text("Your avatar", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                state.avatars[state.identity.peerId]?.let { art ->
-                    Avatar(art, Modifier.size(56.dp))
-                    Spacer(Modifier.width(12.dp))
-                }
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "Drawn from your identity, so it is the same everywhere.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                TextButton(onClick = { showAvatarEditor = true }) { Text("Edit") }
-            }
-
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(16.dp))
-
-            Text("Chat history", style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Stored on this device only. Deleting does not remove anything " +
-                    "from your peers - they keep their own copies.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(8.dp))
-            Row {
-                TextButton(onClick = { onTrimHistory(30) }) { Text("Trim over 30 days") }
-                TextButton(onClick = { confirmPurge = true }) {
-                    Text("Delete all", color = MaterialTheme.colorScheme.error)
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(16.dp))
-
-            Text("Voice", style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(8.dp))
-
             TuningSlider(
                 label = "Microphone",
                 value = state.prefs.inputGain.toFloat(),
@@ -3022,8 +2574,23 @@ private fun SettingsScreen(
 
             Spacer(Modifier.height(16.dp))
             HorizontalDivider()
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(8.dp))
 
+            // ── Appearance ────────────────────────────────────────────────
+            SectionTitle("Appearance")
+            AppearanceSection(
+                theme = state.prefs.theme,
+                skinJson = state.prefs.skin,
+                onSetTheme = onSetTheme,
+                onSetSkin = onSetSkin,
+            )
+
+            Spacer(Modifier.height(16.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+
+            // ── Network ───────────────────────────────────────────────────
+            SectionTitle("Network")
             Text("Supernodes", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(4.dp))
             Text(
@@ -3033,7 +2600,6 @@ private fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(8.dp))
-
             if (state.supernodeInfo.isEmpty()) {
                 Text(
                     "None yet.",
@@ -3070,36 +2636,32 @@ private fun SettingsScreen(
 
             Spacer(Modifier.height(16.dp))
             HorizontalDivider()
-            Spacer(Modifier.height(16.dp))
-
-            Text("Theme", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(8.dp))
-            listOf(
-                AppSettings.THEME_SYSTEM to "Follow the system",
-                AppSettings.THEME_LIGHT to "Light",
-                AppSettings.THEME_DARK to "Dark",
-            ).forEach { (value, label) ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onSetTheme(value) }
-                        .padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    RadioButton(
-                        selected = state.prefs.theme == value,
-                        onClick = { onSetTheme(value) },
-                    )
-                    Text(label, Modifier.padding(start = 8.dp))
+
+            // ── Privacy ───────────────────────────────────────────────────
+            SectionTitle("Privacy")
+            Text("Chat history", style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Stored on this device only. Deleting does not remove anything " +
+                    "from your peers - they keep their own copies.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row {
+                TextButton(onClick = { onTrimHistory(30) }) { Text("Trim over 30 days") }
+                TextButton(onClick = { confirmPurge = true }) {
+                    Text("Delete all", color = MaterialTheme.colorScheme.error)
                 }
             }
 
             Spacer(Modifier.height(16.dp))
             HorizontalDivider()
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(8.dp))
 
-            Text("Legal", style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(4.dp))
+            // ── About ─────────────────────────────────────────────────────
+            SectionTitle("About")
             val legalContext = LocalContext.current
             TextButton(onClick = { Legal.openUrl(legalContext, Legal.PRIVACY_URL) }) {
                 Text("Privacy policy")
@@ -3110,8 +2672,12 @@ private fun SettingsScreen(
             TextButton(onClick = { showLicenses = true }) {
                 Text("Third-party licenses")
             }
-
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "core $version",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Text(
                 "Fingerprint ${state.identity.fingerprint.take(23)}",
                 style = MaterialTheme.typography.labelSmall,
@@ -3152,6 +2718,17 @@ private fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { confirmRemoveNode = null }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (confirmLock) {
+        LockIdentityDialog(
+            stayUnlocked = state.stayUnlocked,
+            onDismiss = { confirmLock = false },
+            onConfirm = {
+                confirmLock = false
+                onLock()
             },
         )
     }

@@ -26,7 +26,9 @@ ApplicationWindow {
     flags: Qt.Window | Qt.CustomizeWindowHint
 
     Material.theme: Theme.isDark ? Material.Dark : Material.Light
-    Material.accent: Material.Blue
+    // The skin's accent, so Material controls (switches, sliders, focus
+    // lines) follow a custom colour rather than a fixed blue.
+    Material.accent: Theme.accent
 
     function applyThemePreference(value) {
         var useDark = true
@@ -184,7 +186,7 @@ ApplicationWindow {
             handle: (settingsModel.local_handle && settingsModel.local_handle !== "")
                 ? settingsModel.local_handle
                 : backend.public_id,
-            muted: voiceRail.muted,
+            muted: voiceDock.muted,
             audioLevel: 0.0,
             isSelf: true
         })
@@ -202,108 +204,225 @@ ApplicationWindow {
         return isNaN(n) ? 0 : Math.max(0, n)
     }
 
-    // Collapsed room subtrees, keyed `node_id:room_id`. Reassigned (not mutated)
-    // on toggle so the `roomsTree` bindings re-evaluate.
+    // Room fold, keyed `node_id:room_id`. Reassigned (not mutated) on toggle so
+    // the `roomsTree` bindings re-evaluate. `true` shuts a room's member lists
+    // (and wins over the live voice room and the open chat), `false` opens
+    // them, and no entry leaves them collapsed unless this is the voice room
+    // or the chat on screen. Sub-rooms stay listed either way.
     property var collapsedRooms: ({})
+    // The voice room whose explicit collapse has already been released, so a
+    // later fold stays shut until the user leaves that room and joins again.
+    property string releasedVoiceKey: ""
 
-    function toggleRoomCollapse(nodeId, roomId) {
-        var key = nodeId + ":" + roomId
+    readonly property string voiceTreeKey: (backend.voice_in_room && root.voiceRoomId !== "")
+        ? root.voiceSupernodeId + ":" + root.voiceRoomId
+        : ""
+    onVoiceTreeKeyChanged: root.forgetCollapseOnVoiceRoom()
+
+    function copyCollapseFlags() {
         var next = {}
         for (var k in root.collapsedRooms)
             if (root.collapsedRooms.hasOwnProperty(k)) next[k] = root.collapsedRooms[k]
-        if (next[key]) delete next[key]
-        else next[key] = true
+        return next
+    }
+
+    function roomIsOpen(nodeId, roomId) {
+        var flag = root.collapsedRooms[nodeId + ":" + roomId]
+        if (flag === true)
+            return false
+        if (flag === false)
+            return true
+        if (root.voiceTreeKey !== "" && nodeId === root.voiceSupernodeId
+                && roomId === root.voiceRoomId)
+            return true
+        return nodeId === roomPanel.supernodeId && roomId === roomPanel.roomId
+    }
+
+    function toggleRoomCollapse(nodeId, roomId) {
+        var next = root.copyCollapseFlags()
+        next[nodeId + ":" + roomId] = root.roomIsOpen(nodeId, roomId) ? true : false
         root.collapsedRooms = next
     }
 
-    // Flatten a node's room list into Space-tree order: DFS pre-order so each
-    // parent is immediately followed by its descendants. Each emitted item gains:
-    //   tree_depth   — nesting depth (0 = top-level)
-    //   has_children — whether it has sub-rooms (shows the expand/collapse toggle)
-    //   collapsed    — whether it is currently collapsed
-    //   guide_cols   — per-column connector codes for the tree lines:
-    //                  0 = blank, 1 = pass-through │, 2 = └ (last child), 3 = ├
-    // A room is top-level when its `parent_id` is "" or points outside the list
-    // (the Server node / a legacy room). Collapsed subtrees are traversed (to
-    // mark them seen) but not emitted. Cycle- and self-parent-guarded.
-    function roomTreeOrder(rooms, nodeId, collapsed) {
-        if (!Array.isArray(rooms)) return []
+    /// Drop an explicit collapse of the voice room once per join.
+    function forgetCollapseOnVoiceRoom() {
+        var voiceKey = root.voiceTreeKey
+        if (voiceKey === "") {
+            root.releasedVoiceKey = ""
+            return
+        }
+        if (voiceKey === root.releasedVoiceKey)
+            return
+        root.releasedVoiceKey = voiceKey
+        var next = root.copyCollapseFlags()
+        if (next[voiceKey] === true) {
+            delete next[voiceKey]
+            root.collapsedRooms = next
+        }
+    }
+
+    /// Clear a shut flag so selecting this chat can open it, without leaving
+    /// it open after the chat changes.
+    function releaseRoomCollapse(nodeId, roomId) {
+        var key = nodeId + ":" + roomId
+        if (root.collapsedRooms[key] !== true)
+            return
+        var next = root.copyCollapseFlags()
+        delete next[key]
+        root.collapsedRooms = next
+    }
+
+    // Voice / Text-only leaves opened or closed by hand, keyed
+    // `node_id:room_id:voice|text`. Absent means open: an expanded room shows
+    // both lists.
+    property var memberLeafState: ({})
+    // Leaves showing every member rather than the first few.
+    property var memberOverflowOpen: ({})
+    // The member whose actions are open under their row, or "". One at a time.
+    property string openMemberKey: ""
+    // Members a leaf lists before folding the rest under "+N more".
+    readonly property int treeMemberLimit: 8
+
+    function setTreeFlag(which, key, value) {
+        var src = which === "leaf" ? root.memberLeafState : root.memberOverflowOpen
+        var next = {}
+        for (var k in src)
+            if (src.hasOwnProperty(k)) next[k] = src[k]
+        next[key] = value
+        if (which === "leaf") root.memberLeafState = next
+        else root.memberOverflowOpen = next
+    }
+
+    function toggleOpenMember(key) {
+        root.openMemberKey = root.openMemberKey === key ? "" : key
+    }
+
+    /// Bring a room's members into view: Rooms tab, that room's lists unfolded.
+    /// The room panel's member count asks for this. Sub-rooms are already listed.
+    function revealRoomMembers(nodeId, roomId) {
+        if (nodeId === "" || roomId === "")
+            return
+        root.sidebarTab = 1
+        var next = root.copyCollapseFlags()
+        next[nodeId + ":" + roomId] = false
+        root.collapsedRooms = next
+        root.setTreeFlag("leaf", nodeId + ":" + roomId + ":voice", true)
+        root.setTreeFlag("leaf", nodeId + ":" + roomId + ":text", true)
+    }
+
+    // Everything the tree's shape depends on besides the rooms themselves, as
+    // one value so a change to any of it rebuilds the rows.
+    readonly property var treeContext: ({
+        collapsed: root.collapsedRooms,
+        leaves: root.memberLeafState,
+        overflow: root.memberOverflowOpen,
+        selectedNode: roomPanel.supernodeId,
+        selectedRoom: roomPanel.roomId,
+        voiceNode: backend.voice_in_room ? root.voiceSupernodeId : "",
+        voiceRoom: backend.voice_in_room ? root.voiceRoomId : "",
+        limit: root.treeMemberLimit
+    })
+
+    /// Open a room's text from the tree (a single click on it).
+    function openRoomFromTree(nodeId, roomId, name) {
+        if (!nodeId || !roomId)
+            return
+        // The open chat expands this room only while it stays selected.
+        root.releaseRoomCollapse(nodeId, roomId)
+        roomPanel.switchToRoom(name || roomId, roomId, nodeId)
+        backend.subscribeRoomChat(nodeId, roomId)
+        navIndex = 1
+    }
+
+    /// Join a room's voice from the tree (double-click, or a Voice leaf's Join).
+    function joinVoiceFromTree(nodeId, roomId, name) {
+        if (!nodeId || !roomId)
+            return
+        root.releaseRoomCollapse(nodeId, roomId)
+        roomPanel.switchToRoom(name || roomId, roomId, nodeId)
+        backend.joinRoomWithVoice(nodeId, roomId)
+        root.voiceRoomName = name || roomId
+        root.voiceSupernodeId = nodeId
+        root.voiceRoomId = roomId
+        navIndex = 1
+    }
+
+    /// Open the 1:1 chat with a trusted member, by Peers-list id.
+    function messagePeer(listPeerId, name) {
+        if (!listPeerId)
+            return
+        chatPanel.selectedPeerId = listPeerId
+        chatPanel.selectedPeerName = name
+        backend.selectPeer(listPeerId)
+        peerModel.setPeerUnread(listPeerId, 0)
+        root.sidebarTab = 0
+        navIndex = 0
+    }
+
+    /// Watch a peer in the centre region, or stop watching wherever they are.
+    function toggleWatching(peerId) {
+        if (root.watchedVideoPeers.indexOf(peerId) !== -1)
+            root.stopWatchingVideo(peerId)
+        else
+            root.toggleVideoExpanded(peerId)
+    }
+
+    // The content page to return to from Settings. There is no Chat/Settings
+    // switch any more: the title-bar avatar opens Settings, and its Back
+    // button or the Peers | Rooms toggle leaves it.
+    property int lastContentNav: 0
+    // The sidebar's list: 0 = Peers, 1 = Rooms. Driven by the title-bar toggle.
+    property int sidebarTab: 0
+    onNavIndexChanged: if (navIndex !== 2) root.lastContentNav = navIndex
+
+    function leaveSettings() {
+        if (navIndex === 2)
+            navIndex = root.lastContentNav
+    }
+
+    /// The voice room as "Parent › Room", from the sidebar's own room list.
+    function voiceRoomPath() {
+        var name = root.voiceRoomName || qsTr("Voice room")
+        var idx = root.findNodeIndex(root.voiceSupernodeId)
+        if (idx < 0 || root.voiceRoomId === "")
+            return name
+        var rooms = []
+        try { rooms = JSON.parse(nodeListModel.get(idx).rooms_json || "[]") } catch (e) { return name }
         var byId = {}
-        var i
-        for (i = 0; i < rooms.length; i++)
+        for (var i = 0; i < rooms.length; i++)
             if (rooms[i] && rooms[i].room_id) byId[rooms[i].room_id] = rooms[i]
-
-        var childrenOf = {}
-        var roots = []
-        for (i = 0; i < rooms.length; i++) {
-            var r = rooms[i]
-            if (!r || !r.room_id) continue
-            var pid = r.parent_id || ""
-            if (pid !== "" && pid !== r.room_id && byId.hasOwnProperty(pid)) {
-                if (!childrenOf[pid]) childrenOf[pid] = []
-                childrenOf[pid].push(r)
-            } else {
-                roots.push(r)
-            }
-        }
-
-        // Explicit stack (avoids recursion); reverse-push keeps display order.
-        // Each frame carries `isLast` (last among siblings, for └ vs ├),
-        // `passLines` (ancestor vertical-line flags), and `visible` (false under
-        // a collapsed ancestor — still traversed to mark seen, not emitted).
-        var out = []
-        var seen = {}
-        var stack = []
-        var s
-        for (s = roots.length - 1; s >= 0; s--)
-            stack.push({ room: roots[s], depth: 0, isLast: (s === roots.length - 1),
-                         passLines: [], visible: true })
+        var parts = []
+        var cur = byId[root.voiceRoomId]
         var guard = 0
-        while (stack.length > 0 && guard < 8192) {
-            guard++
-            var top = stack.pop()
-            var rr = top.room
-            if (seen[rr.room_id]) continue // guard against duplicate visits
-            seen[rr.room_id] = true
-            var kids = childrenOf[rr.room_id]
-            var hasKids = !!(kids && kids.length)
-            var isCollapsed = hasKids && collapsed
-                && collapsed[nodeId + ":" + rr.room_id] === true
-            if (top.visible) {
-                var cols = []
-                for (var k = 0; k < top.depth - 1; k++)
-                    cols.push(top.passLines[k] ? 1 : 0)
-                if (top.depth > 0) cols.push(top.isLast ? 2 : 3)
-                var item = {}
-                for (var kk in rr) if (rr.hasOwnProperty(kk)) item[kk] = rr[kk]
-                item.tree_depth = top.depth
-                item.has_children = hasKids
-                item.collapsed = isCollapsed
-                item.guide_cols = cols
-                out.push(item)
-            }
-            if (hasKids) {
-                var childVisible = top.visible && !isCollapsed
-                var childPass = top.passLines.concat([!top.isLast])
-                for (var c = kids.length - 1; c >= 0; c--)
-                    stack.push({ room: kids[c], depth: top.depth + 1,
-                                 isLast: (c === kids.length - 1),
-                                 passLines: childPass, visible: childVisible })
-            }
+        while (cur && guard++ < 16) {
+            parts.unshift(cur.name || cur.room_id)
+            cur = cur.parent_id ? byId[cur.parent_id] : null
         }
-        // Safety net: never hide a room. Anything genuinely unreachable (e.g. a
-        // malformed parent cycle) is appended flat at the top level.
-        for (i = 0; i < rooms.length; i++) {
-            if (rooms[i] && rooms[i].room_id && !seen[rooms[i].room_id]) {
-                seen[rooms[i].room_id] = true
-                var orphan = {}
-                for (var ok in rooms[i]) if (rooms[i].hasOwnProperty(ok)) orphan[ok] = rooms[i][ok]
-                orphan.tree_depth = 0
-                orphan.has_children = false
-                orphan.collapsed = false
-                orphan.guide_cols = []
-                out.push(orphan)
-            }
+        return parts.length > 0 ? parts.join(" › ") : name
+    }
+
+    // Bumped whenever the voice roster is replaced, so bindings that ask
+    // roomModel about a peer (it has no per-peer change signal) re-run.
+    property int sessionRosterStamp: 0
+
+    /// People in the live session sharing video that we are not watching, as
+    /// `[{id, name}]` — the voice dock's "is sharing video · Watch" line.
+    readonly property var unwatchedStreamers: {
+        root.sessionRosterStamp
+        var out = []
+        if (!backend.voice_active)
+            return out
+        for (var pid in root.videoActivePeers) {
+            if (!root.videoActivePeers[pid] || pid === backend.public_id)
+                continue
+            if (root.watchedVideoPeers.indexOf(pid) !== -1)
+                continue
+            var name = backend.voice_in_room
+                ? roomModel.handleFor(pid)
+                : (pid === root.activeCallPeerId ? root.activeCallPeerHandle() : "")
+            if (name === "")
+                continue
+            out.push({ id: pid, name: name })
         }
         return out
     }
@@ -535,7 +654,7 @@ ApplicationWindow {
             var voiceCount = root.roomVoiceCount(r)
             var countKnown = root.roomHasVoiceCount(r)
             var knownPeers = root.roomKnownPeers(r)
-            normalized.push({
+            var entry = {
                 room_id: r.room_id || "",
                 name: r.name || r.room_name || r.room_id || "Room",
                 kind: r.kind || r.room_type || "voice",
@@ -550,7 +669,19 @@ ApplicationWindow {
                 // Space-tree parent (carried from the local store) for sidebar
                 // indent. Supernode-sourced rooms omit it → "" → top-level.
                 parent_id: r.parent_id || ""
-            })
+            }
+            // Absent means "this update does not know", so a voice patch
+            // must not clear a tombstone the sidebar is still holding.
+            if (r.hidden === true || r.hidden === false)
+                entry.hidden = r.hidden === true
+            // Who is in the room. Without these the tree still paints the
+            // headphone on a room we have joined, and nothing under it.
+            var rosters = RoomTree.rosterFields(r)
+            for (var rk in rosters) {
+                if (rosters.hasOwnProperty(rk))
+                    entry[rk] = rosters[rk]
+            }
+            normalized.push(entry)
         }
 
         var nodeIdx = findNodeIndex(canon)
@@ -577,6 +708,58 @@ ApplicationWindow {
             })
         }
         dedupeNodeList()
+        root.recountRooms()
+        if (canon === root.voiceSupernodeId)
+            root.forgetCollapseOnVoiceRoom()
+    }
+
+    // Local sidebar tombstones. Hidden rooms stay in the model; the tree
+    // draws them only while this is on, the same way the phone's + does.
+    property bool showHiddenRooms: false
+    // Blocked peers are the Peers list's hidden ones, on both clients.
+    property bool showBlockedPeers: false
+    property int blockedPeerCount: 0
+    property int hiddenRoomCount: 0
+    property int visibleRoomCount: 0
+
+    function recountRooms() {
+        var hidden = 0
+        var visible = 0
+        for (var i = 0; i < nodeListModel.count; i++) {
+            var rooms = []
+            try { rooms = JSON.parse(nodeListModel.get(i).rooms_json || "[]") } catch (e) {}
+            for (var r = 0; r < rooms.length; r++) {
+                if (rooms[r] && rooms[r].hidden)
+                    hidden++
+                else
+                    visible++
+            }
+        }
+        root.hiddenRoomCount = hidden
+        root.visibleRoomCount = visible
+    }
+
+    function setRoomHiddenFlag(supernodeId, roomId, hidden) {
+        var nodeIdx = root.findNodeIndex(supernodeId)
+        if (nodeIdx < 0)
+            return
+        var rooms = []
+        try { rooms = JSON.parse(nodeListModel.get(nodeIdx).rooms_json || "[]") } catch (e) {}
+        var changed = false
+        for (var i = 0; i < rooms.length; i++) {
+            if (rooms[i] && rooms[i].room_id === roomId && rooms[i].hidden !== hidden) {
+                rooms[i].hidden = hidden
+                changed = true
+            }
+        }
+        if (changed)
+            nodeListModel.setProperty(nodeIdx, "rooms_json", JSON.stringify(rooms))
+        root.recountRooms()
+    }
+
+    function unhideRoom(supernodeId, roomId) {
+        backend.unhideRoom(supernodeId, roomId)
+        root.setRoomHiddenFlag(supernodeId, roomId, false)
     }
 
     // ── Custom frameless title bar with embedded logo + invite controls ─────
@@ -597,6 +780,20 @@ ApplicationWindow {
             Layout.alignment: Qt.AlignVCenter
             fillMode: Image.PreserveAspectFit
             source: "qrc:/qt/qml/DoubleSlash/Client/icons/logo.svg"
+        }
+
+        // Peers | Rooms — the one switch between the two lists, where the
+        // phone has it too. Picking either also leaves Settings.
+        SidebarToggle {
+            id: sidebarToggle
+            Layout.alignment: Qt.AlignVCenter
+            Layout.leftMargin: Theme.spacingSm
+            currentIndex: root.sidebarTab
+            dimmed: navIndex === 2
+            onActivated: (index) => {
+                root.sidebarTab = index
+                root.leaveSettings()
+            }
         }
 
         // Invite / peer-ID paste field
@@ -664,6 +861,76 @@ ApplicationWindow {
         }
 
         Item { Layout.fillWidth: true }
+
+        // Same place as the phone: immediately left of your avatar. What it
+        // offers follows the list on screen, as the phone's does.
+        ToolButton {
+            id: roomAddButton
+            Layout.alignment: Qt.AlignVCenter
+            Layout.preferredWidth: 30
+            Layout.preferredHeight: 30
+            padding: 6
+            flat: true
+            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
+            icon.width: 18
+            icon.height: 18
+            icon.color: Theme.text
+            Accessible.name: root.sidebarTab === 1 ? qsTr("Create or join a room") : qsTr("Add a peer")
+            ToolTip.text: Accessible.name
+            ToolTip.visible: hovered
+            ToolTip.delay: Theme.animSlow
+            onClicked: root.sidebarTab === 1 ? roomAddMenu.popup() : peerAddMenu.popup()
+
+            Menu {
+                id: peerAddMenu
+
+                MenuItem {
+                    text: qsTr("Create an invite")
+                    onTriggered: newInviteBtn.clicked()
+                }
+                MenuItem {
+                    text: qsTr("Join with an invite…")
+                    onTriggered: acceptInviteDialog.open()
+                }
+                MenuItem {
+                    visible: root.blockedPeerCount > 0
+                    height: visible ? implicitHeight : 0
+                    text: root.showBlockedPeers
+                        ? qsTr("Hide %1 blocked").arg(root.blockedPeerCount)
+                        : qsTr("Show %1 blocked").arg(root.blockedPeerCount)
+                    onTriggered: root.showBlockedPeers = !root.showBlockedPeers
+                }
+                MenuItem {
+                    text: qsTr("Refresh")
+                    onTriggered: backend.refreshPeers()
+                }
+            }
+
+            Menu {
+                id: roomAddMenu
+
+                MenuItem {
+                    text: qsTr("Create a room…")
+                    enabled: nodeListModel.count > 0
+                    onTriggered: createRoomDialog.openNew()
+                }
+                MenuItem {
+                    text: qsTr("Join with an invite…")
+                    onTriggered: acceptInviteDialog.open()
+                }
+                MenuItem {
+                    visible: root.hiddenRoomCount > 0
+                    text: root.showHiddenRooms
+                        ? qsTr("Hide %1 hidden").arg(root.hiddenRoomCount)
+                        : qsTr("Show %1 hidden").arg(root.hiddenRoomCount)
+                    onTriggered: root.showHiddenRooms = !root.showHiddenRooms
+                }
+                MenuItem {
+                    text: qsTr("Refresh")
+                    onTriggered: backend.refreshRooms()
+                }
+            }
+        }
 
         // Discord-style update affordance: present but unobtrusive until a
         // release is ready. The installer owns shutdown, install, and relaunch.
@@ -989,12 +1256,14 @@ ApplicationWindow {
         root.trustInviteStates = next
     }
 
-    function sendTrustInvite(memberId) {
-        if (!memberId || roomPanel.roomId === "")
+    /// Offer trust to a member of `roomId`, a room we are in: the receiver only
+    /// honours an invite from someone in the room it names.
+    function sendTrustInvite(roomId, memberId) {
+        if (!memberId || !roomId)
             return
         root.setTrustInviteState(memberId, "pending")
         root.trustInviteNotice = ""
-        backend.sendTrustInvite(roomPanel.roomId, memberId)
+        backend.sendTrustInvite(roomId, memberId)
     }
 
     Timer {
@@ -1125,6 +1394,9 @@ ApplicationWindow {
         function onThemeChanged() {
             applyThemePreference(settingsModel.theme)
         }
+        function onSkin_jsonChanged() {
+            Theme.applySkinJson(settingsModel.skin_json)
+        }
         // Keep the bridge's applied avatar config in lockstep with settings so
         // every self-avatar site (voice rail, own room messages, …) resolves to
         // the same config as the Settings preview — including after a profile
@@ -1162,6 +1434,7 @@ ApplicationWindow {
         settingsModel.load()
         backend.setAutomaticUpdateChecks(settingsModel.update_check_enabled)
         applyThemePreference(settingsModel.theme)
+        Theme.applySkinJson(settingsModel.skin_json)
         root.refreshVideoEncoderAvailable()
 
         // Announce the (empty) watched set. Not a no-op: the supernode treats
@@ -1238,6 +1511,15 @@ ApplicationWindow {
         }
 
         backend.peersUpdated.connect(peerModel.setPeers)
+        backend.peersUpdated.connect(function(json) {
+            var n = 0
+            try {
+                var list = JSON.parse(json || "[]")
+                for (var i = 0; i < list.length; i++)
+                    if (list[i] && list[i].blocked) n++
+            } catch (e) {}
+            root.blockedPeerCount = n
+        })
         backend.chatMessageReceived.connect(function(msgJson) {
             try {
                 var msg = JSON.parse(msgJson)
@@ -1256,6 +1538,7 @@ ApplicationWindow {
         backend.chatHistoryPrepended.connect(chatPanel.onHistoryPrepended)
         backend.messageStatusChanged.connect(chatModel.updateMessageStatus)
         backend.participantsUpdated.connect(roomModel.setParticipants)
+        backend.participantsUpdated.connect(function() { root.sessionRosterStamp++ })
         backend.textMembersUpdated.connect(textRoomModel.setParticipants)
         // Live audio state goes to the room's member list too while it shows
         // the room we are in voice for — that list is where the rail reads it
@@ -1551,16 +1834,8 @@ ApplicationWindow {
         function onRoomRemoved(supernodeId, roomId) {
             if (roomPanel.supernodeId === supernodeId && roomPanel.roomId === roomId)
                 roomPanel.switchToRoom("", "", "")
-            var nodeIdx = root.findNodeIndex(supernodeId)
-            if (nodeIdx < 0) return
-            var rooms = []
-            try { rooms = JSON.parse(nodeListModel.get(nodeIdx).rooms_json || "[]") } catch (e) {}
-            var filtered = []
-            for (var i = 0; i < rooms.length; i++) {
-                if (rooms[i].room_id !== roomId)
-                    filtered.push(rooms[i])
-            }
-            nodeListModel.setProperty(nodeIdx, "rooms_json", JSON.stringify(filtered))
+            // Keep the row, marked hidden, so + can show it again.
+            root.setRoomHiddenFlag(supernodeId, roomId, true)
         }
         function onRoomCreated(supernodeId, roomId, roomName, roomType, inviteToken) {
             roomPanel.switchToRoom(roomName, roomId, supernodeId)
@@ -1617,6 +1892,82 @@ ApplicationWindow {
         onAccepted: (inviteUrl) => backend.pasteInvite(inviteUrl)
     }
 
+    // Paste a peer or room invite. The phone's + opens this same box.
+    Dialog {
+        id: acceptInviteDialog
+        title: qsTr("Accept an invite")
+        modal: true
+        anchors.centerIn: parent
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        closePolicy: Dialog.CloseOnEscape
+        width: 420
+        padding: Theme.spacingXl
+        z: 100
+
+        onAboutToShow: acceptInviteField.forceActiveFocus()
+        onOpened: acceptInviteField.text = ""
+        onAccepted: {
+            var url = acceptInviteField.text.trim()
+            if (url !== "")
+                backend.pasteInvite(url)
+        }
+
+        background: Rectangle {
+            color: Theme.bg1
+            radius: 0
+            border.color: Theme.bg3
+            border.width: 1
+        }
+
+        header: Rectangle {
+            color: Theme.bg0
+            height: 48
+            Text {
+                anchors.centerIn: parent
+                text: acceptInviteDialog.title
+                color: Theme.text
+                font.pixelSize: Theme.fontSizeBody
+                font.bold: true
+            }
+        }
+
+        contentItem: ColumnLayout {
+            spacing: Theme.spacingSm
+
+            Text {
+                text: qsTr("Invite link")
+                color: Theme.muted
+                font.pixelSize: Theme.fontSizeCaption
+            }
+
+            TextField {
+                id: acceptInviteField
+                Layout.fillWidth: true
+                Layout.preferredHeight: Theme.controlHeight * 2
+                placeholderText: qsTr("doubleslash://…")
+                wrapMode: Text.Wrap
+                color: Theme.text
+                font.pixelSize: Theme.fontSizeBody
+                background: Rectangle {
+                    color: Theme.bg2
+                    radius: 0
+                    border.color: acceptInviteField.activeFocus ? Theme.accent : Theme.bg3
+                    border.width: 1
+                }
+                Keys.onReturnPressed: acceptInviteDialog.accept()
+            }
+        }
+
+        footer: DialogButtonBox {
+            standardButtons: acceptInviteDialog.standardButtons
+            background: Rectangle { color: Theme.bg0 }
+            delegate: Button {
+                enabled: DialogButtonBox.buttonRole !== DialogButtonBox.AcceptRole
+                      || acceptInviteField.text.trim() !== ""
+            }
+        }
+    }
+
     // ── Join Room dialog ──────────────────────────────────────────────────
     JoinRoomDialog {
         id: joinRoomDialog
@@ -1641,6 +1992,7 @@ ApplicationWindow {
         anchors.centerIn: parent
         z: 100
         nodeListModel: nodeListModel
+        includeHidden: root.showHiddenRooms
     }
 
     // ── Topbar removed: logo + invite field now live inside the TitleBar ─
@@ -1721,12 +2073,6 @@ ApplicationWindow {
                 directCallModel.clear()
             }
         }
-        function onCall_duration_secsChanged() {
-            voiceRail.durationSecs = backend.call_duration_secs
-        }
-        function onConnection_modeChanged() {
-            voiceRail.connectionMode = backend.connection_mode
-        }
     }
 
     // ── Main body ─────────────────────────────────────────────────────────
@@ -1748,39 +2094,12 @@ ApplicationWindow {
             clip: true
             spacing: 0
 
-            // Tab bar (hidden while settings nav is active)
-            TabBar {
-                id: sidebarTabBar
-                Layout.fillWidth: true
-                Layout.preferredHeight: sidebarTabHeight
-                implicitHeight: sidebarTabHeight
-                visible: navIndex !== 2
-                Material.accent: Theme.accent
-                Material.foreground: Theme.text
-                Material.background: Theme.bg1
-
-                readonly property int sidebarTabHeight: Theme.controlHeight + 4
-
-                TabButton {
-                    text: "Peers"
-                    font.pixelSize: Theme.fontSizeBody
-                    font.bold: sidebarTabBar.currentIndex === 0
-                    implicitHeight: sidebarTabBar.sidebarTabHeight
-                }
-                TabButton {
-                    text: "Rooms"
-                    font.pixelSize: Theme.fontSizeBody
-                    font.bold: sidebarTabBar.currentIndex === 1
-                    implicitHeight: sidebarTabBar.sidebarTabHeight
-                }
-            }
-
             // Tab content (hidden while settings nav is active)
             StackLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 visible: navIndex !== 2
-                currentIndex: sidebarTabBar.currentIndex
+                currentIndex: root.sidebarTab
 
                 // ── Tab 0: Peers ──────────────────────────────────────────
                 PeerList {
@@ -1788,6 +2107,8 @@ ApplicationWindow {
                     peerCount: backend.peer_count
                     peerModel: peerModel
                     selectedPeerId: chatPanel.selectedPeerId
+                    showBlocked: root.showBlockedPeers
+                    blockedCount: root.blockedPeerCount
                     onPeerSelected: function(peerId, handle) {
                         chatPanel.selectedPeerId = peerId
                         chatPanel.selectedPeerName = handle
@@ -1817,6 +2138,7 @@ ApplicationWindow {
                         property string targetRoomId: ""
                         property string targetRoomName: ""
                         property bool targetCanRemove: false
+                        property bool targetHidden: false
 
                         MenuItem {
                             text: qsTr("Join Voice Room")
@@ -1908,65 +2230,19 @@ ApplicationWindow {
                             visible: roomContextMenu.targetCanRemove
                         }
                         MenuItem {
-                            text: qsTr("Hide Room")
+                            text: roomContextMenu.targetHidden
+                                ? qsTr("Show in list")
+                                : qsTr("Hide Room")
                             visible: roomContextMenu.targetCanRemove
-                            onTriggered: backend.removeRoom(
-                                roomContextMenu.targetSupernodeId,
-                                roomContextMenu.targetRoomId)
-                        }
-                    }
-
-                    // Room creation used to hang off the supernode avatar's
-                    // context menu. With the avatar gone the host is no longer
-                    // implied by where you clicked, so it is asked for in the
-                    // dialog's picker instead (skipped when there is one node).
-                    Menu {
-                        id: createRoomMenu
-
-                        MenuItem {
-                            text: qsTr("Public Room…")
-                            onTriggered: createRoomDialog.openForNode("", "public")
-                        }
-                        MenuItem {
-                            text: qsTr("Private Room…")
-                            onTriggered: createRoomDialog.openForNode("", "private")
-                        }
-                    }
-
-                    // Header, matching the Peers rail's.
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 36
-                        color: Theme.bg2
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: Theme.spacingMd
-                            anchors.rightMargin: Theme.spacingXs
-                            spacing: Theme.spacingSm
-
-                            Text {
-                                text: "Rooms"
-                                color: Theme.muted
-                                font.pixelSize: Theme.fontSizeCaption
-                                font.capitalization: Font.AllUppercase
-                                font.letterSpacing: 1.2
-                                font.bold: true
-                            }
-
-                            Item { Layout.fillWidth: true }
-
-                            ToolButton {
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
-                                icon.width: 16
-                                icon.height: 16
-                                icon.color: enabled ? Theme.text : Theme.muted
-                                flat: true
-                                // Nothing hosts a room without a supernode.
-                                enabled: nodeListModel.count > 0
-                                ToolTip.text: "Create a room"
-                                ToolTip.visible: hovered
-                                onClicked: createRoomMenu.popup()
+                            onTriggered: {
+                                if (roomContextMenu.targetHidden)
+                                    root.unhideRoom(
+                                        roomContextMenu.targetSupernodeId,
+                                        roomContextMenu.targetRoomId)
+                                else
+                                    backend.removeRoom(
+                                        roomContextMenu.targetSupernodeId,
+                                        roomContextMenu.targetRoomId)
                             }
                         }
                     }
@@ -1989,6 +2265,19 @@ ApplicationWindow {
                             subtitle: "Accept a supernode invite to see the rooms it hosts."
                         }
 
+                        EmptyState {
+                            anchors.centerIn: parent
+                            visible: nodeListModel.count > 0
+                                && root.visibleRoomCount === 0
+                                && root.hiddenRoomCount > 0
+                                && !root.showHiddenRooms
+                            width: Math.min(parent.width - Theme.spacingXl, 170)
+                            iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
+                            iconSize: 30
+                            title: "All rooms are hidden"
+                            subtitle: "Use + to show them."
+                        }
+
                         delegate: Item {
                             id: roomGroup
                             required property string node_id
@@ -1997,243 +2286,161 @@ ApplicationWindow {
                             required property string rooms_json
 
                             readonly property var rooms: {
+                                var showHidden = root.showHiddenRooms
+                                var parsed = []
                                 try {
-                                    return JSON.parse(roomGroup.rooms_json || "[]")
+                                    parsed = JSON.parse(roomGroup.rooms_json || "[]")
                                 } catch (e) {
                                     return []
                                 }
+                                if (showHidden)
+                                    return parsed
+                                var out = []
+                                for (var i = 0; i < parsed.length; i++) {
+                                    if (!parsed[i] || !parsed[i].hidden)
+                                        out.push(parsed[i])
+                                }
+                                return out
                             }
 
-                            // Rooms flattened into Space-tree order (parent →
-                            // children, collapsed subtrees omitted), each with
-                            // tree_depth / has_children / collapsed / guide_cols.
+                            // Rooms with their Voice / Text-only leaves and
+                            // members, flattened parent-first (RoomTree.rows).
                             readonly property var roomsTree:
-                                root.roomTreeOrder(roomGroup.rooms, roomGroup.node_id,
-                                                   root.collapsedRooms)
-
-                            readonly property real groupHeight:
-                                Math.max(48, roomGroup.roomsTree.length * 48) + Theme.spacingSm
+                                RoomTree.rows(roomGroup.rooms, roomGroup.node_id,
+                                              roomGroup.connected, root.treeContext)
 
                             visible: backend.isKnownSupernode(roomGroup.node_id)
                             width: roomsListView.width
-                            height: visible ? groupHeight : 0
+                            height: visible ? roomColumn.implicitHeight + Theme.spacingXs * 2 : 0
 
                             // One group per supernode is still how rooms arrive,
-                            // but nothing marks the boundary any more: the list
-                            // reads as one flat set of rooms, and the nodes
-                            // themselves are managed in Settings › Network.
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: Theme.spacingSm
-                                anchors.rightMargin: Theme.spacingSm
-                                anchors.topMargin: Theme.spacingXs
-                                anchors.bottomMargin: Theme.spacingXs
-                                spacing: Theme.spacingSm
+                            // but nothing marks the boundary: the list reads as
+                            // one tree, and nodes are managed in Settings › Network.
+                            Column {
+                                id: roomColumn
+                                y: Theme.spacingXs
+                                width: parent.width
+                                spacing: 0
 
-                                Column {
-                                    id: roomColumn
-                                    Layout.fillWidth: true
-                                    spacing: 0
+                                Label {
+                                    visible: roomGroup.rooms.length === 0
+                                    width: roomColumn.width
+                                    height: 40
+                                    verticalAlignment: Text.AlignVCenter
+                                    // Named: a bare "No rooms" would not say which
+                                    // supernode is the empty one.
+                                    text: roomGroup.title !== ""
+                                        ? qsTr("No rooms on %1").arg(roomGroup.title)
+                                        : qsTr("No rooms")
+                                    color: Theme.muted
+                                    font.pixelSize: Theme.fontSizeCaption
+                                    leftPadding: Theme.spacingMd
+                                }
 
-                                    Label {
-                                        visible: roomGroup.rooms.length === 0
+                                Repeater {
+                                    model: roomGroup.roomsTree
+
+                                    delegate: Loader {
+                                        id: treeRow
+                                        required property var modelData
+                                        readonly property var row: treeRow.modelData
                                         width: roomColumn.width
-                                        height: 48
-                                        verticalAlignment: Text.AlignVCenter
-                                        // Named: with the node avatar gone, a
-                                        // bare "No rooms" would not say which
-                                        // supernode is the empty one.
-                                        text: roomGroup.title !== ""
-                                            ? "No rooms on " + roomGroup.title
-                                            : "No rooms"
-                                        color: Theme.muted
-                                        font.pixelSize: Theme.fontSizeCaption
-                                        leftPadding: Theme.spacingXs
-                                    }
+                                        height: item ? item.implicitHeight : 0
+                                        sourceComponent: row.row_kind === "room" ? roomRowComp
+                                            : row.row_kind === "group" ? groupRowComp
+                                            : row.row_kind === "member" ? memberRowComp
+                                            : row.row_kind === "session" ? sessionRowComp
+                                            : moreRowComp
 
-                                    Repeater {
-                                        // Tree-ordered (parent → children) so the
-                                        // list reads top-down as a proper tree.
-                                        model: roomGroup.roomsTree
+                                        // ── Room ────────────────────────────────
+                                        Component {
+                                            id: roomRowComp
 
-                                        delegate: ItemDelegate {
-                                            id: roomDelegate
-                                            required property string room_id
-                                            required property string name
-                                            required property string kind
-                                            required property int voice_count
-                                            required property int chat_count
-                                            required property bool chat_count_known
-                                            required property var known_peers
-                                            required property int unknown_peers
-                                            // Model roles carry the roster as a
-                                            // QVariantList sequence, not a JS Array —
-                                            // normalize rather than type-test it.
-                                            readonly property var knownPeers:
-                                                root.nameList(roomDelegate.known_peers)
-                                            // Derive Unknown from the same voice_count the badge shows
-                                            // (minus the named/known peers) so the tooltip can never
-                                            // disagree with the number on the bubble — named peers +
-                                            // Unknown always sums to the badge count.
-                                            readonly property int unknownPeers:
-                                                Math.max(0, roomDelegate.voice_count - roomDelegate.knownPeers.length)
-                                            required property string creator_id
-                                            required property bool is_default
-                                            // Space-tree metadata from roomTreeOrder.
-                                            required property int tree_depth
-                                            required property bool has_children
-                                            required property bool collapsed
-                                            required property var guide_cols
+                                            ItemDelegate {
+                                                id: roomDelegate
+                                                readonly property var row: treeRow.row
+                                                readonly property string roomName: row.name || row.room_id
+                                                readonly property int treeStep: Theme.spacingLg
+                                                readonly property int treeIndent:
+                                                    Theme.spacingSm + row.guide_cols.length * treeStep
+                                                readonly property bool canRemove:
+                                                    row.is_default !== true && row.room_id !== "default"
+                                                readonly property bool roomSelected:
+                                                    roomPanel.supernodeId !== ""
+                                                    && roomPanel.supernodeId === roomGroup.node_id
+                                                    && roomPanel.roomId === row.room_id
+                                                readonly property bool voiceHere:
+                                                    backend.voice_in_room
+                                                    && root.voiceRoomId === row.room_id
+                                                    && root.voiceSupernodeId === roomGroup.node_id
+                                                readonly property bool isPrivate:
+                                                    String(row.kind || "").toLowerCase() === "private"
 
-                                            // Width of one tree-guide column / indent step.
-                                            readonly property int treeStep: Theme.spacingLg
-                                            // Space-tree indent: one step (a "tab")
-                                            // to the right per nesting level.
-                                            readonly property int treeIndent:
-                                                roomDelegate.tree_depth * roomDelegate.treeStep
+                                                implicitHeight: 34
+                                                padding: 0
 
-                                            width: roomColumn.width
-                                            height: 48
-
-                                            readonly property bool canRemove:
-                                                !roomDelegate.is_default
-                                                && roomDelegate.room_id !== "default"
-
-                                            readonly property bool roomSelected:
-                                                roomPanel.supernodeId !== ""
-                                                && roomPanel.supernodeId === roomGroup.node_id
-                                                && roomPanel.roomId !== ""
-                                                && roomPanel.roomId === roomDelegate.room_id
-
-                                            background: Rectangle {
-                                                color: roomDelegate.roomSelected
-                                                    ? Theme.selectedFill()
-                                                    : (roomDelegate.hovered ? Theme.bg3 : "transparent")
-                                                Behavior on color {
-                                                    ColorAnimation { duration: Theme.animNormal }
-                                                }
-
-                                                Rectangle {
-                                                    visible: roomDelegate.roomSelected
-                                                    width: 3
-                                                    anchors {
-                                                        left: parent.left
-                                                        top: parent.top
-                                                        bottom: parent.bottom
+                                                background: Rectangle {
+                                                    color: roomDelegate.roomSelected
+                                                        ? Theme.selectedFill()
+                                                        : (roomDelegate.hovered ? Theme.bg3 : "transparent")
+                                                    Behavior on color {
+                                                        ColorAnimation { duration: Theme.animNormal }
                                                     }
-                                                    color: Theme.accent
+
+                                                    Rectangle {
+                                                        visible: roomDelegate.roomSelected
+                                                        width: 3
+                                                        anchors {
+                                                            left: parent.left
+                                                            top: parent.top
+                                                            bottom: parent.bottom
+                                                        }
+                                                        color: Theme.accent
+                                                    }
                                                 }
-                                            }
 
-                                            onClicked: {
-                                                roomPanel.switchToRoom(
-                                                    roomDelegate.name || roomDelegate.room_id,
-                                                    roomDelegate.room_id,
-                                                    roomGroup.node_id)
-                                                backend.subscribeRoomChat(
-                                                    roomGroup.node_id,
-                                                    roomDelegate.room_id)
-                                                navIndex = 1
-                                            }
-                                            onDoubleClicked: {
-                                                roomPanel.switchToRoom(
-                                                    roomDelegate.name || roomDelegate.room_id,
-                                                    roomDelegate.room_id,
-                                                    roomGroup.node_id)
-                                                backend.joinRoomWithVoice(
-                                                    roomGroup.node_id,
-                                                    roomDelegate.room_id)
-                                                root.voiceRoomName = roomDelegate.name || roomDelegate.room_id
-                                                root.voiceSupernodeId = roomGroup.node_id
-                                                root.voiceRoomId = roomDelegate.room_id
-                                                navIndex = 1
-                                            }
+                                                onClicked: root.openRoomFromTree(
+                                                    roomGroup.node_id, row.room_id, roomDelegate.roomName)
+                                                onDoubleClicked: root.joinVoiceFromTree(
+                                                    roomGroup.node_id, row.room_id, roomDelegate.roomName)
 
-                                            MouseArea {
-                                                anchors.fill: parent
-                                                acceptedButtons: Qt.RightButton
-                                                onClicked: (mouse) => {
-                                                    if (mouse.button === Qt.RightButton) {
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    acceptedButtons: Qt.RightButton
+                                                    onClicked: (mouse) => {
                                                         roomContextMenu.targetSupernodeId = roomGroup.node_id
-                                                        roomContextMenu.targetRoomId = roomDelegate.room_id
-                                                        roomContextMenu.targetRoomName =
-                                                            roomDelegate.name || roomDelegate.room_id
+                                                        roomContextMenu.targetRoomId = row.room_id
+                                                        roomContextMenu.targetRoomName = roomDelegate.roomName
                                                         roomContextMenu.targetCanRemove = roomDelegate.canRemove
+                                                        roomContextMenu.targetHidden = row.hidden === true
                                                         roomContextMenu.popup()
                                                     }
                                                 }
-                                            }
 
-                                            // Tree connector lines, drawn in the
-                                            // indent gutter. One cell per depth
-                                            // column; codes from `guide_cols`:
-                                            // 1 = │ pass-through, 2 = └ (last),
-                                            // 3 = ├ (has following sibling).
-                                            Row {
-                                                id: treeGuides
-                                                anchors.left: parent.left
-                                                anchors.top: parent.top
-                                                anchors.bottom: parent.bottom
-                                                width: roomDelegate.treeIndent
-                                                visible: roomDelegate.tree_depth > 0
-
-                                                Repeater {
-                                                    model: roomDelegate.guide_cols
-                                                    delegate: Item {
-                                                        id: guideCell
-                                                        property int code: modelData
-                                                        width: roomDelegate.treeStep
-                                                        height: treeGuides.height
-
-                                                        // Vertical: full for │/├, top-half for └.
-                                                        Rectangle {
-                                                            width: 1
-                                                            color: Theme.divider
-                                                            x: Math.floor(guideCell.width / 2)
-                                                            y: 0
-                                                            height: (guideCell.code === 1 || guideCell.code === 3)
-                                                                ? guideCell.height
-                                                                : (guideCell.code === 2 ? guideCell.height / 2 : 0)
-                                                            visible: guideCell.code !== 0
-                                                        }
-                                                        // Horizontal elbow into the row for ├ / └.
-                                                        Rectangle {
-                                                            height: 1
-                                                            color: Theme.divider
-                                                            x: Math.floor(guideCell.width / 2)
-                                                            y: Math.floor(guideCell.height / 2)
-                                                            width: (guideCell.code === 2 || guideCell.code === 3)
-                                                                ? guideCell.width / 2
-                                                                : 0
-                                                            visible: guideCell.code === 2 || guideCell.code === 3
-                                                        }
-                                                    }
+                                                TreeGuides {
+                                                    x: Theme.spacingSm
+                                                    height: parent.height
+                                                    guides: row.guide_cols
                                                 }
-                                            }
-
-                                            ColumnLayout {
-                                                anchors.verticalCenter: parent.verticalCenter
-                                                anchors.left: parent.left
-                                                anchors.right: parent.right
-                                                anchors.leftMargin: roomDelegate.treeIndent
-                                                spacing: Theme.spacingXs
 
                                                 RowLayout {
-                                                    Layout.fillWidth: true
+                                                    anchors {
+                                                        left: parent.left
+                                                        right: parent.right
+                                                        verticalCenter: parent.verticalCenter
+                                                        leftMargin: roomDelegate.treeIndent
+                                                        rightMargin: Theme.spacingSm
+                                                    }
+                                                    spacing: Theme.spacingXs
 
-                                                    // Expand/collapse toggle (only
-                                                    // for rooms that have sub-rooms).
-                                                    // An SVG caret rotated in place —
-                                                    // right when collapsed, down when
-                                                    // expanded — so it never depends on
-                                                    // the UI font having a triangle char.
+                                                    // Expand/collapse: an SVG caret rotated in
+                                                    // place, so it never depends on the UI font.
                                                     Item {
-                                                        Layout.preferredWidth: 14
-                                                        Layout.preferredHeight: 14
+                                                        Layout.preferredWidth: 16
+                                                        Layout.preferredHeight: 16
                                                         Layout.alignment: Qt.AlignVCenter
 
                                                         Image {
-                                                            id: chevron
                                                             anchors.centerIn: parent
                                                             width: 10
                                                             height: 10
@@ -2241,11 +2448,9 @@ ApplicationWindow {
                                                             sourceSize.height: 20
                                                             fillMode: Image.PreserveAspectFit
                                                             smooth: true
-                                                            visible: roomDelegate.has_children
+                                                            visible: row.has_children
                                                             source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
-                                                            // collapsed → points right (0°);
-                                                            // expanded → points down (90°).
-                                                            rotation: roomDelegate.collapsed ? 0 : 90
+                                                            rotation: row.collapsed ? 0 : 90
                                                             Behavior on rotation {
                                                                 NumberAnimation { duration: Theme.animNormal }
                                                             }
@@ -2253,229 +2458,315 @@ ApplicationWindow {
 
                                                         MouseArea {
                                                             anchors.fill: parent
-                                                            anchors.margins: -3
-                                                            enabled: roomDelegate.has_children
+                                                            anchors.margins: -4
+                                                            enabled: row.has_children
                                                             cursorShape: Qt.PointingHandCursor
                                                             onClicked: root.toggleRoomCollapse(
-                                                                roomGroup.node_id, roomDelegate.room_id)
+                                                                roomGroup.node_id, row.room_id)
                                                         }
+                                                    }
+
+                                                    Image {
+                                                        visible: roomDelegate.isPrivate
+                                                        source: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg"
+                                                        sourceSize.width: 12; sourceSize.height: 12
+                                                        Layout.preferredWidth: 12
+                                                        Layout.preferredHeight: 12
+                                                        Layout.alignment: Qt.AlignVCenter
+                                                        opacity: 0.7
                                                     }
 
                                                     Label {
                                                         Layout.fillWidth: true
-                                                        text: roomDelegate.name
-                                                        color: Theme.text
+                                                        text: roomDelegate.roomName
+                                                        color: row.hidden
+                                                            ? Theme.muted
+                                                            : (roomDelegate.voiceHere ? Theme.online : Theme.text)
                                                         font.pixelSize: Theme.fontSizeBody
-                                                        font.bold: roomDelegate.roomSelected
+                                                        font.bold: roomDelegate.roomSelected || roomDelegate.voiceHere
                                                         elide: Text.ElideRight
                                                     }
 
-                                                    Rectangle {
-                                                        id: roomVoiceBubble
-                                                        // Once the hosting supernode disconnects, `voice_count` is
-                                                        // whatever we last heard — there is no live refresh path
-                                                        // for a dead session (RequestRoomList would just target a
-                                                        // closed connection), so treat the count as unknown rather
-                                                        // than rendering a stale number as if it were live.
-                                                        readonly property bool countIsStale: !roomGroup.connected
+                                                    Image {
+                                                        visible: roomDelegate.voiceHere
+                                                        source: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
+                                                        sourceSize.width: 13; sourceSize.height: 13
+                                                        Layout.preferredWidth: 13
+                                                        Layout.preferredHeight: 13
                                                         Layout.alignment: Qt.AlignVCenter
-                                                        Layout.preferredWidth: voiceBubbleRow.implicitWidth + 10
-                                                        Layout.preferredHeight: 22
-                                                        radius: 11
-                                                        color: (!roomVoiceBubble.countIsStale && roomDelegate.voice_count > 0)
-                                                            ? Theme.semanticTint(Theme.online, 0.16)
-                                                            : Theme.bg2
-                                                        border.color: (!roomVoiceBubble.countIsStale && roomDelegate.voice_count > 0)
-                                                            ? Theme.online
-                                                            : Theme.divider
-                                                        border.width: 1
+                                                        ToolTip.text: qsTr("You are in voice here")
+                                                        ToolTip.visible: youHereHover.hovered
+                                                        HoverHandler { id: youHereHover }
+                                                    }
 
-                                                        Row {
-                                                            id: voiceBubbleRow
-                                                            anchors.centerIn: parent
-                                                            spacing: 4
-
-                                                            Image {
-                                                                source: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
-                                                                sourceSize.width: 12
-                                                                sourceSize.height: 12
-                                                                width: 12
-                                                                height: 12
-                                                                anchors.verticalCenter: parent.verticalCenter
-                                                                fillMode: Image.PreserveAspectFit
-                                                                opacity: (!roomVoiceBubble.countIsStale && roomDelegate.voice_count > 0) ? 1.0 : 0.55
-                                                            }
-
-                                                            Label {
-                                                                text: roomVoiceBubble.countIsStale ? "\u2014" : roomDelegate.voice_count.toString()
-                                                                color: (!roomVoiceBubble.countIsStale && roomDelegate.voice_count > 0) ? Theme.online : Theme.muted
-                                                                font.pixelSize: Theme.fontSizeCaption
-                                                                font.bold: !roomVoiceBubble.countIsStale && roomDelegate.voice_count > 0
-                                                                anchors.verticalCenter: parent.verticalCenter
-                                                            }
-                                                        }
-
-                                                        HoverHandler { id: roomStatsHover }
-
-                                                        Popup {
-                                                            id: roomVoicePopup
-                                                            parent: roomVoiceBubble
-                                                            visible: roomStatsHover.hovered
-                                                            modal: false
-                                                            focus: false
-                                                            closePolicy: Popup.NoAutoClose
-                                                            padding: 10
-                                                            width: 220
-                                                            x: roomVoiceBubble.width + 6
-                                                            y: Math.round((roomVoiceBubble.height - implicitHeight) / 2)
-
-                                                            background: Rectangle {
-                                                                color: Theme.bg2
-                                                                radius: Theme.radiusMd
-                                                                border.color: Theme.divider
-                                                                border.width: 1
-                                                            }
-
-                                                            contentItem: Column {
-                                                                spacing: Theme.spacingXs
-
-                                                                Label {
-                                                                    visible: roomVoiceBubble.countIsStale
-                                                                    width: roomVoicePopup.availableWidth
-                                                                    text: "Supernode offline \u2014 counts may be stale"
-                                                                    color: Theme.muted
-                                                                    font.italic: true
-                                                                    font.pixelSize: Theme.fontSizeCaption
-                                                                    wrapMode: Text.WordWrap
-                                                                }
-
-                                                                // Live but empty voice room — say so plainly rather
-                                                                // than showing a permanent "Known: none / Unknown: 0".
-                                                                Label {
-                                                                    visible: !roomVoiceBubble.countIsStale
-                                                                        && roomDelegate.voice_count === 0
-                                                                    width: roomVoicePopup.availableWidth
-                                                                    text: "No one in voice"
-                                                                    color: Theme.muted
-                                                                    font.pixelSize: Theme.fontSizeCaption
-                                                                    wrapMode: Text.WordWrap
-                                                                }
-
-                                                                // Only render the roster breakdown when we have a live
-                                                                // count with people in it — a stale ("—") badge has no
-                                                                // trustworthy roster to describe.
-                                                                Label {
-                                                                    visible: !roomVoiceBubble.countIsStale
-                                                                        && roomDelegate.voice_count > 0
-                                                                    width: roomVoicePopup.availableWidth
-                                                                    text: roomDelegate.knownPeers.length > 0
-                                                                        ? "Known: " + roomDelegate.knownPeers.join(", ")
-                                                                        : "Known: none"
-                                                                    color: Theme.text
-                                                                    font.pixelSize: Theme.fontSizeCaption
-                                                                    wrapMode: Text.WordWrap
-                                                                }
-
-                                                                Label {
-                                                                    visible: !roomVoiceBubble.countIsStale
-                                                                        && roomDelegate.voice_count > 0
-                                                                        && roomDelegate.unknownPeers > 0
-                                                                    width: roomVoicePopup.availableWidth
-                                                                    text: "Unknown: " + roomDelegate.unknownPeers
-                                                                    color: Theme.muted
-                                                                    font.pixelSize: Theme.fontSizeCaption
-                                                                }
+                                                    // Folded: who is inside, without unfolding.
+                                                    Row {
+                                                        visible: row.collapsed && row.stack_ids.length > 0
+                                                        spacing: -5
+                                                        Layout.alignment: Qt.AlignVCenter
+                                                        Repeater {
+                                                            model: row.stack_ids
+                                                            delegate: Avatar {
+                                                                required property var modelData
+                                                                peerId: modelData
+                                                                size: 16
                                                             }
                                                         }
                                                     }
 
-                                                    Rectangle {
-                                                        id: roomChatBubble
-                                                        // Text-chat occupancy (voice participants + chat-only
-                                                        // subscribers) — distinct from roomVoiceBubble, which is
-                                                        // voice-only. Stale when the supernode is offline (no live
-                                                        // refresh path) OR we've never received a real chat_count
-                                                        // yet (only voice-roster patches have landed so far) —
-                                                        // show "—" rather than a possibly-wrong 0 in either case.
-                                                        readonly property bool countIsStale:
-                                                            !roomGroup.connected || !roomDelegate.chat_count_known
-                                                        Layout.alignment: Qt.AlignVCenter
-                                                        Layout.preferredWidth: chatBubbleRow.implicitWidth + 10
-                                                        Layout.preferredHeight: 22
-                                                        radius: 11
-                                                        color: (!roomChatBubble.countIsStale && roomDelegate.chat_count > 0)
-                                                            ? Theme.semanticTint(Theme.accent, 0.16)
-                                                            : Theme.bg2
-                                                        border.color: (!roomChatBubble.countIsStale && roomDelegate.chat_count > 0)
-                                                            ? Theme.accent
-                                                            : Theme.divider
-                                                        border.width: 1
+                                                    CountPill {
+                                                        // A node that is gone has no live roster:
+                                                        // "—" rather than a stale number.
+                                                        visible: !roomGroup.connected
+                                                            || (row.collapsed && row.subtree_voice > 0)
+                                                        iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
+                                                        text: roomGroup.connected ? String(row.subtree_voice) : "—"
+                                                        tint: roomGroup.connected ? Theme.online : Theme.muted
+                                                        active: roomGroup.connected
+                                                        tip: roomGroup.connected
+                                                            ? qsTr("In voice")
+                                                            : qsTr("Supernode offline — counts may be stale")
+                                                    }
 
-                                                        Row {
-                                                            id: chatBubbleRow
-                                                            anchors.centerIn: parent
-                                                            spacing: 4
-
-                                                            Image {
-                                                                source: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
-                                                                sourceSize.width: 12
-                                                                sourceSize.height: 12
-                                                                width: 12
-                                                                height: 12
-                                                                anchors.verticalCenter: parent.verticalCenter
-                                                                fillMode: Image.PreserveAspectFit
-                                                                opacity: (!roomChatBubble.countIsStale && roomDelegate.chat_count > 0) ? 1.0 : 0.55
-                                                            }
-
-                                                            Label {
-                                                                text: roomChatBubble.countIsStale ? "—" : roomDelegate.chat_count.toString()
-                                                                color: (!roomChatBubble.countIsStale && roomDelegate.chat_count > 0) ? Theme.accent : Theme.muted
-                                                                font.pixelSize: Theme.fontSizeCaption
-                                                                font.bold: !roomChatBubble.countIsStale && roomDelegate.chat_count > 0
-                                                                anchors.verticalCenter: parent.verticalCenter
-                                                            }
-                                                        }
-
-                                                        HoverHandler { id: roomChatHover }
-
-                                                        Popup {
-                                                            id: roomChatPopup
-                                                            parent: roomChatBubble
-                                                            visible: roomChatHover.hovered
-                                                            modal: false
-                                                            focus: false
-                                                            closePolicy: Popup.NoAutoClose
-                                                            padding: 10
-                                                            width: 180
-                                                            x: roomChatBubble.width + 6
-                                                            y: Math.round((roomChatBubble.height - implicitHeight) / 2)
-
-                                                            background: Rectangle {
-                                                                color: Theme.bg2
-                                                                radius: Theme.radiusMd
-                                                                border.color: Theme.divider
-                                                                border.width: 1
-                                                            }
-
-                                                            contentItem: Label {
-                                                                width: roomChatPopup.availableWidth
-                                                                text: !roomGroup.connected
-                                                                    ? "Supernode offline — counts may be stale"
-                                                                    : (!roomDelegate.chat_count_known
-                                                                        ? "Waiting for room list — count not yet known"
-                                                                        : ("In room chat: " + roomDelegate.chat_count))
-                                                                color: Theme.text
-                                                                font.pixelSize: Theme.fontSizeCaption
-                                                                wrapMode: Text.WordWrap
-                                                            }
-                                                        }
+                                                    CountPill {
+                                                        visible: roomGroup.connected && row.collapsed && row.room_chat > 0
+                                                        iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
+                                                        text: String(row.room_chat)
+                                                        tint: Theme.accent
+                                                        active: true
+                                                        tip: qsTr("In text only")
                                                     }
                                                 }
+                                            }
+                                        }
 
-                                                Label {
-                                                    text: roomDelegate.kind
-                                                    color: Theme.muted
+                                        // ── Voice / Text-only leaf ─────────────
+                                        Component {
+                                            id: groupRowComp
+
+                                            Item {
+                                                id: groupRow
+                                                readonly property var row: treeRow.row
+                                                readonly property bool isVoice: row.group === "voice"
+                                                implicitHeight: 26
+
+                                                Rectangle {
+                                                    anchors.fill: parent
+                                                    color: groupHover.hovered ? Theme.bg2 : "transparent"
+                                                }
+
+                                                TreeGuides {
+                                                    x: Theme.spacingSm
+                                                    height: parent.height
+                                                    guides: row.guide_cols
+                                                }
+
+                                                RowLayout {
+                                                    anchors {
+                                                        left: parent.left
+                                                        right: parent.right
+                                                        verticalCenter: parent.verticalCenter
+                                                        leftMargin: Theme.spacingSm + row.guide_cols.length * Theme.spacingLg
+                                                        rightMargin: Theme.spacingSm
+                                                    }
+                                                    spacing: Theme.spacingXs
+
+                                                    Item {
+                                                        id: leafToggle
+                                                        Layout.fillWidth: true
+                                                        Layout.preferredHeight: 26
+
+                                                        RowLayout {
+                                                            anchors.fill: parent
+                                                            spacing: Theme.spacingXs
+
+                                                            Item {
+                                                                Layout.preferredWidth: 16
+                                                                Layout.preferredHeight: 16
+                                                                Image {
+                                                                    anchors.centerIn: parent
+                                                                    width: 8; height: 8
+                                                                    sourceSize.width: 16; sourceSize.height: 16
+                                                                    source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
+                                                                    rotation: row.expanded ? 90 : 0
+                                                                    opacity: 0.8
+                                                                }
+                                                            }
+                                                            Image {
+                                                                id: leafIcon
+                                                                source: groupRow.isVoice
+                                                                    ? "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
+                                                                    : "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
+                                                                sourceSize.width: 14; sourceSize.height: 14
+                                                                Layout.preferredWidth: 14
+                                                                Layout.preferredHeight: 14
+                                                                Layout.alignment: Qt.AlignVCenter
+                                                                Accessible.name: groupRow.isVoice ? qsTr("Voice") : qsTr("Text only")
+                                                                ToolTip.text: groupRow.isVoice ? qsTr("Voice") : qsTr("Text only")
+                                                                ToolTip.visible: leafIconHover.hovered
+                                                                ToolTip.delay: Theme.animSlow
+                                                                HoverHandler { id: leafIconHover }
+                                                            }
+                                                            Text {
+                                                                text: row.count
+                                                                color: Theme.muted
+                                                                font.pixelSize: Theme.fontSizeCaption
+                                                            }
+                                                            Item { Layout.fillWidth: true }
+                                                        }
+
+                                                        HoverHandler { id: groupHover; cursorShape: Qt.PointingHandCursor }
+                                                        TapHandler {
+                                                            onTapped: root.setTreeFlag("leaf", row.key, !row.expanded)
+                                                        }
+                                                    }
+
+                                                    Rectangle {
+                                                        visible: row.show_join
+                                                        implicitWidth: joinText.implicitWidth + Theme.spacingMd
+                                                        implicitHeight: 20
+                                                        color: joinHover.hovered
+                                                            ? Theme.semanticTint(Theme.online, 0.3)
+                                                            : Theme.semanticTint(Theme.online, 0.16)
+                                                        border.color: Theme.online
+                                                        border.width: 1
+
+                                                        Text {
+                                                            id: joinText
+                                                            anchors.centerIn: parent
+                                                            text: qsTr("Join")
+                                                            color: Theme.online
+                                                            font.pixelSize: Theme.fontSizeCaption
+                                                            font.bold: true
+                                                        }
+                                                        HoverHandler { id: joinHover; cursorShape: Qt.PointingHandCursor }
+                                                        TapHandler {
+                                                            onTapped: root.joinVoiceFromTree(
+                                                                roomGroup.node_id, row.room_id, row.room_name)
+                                                        }
+                                                        ToolTip.text: qsTr("Join this room's voice")
+                                                        ToolTip.visible: joinHover.hovered
+                                                        ToolTip.delay: 400
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // ── A roster member ────────────────────
+                                        Component {
+                                            id: memberRowComp
+
+                                            RoomTreeMember {
+                                                readonly property var row: treeRow.row
+                                                peerId: row.id
+                                                displayName: row.name
+                                                isSelf: row.is_self
+                                                inVoice: row.group === "voice"
+                                                inSession: false
+                                                videoActive: row.group === "voice" && row.on_roster
+                                                    && root.videoActivePeers[row.id] === true
+                                                watching: root.watchedVideoPeers.indexOf(row.id) !== -1
+                                                trusted: row.trusted
+                                                listPeerId: row.list_peer_id
+                                                inviteState: root.trustInviteStates[row.id] || ""
+                                                canInvite: row.can_invite
+                                                expanded: root.openMemberKey === row.key
+                                                guides: row.guide_cols
+                                                onToggleRequested: root.toggleOpenMember(row.key)
+                                                onMessageRequested: root.messagePeer(row.list_peer_id, row.name)
+                                                onInviteRequested: root.sendTrustInvite(row.room_id, row.id)
+                                                onCopyIdRequested: backend.copyToClipboard(row.id)
+                                            }
+                                        }
+
+                                        // ── The live voice session ─────────────
+                                        //
+                                        // Drawn from roomModel rather than the
+                                        // roster, because that is where levels,
+                                        // their mute and "muted for me" live.
+                                        Component {
+                                            id: sessionRowComp
+
+                                            Column {
+                                                id: sessionColumn
+                                                readonly property var row: treeRow.row
+
+                                                Repeater {
+                                                    id: sessionRepeater
+                                                    model: roomModel
+
+                                                    delegate: RoomTreeMember {
+                                                        id: sessionMember
+                                                        required property var model
+                                                        required property int index
+                                                        readonly property string memberKey:
+                                                            roomGroup.node_id + ":" + sessionColumn.row.room_id
+                                                            + ":voice:" + (model.peerId || "")
+
+                                                        width: sessionColumn.width
+                                                        peerId: model.peerId || ""
+                                                        displayName: model.handle || ""
+                                                        isSelf: model.isSelf === true
+                                                        inVoice: true
+                                                        inSession: true
+                                                        isMuted: model.muted === true
+                                                        audioLevel: model.isSelf ? backend.mic_level : (model.audioLevel || 0.0)
+                                                        videoActive: model.videoActive === true
+                                                            || root.videoActivePeers[model.peerId] === true
+                                                        watching: root.watchedVideoPeers.indexOf(model.peerId) !== -1
+                                                        locallyMuted: model.localMuted === true
+                                                        localVolume: model.localVolume === undefined ? 100 : model.localVolume
+                                                        trusted: model.trusted === true
+                                                        listPeerId: model.listPeerId || ""
+                                                        inviteState: root.trustInviteStates[model.peerId] || ""
+                                                        canInvite: sessionColumn.row.can_invite
+                                                        expanded: root.openMemberKey === sessionMember.memberKey
+                                                        guides: sessionColumn.row.pass_cols.concat(
+                                                            [sessionMember.index === sessionRepeater.count - 1 ? 2 : 3])
+
+                                                        onToggleRequested: root.toggleOpenMember(sessionMember.memberKey)
+                                                        onWatchToggled: root.toggleWatching(sessionMember.peerId)
+                                                        onPopoutRequested: root.popoutVideo(sessionMember.peerId)
+                                                        onLocalAudioChanged: function(muted, volume) {
+                                                            backend.setPeerAudioPref(sessionMember.peerId, muted, volume)
+                                                            roomModel.setLocalAudio(sessionMember.peerId, muted, volume)
+                                                        }
+                                                        onMessageRequested: root.messagePeer(
+                                                            sessionMember.listPeerId, sessionMember.displayName)
+                                                        onInviteRequested: root.sendTrustInvite(
+                                                            sessionColumn.row.room_id, sessionMember.peerId)
+                                                        onCopyIdRequested: backend.copyToClipboard(sessionMember.peerId)
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // ── "+N more" / "Show fewer" ───────────
+                                        Component {
+                                            id: moreRowComp
+
+                                            Item {
+                                                readonly property var row: treeRow.row
+                                                implicitHeight: 24
+
+                                                TreeGuides {
+                                                    x: Theme.spacingSm
+                                                    height: parent.height
+                                                    guides: row.guide_cols
+                                                }
+
+                                                Text {
+                                                    x: Theme.spacingSm + row.guide_cols.length * Theme.spacingLg + 4
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    text: row.label
+                                                    color: Theme.linkPeer
                                                     font.pixelSize: Theme.fontSizeCaption
+                                                    font.underline: moreHover.hovered
+                                                    HoverHandler { id: moreHover; cursorShape: Qt.PointingHandCursor }
+                                                    TapHandler {
+                                                        onTapped: root.setTreeFlag("overflow", row.key,
+                                                            root.memberOverflowOpen[row.key] !== true)
+                                                    }
                                                 }
                                             }
                                         }
@@ -2485,19 +2776,6 @@ ApplicationWindow {
                         }
                     }
 
-                    // Room action buttons
-                    Rectangle {
-                        Layout.fillWidth: true
-                        height: Theme.touchTarget
-                        color: Theme.bg0
-
-                        StyledButton {
-                            anchors.centerIn: parent
-                            width: parent.width - Theme.spacingMd * 2
-                            text: "Join Room"
-                            onClicked: joinRoomDialog.show()
-                        }
-                    }
                 }
             }                    // end sidebar StackLayout
 
@@ -2511,6 +2789,7 @@ ApplicationWindow {
                 currentIndex: settingsTab
                 dirty: settingsModel ? settingsModel.dirty : false
                 onSectionActivated: (index) => settingsTab = index
+                onBackRequested: root.leaveSettings()
                 onSaveRequested: if (settingsModel) settingsModel.save()
 
                 // Polled rather than pushed: settings are written from around a
@@ -2529,66 +2808,146 @@ ApplicationWindow {
                 }
             }
 
-            Rectangle {
+            // ── The live call ────────────────────────────────────────────────
+            // At the foot of the sidebar whatever it shows, so the session and
+            // its controls never leave the screen.
+            VoiceDock {
+                id: voiceDock
                 Layout.fillWidth: true
-                height: Theme.touchTarget
-                color: Theme.bg0
+                Layout.preferredHeight: implicitHeight
+                visible: backend.voice_active
 
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.margins: Theme.spacingXs
-                    spacing: Theme.spacingXs
+                callState: backend.call_state
+                inRoom: backend.voice_in_room
+                contextName: backend.voice_in_room
+                    ? root.voiceRoomPath()
+                    : (root.activeCallPeerHandle() || chatPanel.selectedPeerName || qsTr("Call"))
+                connectionMode: backend.connection_mode
+                durationSecs: backend.call_duration_secs
+                unwatchedStreamers: root.unwatchedStreamers.map(function (s) { return s.name })
+                inviteNotice: root.trustInviteNotice
 
-                    Repeater {
-                        model: [
-                            { icon: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg", label: "Chat", index: 0 },
-                            { icon: "qrc:/qt/qml/DoubleSlash/Client/icons/gear.svg", label: "Settings", index: 2 }
-                        ]
-
-                        delegate: Item {
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            property bool active: navIndex === modelData.index
-
-                            Rectangle {
-                                anchors.fill: parent
-                                color: active ? Theme.selectedFill() : (navMouse.containsMouse ? Theme.bg3 : "transparent")
-                                Behavior on color { ColorAnimation { duration: Theme.animNormal } }
-
-                                Rectangle {
-                                    visible: active
-                                    anchors.left: parent.left
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: 3
-                                    height: parent.height - Theme.spacingSm
-                                    color: Theme.accent
-                                }
-                            }
-
-                            Image {
-                                anchors.centerIn: parent
-                                source: modelData.icon
-                                sourceSize.width: 20
-                                sourceSize.height: 20
-                                width: 20
-                                height: 20
-                                opacity: active ? 1.0 : 0.72
-                            }
-
-                            MouseArea {
-                                id: navMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                ToolTip.text: modelData.label
-                                ToolTip.visible: containsMouse
-                                onClicked: {
-                                    navIndex = modelData.index
-                                    if (modelData.index === 0) backend.clearUnread()
-                                }
-                            }
-                        }
+                onOpenSessionRequested: {
+                    if (backend.voice_in_room) {
+                        root.sidebarTab = 1
+                        root.openRoomFromTree(root.voiceSupernodeId, root.voiceRoomId, root.voiceRoomName)
+                    } else if (root.activeCallPeerId !== "") {
+                        root.sidebarTab = 0
+                        navIndex = 0
                     }
+                }
+                onWatchStreamersRequested: {
+                    var list = root.unwatchedStreamers
+                    for (var i = 0; i < list.length; i++)
+                        root.toggleVideoExpanded(list[i].id)
+                }
+
+                onEndCallRequested: {
+                    // Collapse expand/popout UI before the session ends so tiles
+                    // unregister and we do not keep a detached window on a stream
+                    // that is about to stop.
+                    root.closeAllVideoPopouts()
+                    root.expandedVideoPeers = []
+                    if (backend.voice_in_room) {
+                        backend.leaveRoom()
+                        // Stay on the room text panel when a text room is still selected.
+                        if (!roomPanel.roomId)
+                            navIndex = 0
+                    } else {
+                        backend.endCall()
+                    }
+                }
+                onMuteToggled: (m) => backend.setMuted(m)
+
+                videoOn: backend.video_active
+                shareAudioOn: backend.content_audio_active
+
+                videoSources: root.shareCaptureSources
+                videoSourceId: settingsModel.video_input_device
+                videoOverlaysJson: settingsModel.video_overlays_json
+                contentAudioMode: settingsModel.content_audio_mode
+
+                videoUnavailableReason: root.videoUnavailableReason
+                videoEncoderMissing: !root.videoEncoderAvailable
+
+                onShareOptionsOpened: root.refreshShareCaptureSources()
+                // Written straight to settings, so the menu and Settings › Video
+                // are two views of one choice rather than two choices that can
+                // disagree. Not saved here: the settings page's Save button owns
+                // that, exactly as the audio mode below has always worked.
+                onVideoSourceSelected: (sourceId) => settingsModel.video_input_device = sourceId
+                onVideoOverlaysEdited: (json) => settingsModel.video_overlays_json = json
+
+                /// Start sharing video, and the audio that belongs with it.
+                ///
+                /// Order matters: video creates the session clock, and the content
+                /// audio is timestamped against it. Starting audio first would
+                /// stamp it against a clock that does not exist yet.
+                onShareRequested: (audioMode) => {
+                    settingsModel.content_audio_mode = audioMode
+
+                    var got = backend.setVideoEnabled(
+                        true,
+                        settingsModel.video_input_device,
+                        settingsModel.video_quality,
+                        settingsModel.video_overlays_json,
+                        settingsModel.videoEncoderJson())
+                    if (!got) {
+                        console.warn("[video] could not start sharing")
+                        return
+                    }
+                    // Reflect our own state on our own row straight away; remote
+                    // members learn about it from the SfuVideoState announcement.
+                    // `public_id` is the exposed Q_PROPERTY — `my_public_id` is the
+                    // internal Rust field name and reads as undefined from QML.
+                    if (roomModel && roomModel.setVideoActive && backend.public_id) {
+                        roomModel.setVideoActive(backend.public_id, true)
+                        textRoomModel.setVideoActive(backend.public_id, true)
+                    }
+                    root.setPeerVideoActive(backend.public_id, true)
+
+                    if (audioMode === "off")
+                        return
+                    // Audio failing is not a reason to abandon the video that is
+                    // already running — the platform may simply have no loopback.
+                    var audioOk = backend.setContentAudioEnabled(
+                        true,
+                        settingsModel.video_input_device,
+                        audioMode)
+                    if (audioOk)
+                        return
+                    // "auto" on a camera resolves to no audio by design — your
+                    // microphone already carries you — so it is not a failure and
+                    // must not be logged as one, or the real failures below stop
+                    // being worth reading.
+                    var dev = settingsModel.video_input_device
+                    var isScreen = dev.indexOf("window:") === 0
+                        || dev.indexOf("monitor:") === 0
+                    if (audioMode === "auto" && !isScreen)
+                        return
+                    console.warn("[content-audio] sharing video without audio: "
+                        + "no capture endpoint for mode '" + audioMode + "'")
+                }
+
+                /// Stop both. Content audio cannot outlive the clock it is stamped
+                /// against, so it is stopped first and explicitly.
+                onStopShareRequested: {
+                    if (backend.content_audio_active)
+                        backend.setContentAudioEnabled(
+                            false,
+                            settingsModel.video_input_device,
+                            settingsModel.content_audio_mode)
+                    backend.setVideoEnabled(
+                        false,
+                        settingsModel.video_input_device,
+                        settingsModel.video_quality,
+                        settingsModel.video_overlays_json,
+                        settingsModel.videoEncoderJson())
+                    if (roomModel && roomModel.setVideoActive && backend.public_id) {
+                        roomModel.setVideoActive(backend.public_id, false)
+                        textRoomModel.setVideoActive(backend.public_id, false)
+                    }
+                    root.setPeerVideoActive(backend.public_id, false)
                 }
             }
         }
@@ -2715,6 +3074,7 @@ ApplicationWindow {
                     root.voiceRoomId = roomPanel.roomId
                 }
                 onOpenAttachment: (path) => root.showFilePreview(path)
+                onMembersRequested: root.revealRoomMembers(roomPanel.supernodeId, roomPanel.roomId)
             }
 
             // Full-size local media / document preview (images, video, PDF, …).
@@ -2816,177 +3176,6 @@ ApplicationWindow {
             }
         }  // end contentArea
 
-        // ── Right rail: the room's members and the voice controls ─────────
-        VoiceRail {
-            id: voiceRail
-            Layout.fillHeight: true
-            // Open while voice is live anywhere, and while a room is open with
-            // its member list shown — one column for both, never two.
-            readonly property bool showsRoom: navIndex === 1
-                && roomPanel.roomId !== ""
-                && roomPanel.membersOpen
-            Layout.preferredWidth: (backend.voice_active || showsRoom) ? 220 : 0
-            visible: Layout.preferredWidth > 0
-            clip: true
-
-            Behavior on Layout.preferredWidth {
-                NumberAnimation { duration: Theme.animFast; easing.type: Easing.InOutQuad }
-            }
-
-            // Direct calls have no videoActive model role, so the rail reads
-            // camera state from this map instead.
-            videoActivePeers: root.videoActivePeers
-
-            // The voice session's participants, for when no room is open.
-            participantModel: backend.voice_in_room
-                ? roomModel
-                : directCallModel
-            // The open room's whole roster, which the rail shows instead
-            // whenever a room is open.
-            roomView: showsRoom
-            memberModel: textRoomModel
-            roomId: roomPanel.roomId
-            voiceHere: roomPanel.voiceActiveHere
-            voiceActive: backend.voice_active
-            watchedPeers: root.watchedVideoPeers
-            inviteStates: root.trustInviteStates
-            inviteNotice: root.trustInviteNotice
-            onStopWatchingRequested: (pid) => root.stopWatchingVideo(pid)
-            onTrustInviteRequested: (pid) => root.sendTrustInvite(pid)
-            onMessagePeerRequested: function(listPeerId, name) {
-                if (!listPeerId)
-                    return
-                chatPanel.selectedPeerId = listPeerId
-                chatPanel.selectedPeerName = name
-                backend.selectPeer(listPeerId)
-                peerModel.setPeerUnread(listPeerId, 0)
-                sidebarTabBar.currentIndex = 0
-                navIndex = 0
-            }
-            contextName: backend.voice_in_room
-                ? root.voiceRoomName
-                : (root.activeCallPeerHandle() || chatPanel.selectedPeerName || chatPanel.selectedPeerId || "Call")
-            supernodeId: backend.voice_in_room ? root.voiceSupernodeId : ""
-            supernodeHandle: backend.voice_in_room
-                ? root.supernodeHandleFor(root.voiceSupernodeId)
-                : ""
-            callState: backend.call_state
-            inRoom: backend.voice_in_room
-            connectionMode: backend.connection_mode
-            durationSecs: backend.call_duration_secs
-
-            onEndCallRequested: {
-                // Collapse expand/popout UI before the session ends so tiles
-                // unregister and we do not keep a detached window on a stream
-                // that is about to stop.
-                root.closeAllVideoPopouts()
-                root.expandedVideoPeers = []
-                if (backend.voice_in_room) {
-                    backend.leaveRoom()
-                    // Stay on the room text panel when a text room is still selected.
-                    if (!roomPanel.roomId)
-                        navIndex = 0
-                } else {
-                    backend.endCall()
-                }
-            }
-            onMuteToggled: (m) => backend.setMuted(m)
-
-            videoOn: backend.video_active
-            shareAudioOn: backend.content_audio_active
-
-            videoSources: root.shareCaptureSources
-            videoSourceId: settingsModel.video_input_device
-            videoOverlaysJson: settingsModel.video_overlays_json
-            contentAudioMode: settingsModel.content_audio_mode
-
-            videoUnavailableReason: root.videoUnavailableReason
-            videoEncoderMissing: !root.videoEncoderAvailable
-
-            onShareOptionsOpened: root.refreshShareCaptureSources()
-            // Written straight to settings, so the menu and Settings › Video
-            // are two views of one choice rather than two choices that can
-            // disagree. Not saved here: the settings page's Save button owns
-            // that, exactly as the audio mode below has always worked.
-            onVideoSourceSelected: (sourceId) => settingsModel.video_input_device = sourceId
-            onVideoOverlaysEdited: (json) => settingsModel.video_overlays_json = json
-
-            /// Start sharing video, and the audio that belongs with it.
-            ///
-            /// Order matters: video creates the session clock, and the content
-            /// audio is timestamped against it. Starting audio first would
-            /// stamp it against a clock that does not exist yet.
-            onShareRequested: (audioMode) => {
-                settingsModel.content_audio_mode = audioMode
-
-                var got = backend.setVideoEnabled(
-                    true,
-                    settingsModel.video_input_device,
-                    settingsModel.video_quality,
-                    settingsModel.video_overlays_json,
-                    settingsModel.videoEncoderJson())
-                if (!got) {
-                    console.warn("[video] could not start sharing")
-                    return
-                }
-                // Reflect our own state on our own tile straight away; remote
-                // members learn about it from the SfuVideoState announcement.
-                // `public_id` is the exposed Q_PROPERTY — `my_public_id` is the
-                // internal Rust field name and reads as undefined from QML.
-                if (roomModel && roomModel.setVideoActive && backend.public_id) {
-                    roomModel.setVideoActive(backend.public_id, true)
-                    textRoomModel.setVideoActive(backend.public_id, true)
-                }
-                root.setPeerVideoActive(backend.public_id, true)
-
-                if (audioMode === "off")
-                    return
-                // Audio failing is not a reason to abandon the video that is
-                // already running — the platform may simply have no loopback.
-                var audioOk = backend.setContentAudioEnabled(
-                    true,
-                    settingsModel.video_input_device,
-                    audioMode)
-                if (audioOk)
-                    return
-                // "auto" on a camera resolves to no audio by design — your
-                // microphone already carries you — so it is not a failure and
-                // must not be logged as one, or the real failures below stop
-                // being worth reading.
-                var dev = settingsModel.video_input_device
-                var isScreen = dev.indexOf("window:") === 0
-                    || dev.indexOf("monitor:") === 0
-                if (audioMode === "auto" && !isScreen)
-                    return
-                console.warn("[content-audio] sharing video without audio: "
-                    + "no capture endpoint for mode '" + audioMode + "'")
-            }
-
-            /// Stop both. Content audio cannot outlive the clock it is stamped
-            /// against, so it is stopped first and explicitly.
-            onStopShareRequested: {
-                if (backend.content_audio_active)
-                    backend.setContentAudioEnabled(
-                        false,
-                        settingsModel.video_input_device,
-                        settingsModel.content_audio_mode)
-                backend.setVideoEnabled(
-                    false,
-                    settingsModel.video_input_device,
-                    settingsModel.video_quality,
-                    settingsModel.video_overlays_json,
-                    settingsModel.videoEncoderJson())
-                if (roomModel && roomModel.setVideoActive && backend.public_id) {
-                    roomModel.setVideoActive(backend.public_id, false)
-                    textRoomModel.setVideoActive(backend.public_id, false)
-                }
-                root.setPeerVideoActive(backend.public_id, false)
-            }
-
-            expandedPeers: root.expandedVideoPeers
-            onExpandVideoRequested: (pid) => root.toggleVideoExpanded(pid)
-            onPopoutVideoRequested: (pid) => root.popoutVideo(pid)
-        }
     }
 
     // ── System tray icon (port of client_desktop/taskbar_badge.py setup_tray) ─

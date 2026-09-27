@@ -162,6 +162,8 @@ pub struct ConnectionManager {
     /// Rooms already warned about an own-identity device without device
     /// routing (`ConnectionEvent::OwnDeviceOutdated`); cleared on recovery.
     outdated_own_device_rooms: HashSet<String>,
+    /// The own-device room snapshot waiting to go out, and when one last did.
+    own_room_sync: device_session::OwnRoomSync,
     device_calls: HashMap<String, device_calls::DeviceCall>,
     peer_store: Arc<RwLock<PeerStore>>,
 
@@ -555,6 +557,7 @@ impl ConnectionManager {
             room_device_rosters: HashMap::new(),
             own_room_key_rounds: HashMap::new(),
             outdated_own_device_rooms: HashSet::new(),
+            own_room_sync: device_session::OwnRoomSync::default(),
             device_calls: HashMap::new(),
             identity,
             peer_store,
@@ -1272,6 +1275,9 @@ impl ConnectionManager {
                         ConnectionCommand::AnnounceSpaceRoot { supernode_id, root_json } => {
                             self.send_space_root_announce(&supernode_id, &root_json).await;
                         }
+                        ConnectionCommand::SyncOwnRooms { snapshot, reply_wanted } => {
+                            self.queue_own_room_sync(snapshot, reply_wanted).await;
+                        }
                         ConnectionCommand::SendTyping { peer_id, is_typing } => {
                             self.send_typing(&peer_id, is_typing).await;
                         }
@@ -1623,6 +1629,7 @@ impl ConnectionManager {
                     self.retry_pending_group_keys().await;
                     self.retry_group_key_requests().await;
                     self.retry_own_room_key_sync().await;
+                    self.flush_own_room_sync().await;
                     self.expire_device_calls();
                     self.retry_device_call_selections().await;
                 }
