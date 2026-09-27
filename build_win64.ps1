@@ -183,6 +183,69 @@ function Move-BundleDirectory {
     }
 }
 
+# A watcher can hold dist\DoubleSlash, or a directory inside it, open. Renaming
+# that directory fails with access denied, while replacing the files inside it
+# still works. Park every entry that will move, then either rename the new
+# entry into place or mirror a pinned directory in place with robocopy.
+function Sync-BundleInPlace {
+    param(
+        [Parameter(Mandatory = $true)][string]$From,
+        [Parameter(Mandatory = $true)][string]$To,
+        [Parameter(Mandatory = $true)][string]$Retired
+    )
+    if (-not (Test-Path -LiteralPath $Retired)) {
+        New-Item -ItemType Directory -Path $Retired | Out-Null
+    }
+    $incoming = @(Get-ChildItem -LiteralPath $From -Force)
+    $kept = @{}
+    foreach ($item in $incoming) { $kept[$item.Name] = $true }
+    foreach ($item in $incoming) {
+        $dest = Join-Path $To $item.Name
+        $park = Join-Path $Retired $item.Name
+        $pinned = $false
+        if (Test-Path -LiteralPath $dest) {
+            try {
+                if ($item.PSIsContainer) {
+                    [System.IO.Directory]::Move($dest, $park)
+                } else {
+                    [System.IO.File]::Move($dest, $park)
+                }
+            } catch {
+                if (-not $item.PSIsContainer) { throw }
+                $pinned = $true
+                Write-Host "    [warn] $($item.Name) is open; updating the files inside it" -ForegroundColor Yellow
+                $_prevRobo = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                & robocopy.exe $item.FullName $dest /E /R:1 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+                $_roboExit = $LASTEXITCODE
+                $ErrorActionPreference = $_prevRobo
+                if ($_roboExit -ge 8) {
+                    throw "robocopy failed for $($item.Name) (exit $_roboExit)"
+                }
+            }
+        }
+        if ($pinned) { continue }
+        if ($item.PSIsContainer) {
+            [System.IO.Directory]::Move($item.FullName, $dest)
+        } else {
+            [System.IO.File]::Move($item.FullName, $dest)
+        }
+    }
+    foreach ($old in @(Get-ChildItem -LiteralPath $To -Force)) {
+        if ($kept.ContainsKey($old.Name)) { continue }
+        $park = Join-Path $Retired $old.Name
+        try {
+            if ($old.PSIsContainer) {
+                [System.IO.Directory]::Move($old.FullName, $park)
+            } else {
+                [System.IO.File]::Move($old.FullName, $park)
+            }
+        } catch {
+            Write-Host "    [warn] Left stale '$($old.Name)' in dist\DoubleSlash" -ForegroundColor Yellow
+        }
+    }
+}
+
 function Get-RetiredBundlePath {
     $base = Join-Path $DIST ".DoubleSlash.previous"
     if (-not (Test-Path -LiteralPath $base)) { return $base }
@@ -484,11 +547,26 @@ if ($_lockers.Count -gt 0) {
     Write-Host "    Archive will be built from staging. Close those processes and re-run to update dist\DoubleSlash\." -ForegroundColor Yellow
 } else {
     $_retired = Get-RetiredBundlePath
+    $_rootRenamed = $true
     if (Test-Path -LiteralPath $FINAL_BUNDLE) {
-        Move-BundleDirectory $FINAL_BUNDLE $_retired
+        try {
+            Move-BundleDirectory $FINAL_BUNDLE $_retired
+        } catch {
+            $_rootRenamed = $false
+            if (@(Get-BundleLockers $FINAL_BUNDLE).Count -gt 0) { throw }
+            Write-Host "    [warn] Could not rename dist\DoubleSlash because the directory is open." -ForegroundColor Yellow
+            Write-Host "           Updating the files inside it instead." -ForegroundColor Yellow
+        }
     }
     try {
-        Move-BundleDirectory $STAGING $FINAL_BUNDLE
+        if ($_rootRenamed) {
+            Move-BundleDirectory $STAGING $FINAL_BUNDLE
+        } else {
+            Sync-BundleInPlace -From $STAGING -To $FINAL_BUNDLE -Retired $_retired
+            if (Test-Path -LiteralPath $STAGING) {
+                Remove-Item -LiteralPath $STAGING -Force -Recurse -ErrorAction SilentlyContinue
+            }
+        }
     } catch {
         if ((Test-Path -LiteralPath $_retired) -and -not (Test-Path -LiteralPath $FINAL_BUNDLE)) {
             try { [System.IO.Directory]::Move($_retired, $FINAL_BUNDLE) } catch { }

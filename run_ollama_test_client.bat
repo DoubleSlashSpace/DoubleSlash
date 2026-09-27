@@ -19,14 +19,18 @@ set "SETTINGS=%DOUBLESLASH_HOME%\settings.json"
 set "LOG_DIR=%DOUBLESLASH_HOME%\logs"
 set "LOG_FILE=%LOG_DIR%\doubleslash-client.log"
 
-:: Prefer a freshly built binary (release, then debug), then the packaged dist client.
+:: Same binary choice as run_client.bat: the package carries Qt beside the exe.
+set "DIST_BIN=%ROOT%dist\DoubleSlash\DoubleSlash.exe"
 set "RELEASE_BIN=%ROOT%rust\target\release\doubleslash-client.exe"
 set "DEBUG_BIN=%ROOT%rust\target\debug\doubleslash-client.exe"
-set "DIST_BIN=%ROOT%dist\DoubleSlash\DoubleSlash.exe"
 set "BINARY="
 set "BINARY_KIND="
 set "USE_DEBUG=0"
-if exist "%RELEASE_BIN%" (
+if exist "%DIST_BIN%" (
+    set "BINARY=%DIST_BIN%"
+    set "BINARY_KIND=dist package"
+    set "USE_DEBUG=0"
+) else if exist "%RELEASE_BIN%" (
     set "BINARY=%RELEASE_BIN%"
     set "BINARY_KIND=release (rust\target\release)"
     set "USE_DEBUG=1"
@@ -34,10 +38,6 @@ if exist "%RELEASE_BIN%" (
     set "BINARY=%DEBUG_BIN%"
     set "BINARY_KIND=debug (rust\target\debug)"
     set "USE_DEBUG=1"
-) else if exist "%DIST_BIN%" (
-    set "BINARY=%DIST_BIN%"
-    set "BINARY_KIND=dist package"
-    set "USE_DEBUG=0"
 )
 
 :: Prefer verbose client logs for AI debugging (overrides settings when set).
@@ -50,8 +50,9 @@ if not defined RUST_LOG set "RUST_LOG=doubleslash_client=debug,warn"
 if not defined BINARY (
     echo DoubleSlash client binary not found.
     echo Tried:
-    echo   %DEBUG_BIN%
     echo   %DIST_BIN%
+    echo   %RELEASE_BIN%
+    echo   %DEBUG_BIN%
     echo.
     echo Build with:
     echo   cd rust\doubleslash-client
@@ -61,14 +62,12 @@ if not defined BINARY (
 )
 
 :: Debug builds need Qt on PATH; dist is self-contained.
-if "%USE_DEBUG%"=="1" (
-    if defined QT_DIR (
-        set "PATH=%QT_DIR%\bin;%PATH%"
-    ) else if exist "C:\Qt\6.8.3\msvc2022_64\bin\NUL" (
-        set "PATH=C:\Qt\6.8.3\msvc2022_64\bin;%PATH%"
-        set "QT_DIR=C:\Qt\6.8.3\msvc2022_64"
-    )
-)
+:: Keep this assignment outside parentheses: PATH contains ")" and would
+:: truncate the block, leaving the PortableApps Qt first.
+if "%USE_DEBUG%"=="0" goto :have_path
+if not defined QT_DIR set "QT_DIR=C:\Qt\6.8.3\msvc2022_64"
+if exist "%QT_DIR%\bin\Qt6Core.dll" set "PATH=%QT_DIR%\bin;%PATH%"
+:have_path
 
 if not exist "%DOUBLESLASH_HOME%\NUL" mkdir "%DOUBLESLASH_HOME%"
 if not exist "%LOG_DIR%\NUL" mkdir "%LOG_DIR%"
