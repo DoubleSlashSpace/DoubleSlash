@@ -2797,6 +2797,18 @@ impl SupernodeHandler {
             .and_then(|v| v.as_str())
             .unwrap_or(sfu::DEFAULT_ROOM_ID);
 
+        // Clients send a voice leave to every cluster member, and only the node
+        // holding this endpoint's join has anything to undo. Elsewhere it would
+        // announce a departure that never happened, which rotates the room key,
+        // and the relay leave below drops the endpoint's relay room whichever
+        // room that is.
+        if !sfu
+            .read()
+            .is_endpoint_in_voice(&msg.sender, msg.source_device, room_id)
+        {
+            return;
+        }
+
         let remaining = if msg.source_device.is_some() {
             sfu.write()
                 .leave_room_endpoint(&msg.sender, msg.source_device, room_id)

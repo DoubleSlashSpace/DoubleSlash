@@ -628,6 +628,23 @@ impl SFURoomManager {
         }
     }
 
+    /// Whether this endpoint of `peer_id` is in `room_id`'s voice on this node.
+    /// Another device of the same identity does not count.
+    pub fn is_endpoint_in_voice(
+        &self,
+        peer_id: &str,
+        device: Option<DeviceId>,
+        room_id: &str,
+    ) -> bool {
+        self.rooms
+            .get(room_id)
+            .and_then(|room| {
+                room.device_members
+                    .get(&(normalize_peer_id(peer_id), device))
+            })
+            .is_some_and(|membership| membership.voice)
+    }
+
     /// Leave a room. Returns remaining member list.
     pub fn leave_room(&mut self, peer_id: &str, room_id: &str) -> Vec<String> {
         self.leave_room_endpoint(peer_id, None, room_id)
@@ -993,6 +1010,28 @@ pub struct SFURoomStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A leave is acted on only where this device joined, so a text
+    /// subscriber, a sibling device and an unknown room all read false.
+    #[test]
+    fn voice_membership_is_per_endpoint_and_room() {
+        let mut manager = SFURoomManager::new();
+        let desktop = Some(DeviceId([1; 32]));
+        let phone = Some(DeviceId([2; 32]));
+        let owner = crate::crypto::b64url_encode(&[8; 32]);
+        let padded = format!("{owner}=");
+
+        assert!(manager.subscribe_endpoint(&owner, desktop, DEFAULT_ROOM_ID));
+        assert!(!manager.is_endpoint_in_voice(&owner, desktop, DEFAULT_ROOM_ID));
+
+        assert!(manager.join_room_endpoint(&owner, phone, DEFAULT_ROOM_ID).0);
+        assert!(manager.is_endpoint_in_voice(&padded, phone, DEFAULT_ROOM_ID));
+        assert!(!manager.is_endpoint_in_voice(&owner, desktop, DEFAULT_ROOM_ID));
+        assert!(!manager.is_endpoint_in_voice(&owner, phone, "absent"));
+
+        manager.leave_room_endpoint(&owner, phone, DEFAULT_ROOM_ID);
+        assert!(!manager.is_endpoint_in_voice(&owner, phone, DEFAULT_ROOM_ID));
+    }
 
     #[test]
     fn same_identity_devices_keep_independent_voice_and_text_membership() {
