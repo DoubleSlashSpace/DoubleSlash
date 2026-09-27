@@ -36,6 +36,13 @@ class MemberListTest {
     }
 
     @Test
+    fun `a room invite can be bound to a person, not a block or a node`() {
+        val revoked = Peer(peerId = "revoked", identityPub = "UmV2b2tlZA", revoked = true)
+        val contacts = (state.peers + revoked).inviteContacts()
+        assertEquals(listOf(friend), contacts)
+    }
+
+    @Test
     fun `blocked peers, supernodes and strangers are not trusted`() {
         assertNull(state.trustedPeer("QmxvY2tlZA"))
         assertNull(state.trustedPeer("Tm9kZQ"))

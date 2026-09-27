@@ -183,7 +183,10 @@ read.
   `room.chat.send`, `room.history`, `room.request_list`, `room.voice.join`,
   `room.voice.leave`, `room.invite`. `room.create` takes an optional
   `parent_room_id`. A shareable link carries a Space inclusion proof and no
-  grant; per-peer grants (`generateRoomInviteForPeer`) are not wired.
+  grant. `room.invite` with `peer_id` adds an owner-signed SpaceGrant for that
+  contact, the same link the desktop's `generateRoomInviteForPeer` copies.
+  Press and hold a room for Join Voice Room, Copy Room Invite, and Invite
+  Contact to Room.
 
   Creation was not just a missing command. Nothing else on Android writes to
   the room store — the rooms a phone lists were persisted by a desktop client

@@ -61,11 +61,11 @@ TestCase {
         var rows = RoomTree.rows(sample(), "n", true,
                                  ctx({ collapsed: opened("lobby", "gaming", "raid", "strat") }))
         compare(kinds(rows), [
-            "room:lobby", "group:lobby:voice", "member:mara", "member:theo",
-            "group:lobby:text", "member:jonah",
             "room:gaming",
             "room:raid", "group:raid:voice", "member:sam",
-            "room:strat", "group:strat:voice", "member:ade"
+            "room:strat", "group:strat:voice", "member:ade",
+            "room:lobby", "group:lobby:voice", "member:mara", "member:theo",
+            "group:lobby:text", "member:jonah"
         ])
     }
 
@@ -166,19 +166,29 @@ TestCase {
 
     function test_rooms_start_collapsed_with_voice_and_text_counts() {
         var rows = RoomTree.rows(sample(), "n", true, ctx())
-        compare(kinds(rows), ["room:lobby", "room:gaming", "room:raid", "room:strat"])
-        verify(rows[0].collapsed)
-        compare(rows[0].subtree_voice, 2)
-        compare(rows[0].room_chat, 1)
-        compare(rows[0].stack_ids, ["mara", "theo"])
+        compare(kinds(rows), ["room:gaming", "room:raid", "room:strat", "room:lobby"])
+        function room(id) {
+            for (var i = 0; i < rows.length; i++)
+                if (rows[i].row_kind === "room" && rows[i].room_id === id)
+                    return rows[i]
+            return null
+        }
+        var lobby = room("lobby")
+        verify(lobby.collapsed)
+        compare(lobby.subtree_voice, 2)
+        compare(lobby.room_chat, 1)
+        compare(lobby.stack_ids, ["mara", "theo"])
         // Gaming has nobody of its own: it is the row its sub-rooms hang from.
-        verify(!rows[1].has_children)
-        compare(rows[1].subtree_voice, 0)
-        verify(rows[2].collapsed)
-        compare(rows[2].subtree_voice, 1)
-        compare(rows[2].room_chat, 0)
-        verify(rows[3].collapsed)
-        compare(rows[3].subtree_voice, 1)
+        var gaming = room("gaming")
+        verify(!gaming.has_children)
+        compare(gaming.subtree_voice, 0)
+        var raid = room("raid")
+        verify(raid.collapsed)
+        compare(raid.subtree_voice, 1)
+        compare(raid.room_chat, 0)
+        var strat = room("strat")
+        verify(strat.collapsed)
+        compare(strat.subtree_voice, 1)
     }
 
     function test_voice_room_shows_voice_and_text_people_together() {
@@ -187,11 +197,11 @@ TestCase {
         var rows = RoomTree.rows(rooms, "n", true,
                                  ctx({ voiceNode: "n", voiceRoom: "raid" }))
         compare(kinds(rows), [
-            "room:lobby",
             "room:gaming",
             "room:raid", "group:raid:voice", "session:raid",
             "group:raid:text", "member:nia",
-            "room:strat"
+            "room:strat",
+            "room:lobby"
         ])
         var k = kinds(rows)
         verify(rows[k.indexOf("room:lobby")].collapsed)
@@ -283,5 +293,65 @@ TestCase {
         compare(rows.filter(function (r) { return r.row_kind === "room" }).length, 2)
         var folded = RoomTree.rows(rooms, "n", true, ctx())
         compare(folded.filter(function (r) { return r.row_kind === "room" }).length, 2)
+    }
+
+    function roomIds(rows) {
+        return rows.filter(function (r) { return r.row_kind === "room" })
+            .map(function (r) { return r.room_id })
+    }
+
+    function test_sort_by_name_and_by_people() {
+        var desc = RoomTree.rows(sample(), "n", true, ctx({ order: { mode: "name_desc" } }))
+        compare(roomIds(desc), ["lobby", "gaming", "raid", "strat"])
+        // Lobby has three people and Gaming has none, so the roots swap.
+        var most = RoomTree.rows(sample(), "n", true, ctx({ order: { mode: "peers_desc" } }))
+        compare(roomIds(most), ["lobby", "gaming", "raid", "strat"])
+        var fewest = RoomTree.rows(sample(), "n", true, ctx({ order: { mode: "peers_asc" } }))
+        compare(roomIds(fewest), ["gaming", "raid", "strat", "lobby"])
+        var rooms = sample()
+        rooms.push({
+            room_id: "chill", name: "Chill", parent_id: "gaming",
+            voice_members: [member("a"), member("b"), member("c")]
+        })
+        var under = RoomTree.rows(rooms, "n", true, ctx({ order: { mode: "peers_desc" } }))
+        var ids = roomIds(under)
+        verify(ids.indexOf("chill") < ids.indexOf("raid"))
+        verify(ids.indexOf("chill") > ids.indexOf("gaming"))
+    }
+
+    function test_natural_order_pins_and_manual() {
+        var numbered = [
+            { room_id: "r10", name: "Room 10", parent_id: "" },
+            { room_id: "r2", name: "Room 2", parent_id: "" },
+            { room_id: "r1", name: "Room 1", parent_id: "" }
+        ]
+        compare(roomIds(RoomTree.rows(numbered, "n", true, ctx())), ["r1", "r2", "r10"])
+
+        var pinned = RoomTree.togglePin({ mode: "name_asc" }, "n:lobby")
+        compare(pinned.pinned, ["n:lobby"])
+        compare(roomIds(RoomTree.rows(sample(), "n", true, ctx({ order: pinned })))[0], "lobby")
+        // A pinned sub-room stays under its parent.
+        var pinStrat = RoomTree.togglePin({}, "n:strat")
+        compare(roomIds(RoomTree.rows(sample(), "n", true, ctx({ order: pinStrat }))),
+                ["gaming", "raid", "strat", "lobby"])
+        compare(RoomTree.canMove(sample(), "n", "lobby", 1, pinned), false)
+
+        var manual = RoomTree.withMode({}, "manual", [{ nodeId: "n", rooms: sample() }])
+        compare(manual.mode, "manual")
+        compare(manual.manual, ["n:gaming", "n:raid", "n:strat", "n:lobby"])
+        var kept = RoomTree.withMode(
+            { mode: "name_desc", manual: ["n:lobby"] }, "manual",
+            [{ nodeId: "n", rooms: sample() }])
+        compare(kept.manual, ["n:lobby"])
+        var moved = RoomTree.moveRoom(sample(), "n", "lobby", -1, manual)
+        verify(moved.manual.indexOf("n:lobby") < moved.manual.indexOf("n:gaming"))
+        compare(RoomTree.canMove(sample(), "n", "lobby", -1, manual), true)
+        compare(RoomTree.canMove(sample(), "n", "gaming", -1, manual), false)
+
+        var both = RoomTree.togglePin(RoomTree.togglePin({}, "n:gaming"), "n:lobby")
+        // The room pinned last is first.
+        compare(both.pinned[0], "n:lobby")
+        var swapped = RoomTree.moveRoom(sample(), "n", "gaming", -1, both)
+        compare(swapped.pinned[0], "n:gaming")
     }
 }

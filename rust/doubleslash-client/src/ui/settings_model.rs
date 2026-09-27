@@ -120,6 +120,11 @@ pub mod ffi {
         /// JSON both clients read (`{"v":1,"name":…,"base":…,"colors":{…}}`).
         /// Empty means the built-in palette.
         #[qproperty(QString, skin_json)]
+        /// Rooms list order, shared in shape with the phone:
+        /// `{"mode":"name_asc"|"name_desc"|"peers_asc"|"peers_desc"|"manual","pinned":["node:room"],"manual":["node:room"]}`.
+        /// Pinned rooms stay first among their siblings. Manual is used only
+        /// while `mode` is `manual`.
+        #[qproperty(QString, room_list_order_json)]
         /// Allow relay-gated (non-direct) connections.
         #[qproperty(bool, relay_allow_gated)]
         /// Auto-renew relay tickets before they expire.
@@ -321,6 +326,10 @@ struct SettingsSnapshot {
     theme: String,
     #[serde(default)]
     skin_json: String,
+    /// See the `room_list_order_json` qproperty. Missing on older files, so
+    /// the default is name A–Z with nothing pinned.
+    #[serde(default = "default_room_list_order")]
+    room_list_order_json: String,
     #[serde(default = "default_true")]
     relay_allow_gated: bool,
     #[serde(default = "default_true")]
@@ -428,6 +437,9 @@ fn default_voice_bitrate() -> String {
 fn default_theme() -> String {
     "dark".to_string()
 }
+fn default_room_list_order() -> String {
+    r#"{"mode":"name_asc","pinned":[],"manual":[]}"#.to_string()
+}
 fn default_attestation_policy() -> String {
     "warn".to_string()
 }
@@ -482,6 +494,7 @@ impl Default for SettingsSnapshot {
             noise_strength: default_noise_strength(),
             theme: default_theme(),
             skin_json: String::new(),
+            room_list_order_json: default_room_list_order(),
             relay_allow_gated: true,
             relay_auto_renew: true,
             upnp_enabled: true,
@@ -562,6 +575,7 @@ pub struct SettingsModelRust {
     noise_strength: QString,
     theme: QString,
     skin_json: QString,
+    room_list_order_json: QString,
     relay_allow_gated: bool,
     relay_auto_renew: bool,
     upnp_enabled: bool,
@@ -639,6 +653,7 @@ impl Default for SettingsModelRust {
             noise_strength: QString::from(s.noise_strength.as_str()),
             theme: QString::from(s.theme.as_str()),
             skin_json: QString::from(s.skin_json.as_str()),
+            room_list_order_json: QString::from(s.room_list_order_json.as_str()),
             relay_allow_gated: s.relay_allow_gated,
             relay_auto_renew: s.relay_auto_renew,
             upnp_enabled: s.upnp_enabled,
@@ -808,6 +823,7 @@ impl ffi::SettingsModel {
             noise_strength: r.noise_strength.to_string(),
             theme: r.theme.to_string(),
             skin_json: r.skin_json.to_string(),
+            room_list_order_json: r.room_list_order_json.to_string(),
             relay_allow_gated: r.relay_allow_gated,
             relay_auto_renew: r.relay_auto_renew,
             upnp_enabled: r.upnp_enabled,
@@ -1061,6 +1077,8 @@ impl ffi::SettingsModel {
         self.as_mut().set_theme(QString::from(snap.theme.as_str()));
         self.as_mut()
             .set_skin_json(QString::from(snap.skin_json.as_str()));
+        self.as_mut()
+            .set_room_list_order_json(QString::from(snap.room_list_order_json.as_str()));
         self.as_mut().set_relay_allow_gated(snap.relay_allow_gated);
         self.as_mut().set_relay_auto_renew(snap.relay_auto_renew);
         self.as_mut().set_upnp_enabled(snap.upnp_enabled);
@@ -1083,6 +1101,14 @@ impl ffi::SettingsModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn room_list_order_defaults_to_name_ascending() {
+        assert_eq!(
+            SettingsSnapshot::default().room_list_order_json,
+            r#"{"mode":"name_asc","pinned":[],"manual":[]}"#
+        );
+    }
 
     #[test]
     fn a_resolution_setting_parses_into_dimensions() {

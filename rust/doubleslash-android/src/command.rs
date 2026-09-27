@@ -856,6 +856,22 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
             };
 
             let (space_root, space_proof) = space_invite_fields(session, supernode_id, room_id);
+            // Naming a contact binds an owner-signed SpaceGrant to their
+            // identity, the same link the desktop's "Invite Contact to Room"
+            // copies. A shareable link leaves this empty.
+            let space_grant = {
+                let rooms = session.room_store.read();
+                let peers = session.peer_store.read();
+                space_grant_field(
+                    &session.identity,
+                    &session.my_public_id,
+                    &rooms,
+                    &peers,
+                    supernode_id,
+                    room_id,
+                    arg_str(&parsed, "peer_id").unwrap_or(""),
+                )
+            };
 
             let (reply_tx, reply_rx) = std_mpsc::channel();
             let queued_ok = session.send(ConnectionCommand::GenerateRoomInvite {
@@ -870,7 +886,7 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                 invite_token: entry.invite_token.clone(),
                 space_root,
                 space_proof,
-                space_grant: String::new(),
+                space_grant,
                 reply_tx,
             });
             if !queued_ok {
@@ -1366,6 +1382,42 @@ fn space_invite_fields(session: &Session, supernode_id: &str, room_id: &str) -> 
         serde_json::to_string(&root).unwrap_or_default(),
         serde_json::to_string(&proof).unwrap_or_default(),
     )
+}
+
+/// Owner-signed [`SpaceGrant`] JSON admitting `peer_id` to `room_id`.
+///
+/// `peer_id` may be the hex peer-store key or an identity already. An id that
+/// is not in the store is used as the grantee key itself. Empty when no
+/// contact was named, that key is empty, or this device does not own the
+/// room's Space — the invite then stays the shareable, token-gated link.
+fn space_grant_field(
+    identity: &doubleslash_client::identity::Identity,
+    my_public_id: &str,
+    room_store: &doubleslash_client::room_store::RoomStore,
+    peer_store: &doubleslash_client::peer_store::PeerStore,
+    supernode_id: &str,
+    room_id: &str,
+    peer_id: &str,
+) -> String {
+    if peer_id.is_empty() {
+        return String::new();
+    }
+    let grantee = peer_store
+        .get(peer_id)
+        .or_else(|| peer_store.get_by_identity(peer_id))
+        .map(|record| record.identity_pub.clone())
+        .filter(|public_id| !public_id.is_empty())
+        .unwrap_or_else(|| peer_id.to_owned());
+    if grantee.is_empty() {
+        return String::new();
+    }
+    let space_id =
+        doubleslash_client::room_store::RoomStore::space_id_for(my_public_id, supernode_id);
+    let Some(space) = room_store.get_space(&space_id) else {
+        return String::new();
+    };
+    let grant = space.grant(room_id, &grantee, 0, |bytes| identity.sign(bytes));
+    serde_json::to_string(&grant).unwrap_or_default()
 }
 
 /// Advertise a file to a room, echoing it into the room's history.
@@ -1927,5 +1979,95 @@ mod tests {
         assert_eq!(arg_str(&v, "a"), Some("x"));
         assert_eq!(arg_str(&v, "b"), None);
         assert_eq!(arg_str(&v, "missing"), None);
+    }
+
+    /// A contact invite carries a grant bound to that peer's identity. A link
+    /// with no contact, or for a Space we do not own, stays grant-free.
+    #[test]
+    fn a_named_peer_gets_an_owner_signed_space_grant() {
+        use doubleslash_client::identity::Identity;
+        use doubleslash_client::peer_store::{PeerRecord, PeerStore};
+        use doubleslash_client::room_store::{RoomEntry, RoomStore};
+
+        let dir = std::env::temp_dir().join(format!(
+            "doubleslash-android-grant-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let identity = Identity::generate();
+        let mut rooms = RoomStore::open(&identity, Some(&dir.join("rooms.dat"))).unwrap();
+        rooms
+            .add(RoomEntry::new("room-1", "Lobby").with_supernode("sn-a"))
+            .unwrap();
+        rooms
+            .adopt_room_into_space(
+                &identity.public_id(),
+                "sn-a",
+                "room-1",
+                "Lobby",
+                "public",
+                "",
+                1,
+                |bytes| identity.sign(bytes),
+            )
+            .unwrap();
+        let mut peers = PeerStore::open(&identity, Some(&dir.join("peers.dat"))).unwrap();
+        peers.upsert(PeerRecord {
+            peer_id: "aabb".to_owned(),
+            identity_pub: "GranteePub".to_owned(),
+            ..Default::default()
+        });
+
+        let grant = space_grant_field(
+            &identity,
+            &identity.public_id(),
+            &rooms,
+            &peers,
+            "sn-a",
+            "room-1",
+            "aabb",
+        );
+        let parsed: Value = serde_json::from_str(&grant).unwrap();
+        assert_eq!(parsed["grantee_pub"], "GranteePub");
+        assert_eq!(parsed["node_id"], "room-1");
+        assert_eq!(parsed["expires_at"], 0);
+        assert!(!parsed["signature"].as_str().unwrap_or("").is_empty());
+
+        let raw = space_grant_field(
+            &identity,
+            &identity.public_id(),
+            &rooms,
+            &peers,
+            "sn-a",
+            "room-1",
+            "not-in-the-store",
+        );
+        let raw_parsed: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(raw_parsed["grantee_pub"], "not-in-the-store");
+
+        assert!(space_grant_field(
+            &identity,
+            &identity.public_id(),
+            &rooms,
+            &peers,
+            "sn-a",
+            "room-1",
+            "",
+        )
+        .is_empty());
+        assert!(
+            space_grant_field(
+                &identity,
+                &identity.public_id(),
+                &rooms,
+                &peers,
+                "other-node",
+                "room-1",
+                "aabb",
+            )
+            .is_empty(),
+            "a node whose Space we do not own stays a shareable link"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

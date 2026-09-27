@@ -41,6 +41,348 @@ QtObject {
         return out
     }
 
+    // How sibling rooms are ordered. The phone stores the same JSON.
+    //
+    // `mode` is name_asc (default), name_desc, peers_asc, peers_desc, or
+    // manual. `pinned` room keys (`nodeId:roomId`) stay first among their
+    // siblings, in the order they were pinned. `manual` is that same key
+    // order, used only while mode is manual. A pin does not pull a sub-room
+    // out from under its parent.
+    function normalizeMode(mode) {
+        if (mode === "name_desc" || mode === "peers_asc" || mode === "peers_desc" || mode === "manual")
+            return mode
+        return "name_asc"
+    }
+
+    function asKeyList(value) {
+        if (!value || typeof value.length !== "number")
+            return []
+        var out = []
+        for (var i = 0; i < value.length; i++)
+            if (typeof value[i] === "string" && value[i] !== "")
+                out.push(value[i])
+        return out
+    }
+
+    function normalizeOrder(order) {
+        var src = order || {}
+        return {
+            mode: root.normalizeMode(src.mode),
+            pinned: root.asKeyList(src.pinned),
+            manual: root.asKeyList(src.manual)
+        }
+    }
+
+    function sortMode(order) {
+        return root.normalizeOrder(order).mode
+    }
+
+    function isPinned(order, key) {
+        return root.indexIn(root.normalizeOrder(order).pinned, key) !== -1
+    }
+
+    function indexIn(list, key) {
+        for (var i = 0; i < list.length; i++)
+            if (list[i] === key)
+                return i
+        return -1
+    }
+
+    // Case-insensitive, and "Room 2" before "Room 10". The phone uses the
+    // same split so the two lists agree.
+    function compareAlphanumeric(a, b) {
+        var left = String(a || "").toLowerCase()
+        var right = String(b || "").toLowerCase()
+        var i = 0
+        var j = 0
+        function digit(s, at) {
+            var c = s.charAt(at)
+            return c >= "0" && c <= "9"
+        }
+        function trimZeros(s) {
+            var k = 0
+            while (k < s.length - 1 && s.charAt(k) === "0")
+                k++
+            return s.substring(k)
+        }
+        while (i < left.length && j < right.length) {
+            var aDigit = digit(left, i)
+            var bDigit = digit(right, j)
+            if (aDigit && bDigit) {
+                var iStart = i
+                var jStart = j
+                while (i < left.length && digit(left, i))
+                    i++
+                while (j < right.length && digit(right, j))
+                    j++
+                var aNum = trimZeros(left.substring(iStart, i))
+                var bNum = trimZeros(right.substring(jStart, j))
+                if (aNum.length !== bNum.length)
+                    return aNum.length < bNum.length ? -1 : 1
+                if (aNum !== bNum)
+                    return aNum < bNum ? -1 : 1
+            } else {
+                if (left.charAt(i) !== right.charAt(j))
+                    return left.charAt(i) < right.charAt(j) ? -1 : 1
+                i++
+                j++
+            }
+        }
+        if (left.length === right.length)
+            return 0
+        return left.length < right.length ? -1 : 1
+    }
+
+    function roomLabel(room) {
+        var name = room && room.name
+        if (name === undefined || name === null || String(name) === "")
+            return String(room && room.room_id || "")
+        return String(name)
+    }
+
+    /// Voice members plus text-only members. A list the bridge has not sent
+    /// yet counts as nobody, the same as an empty roster.
+    function peerCount(room) {
+        var voice = root.memberList(room && room.voice_members)
+        var text = root.memberList(room && room.text_members)
+        return (voice ? voice.length : 0) + (text ? text.length : 0)
+    }
+
+    function compareRooms(a, b, nodeId, order) {
+        var o = root.normalizeOrder(order)
+        var ka = nodeId + ":" + (a && a.room_id || "")
+        var kb = nodeId + ":" + (b && b.room_id || "")
+        var pa = root.indexIn(o.pinned, ka)
+        var pb = root.indexIn(o.pinned, kb)
+        if ((pa !== -1) !== (pb !== -1))
+            return pa !== -1 ? -1 : 1
+        if (pa !== -1 && pb !== -1 && pa !== pb)
+            return pa - pb
+        if (o.mode === "manual") {
+            var ma = root.indexIn(o.manual, ka)
+            var mb = root.indexIn(o.manual, kb)
+            if (ma < 0) ma = 1000000000
+            if (mb < 0) mb = 1000000000
+            if (ma !== mb)
+                return ma - mb
+        } else if (o.mode === "peers_asc" || o.mode === "peers_desc") {
+            var diff = root.peerCount(a) - root.peerCount(b)
+            if (diff !== 0)
+                return o.mode === "peers_asc" ? diff : -diff
+        } else if (o.mode === "name_desc") {
+            var desc = root.compareAlphanumeric(root.roomLabel(b), root.roomLabel(a))
+            if (desc !== 0)
+                return desc
+            return root.compareAlphanumeric(b && b.room_id, a && a.room_id)
+        }
+        var asc = root.compareAlphanumeric(root.roomLabel(a), root.roomLabel(b))
+        if (asc !== 0)
+            return asc
+        return root.compareAlphanumeric(a && a.room_id, b && b.room_id)
+    }
+
+    /// Roots, each parent's children, and rooms a cycle kept out of both.
+    function partition(rooms) {
+        var byId = {}
+        var childrenOf = {}
+        var roots = []
+        var i
+        if (!Array.isArray(rooms))
+            return { childrenOf: childrenOf, roots: roots, tail: [] }
+        for (i = 0; i < rooms.length; i++)
+            if (rooms[i] && rooms[i].room_id)
+                byId[rooms[i].room_id] = rooms[i]
+        for (i = 0; i < rooms.length; i++) {
+            var r = rooms[i]
+            if (!r || !r.room_id)
+                continue
+            var pid = r.parent_id || ""
+            if (pid !== "" && pid !== r.room_id && byId.hasOwnProperty(pid)) {
+                if (!childrenOf[pid])
+                    childrenOf[pid] = []
+                childrenOf[pid].push(r)
+            } else {
+                roots.push(r)
+            }
+        }
+        var seen = {}
+        function walk(room) {
+            if (!room || seen[room.room_id])
+                return
+            seen[room.room_id] = true
+            var kids = childrenOf[room.room_id] || []
+            for (var k = 0; k < kids.length; k++)
+                walk(kids[k])
+        }
+        for (i = 0; i < roots.length; i++)
+            walk(roots[i])
+        var tail = []
+        for (i = 0; i < rooms.length; i++)
+            if (rooms[i] && rooms[i].room_id && !seen[rooms[i].room_id])
+                tail.push(rooms[i])
+        return { childrenOf: childrenOf, roots: roots, tail: tail }
+    }
+
+    function siblingGroup(rooms, roomId) {
+        var part = root.partition(rooms)
+        var i
+        for (i = 0; i < part.tail.length; i++)
+            if (part.tail[i].room_id === roomId)
+                return part.tail
+        for (i = 0; i < part.roots.length; i++)
+            if (part.roots[i].room_id === roomId)
+                return part.roots
+        for (var pid in part.childrenOf) {
+            if (!part.childrenOf.hasOwnProperty(pid))
+                continue
+            var list = part.childrenOf[pid]
+            for (i = 0; i < list.length; i++)
+                if (list[i].room_id === roomId)
+                    return list
+        }
+        return []
+    }
+
+    function roomKeysInOrder(rooms, nodeId, order) {
+        var rows = root.rows(rooms, nodeId, true, {
+            collapsed: {}, leaves: {}, overflow: {},
+            selectedNode: "", selectedRoom: "",
+            voiceNode: "", voiceRoom: "",
+            limit: 8,
+            order: order
+        })
+        var keys = []
+        for (var i = 0; i < rows.length; i++)
+            if (rows[i].row_kind === "room")
+                keys.push(nodeId + ":" + rows[i].room_id)
+        return keys
+    }
+
+    /// Switch mode. The first time manual is chosen, freeze the order on screen.
+    function withMode(order, mode, groups) {
+        var o = root.normalizeOrder(order)
+        var nextMode = root.normalizeMode(mode)
+        var manual = o.manual.slice()
+        if (nextMode === "manual" && manual.length === 0 && groups && groups.length) {
+            for (var g = 0; g < groups.length; g++) {
+                var group = groups[g]
+                if (!group || !group.nodeId)
+                    continue
+                var keys = root.roomKeysInOrder(group.rooms, group.nodeId, o)
+                for (var i = 0; i < keys.length; i++)
+                    manual.push(keys[i])
+            }
+        }
+        return { mode: nextMode, pinned: o.pinned.slice(), manual: manual }
+    }
+
+    function togglePin(order, key) {
+        var o = root.normalizeOrder(order)
+        var pinned = o.pinned.slice()
+        var at = root.indexIn(pinned, key)
+        if (at === -1)
+            pinned.unshift(key)
+        else
+            pinned.splice(at, 1)
+        return { mode: o.mode, pinned: pinned, manual: o.manual.slice() }
+    }
+
+    function relocate(list, key, neighborKey, after) {
+        var next = []
+        var i
+        for (i = 0; i < list.length; i++)
+            if (list[i] !== key)
+                next.push(list[i])
+        var at = -1
+        for (i = 0; i < next.length; i++) {
+            if (next[i] === neighborKey) {
+                at = i
+                break
+            }
+        }
+        if (at < 0)
+            return list.slice()
+        next.splice(after ? at + 1 : at, 0, key)
+        return next
+    }
+
+    function placeMissing(manual, rooms, nodeId, order) {
+        var keys = root.roomKeysInOrder(rooms, nodeId, order)
+        var next = manual.slice()
+        var cursor = -1
+        for (var i = 0; i < keys.length; i++) {
+            var at = root.indexIn(next, keys[i])
+            if (at < 0) {
+                next.splice(cursor + 1, 0, keys[i])
+                cursor = cursor + 1
+            } else {
+                cursor = at
+            }
+        }
+        return next
+    }
+
+    /// Move a room one place among its siblings. Pins move inside the pin
+    /// band; other rooms move only in manual order, and not across a pin.
+    function moveRoom(rooms, nodeId, roomId, delta, order) {
+        var o = root.normalizeOrder(order)
+        if (delta !== -1 && delta !== 1)
+            return o
+        var group = root.siblingGroup(rooms, roomId)
+        if (group.length < 2)
+            return o
+        var sorted = group.slice()
+        sorted.sort(function (a, b) { return root.compareRooms(a, b, nodeId, o) })
+        var i = -1
+        for (var n = 0; n < sorted.length; n++)
+            if (sorted[n].room_id === roomId)
+                i = n
+        var j = i + delta
+        if (i < 0 || j < 0 || j >= sorted.length)
+            return o
+        var aKey = nodeId + ":" + sorted[i].room_id
+        var bKey = nodeId + ":" + sorted[j].room_id
+        var aPin = root.indexIn(o.pinned, aKey) !== -1
+        var bPin = root.indexIn(o.pinned, bKey) !== -1
+        if (aPin !== bPin)
+            return o
+        if (aPin)
+            return {
+                mode: o.mode,
+                pinned: root.relocate(o.pinned, aKey, bKey, delta > 0),
+                manual: o.manual.slice()
+            }
+        if (o.mode !== "manual")
+            return o
+        var manual = o.manual.slice()
+        if (root.indexIn(manual, aKey) < 0 || root.indexIn(manual, bKey) < 0)
+            manual = root.placeMissing(manual, rooms, nodeId, o)
+        return {
+            mode: o.mode,
+            pinned: o.pinned.slice(),
+            manual: root.relocate(manual, aKey, bKey, delta > 0)
+        }
+    }
+
+    function sameOrder(a, b) {
+        a = root.normalizeOrder(a)
+        b = root.normalizeOrder(b)
+        if (a.mode !== b.mode || a.pinned.length !== b.pinned.length || a.manual.length !== b.manual.length)
+            return false
+        var i
+        for (i = 0; i < a.pinned.length; i++)
+            if (a.pinned[i] !== b.pinned[i])
+                return false
+        for (i = 0; i < a.manual.length; i++)
+            if (a.manual[i] !== b.manual[i])
+                return false
+        return true
+    }
+
+    function canMove(rooms, nodeId, roomId, delta, order) {
+        return !root.sameOrder(order, root.moveRoom(rooms, nodeId, roomId, delta, order))
+    }
+
     // Flatten a node's rooms into the rows of the Rooms tree, parents first.
     //
     // Under each room come its Voice leaf, its Text-only leaf, then its
@@ -66,26 +408,23 @@ QtObject {
     //
     // A room is top-level when its `parent_id` is "" or points outside the list.
     // Anything unreachable (a parent cycle) is appended flat rather than hidden.
+    //
+    // Siblings follow `ctx.order` (see normalizeOrder). With no order, that is
+    // name A–Z.
     function rows(rooms, nodeId, connected, ctx) {
         if (!Array.isArray(rooms)) return []
-        var byId = {}
+        var part = root.partition(rooms)
+        var order = root.normalizeOrder(ctx && ctx.order)
+        function byOrder(a, b) { return root.compareRooms(a, b, nodeId, order) }
+        part.roots.sort(byOrder)
+        var childrenOf = part.childrenOf
+        var roots = part.roots
+        var pid
+        for (pid in childrenOf)
+            if (childrenOf.hasOwnProperty(pid))
+                childrenOf[pid].sort(byOrder)
+        part.tail.sort(byOrder)
         var i
-        for (i = 0; i < rooms.length; i++)
-            if (rooms[i] && rooms[i].room_id) byId[rooms[i].room_id] = rooms[i]
-
-        var childrenOf = {}
-        var roots = []
-        for (i = 0; i < rooms.length; i++) {
-            var r = rooms[i]
-            if (!r || !r.room_id) continue
-            var pid = r.parent_id || ""
-            if (pid !== "" && pid !== r.room_id && byId.hasOwnProperty(pid)) {
-                if (!childrenOf[pid]) childrenOf[pid] = []
-                childrenOf[pid].push(r)
-            } else {
-                roots.push(r)
-            }
-        }
 
         function codes(pass, isLast) {
             var cols = []
@@ -222,10 +561,8 @@ QtObject {
 
         for (var t = 0; t < roots.length; t++)
             emitRoom(roots[t], 0, [], t === roots.length - 1, true)
-        for (i = 0; i < rooms.length; i++) {
-            if (rooms[i] && rooms[i].room_id && !seen[rooms[i].room_id])
-                emitRoom(rooms[i], 0, [], true, true)
-        }
+        for (i = 0; i < part.tail.length; i++)
+            emitRoom(part.tail[i], 0, [], i === part.tail.length - 1, true)
         return out
     }
 }

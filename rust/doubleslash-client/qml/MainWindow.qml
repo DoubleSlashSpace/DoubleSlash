@@ -310,6 +310,57 @@ ApplicationWindow {
         root.setTreeFlag("leaf", nodeId + ":" + roomId + ":text", true)
     }
 
+    // Rooms list order, the same JSON the phone stores. Name A–Z until changed.
+    readonly property var roomListOrder: {
+        var raw = settingsModel ? (settingsModel.room_list_order_json || "") : ""
+        try {
+            return JSON.parse(raw || "{}")
+        } catch (e) {
+            return {}
+        }
+    }
+
+    function commitRoomOrder(order) {
+        if (!settingsModel)
+            return
+        var o = RoomTree.normalizeOrder(order)
+        settingsModel.room_list_order_json = JSON.stringify({
+            mode: o.mode,
+            pinned: o.pinned,
+            manual: o.manual
+        })
+        settingsModel.save()
+    }
+
+    function roomGroupsForOrder() {
+        var groups = []
+        for (var i = 0; i < nodeListModel.count; i++) {
+            var node = nodeListModel.get(i)
+            if (!node || !backend.isKnownSupernode(node.node_id))
+                continue
+            var parsed = []
+            try {
+                parsed = JSON.parse(node.rooms_json || "[]")
+            } catch (e) {
+                parsed = []
+            }
+            var rooms = []
+            for (var r = 0; r < parsed.length; r++) {
+                if (!parsed[r])
+                    continue
+                if (!root.showHiddenRooms && parsed[r].hidden)
+                    continue
+                rooms.push(parsed[r])
+            }
+            groups.push({ nodeId: node.node_id, rooms: rooms })
+        }
+        return groups
+    }
+
+    function setRoomSort(mode) {
+        root.commitRoomOrder(RoomTree.withMode(root.roomListOrder, mode, root.roomGroupsForOrder()))
+    }
+
     // Everything the tree's shape depends on besides the rooms themselves, as
     // one value so a change to any of it rebuilds the rows.
     readonly property var treeContext: ({
@@ -320,7 +371,8 @@ ApplicationWindow {
         selectedRoom: roomPanel.roomId,
         voiceNode: backend.voice_in_room ? root.voiceSupernodeId : "",
         voiceRoom: backend.voice_in_room ? root.voiceRoomId : "",
-        limit: root.treeMemberLimit
+        limit: root.treeMemberLimit,
+        order: root.roomListOrder
     })
 
     /// Open a room's text from the tree (a single click on it).
@@ -924,6 +976,35 @@ ApplicationWindow {
                         ? qsTr("Hide %1 hidden").arg(root.hiddenRoomCount)
                         : qsTr("Show %1 hidden").arg(root.hiddenRoomCount)
                     onTriggered: root.showHiddenRooms = !root.showHiddenRooms
+                }
+                Menu {
+                    id: roomSortMenu
+                    title: qsTr("Sort rooms")
+
+                    function mark(mode) {
+                        return RoomTree.sortMode(root.roomListOrder) === mode ? "\u2713  " : ""
+                    }
+
+                    MenuItem {
+                        text: roomSortMenu.mark("name_asc") + qsTr("Name (A\u2013Z)")
+                        onTriggered: root.setRoomSort("name_asc")
+                    }
+                    MenuItem {
+                        text: roomSortMenu.mark("name_desc") + qsTr("Name (Z\u2013A)")
+                        onTriggered: root.setRoomSort("name_desc")
+                    }
+                    MenuItem {
+                        text: roomSortMenu.mark("peers_asc") + qsTr("Fewest people")
+                        onTriggered: root.setRoomSort("peers_asc")
+                    }
+                    MenuItem {
+                        text: roomSortMenu.mark("peers_desc") + qsTr("Most people")
+                        onTriggered: root.setRoomSort("peers_desc")
+                    }
+                    MenuItem {
+                        text: roomSortMenu.mark("manual") + qsTr("Manual order")
+                        onTriggered: root.setRoomSort("manual")
+                    }
                 }
                 MenuItem {
                     text: qsTr("Refresh")
@@ -2139,6 +2220,10 @@ ApplicationWindow {
                         property string targetRoomName: ""
                         property bool targetCanRemove: false
                         property bool targetHidden: false
+                        property var targetRooms: []
+                        readonly property string targetKey: targetSupernodeId + ":" + targetRoomId
+                        readonly property bool targetPinned: RoomTree.isPinned(root.roomListOrder, targetKey)
+                        readonly property bool targetManual: RoomTree.sortMode(root.roomListOrder) === "manual"
 
                         MenuItem {
                             text: qsTr("Join Voice Room")
@@ -2225,6 +2310,48 @@ ApplicationWindow {
                                 "private",
                                 roomContextMenu.targetRoomId,
                                 roomContextMenu.targetRoomName)
+                        }
+                        MenuSeparator {}
+                        MenuItem {
+                            text: roomContextMenu.targetPinned
+                                ? qsTr("Stop keeping at top")
+                                : qsTr("Keep at top")
+                            onTriggered: root.commitRoomOrder(
+                                RoomTree.togglePin(root.roomListOrder, roomContextMenu.targetKey))
+                        }
+                        MenuItem {
+                            text: qsTr("Move up")
+                            visible: roomContextMenu.targetManual || roomContextMenu.targetPinned
+                            height: visible ? implicitHeight : 0
+                            enabled: RoomTree.canMove(
+                                roomContextMenu.targetRooms,
+                                roomContextMenu.targetSupernodeId,
+                                roomContextMenu.targetRoomId,
+                                -1,
+                                root.roomListOrder)
+                            onTriggered: root.commitRoomOrder(RoomTree.moveRoom(
+                                roomContextMenu.targetRooms,
+                                roomContextMenu.targetSupernodeId,
+                                roomContextMenu.targetRoomId,
+                                -1,
+                                root.roomListOrder))
+                        }
+                        MenuItem {
+                            text: qsTr("Move down")
+                            visible: roomContextMenu.targetManual || roomContextMenu.targetPinned
+                            height: visible ? implicitHeight : 0
+                            enabled: RoomTree.canMove(
+                                roomContextMenu.targetRooms,
+                                roomContextMenu.targetSupernodeId,
+                                roomContextMenu.targetRoomId,
+                                1,
+                                root.roomListOrder)
+                            onTriggered: root.commitRoomOrder(RoomTree.moveRoom(
+                                roomContextMenu.targetRooms,
+                                roomContextMenu.targetSupernodeId,
+                                roomContextMenu.targetRoomId,
+                                1,
+                                root.roomListOrder))
                         }
                         MenuSeparator {
                             visible: roomContextMenu.targetCanRemove
@@ -2413,6 +2540,7 @@ ApplicationWindow {
                                                         roomContextMenu.targetRoomName = roomDelegate.roomName
                                                         roomContextMenu.targetCanRemove = roomDelegate.canRemove
                                                         roomContextMenu.targetHidden = row.hidden === true
+                                                        roomContextMenu.targetRooms = roomGroup.rooms
                                                         roomContextMenu.popup()
                                                     }
                                                 }
@@ -2485,6 +2613,17 @@ ApplicationWindow {
                                                         font.pixelSize: Theme.fontSizeBody
                                                         font.bold: roomDelegate.roomSelected || roomDelegate.voiceHere
                                                         elide: Text.ElideRight
+                                                    }
+
+                                                    Label {
+                                                        visible: RoomTree.isPinned(
+                                                            root.roomListOrder,
+                                                            roomGroup.node_id + ":" + row.room_id)
+                                                        text: qsTr("top")
+                                                        color: Theme.accent
+                                                        font.pixelSize: Theme.fontSizeCaption
+                                                        font.bold: true
+                                                        Layout.alignment: Qt.AlignVCenter
                                                     }
 
                                                     Image {

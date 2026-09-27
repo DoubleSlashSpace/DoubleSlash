@@ -140,6 +140,7 @@ import com.doubleslash.client.roomSenderName
 import com.doubleslash.client.cameraOn
 import com.doubleslash.client.videoKey
 import com.doubleslash.client.watching
+import com.doubleslash.client.inviteContacts
 import com.doubleslash.client.trustedPeer
 import com.doubleslash.client.TrustOffer
 import androidx.compose.ui.draw.alpha
@@ -210,6 +211,8 @@ fun AppRoot(viewModel: AppViewModel) {
     // Joining voice from the tree asks for the microphone first, as the room
     // screen's own Join does.
     var pendingVoiceJoin by remember { mutableStateOf<Room?>(null) }
+    // "Invite Contact to Room": the room whose link will be bound to a peer.
+    var inviteContactFor by remember { mutableStateOf<Room?>(null) }
     val requestMicForJoin = rememberExplainedPermission(
         permission = Manifest.permission.RECORD_AUDIO,
         title = MicRationaleTitle,
@@ -239,6 +242,10 @@ fun AppRoot(viewModel: AppViewModel) {
             onCreateSubRoom = onCreateSubRoom,
             members = memberActions,
             onPeerAudio = viewModel::setPeerAudio,
+            onTogglePin = viewModel::toggleRoomPin,
+            onMoveRoom = viewModel::moveRoom,
+            onCopyInvite = viewModel::copyRoomInvite,
+            onInviteContact = { inviteContactFor = it },
         )
     }
 
@@ -396,6 +403,18 @@ fun AppRoot(viewModel: AppViewModel) {
 
     state.inviteUrl?.let { url ->
         InviteDialog(url = url, onDismiss = viewModel::dismissInvite)
+    }
+
+    inviteContactFor?.let { room ->
+        InviteContactDialog(
+            roomName = room.roomName.ifBlank { room.roomId.take(12) },
+            contacts = state.peers.inviteContacts(),
+            onPick = { peer ->
+                inviteContactFor = null
+                viewModel.copyRoomInviteFor(room, peer)
+            },
+            onDismiss = { inviteContactFor = null },
+        )
     }
 
     state.trustOffers.firstOrNull()?.let { offer ->
@@ -915,6 +934,26 @@ private fun HomeScreen(
                                 },
                             )
                         }
+                        if (state.tab == HomeTab.ROOMS) {
+                            HorizontalDivider()
+                            Text(
+                                "Sort rooms",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
+                            ROOM_SORT_OPTIONS.forEach { (mode, label) ->
+                                val selected = state.prefs.roomListOrder.mode == mode
+                                DropdownMenuItem(
+                                    text = { Text(if (selected) "\u2713  $label" else label) },
+                                    onClick = {
+                                        showAddMenu = false
+                                        viewModel.setRoomSortMode(mode)
+                                    },
+                                )
+                            }
+                            HorizontalDivider()
+                        }
                         DropdownMenuItem(
                             text = { Text("Refresh") },
                             onClick = {
@@ -994,6 +1033,7 @@ private fun HomeScreen(
                             reading = (state.screen as? Screen.RoomChat)?.room,
                             voiceRoom = state.voiceRoom,
                             fold = treeFold,
+                            order = state.prefs.roomListOrder,
                         )
                         LazyColumn(Modifier.fillMaxSize()) {
                             roomTreeItems(rows, state, treeFold, treeActions)
@@ -1943,6 +1983,10 @@ private fun RoomChatScreen(
             },
             onSetHidden = treeActions.onSetHidden,
             onCreateSubRoom = treeActions.onCreateSubRoom,
+            onTogglePin = treeActions.onTogglePin,
+            onMoveRoom = treeActions.onMoveRoom,
+            onCopyInvite = treeActions.onCopyInvite,
+            onInviteContact = treeActions.onInviteContact,
             members = MemberActions(
                 onToggleWatch = { id ->
                     membersOpen = false
@@ -2960,6 +3004,38 @@ private fun formatSize(bytes: Long): String = when {
 }
 
 // ── Dialogs ────────────────────────────────────────────────────────────────
+
+@Composable
+private fun InviteContactDialog(
+    roomName: String,
+    contacts: List<Peer>,
+    onPick: (Peer) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Invite Contact to Room") },
+        text = {
+            Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+                Text(
+                    "A link for $roomName, bound to the contact you pick. It is copied when you choose them.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
+                contacts.forEach { peer ->
+                    TextButton(
+                        onClick = { onPick(peer) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(peer.label, modifier = Modifier.fillMaxWidth())
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
 
 @Composable
 private fun InviteDialog(url: String, onDismiss: () -> Unit) {

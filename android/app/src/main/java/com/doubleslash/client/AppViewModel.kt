@@ -2,6 +2,9 @@ package com.doubleslash.client
 
 import android.Manifest
 import android.app.Application
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
@@ -11,7 +14,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import com.doubleslash.client.ui.AvatarArt
+import com.doubleslash.client.ui.RoomListOrder
+import com.doubleslash.client.ui.listOrderKey
+import com.doubleslash.client.ui.moveRoomInOrder
 import com.doubleslash.client.ui.parseAvatarSvg
+import com.doubleslash.client.ui.parseRoomListOrder
+import com.doubleslash.client.ui.roomOrderWithMode
+import com.doubleslash.client.ui.toJson
+import com.doubleslash.client.ui.withRoomPinToggled
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -235,6 +245,16 @@ internal fun AppState.trustedPeer(memberId: String): Peer? {
 }
 
 /**
+ * People a room invite can be bound to.
+ *
+ * The desktop's "Invite Contact to Room" lists the peer model, which is
+ * everyone who is not a supernode. Blocked and revoked contacts stay out:
+ * the Peers list hides them, and a grant should not go to someone cut off.
+ */
+internal fun List<Peer>.inviteContacts(): List<Peer> =
+    filter { !it.blocked && !it.revoked && !it.isSupernode }
+
+/**
  * Update one presence source and recompute [AppState.onlinePeers] from all of
  * them.
  *
@@ -368,6 +388,8 @@ data class Prefs(
     val outputGain: Int = 100,
     val noiseStrength: Int = 2,
     val voiceBitrate: Int = 32_000,
+    /** Rooms list order. Same choices as the desktop. */
+    val roomListOrder: RoomListOrder = RoomListOrder(),
 )
 
 
@@ -562,6 +584,47 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(prefs = it.prefs.copy(skin = skin)) }
     }
 
+    /** Name, people count, or manual. The first manual choice freezes the list as it stands. */
+    fun setRoomSortMode(mode: String) {
+        val current = _state.value
+        val visible = current.rooms.filter { current.showHiddenRooms || !it.hidden }
+        storeRoomOrder(
+            roomOrderWithMode(
+                current.prefs.roomListOrder,
+                mode,
+                visible,
+                current.roomVoiceRosters,
+                current.roomTextRosters,
+            ),
+        )
+    }
+
+    /** Keep [room] first among its siblings, or stop doing that. */
+    fun toggleRoomPin(room: Room) {
+        storeRoomOrder(withRoomPinToggled(_state.value.prefs.roomListOrder, room.listOrderKey()))
+    }
+
+    /** Move [room] one place among its siblings. [delta] is -1 or 1. */
+    fun moveRoom(room: Room, delta: Int) {
+        val current = _state.value
+        val visible = current.rooms.filter { current.showHiddenRooms || !it.hidden }
+        storeRoomOrder(
+            moveRoomInOrder(
+                current.prefs.roomListOrder,
+                visible,
+                room,
+                delta,
+                current.roomVoiceRosters,
+                current.roomTextRosters,
+            ),
+        )
+    }
+
+    private fun storeRoomOrder(order: RoomListOrder) {
+        settings.roomListOrderJson = order.toJson()
+        _state.update { it.copy(prefs = it.prefs.copy(roomListOrder = order)) }
+    }
+
     /**
      * Open the identity with a stored key, when the user has asked for that.
      *
@@ -708,6 +771,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         outputGain = settings.outputGain,
         noiseStrength = settings.noiseStrength,
         voiceBitrate = settings.voiceBitrate,
+        roomListOrder = parseRoomListOrder(settings.roomListOrderJson),
     )
 
     /**
@@ -977,18 +1041,58 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Build a shareable link for the open room. */
     fun generateRoomInvite() {
         val room = (_state.value.screen as? Screen.RoomChat)?.room ?: return
+        copyRoomInvite(room)
+    }
 
+    /**
+     * Copy a shareable link for [room].
+     *
+     * The link is on the clipboard and shown, the same pair the desktop's
+     * "Copy Room Invite" does: copied, then the link left on screen.
+     */
+    fun copyRoomInvite(room: Room) = mintRoomInvite(room, peerId = null)
+
+    /**
+     * Copy a link for [room] bound to [peer].
+     *
+     * The core attaches an owner-signed SpaceGrant for that contact, so a
+     * private room admits them after the supernode restarts.
+     */
+    fun copyRoomInviteFor(room: Room, peer: Peer) = mintRoomInvite(room, peer.peerId)
+
+    private fun mintRoomInvite(room: Room, peerId: String?) {
         viewModelScope.launch {
             val reply = core.command("room.invite") {
                 put("supernode_id", room.supernodeId)
                 put("room_id", room.roomId)
+                if (!peerId.isNullOrBlank()) put("peer_id", peerId)
             }
             if (!reply.ok) {
                 _state.update { it.copy(error = reply.errorText) }
                 return@launch
             }
-            _state.update { it.copy(inviteUrl = reply.stringOrEmpty("invite_url")) }
+            val url = reply.stringOrEmpty("invite_url")
+            if (url.isEmpty()) {
+                _state.update {
+                    it.copy(
+                        error = if (peerId.isNullOrBlank()) {
+                            "Couldn't build the invite — connect to the room's supernode first."
+                        } else {
+                            "Couldn't build the invite — you must own this room's Space and be connected to its supernode."
+                        },
+                    )
+                }
+                return@launch
+            }
+            copyPlain("Room invite", url)
+            _state.update { it.copy(inviteUrl = url) }
         }
+    }
+
+    private fun copyPlain(label: String, text: String) {
+        val clipboard = getApplication<Application>()
+            .getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.setPrimaryClip(ClipData.newPlainText(label, text))
     }
 
     /** Accept the pending offer, which is what actually starts the download. */

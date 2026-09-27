@@ -27,6 +27,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -64,11 +65,20 @@ import com.doubleslash.client.R
 import com.doubleslash.client.Room
 import com.doubleslash.client.VoiceRoom
 import com.doubleslash.client.cameraOn
+import com.doubleslash.client.inviteContacts
 import com.doubleslash.client.roomMembersUnion
 import com.doubleslash.client.roomSenderName
 import com.doubleslash.client.trustedPeer
 import com.doubleslash.client.videoKey
 import com.doubleslash.client.watching
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 
 // ── The rows ────────────────────────────────────────────────────────────────
 //
@@ -158,6 +168,295 @@ private sealed interface TreeItem {
 /** Members a leaf lists before folding the rest under "+N more". */
 internal const val TREE_MEMBER_LIMIT = 8
 
+/** Rooms-list sort, the same JSON the desktop stores in `room_list_order_json`. */
+internal const val ROOM_SORT_NAME_ASC = "name_asc"
+internal const val ROOM_SORT_NAME_DESC = "name_desc"
+internal const val ROOM_SORT_PEERS_ASC = "peers_asc"
+internal const val ROOM_SORT_PEERS_DESC = "peers_desc"
+internal const val ROOM_SORT_MANUAL = "manual"
+
+internal const val DEFAULT_ROOM_LIST_ORDER_JSON =
+    """{"mode":"name_asc","pinned":[],"manual":[]}"""
+
+/** Labels in the + menu, in the same order as the desktop's Sort rooms menu. */
+internal val ROOM_SORT_OPTIONS = listOf(
+    ROOM_SORT_NAME_ASC to "Name (A\u2013Z)",
+    ROOM_SORT_NAME_DESC to "Name (Z\u2013A)",
+    ROOM_SORT_PEERS_ASC to "Fewest people",
+    ROOM_SORT_PEERS_DESC to "Most people",
+    ROOM_SORT_MANUAL to "Manual order",
+)
+
+/**
+ * Saved rooms-list order.
+ *
+ * [pinned] keys (`supernodeId:roomId`) stay first among their siblings.
+ * [manual] is that same key order, used only while [mode] is [ROOM_SORT_MANUAL].
+ * A pin does not pull a sub-room out from under its parent.
+ */
+data class RoomListOrder(
+    val mode: String = ROOM_SORT_NAME_ASC,
+    val pinned: List<String> = emptyList(),
+    val manual: List<String> = emptyList(),
+) {
+    fun normalized(): RoomListOrder = copy(
+        mode = normalizeRoomSortMode(mode),
+        pinned = pinned.filter { it.isNotEmpty() },
+        manual = manual.filter { it.isNotEmpty() },
+    )
+
+    fun isPinned(room: Room): Boolean = room.listOrderKey() in pinned
+}
+
+internal fun Room.listOrderKey(): String = "$supernodeId:$roomId"
+
+internal fun normalizeRoomSortMode(mode: String): String = when (mode) {
+    ROOM_SORT_NAME_DESC, ROOM_SORT_PEERS_ASC, ROOM_SORT_PEERS_DESC, ROOM_SORT_MANUAL -> mode
+    else -> ROOM_SORT_NAME_ASC
+}
+
+internal fun parseRoomListOrder(raw: String?): RoomListOrder {
+    if (raw.isNullOrBlank()) return RoomListOrder()
+    return try {
+        val obj = Json.parseToJsonElement(raw).jsonObject
+        fun strings(name: String): List<String> {
+            val arr = obj[name] as? JsonArray ?: return emptyList()
+            return arr.mapNotNull { (it as? JsonPrimitive)?.content }
+        }
+        RoomListOrder(
+            mode = normalizeRoomSortMode(obj["mode"]?.jsonPrimitive?.contentOrNull ?: ROOM_SORT_NAME_ASC),
+            pinned = strings("pinned"),
+            manual = strings("manual"),
+        ).normalized()
+    } catch (_: Exception) {
+        RoomListOrder()
+    }
+}
+
+internal fun RoomListOrder.toJson(): String {
+    val o = normalized()
+    return buildJsonObject {
+        put("mode", o.mode)
+        put("pinned", JsonArray(o.pinned.map { JsonPrimitive(it) }))
+        put("manual", JsonArray(o.manual.map { JsonPrimitive(it) }))
+    }.toString()
+}
+
+/** Voice members plus text-only members. */
+internal fun roomPeerCount(
+    room: Room,
+    voiceRosters: Map<String, List<String>>,
+    textRosters: Map<String, List<String>>,
+): Int {
+    val voice = voiceRosters.roomMembersUnion(room.roomId)
+    val inVoice = voice.map { it.videoKey() }.toSet()
+    val text = textRosters.roomMembersUnion(room.roomId).count { it.videoKey() !in inVoice }
+    return voice.size + text
+}
+
+private fun roomSortName(room: Room): String = room.roomName.ifBlank { room.roomId }
+
+/** Case-insensitive, and "Room 2" before "Room 10". Matches [compareAlphanumeric] in RoomTree.qml. */
+internal fun compareAlphanumeric(a: String, b: String): Int {
+    val left = a.lowercase()
+    val right = b.lowercase()
+    var i = 0
+    var j = 0
+    fun digit(s: String, at: Int) = s[at] in '0'..'9'
+    fun trimZeros(s: String): String {
+        var k = 0
+        while (k < s.length - 1 && s[k] == '0') k++
+        return s.substring(k)
+    }
+    while (i < left.length && j < right.length) {
+        val aDigit = digit(left, i)
+        val bDigit = digit(right, j)
+        if (aDigit && bDigit) {
+            val iStart = i
+            val jStart = j
+            while (i < left.length && digit(left, i)) i++
+            while (j < right.length && digit(right, j)) j++
+            val aNum = trimZeros(left.substring(iStart, i))
+            val bNum = trimZeros(right.substring(jStart, j))
+            if (aNum.length != bNum.length) return aNum.length.compareTo(bNum.length)
+            if (aNum != bNum) return aNum.compareTo(bNum)
+        } else {
+            if (left[i] != right[j]) return left[i].compareTo(right[j])
+            i++
+            j++
+        }
+    }
+    return left.length.compareTo(right.length)
+}
+
+internal fun compareRooms(
+    a: Room,
+    b: Room,
+    order: RoomListOrder,
+    peerCount: (Room) -> Int,
+): Int {
+    val o = order.normalized()
+    val ka = a.listOrderKey()
+    val kb = b.listOrderKey()
+    val pa = o.pinned.indexOf(ka)
+    val pb = o.pinned.indexOf(kb)
+    if ((pa >= 0) != (pb >= 0)) return if (pa >= 0) -1 else 1
+    if (pa >= 0 && pb >= 0 && pa != pb) return pa - pb
+    if (o.mode == ROOM_SORT_MANUAL) {
+        val ma = o.manual.indexOf(ka).let { if (it < 0) Int.MAX_VALUE else it }
+        val mb = o.manual.indexOf(kb).let { if (it < 0) Int.MAX_VALUE else it }
+        if (ma != mb) return ma.compareTo(mb)
+    } else if (o.mode == ROOM_SORT_PEERS_ASC || o.mode == ROOM_SORT_PEERS_DESC) {
+        val diff = peerCount(a) - peerCount(b)
+        if (diff != 0) return if (o.mode == ROOM_SORT_PEERS_ASC) diff else -diff
+    } else if (o.mode == ROOM_SORT_NAME_DESC) {
+        val byName = compareAlphanumeric(roomSortName(b), roomSortName(a))
+        if (byName != 0) return byName
+        return compareAlphanumeric(b.roomId, a.roomId)
+    }
+    val byName = compareAlphanumeric(roomSortName(a), roomSortName(b))
+    if (byName != 0) return byName
+    return compareAlphanumeric(a.roomId, b.roomId)
+}
+
+private fun relocate(list: List<String>, key: String, neighbor: String, after: Boolean): List<String> {
+    val next = list.filter { it != key }.toMutableList()
+    val at = next.indexOf(neighbor)
+    if (at < 0) return list
+    next.add(if (after) at + 1 else at, key)
+    return next
+}
+
+internal fun withRoomPinToggled(order: RoomListOrder, key: String): RoomListOrder {
+    val o = order.normalized()
+    val pinned = if (key in o.pinned) o.pinned.filter { it != key } else listOf(key) + o.pinned
+    return o.copy(pinned = pinned)
+}
+
+/** Switch mode. The first time manual is chosen, freeze the order on screen. */
+internal fun roomOrderWithMode(
+    order: RoomListOrder,
+    mode: String,
+    rooms: List<Room>,
+    voiceRosters: Map<String, List<String>>,
+    textRosters: Map<String, List<String>>,
+): RoomListOrder {
+    val current = order.normalized()
+    val nextMode = normalizeRoomSortMode(mode)
+    val manual = if (nextMode == ROOM_SORT_MANUAL && current.manual.isEmpty()) {
+        buildRoomTree(
+            rooms = rooms,
+            voiceRosters = voiceRosters,
+            textRosters = textRosters,
+            reading = null,
+            voiceRoom = null,
+            fold = TreeFold(),
+            order = current,
+        ).mapNotNull { (it as? TreeRow.RoomNode)?.room?.listOrderKey() }
+    } else {
+        current.manual
+    }
+    return current.copy(mode = nextMode, manual = manual)
+}
+
+private fun orderedSiblings(
+    rooms: List<Room>,
+    room: Room,
+    order: RoomListOrder,
+    voiceRosters: Map<String, List<String>>,
+    textRosters: Map<String, List<String>>,
+): List<Room> {
+    val byId = rooms.associateBy { it.roomId }
+    fun parentOf(r: Room): String {
+        val p = r.parentId
+        return if (p.isBlank() || p == r.roomId || p == r.spaceId || p !in byId) "" else p
+    }
+    val grouped = rooms.groupBy { parentOf(it) }
+    val seen = mutableSetOf<String>()
+    fun walk(r: Room) {
+        if (!seen.add(r.roomId)) return
+        grouped[r.roomId].orEmpty().forEach(::walk)
+    }
+    grouped[""].orEmpty().forEach(::walk)
+    val tail = rooms.filter { it.roomId !in seen }
+    val group = if (tail.any { it.roomId == room.roomId && it.supernodeId == room.supernodeId }) {
+        tail
+    } else {
+        grouped[parentOf(room)].orEmpty()
+    }
+    return group.sortedWith { a, b ->
+        compareRooms(a, b, order) { roomPeerCount(it, voiceRosters, textRosters) }
+    }
+}
+
+private fun placeMissing(
+    manual: List<String>,
+    rooms: List<Room>,
+    order: RoomListOrder,
+    voiceRosters: Map<String, List<String>>,
+    textRosters: Map<String, List<String>>,
+): List<String> {
+    val keys = buildRoomTree(
+        rooms = rooms,
+        voiceRosters = voiceRosters,
+        textRosters = textRosters,
+        reading = null,
+        voiceRoom = null,
+        fold = TreeFold(),
+        order = order,
+    ).mapNotNull { (it as? TreeRow.RoomNode)?.room?.listOrderKey() }
+    val next = manual.toMutableList()
+    var cursor = -1
+    for (key in keys) {
+        val at = next.indexOf(key)
+        if (at < 0) {
+            next.add(cursor + 1, key)
+            cursor += 1
+        } else {
+            cursor = at
+        }
+    }
+    return next
+}
+
+/** Move a room one place among its siblings. See RoomTree.qml `moveRoom`. */
+internal fun moveRoomInOrder(
+    order: RoomListOrder,
+    rooms: List<Room>,
+    room: Room,
+    delta: Int,
+    voiceRosters: Map<String, List<String>>,
+    textRosters: Map<String, List<String>>,
+): RoomListOrder {
+    val o = order.normalized()
+    if (delta != -1 && delta != 1) return o
+    val sorted = orderedSiblings(rooms, room, o, voiceRosters, textRosters)
+    val i = sorted.indexOfFirst { it.roomId == room.roomId && it.supernodeId == room.supernodeId }
+    val j = i + delta
+    if (i < 0 || j !in sorted.indices) return o
+    val aKey = sorted[i].listOrderKey()
+    val bKey = sorted[j].listOrderKey()
+    val aPin = aKey in o.pinned
+    val bPin = bKey in o.pinned
+    if (aPin != bPin) return o
+    if (aPin) return o.copy(pinned = relocate(o.pinned, aKey, bKey, delta > 0))
+    if (o.mode != ROOM_SORT_MANUAL) return o
+    var manual = o.manual
+    if (aKey !in manual || bKey !in manual) {
+        manual = placeMissing(manual, rooms, o, voiceRosters, textRosters)
+    }
+    return o.copy(manual = relocate(manual, aKey, bKey, delta > 0))
+}
+
+internal fun canMoveRoom(
+    order: RoomListOrder,
+    rooms: List<Room>,
+    room: Room,
+    delta: Int,
+    voiceRosters: Map<String, List<String>>,
+    textRosters: Map<String, List<String>>,
+): Boolean = moveRoomInOrder(order, rooms, room, delta, voiceRosters, textRosters) != order.normalized()
+
 private fun codes(pass: List<Boolean>, last: Boolean): List<Int> =
     pass.map { if (it) 1 else 0 } + (if (last) 2 else 3)
 
@@ -170,14 +469,15 @@ internal fun buildRoomTree(
     voiceRoom: VoiceRoom?,
     fold: TreeFold,
     limit: Int = TREE_MEMBER_LIMIT,
+    order: RoomListOrder = RoomListOrder(),
 ): List<TreeRow> {
     val byId = rooms.associateBy { it.roomId }
     // Empty, self-referential, the Space itself or a room we do not have all
     // mean "top level", as in layOutSpaceTree before it.
-    val children = rooms.groupBy { r ->
+    val grouped = rooms.groupBy { r ->
         val p = r.parentId
         if (p.isBlank() || p == r.roomId || p == r.spaceId || p !in byId) "" else p
-    }.mapValues { (_, list) -> list.sortedBy { it.roomName.lowercase() } }
+    }
 
     val out = mutableListOf<TreeRow>()
     val seen = mutableSetOf<String>()
@@ -186,6 +486,12 @@ internal fun buildRoomTree(
     fun textOf(r: Room, voice: List<String>): List<String> {
         val inVoice = voice.map { it.videoKey() }.toSet()
         return textRosters.roomMembersUnion(r.roomId).filter { it.videoKey() !in inVoice }
+    }
+    val orderNorm = order.normalized()
+    val children = grouped.mapValues { (_, list) ->
+        list.sortedWith { a, b ->
+            compareRooms(a, b, orderNorm) { roomPeerCount(it, voiceRosters, textRosters) }
+        }
     }
     fun emitLeaf(r: Room, voice: Boolean, members: List<String>, pass: List<Boolean>?, last: Boolean) {
         val leafKey = r.key + ":" + if (voice) "voice" else "text"
@@ -284,8 +590,12 @@ internal fun buildRoomTree(
         emitRoom(r, 0, emptyList(), i == children[""].orEmpty().lastIndex, true)
     }
     // Anything a parent cycle kept out still gets shown, flat.
-    rooms.filter { it.roomId !in seen }.sortedBy { it.roomName.lowercase() }
-        .forEach { emitRoom(it, 0, emptyList(), true, true) }
+    val tail = rooms.filter { it.roomId !in seen }.sortedWith { a, b ->
+        compareRooms(a, b, orderNorm) { roomPeerCount(it, voiceRosters, textRosters) }
+    }
+    tail.forEachIndexed { i, room ->
+        emitRoom(room, 0, emptyList(), i == tail.lastIndex, true)
+    }
     return out
 }
 
@@ -339,6 +649,14 @@ internal class RoomTreeActions(
     val onCreateSubRoom: (Room) -> Unit,
     val members: MemberActions,
     val onPeerAudio: (peerId: String, muted: Boolean, volume: Int) -> Unit,
+    /** Keep this room first among its siblings, or stop doing that. */
+    val onTogglePin: (Room) -> Unit = {},
+    /** Move this room one place among its siblings. `delta` is -1 or 1. */
+    val onMoveRoom: (Room, Int) -> Unit = { _, _ -> },
+    /** Copy a shareable link for this room. */
+    val onCopyInvite: (Room) -> Unit = {},
+    /** Pick a contact and copy a link bound to them. */
+    val onInviteContact: (Room) -> Unit = {},
 )
 
 /** Connector lines in the indent, drawn behind the row. */
@@ -465,6 +783,10 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false),
             )
+            if (state.prefs.roomListOrder.isPinned(room)) {
+                Spacer(Modifier.width(6.dp))
+                Text("top", color = ds.accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
             if (voiceHere) {
                 Spacer(Modifier.width(6.dp))
                 Icon(
@@ -500,7 +822,35 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                 CountBadge(R.drawable.ds_speech, row.roomChat, ds.accent, "in text only")
             }
         }
+        val order = state.prefs.roomListOrder
+        val pinned = order.isPinned(room)
+        val showMove = order.mode == ROOM_SORT_MANUAL || pinned
+        val visibleRooms = state.rooms.filter { state.showHiddenRooms || !it.hidden }
+        val canInviteContact = state.peers.inviteContacts().isNotEmpty()
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(
+                text = { Text("Join Voice Room") },
+                onClick = {
+                    menuOpen = false
+                    actions.onJoinVoice(room)
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Copy Room Invite") },
+                onClick = {
+                    menuOpen = false
+                    actions.onCopyInvite(room)
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Invite Contact to Room") },
+                enabled = canInviteContact,
+                onClick = {
+                    menuOpen = false
+                    actions.onInviteContact(room)
+                },
+            )
+            HorizontalDivider()
             DropdownMenuItem(
                 text = { Text("Create room inside ${room.label}...") },
                 onClick = {
@@ -508,6 +858,37 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                     actions.onCreateSubRoom(room)
                 },
             )
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text(if (pinned) "Stop keeping at top" else "Keep at top") },
+                onClick = {
+                    menuOpen = false
+                    actions.onTogglePin(room)
+                },
+            )
+            if (showMove) {
+                DropdownMenuItem(
+                    text = { Text("Move up") },
+                    enabled = canMoveRoom(
+                        order, visibleRooms, room, -1, state.roomVoiceRosters, state.roomTextRosters,
+                    ),
+                    onClick = {
+                        menuOpen = false
+                        actions.onMoveRoom(room, -1)
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Move down") },
+                    enabled = canMoveRoom(
+                        order, visibleRooms, room, 1, state.roomVoiceRosters, state.roomTextRosters,
+                    ),
+                    onClick = {
+                        menuOpen = false
+                        actions.onMoveRoom(room, 1)
+                    },
+                )
+            }
+            HorizontalDivider()
             DropdownMenuItem(
                 text = { Text(if (room.hidden) "Show in list" else "Hide from list") },
                 onClick = {

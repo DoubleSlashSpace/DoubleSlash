@@ -1,6 +1,7 @@
 package com.doubleslash.client
 
 import android.content.Context
+import com.doubleslash.client.ui.DEFAULT_ROOM_LIST_ORDER_JSON
 import kotlinx.serialization.json.*
 
 /**
@@ -28,6 +29,7 @@ class AppSettings(context: Context) {
         put("voice_bitrate", voiceBitrate)
         put("theme", theme)
         put("skin", skin)
+        put("room_list_order", roomListOrderJson)
     }
 
     fun restoreValues(values: JsonObject) {
@@ -38,6 +40,7 @@ class AppSettings(context: Context) {
         (values["voice_bitrate"] as? JsonPrimitive)?.intOrNull?.let { voiceBitrate = it }
         (values["theme"] as? JsonPrimitive)?.contentOrNull?.takeIf { it in listOf(THEME_SYSTEM, THEME_LIGHT, THEME_DARK) }?.let { theme = it }
         (values["skin"] as? JsonPrimitive)?.contentOrNull?.let { skin = it }
+        (values["room_list_order"] as? JsonPrimitive)?.contentOrNull?.let { roomListOrderJson = it }
     }
 
     private val prefs =
@@ -111,6 +114,16 @@ class AppSettings(context: Context) {
         set(value) = prefs.edit().putString(KEY_SKIN, value).apply()
 
     /**
+     * Rooms list order, the same JSON the desktop stores as `room_list_order_json`:
+     * name or people count in either direction, a manual order, and rooms kept
+     * at the top of their group.
+     */
+    var roomListOrderJson: String
+        get() = prefs.getString(KEY_ROOM_LIST_ORDER, DEFAULT_ROOM_LIST_ORDER_JSON)
+            ?: DEFAULT_ROOM_LIST_ORDER_JSON
+        set(value) = prefs.edit().putString(KEY_ROOM_LIST_ORDER, value).apply()
+
+    /**
      * The [Legal.TERMS_VERSION] last accepted on this device, or 0.
      *
      * Play requires terms before user-generated content. Bumping
@@ -139,6 +152,7 @@ class AppSettings(context: Context) {
         private const val KEY_VOICE_ACTIVATION = "voice_activation"
         private const val KEY_THEME = "theme"
         private const val KEY_SKIN = "skin"
+        private const val KEY_ROOM_LIST_ORDER = "room_list_order"
         private const val KEY_INPUT_GAIN = "input_gain"
         private const val KEY_OUTPUT_GAIN = "output_gain"
         private const val KEY_NOISE_STRENGTH = "noise_strength"

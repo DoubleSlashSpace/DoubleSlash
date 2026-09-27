@@ -4,8 +4,15 @@ import com.doubleslash.client.ui.DarkPalette
 import com.doubleslash.client.ui.SKIN_PRESETS
 import com.doubleslash.client.ui.TreeFold
 import com.doubleslash.client.ui.TreeRow
+import com.doubleslash.client.ui.RoomListOrder
 import com.doubleslash.client.ui.buildRoomLeaves
 import com.doubleslash.client.ui.buildRoomTree
+import com.doubleslash.client.ui.canMoveRoom
+import com.doubleslash.client.ui.moveRoomInOrder
+import com.doubleslash.client.ui.parseRoomListOrder
+import com.doubleslash.client.ui.toJson
+import com.doubleslash.client.ui.roomOrderWithMode
+import com.doubleslash.client.ui.withRoomPinToggled
 import com.doubleslash.client.ui.paletteFor
 import com.doubleslash.client.ui.parseSkin
 import com.doubleslash.client.ui.parseSkinColor
@@ -217,6 +224,70 @@ class RoomTreeTest {
         assertEquals(2, rows.count { it is TreeRow.RoomNode })
         val folded = buildRoomTree(cycle, emptyMap(), emptyMap(), null, null, TreeFold())
         assertEquals(2, folded.count { it is TreeRow.RoomNode })
+    }
+
+    private fun roomIds(rows: List<TreeRow>) =
+        rows.filterIsInstance<TreeRow.RoomNode>().map { it.room.roomId }
+
+    private fun ordered(order: RoomListOrder) =
+        buildRoomTree(rooms, voice, text, null, null, TreeFold(), order = order)
+
+    @Test
+    fun `name descending and peer counts reorder siblings`() {
+        assertEquals(listOf("lobby", "gaming", "raid", "strat"), roomIds(ordered(RoomListOrder(mode = "name_desc"))))
+        // Lobby has three people and Gaming has none, so the roots swap.
+        assertEquals(listOf("lobby", "gaming", "raid", "strat"), roomIds(ordered(RoomListOrder(mode = "peers_desc"))))
+        assertEquals(listOf("gaming", "raid", "strat", "lobby"), roomIds(ordered(RoomListOrder(mode = "peers_asc"))))
+        val withChill = rooms + room("chill", "gaming")
+        val voice3 = voice + ("n:chill" to listOf("a", "b", "c"))
+        val ids = buildRoomTree(
+            withChill, voice3, text, null, null, TreeFold(),
+            order = RoomListOrder(mode = "peers_desc"),
+        ).let(::roomIds)
+        assertTrue(ids.indexOf("chill") < ids.indexOf("raid"))
+        assertTrue(ids.indexOf("chill") > ids.indexOf("gaming"))
+    }
+
+    @Test
+    fun `natural names, pins, and manual order match the desktop`() {
+        val numbered = listOf(
+            Room(roomId = "r10", roomName = "Room 10", supernodeId = "n"),
+            Room(roomId = "r2", roomName = "Room 2", supernodeId = "n"),
+            Room(roomId = "r1", roomName = "Room 1", supernodeId = "n"),
+        )
+        assertEquals(
+            listOf("r1", "r2", "r10"),
+            roomIds(buildRoomTree(numbered, emptyMap(), emptyMap(), null, null, TreeFold())),
+        )
+        val pinned = withRoomPinToggled(RoomListOrder(), "n:lobby")
+        assertEquals(listOf("n:lobby"), pinned.pinned)
+        assertEquals("lobby", roomIds(ordered(pinned)).first())
+        val pinStrat = withRoomPinToggled(RoomListOrder(), "n:strat")
+        assertEquals(listOf("gaming", "raid", "strat", "lobby"), roomIds(ordered(pinStrat)))
+        assertFalse(canMoveRoom(pinned, rooms, rooms[0], 1, voice, text))
+
+        val manual = roomOrderWithMode(RoomListOrder(), "manual", rooms, voice, text)
+        assertEquals("manual", manual.mode)
+        assertEquals(listOf("n:gaming", "n:raid", "n:strat", "n:lobby"), manual.manual)
+        val kept = roomOrderWithMode(
+            RoomListOrder(mode = "name_desc", manual = listOf("n:lobby")),
+            "manual",
+            rooms,
+            voice,
+            text,
+        )
+        assertEquals(listOf("n:lobby"), kept.manual)
+        val moved = moveRoomInOrder(manual, rooms, rooms[0], -1, voice, text)
+        assertTrue(moved.manual.indexOf("n:lobby") < moved.manual.indexOf("n:gaming"))
+        assertTrue(canMoveRoom(manual, rooms, rooms[0], -1, voice, text))
+        assertFalse(canMoveRoom(manual, rooms, rooms[1], -1, voice, text))
+
+        val both = withRoomPinToggled(withRoomPinToggled(RoomListOrder(), "n:gaming"), "n:lobby")
+        assertEquals("n:lobby", both.pinned.first())
+        val swapped = moveRoomInOrder(both, rooms, rooms[1], -1, voice, text)
+        assertEquals("n:gaming", swapped.pinned.first())
+        assertEquals("name_asc", parseRoomListOrder("nope").mode)
+        assertEquals(listOf("n:lobby"), parseRoomListOrder(pinned.toJson()).pinned)
     }
 
     // ── Skins ───────────────────────────────────────────────────────────────
