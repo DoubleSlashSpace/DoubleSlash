@@ -214,6 +214,10 @@ jobs:
           # Tagged: release-X.Y.Z-<12-char sha> (matches local tag checkout in build.rs)
           # Nightly: nightly-<12-char sha>-<run>
           DOUBLESLASH_BUILD_ID: ${{ steps.meta.outputs.build_id }}
+          # The credits step asks GitHub which Chromium revision this Qt pins.
+          # Without a token that contents call is the shared unauthenticated
+          # budget, and a 403 aborts the package.
+          GITHUB_TOKEN: ${{ github.token }}
         run: .\build_win64.ps1
 
       - name: Copy installer for separate upload

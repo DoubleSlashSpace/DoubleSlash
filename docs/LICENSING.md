@@ -168,7 +168,11 @@ a source tree nor any `.qch`.
 So it comes from the source Qt pins.
 [scripts/licenses/chromium_credits.py](../scripts/licenses/chromium_credits.py)
 resolves `qtwebengine`'s `src/3rdparty` submodule for a given tag — v6.8.3
-pins `55749ed0af5869215b88007df0cba430746583ae` — then takes a blobless,
+pins `55749ed0af5869215b88007df0cba430746583ae`. When `GITHUB_TOKEN` is set
+the lookup uses the GitHub contents API; otherwise, and whenever that API
+answers 403, it reads the gitlink from the tag on code.qt.io (then GitHub's
+git protocol). An unauthenticated contents call is what a shared runner
+exhausts. It then takes a blobless,
 depth-1, sparse clone that fetches the 488 `README.chromium` files, reads which
 licence files they reference, and fetches exactly those. That is about 20 MB
 rather than the several GB a full Chromium checkout costs, so it runs in a

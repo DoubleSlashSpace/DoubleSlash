@@ -22,21 +22,132 @@ kept in the repository. build_win64.ps1 runs this before it generates the
 package notices, and caches the result, regenerating only when the bundled Qt
 version changes: both the component set and the Chromium revision move with it.
 """
-import argparse, hashlib, io, json, os, posixpath, re, shutil, subprocess, sys, tempfile, urllib.request
+import argparse, hashlib, io, json, os, posixpath, re, shutil, subprocess, sys, tempfile, urllib.error, urllib.request
 
 CHROMIUM_REPO = "https://github.com/qt/qtwebengine-chromium.git"
 KEYS = ("name", "short name", "url", "version", "revision", "license",
         "license file", "shipped", "security critical")
 
 
+def parse_gitlink(text):
+    """The commit sha from `git ls-tree` on a submodule entry.
+
+    A gitlink looks like `160000 commit <sha>\\tsrc/3rdparty`. Anything else
+    (a blob, an empty answer) is not the pin.
+    """
+    line = text.strip().splitlines()[0] if text and text.strip() else ""
+    parts = line.split()
+    if (len(parts) >= 3 and parts[0] == "160000" and parts[1] == "commit"
+            and re.fullmatch(r"[0-9a-f]{40}", parts[2])):
+        return parts[2]
+    return None
+
+
+def github_api_revision(qt_tag):
+    """The src/3rdparty gitlink via the contents API, or None when it refuses.
+
+    Unauthenticated runners share a small hourly budget and get HTTP 403
+    (`rate limit exceeded`). A token raises that budget; a refusal is not
+    fatal, because the gitlink can be read from the tag itself.
+    """
+    url = f"https://api.github.com/repos/qt/qtwebengine/contents/src/3rdparty?ref={qt_tag}"
+    headers = {
+        "User-Agent": "doubleslash-chromium-credits",
+        "Accept": "application/vnd.github+json",
+    }
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.load(r)
+    except urllib.error.HTTPError as e:
+        print(f"github api lookup for {qt_tag} failed ({e.code} {e.reason})", file=sys.stderr)
+        return None
+    except urllib.error.URLError as e:
+        print(f"github api lookup for {qt_tag} failed ({e.reason})", file=sys.stderr)
+        return None
+    if data.get("type") != "submodule" or not data.get("sha"):
+        print(f"src/3rdparty is {data.get('type')}, not a submodule, at {qt_tag}", file=sys.stderr)
+        return None
+    return data["sha"]
+
+
+def _git_env():
+    env = os.environ.copy()
+    # A missing credential must fail the fetch, not sit on a password prompt.
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def _fetch_tag(work, url, qt_tag):
+    """Depth-1 fetch of one tag. Blobless when the server allows it."""
+    base = ["git", "-c", "credential.helper=", "fetch", "--depth", "1"]
+    for extra in (["--filter=blob:none"], []):
+        try:
+            proc = subprocess.run(
+                base + extra + [url, qt_tag], cwd=work, env=_git_env(),
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=180,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            print(f"could not fetch {qt_tag} from {url}: {e}", file=sys.stderr)
+            return False
+        if proc.returncode == 0:
+            return True
+        err = proc.stderr.decode("utf-8", "replace")
+        if extra and "filter" in err.lower():
+            continue
+        tail = err.strip().splitlines()[-1] if err.strip() else str(proc.returncode)
+        print(f"could not fetch {qt_tag} from {url}: {tail}", file=sys.stderr)
+        return False
+    return False
+
+
+def revision_from_git(qt_tag):
+    """The src/3rdparty gitlink, read from the tag rather than the contents API.
+
+    code.qt.io is Qt's own host. GitHub's git protocol is the second try: it
+    is not the REST budget that returns 403 to an unauthenticated API call.
+    """
+    urls = (
+        "https://code.qt.io/qt/qtwebengine.git",
+        "https://github.com/qt/qtwebengine.git",
+    )
+    work = tempfile.mkdtemp(prefix="qtwe-pin-")
+    try:
+        subprocess.run(["git", "init", "-q"], cwd=work, check=True,
+                       stdout=subprocess.DEVNULL, env=_git_env())
+        for url in urls:
+            if not _fetch_tag(work, url, qt_tag):
+                continue
+            ls = subprocess.run(
+                ["git", "ls-tree", "FETCH_HEAD", "src/3rdparty"],
+                cwd=work, check=True, capture_output=True, text=True, env=_git_env(),
+            )
+            sha = parse_gitlink(ls.stdout)
+            if sha:
+                return sha
+            print(f"{url} tag {qt_tag} has no src/3rdparty gitlink", file=sys.stderr)
+        return None
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def pinned_revision(qt_tag):
     """The qtwebengine-chromium commit that a qtwebengine tag points its submodule at."""
-    url = f"https://api.github.com/repos/qt/qtwebengine/contents/src/3rdparty?ref={qt_tag}"
-    with urllib.request.urlopen(url) as r:
-        data = json.load(r)
-    if data.get("type") != "submodule":
-        raise SystemExit(f"src/3rdparty is {data.get('type')}, not a submodule, at {qt_tag}")
-    return data["sha"]
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    sha = github_api_revision(qt_tag) if token else None
+    if not sha:
+        sha = revision_from_git(qt_tag)
+    if not sha and not token:
+        sha = github_api_revision(qt_tag)
+    if not sha:
+        raise SystemExit(
+            f"could not resolve the chromium revision qtwebengine {qt_tag} pins. "
+            "Pass --revision, or set GITHUB_TOKEN when api.github.com is rate-limiting this machine."
+        )
+    return sha
 
 
 def run(args, cwd):
@@ -205,10 +316,22 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--qt-tag", default="v6.8.3", help="qtwebengine tag, e.g. v6.8.3")
-    ap.add_argument("--output", required=True, help="credits file to write")
+    ap.add_argument("--output", help="credits file to write")
     ap.add_argument("--revision", help="skip the lookup and use this chromium revision")
     ap.add_argument("--work", help="reuse this clone directory instead of a temporary one")
+    ap.add_argument("--self-test", action="store_true",
+                    help="check the gitlink parser and exit, without network")
     args = ap.parse_args()
+
+    if args.self_test:
+        sample = "160000 commit 55749ed0af5869215b88007df0cba430746583ae\tsrc/3rdparty\n"
+        assert parse_gitlink(sample) == "55749ed0af5869215b88007df0cba430746583ae"
+        assert parse_gitlink("100644 blob abc\tfile") is None
+        assert parse_gitlink("") is None
+        print("self-test ok")
+        return
+    if not args.output:
+        ap.error("--output is required")
 
     # Windows consoles default to a legacy codepage, and a path this cannot
     # encode would otherwise kill the build on a progress message.
