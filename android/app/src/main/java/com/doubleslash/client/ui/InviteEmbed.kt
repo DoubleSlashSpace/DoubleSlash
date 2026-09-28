@@ -19,6 +19,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Inline Accept / Ignore for a DoubleSlash invite pasted into a chat.
@@ -56,6 +60,27 @@ fun inviteKindOf(url: String): InviteKind {
 }
 
 /**
+ * The `room_id` a room-invite URL names, or `null` if it can't be read.
+ *
+ * The payload is the same base64url(JSON) fragment the core parses (see
+ * `parse_room_invite` in `invite.rs`) — everything after the URL's one `#`,
+ * in both the `https://doubleslash.space/r#…` and `d://room#…` forms. Reading
+ * `room_id` out of it here is display-only, to know when this invite's room
+ * has shown up in the Rooms list; the join itself is authorized by the token
+ * the core already validated when Accept was pressed.
+ */
+fun roomIdFromInviteUrl(url: String): String? {
+    val payload = url.substringAfter('#', "")
+    if (payload.isEmpty()) return null
+    return runCatching {
+        val padded = payload.padEnd((payload.length + 3) / 4 * 4, '=')
+        val bytes = android.util.Base64.decode(padded, android.util.Base64.URL_SAFE)
+        Json.parseToJsonElement(String(bytes, Charsets.UTF_8))
+            .jsonObject["room_id"]?.jsonPrimitive?.contentOrNull
+    }.getOrNull()?.takeIf { it.isNotBlank() }
+}
+
+/**
  * The message text with the invite link removed.
  *
  * The card already shows (an abbreviated form of) the URL, so leaving the raw
@@ -75,6 +100,8 @@ fun InviteEmbed(
     url: String,
     mine: Boolean,
     onAccept: (String) -> Unit,
+    onJoinRoom: (String) -> Unit,
+    joinableRoomIds: Set<String>,
     modifier: Modifier = Modifier,
 ) {
     // Session-local, matching the desktop: accepting is idempotent on the core
@@ -86,6 +113,10 @@ fun InviteEmbed(
     if (ignored) return
 
     val kind = inviteKindOf(url)
+    val roomId = remember(url, kind) { if (kind == InviteKind.ROOM) roomIdFromInviteUrl(url) else null }
+    // Non-null only when it names a room already in the Rooms list — the
+    // signal that `invite.accept` finished and it is safe to jump into it.
+    val joinableRoomId = roomId?.takeIf { joinableRoomIds.contains(it) }
     Card(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.secondaryContainer,
@@ -98,7 +129,7 @@ fun InviteEmbed(
                 style = MaterialTheme.typography.labelLarge,
             )
             Text(
-                subtitle(kind, mine, accepted),
+                subtitle(kind, mine, accepted, joinableRoomId != null),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -115,14 +146,18 @@ fun InviteEmbed(
             // add you to your own trust list.
             if (!mine) {
                 Row {
-                    TextButton(
-                        onClick = {
-                            accepted = true
-                            onAccept(url)
-                        },
-                        enabled = !accepted,
-                    ) {
-                        Text(if (accepted) "Accepting\u2026" else "Accept")
+                    if (joinableRoomId != null) {
+                        TextButton(onClick = { onJoinRoom(joinableRoomId) }) { Text("Join Room") }
+                    } else {
+                        TextButton(
+                            onClick = {
+                                accepted = true
+                                onAccept(url)
+                            },
+                            enabled = !accepted,
+                        ) {
+                            Text(if (accepted) "Accepting\u2026" else "Accept")
+                        }
                     }
                     TextButton(onClick = { ignored = true }) { Text("Ignore") }
                 }
@@ -137,7 +172,8 @@ private fun title(kind: InviteKind, mine: Boolean): String = when (kind) {
     InviteKind.UNKNOWN -> if (mine) "Invite shared" else "DoubleSlash invite"
 }
 
-private fun subtitle(kind: InviteKind, mine: Boolean, accepted: Boolean): String = when {
+private fun subtitle(kind: InviteKind, mine: Boolean, accepted: Boolean, joinable: Boolean): String = when {
+    joinable -> "Ready to join."
     accepted -> "Accepting\u2026"
     mine -> "They can Accept from their chat to connect."
     kind == InviteKind.ROOM -> "Join this room on a trusted supernode."

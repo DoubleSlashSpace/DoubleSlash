@@ -402,6 +402,16 @@ fn spawn_event_pump(
                     &my_public_id,
                     &ev,
                 );
+                persist_if_room_invite_ready(&room_store, &ev);
+                if let ConnectionEvent::RoomInviteReady { supernode_id, .. } = &ev {
+                    // Joining doesn't reliably push a fresh roster back to the
+                    // joiner on its own; ask so the accepted room's voice/text
+                    // counts are right immediately instead of after the next
+                    // reconnect.
+                    let _ = cmd_tx.try_send(ConnectionCommand::RequestRoomList {
+                        supernode_id: supernode_id.clone(),
+                    });
+                }
 
                 if let ConnectionEvent::ClusterMembersUpdated {
                     supernode_id,
@@ -915,6 +925,57 @@ fn persist_if_room_created(
         Err(e) => warn!("could not adopt the room into the space tree: {e}"),
     }
     sync_own_rooms(room_store, cmd_tx, my_public_id, true);
+}
+
+/// Persist a room reached through a pasted room-invite link (chat embed or
+/// `AcceptInviteDialog`), mirroring the desktop bridge's `remember_room_in_store`
+/// and `set_space_linkage`. Without this the room only ever lives in the
+/// connection manager's transient `pending_room_invite_entries` map: the invite
+/// embed's "Accept" flips to "Accepting…" and stays there forever because
+/// `room.list` reads the on-disk store, which nothing ever wrote to.
+fn persist_if_room_invite_ready(room_store: &Arc<RwLock<RoomStore>>, event: &ConnectionEvent) {
+    let ConnectionEvent::RoomInviteReady {
+        supernode_id,
+        room_id,
+        room_name,
+        room_type,
+        invite_token,
+        parent_id,
+        space_id,
+    } = event
+    else {
+        return;
+    };
+
+    if supernode_id.is_empty() || room_id.is_empty() || room_id == "default" {
+        return;
+    }
+
+    let entry = doubleslash_client::room_store::RoomEntry::new(room_id, room_name)
+        .with_type(if room_type.is_empty() {
+            "public"
+        } else {
+            room_type
+        })
+        .with_supernode(supernode_id)
+        .with_creator("", false)
+        .with_invite_token(invite_token)
+        .with_invite_policy("");
+
+    if let Err(e) = room_store.write().upsert(entry) {
+        warn!("could not persist the accepted room invite: {e}");
+        return;
+    }
+
+    if !parent_id.is_empty() || !space_id.is_empty() {
+        if let Err(e) =
+            room_store
+                .write()
+                .set_space_linkage(supernode_id, room_id, parent_id, space_id)
+        {
+            warn!("room_store set_space_linkage error: {e}");
+        }
+    }
 }
 
 /// Send this device's rooms and Space trees to our other devices, as the

@@ -314,6 +314,8 @@ fun AppRoot(viewModel: AppViewModel) {
                     onRetry = { viewModel.retryMessage(it.id) },
                     onDelete = { viewModel.deleteMessage(it.id) },
                     onAcceptInvite = viewModel::acceptInvite,
+                    onJoinRoom = viewModel::joinRoomFromInvite,
+                    joinableRoomIds = state.rooms.map { it.roomId }.toSet(),
                     transfers = state.transfers,
                     onSendFile = viewModel::sendFile,
                 )
@@ -343,6 +345,7 @@ fun AppRoot(viewModel: AppViewModel) {
                         if (wanted) viewModel.startVideo(null) else viewModel.stopVideo(null)
                     },
                     onAcceptInvite = viewModel::acceptInvite,
+                    onJoinRoom = viewModel::joinRoomFromInvite,
                     transfers = state.transfers,
                     onSendFile = viewModel::sendRoomFile,
                     onShare = viewModel::generateRoomInvite,
@@ -1505,6 +1508,8 @@ private fun ChatScreen(
     onRetry: (ChatMessage) -> Unit,
     onDelete: (ChatMessage) -> Unit,
     onAcceptInvite: (String) -> Unit,
+    onJoinRoom: (String) -> Unit,
+    joinableRoomIds: Set<String>,
     transfers: Map<String, Float>,
     onSendFile: (android.net.Uri) -> Unit,
 ) {
@@ -1572,6 +1577,8 @@ private fun ChatScreen(
                         onRetry = { onRetry(message) },
                         onDelete = { onDelete(message) },
                         onAcceptInvite = onAcceptInvite,
+                        onJoinRoom = onJoinRoom,
+                        joinableRoomIds = joinableRoomIds,
                     )
                 }
             }
@@ -1625,6 +1632,8 @@ private fun MessageBubble(
     onRetry: () -> Unit,
     onDelete: () -> Unit,
     onAcceptInvite: (String) -> Unit,
+    onJoinRoom: (String) -> Unit,
+    joinableRoomIds: Set<String>,
 ) {
     val invite = remember(message.body) { findInviteUrl(message.body) }
     // With the link lifted into the card, a message that was only a link has
@@ -1696,7 +1705,13 @@ private fun MessageBubble(
         }
         invite?.let {
             Spacer(Modifier.height(4.dp))
-            InviteEmbed(url = it, mine = message.isSelf, onAccept = onAcceptInvite)
+            InviteEmbed(
+                url = it,
+                mine = message.isSelf,
+                onAccept = onAcceptInvite,
+                onJoinRoom = onJoinRoom,
+                joinableRoomIds = joinableRoomIds,
+            )
         }
         // A failed send is the one status worth spending a line on — the rest
         // (sending, sent, delivered) resolve on their own within a second.
@@ -1743,6 +1758,7 @@ private fun RoomChatScreen(
     onToggleSpeaker: () -> Unit,
     onToggleVideo: (Boolean) -> Unit,
     onAcceptInvite: (String) -> Unit,
+    onJoinRoom: (String) -> Unit,
     transfers: Map<String, Float>,
     onSendFile: (android.net.Uri) -> Unit,
     onShare: () -> Unit,
@@ -1796,6 +1812,7 @@ private fun RoomChatScreen(
         val parentName = state.rooms
             .firstOrNull { room.parentId.isNotBlank() && it.roomId == room.parentId }
             ?.roomName?.ifBlank { null }
+        val joinableRoomIds = remember(state.rooms) { state.rooms.map { it.roomId }.toSet() }
         TopAppBar(
             // The Scaffold above already pays the status-bar inset for this
             // content, and an M3 top bar applies its own by default - which
@@ -1927,6 +1944,8 @@ private fun RoomChatScreen(
                             avatar = avatars[it.senderId],
                             senderName = peers.roomSenderName(it.senderId, it.senderHandle),
                             onAcceptInvite = onAcceptInvite,
+                            onJoinRoom = onJoinRoom,
+                            joinableRoomIds = joinableRoomIds,
                         )
                     }
                 }
@@ -2021,6 +2040,8 @@ private fun RoomMessageBubble(
     avatar: AvatarArt?,
     senderName: String,
     onAcceptInvite: (String) -> Unit,
+    onJoinRoom: (String) -> Unit,
+    joinableRoomIds: Set<String>,
 ) {
     val invite = remember(message.body) { findInviteUrl(message.body) }
     val text = if (invite == null) message.body else bodyWithoutInvite(message.body, invite)
@@ -2073,7 +2094,13 @@ private fun RoomMessageBubble(
             }
             invite?.let {
                 Spacer(Modifier.height(4.dp))
-                InviteEmbed(url = it, mine = message.isSelf, onAccept = onAcceptInvite)
+                InviteEmbed(
+                    url = it,
+                    mine = message.isSelf,
+                    onAccept = onAcceptInvite,
+                    onJoinRoom = onJoinRoom,
+                    joinableRoomIds = joinableRoomIds,
+                )
             }
             Text(
                 formatTime(message.timestamp),

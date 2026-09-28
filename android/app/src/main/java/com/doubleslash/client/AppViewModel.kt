@@ -1851,6 +1851,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Enter a room reached through an invite embed's "Join Room" button.
+     *
+     * Switches to the Rooms tab so backing out of the room lands there
+     * instead of wherever the invite was accepted from — a direct chat, or
+     * another room's chat.
+     */
+    fun joinRoomFromInvite(roomId: String) {
+        val room = _state.value.rooms.firstOrNull { it.roomId == roomId } ?: return
+        selectTab(HomeTab.ROOMS)
+        openRoom(room)
+    }
+
+    /**
      * Offer [memberId], a member of room [roomId], to become trusted peers.
      *
      * The core seals a fresh invite to them; they are asked before anything
