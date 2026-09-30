@@ -16,7 +16,7 @@ ApplicationWindow {
     width: 1100
     height: 700
     visible: false
-    minimumWidth: 960
+    minimumWidth: 768
     minimumHeight: 640
     // CustomizeWindowHint hides Qt's default title-bar widgets. On Windows,
     // window_chrome.cpp re-applies WS_CAPTION|WS_THICKFRAME and handles
@@ -851,7 +851,7 @@ ApplicationWindow {
         // Invite / peer-ID paste field
         StyledTextField {
             id: inviteField
-            Layout.preferredWidth: 220
+            Layout.preferredWidth: 160
             Layout.preferredHeight: Theme.controlHeight
             Layout.maximumHeight: Theme.controlHeight
             Layout.alignment: Qt.AlignVCenter
@@ -869,7 +869,9 @@ ApplicationWindow {
         StyledButton {
             id: connectBtn
             enabled: inviteField.text.trim().length > 0
-            Layout.preferredWidth: Theme.touchTarget
+            Layout.preferredWidth: Theme.controlHeight
+            leftPadding: 6
+            rightPadding: 6
             Layout.preferredHeight: Theme.controlHeight
             Layout.maximumHeight: Theme.controlHeight
             Layout.alignment: Qt.AlignVCenter
@@ -890,7 +892,9 @@ ApplicationWindow {
         // New Invite button
         StyledButton {
             id: newInviteBtn
-            text: "Invite"
+            Layout.preferredWidth: Theme.controlHeight
+            leftPadding: 6
+            rightPadding: 6
             primary: true
             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
             Layout.preferredHeight: Theme.controlHeight
