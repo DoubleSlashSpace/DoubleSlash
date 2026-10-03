@@ -1,0 +1,5 @@
+<!-- From rust/doubleslash-client/qml/icons/plus.svg -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="20dp" android:height="20dp" android:viewportWidth="20" android:viewportHeight="20">
+    <path android:pathData="M10,3L10,17" android:fillColor="@android:color/transparent" android:strokeColor="#C8C8C8" android:strokeWidth="1.5" android:strokeLineCap="butt" android:strokeLineJoin="miter"/>
+    <path android:pathData="M3,10L17,10" android:fillColor="@android:color/transparent" android:strokeColor="#C8C8C8" android:strokeWidth="1.5" android:strokeLineCap="butt" android:strokeLineJoin="miter"/>
+</vector>

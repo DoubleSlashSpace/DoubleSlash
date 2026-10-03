@@ -766,7 +766,7 @@ ApplicationWindow {
     }
 
     // Local sidebar tombstones. Hidden rooms stay in the model; the tree
-    // draws them only while this is on, the same way the phone's + does.
+    // draws them only while this is on, the same way the phone's list header does.
     property bool showHiddenRooms: false
     // Blocked peers are the Peers list's hidden ones, on both clients.
     property bool showBlockedPeers: false
@@ -917,105 +917,6 @@ ApplicationWindow {
         }
 
         Item { Layout.fillWidth: true }
-
-        // Same place as the phone: immediately left of your avatar. What it
-        // offers follows the list on screen, as the phone's does.
-        ToolButton {
-            id: roomAddButton
-            Layout.alignment: Qt.AlignVCenter
-            Layout.preferredWidth: 30
-            Layout.preferredHeight: 30
-            padding: 6
-            flat: true
-            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
-            icon.width: 18
-            icon.height: 18
-            icon.color: Theme.text
-            Accessible.name: root.sidebarTab === 1 ? qsTr("Create or join a room") : qsTr("Add a peer")
-            ToolTip.text: Accessible.name
-            ToolTip.visible: hovered
-            ToolTip.delay: Theme.animSlow
-            onClicked: root.sidebarTab === 1 ? roomAddMenu.popup() : peerAddMenu.popup()
-
-            Menu {
-                id: peerAddMenu
-
-                MenuItem {
-                    text: qsTr("Create an invite")
-                    onTriggered: newInviteBtn.clicked()
-                }
-                MenuItem {
-                    text: qsTr("Join with an invite…")
-                    onTriggered: acceptInviteDialog.open()
-                }
-                MenuItem {
-                    visible: root.blockedPeerCount > 0
-                    height: visible ? implicitHeight : 0
-                    text: root.showBlockedPeers
-                        ? qsTr("Hide %1 blocked").arg(root.blockedPeerCount)
-                        : qsTr("Show %1 blocked").arg(root.blockedPeerCount)
-                    onTriggered: root.showBlockedPeers = !root.showBlockedPeers
-                }
-                MenuItem {
-                    text: qsTr("Refresh")
-                    onTriggered: backend.refreshPeers()
-                }
-            }
-
-            Menu {
-                id: roomAddMenu
-
-                MenuItem {
-                    text: qsTr("Create a room…")
-                    enabled: nodeListModel.count > 0
-                    onTriggered: createRoomDialog.openNew()
-                }
-                MenuItem {
-                    text: qsTr("Join with an invite…")
-                    onTriggered: acceptInviteDialog.open()
-                }
-                MenuItem {
-                    visible: root.hiddenRoomCount > 0
-                    text: root.showHiddenRooms
-                        ? qsTr("Hide %1 hidden").arg(root.hiddenRoomCount)
-                        : qsTr("Show %1 hidden").arg(root.hiddenRoomCount)
-                    onTriggered: root.showHiddenRooms = !root.showHiddenRooms
-                }
-                Menu {
-                    id: roomSortMenu
-                    title: qsTr("Sort rooms")
-
-                    function mark(mode) {
-                        return RoomTree.sortMode(root.roomListOrder) === mode ? "\u2713  " : ""
-                    }
-
-                    MenuItem {
-                        text: roomSortMenu.mark("name_asc") + qsTr("Name (A\u2013Z)")
-                        onTriggered: root.setRoomSort("name_asc")
-                    }
-                    MenuItem {
-                        text: roomSortMenu.mark("name_desc") + qsTr("Name (Z\u2013A)")
-                        onTriggered: root.setRoomSort("name_desc")
-                    }
-                    MenuItem {
-                        text: roomSortMenu.mark("peers_asc") + qsTr("Fewest people")
-                        onTriggered: root.setRoomSort("peers_asc")
-                    }
-                    MenuItem {
-                        text: roomSortMenu.mark("peers_desc") + qsTr("Most people")
-                        onTriggered: root.setRoomSort("peers_desc")
-                    }
-                    MenuItem {
-                        text: roomSortMenu.mark("manual") + qsTr("Manual order")
-                        onTriggered: root.setRoomSort("manual")
-                    }
-                }
-                MenuItem {
-                    text: qsTr("Refresh")
-                    onTriggered: backend.refreshRooms()
-                }
-            }
-        }
 
         // Discord-style update affordance: present but unobtrusive until a
         // release is ready. The installer owns shutdown, install, and relaunch.
@@ -2179,6 +2080,112 @@ ApplicationWindow {
             clip: true
             spacing: 0
 
+            // Compact actions for the selected list.
+            RowLayout {
+                visible: navIndex !== 2
+                Layout.fillWidth: true
+                Layout.margins: Theme.spacingXs
+                spacing: Theme.spacingXs
+                ToolButton {
+                    icon.source: root.sidebarTab === 1 ? "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg" : "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
+                    icon.color: Theme.text
+                    icon.width: 18; icon.height: 18
+                    Layout.preferredWidth: 32; Layout.preferredHeight: 32
+                    padding: 6
+                    Accessible.name: root.sidebarTab === 1 ? qsTr("Create Room") : qsTr("Create an Invite")
+                    ToolTip.text: Accessible.name
+                    ToolTip.visible: hovered || visualFocus
+                    onClicked: root.sidebarTab === 1 ? createRoomDialog.openNew() : newInviteBtn.clicked()
+                    enabled: root.sidebarTab === 0 || nodeListModel.count > 0
+                }
+                ToolButton {
+                    id: hiddenToggle
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/eye.svg"
+                    icon.color: Theme.text
+                    icon.width: 18; icon.height: 18
+                    Layout.preferredWidth: 32; Layout.preferredHeight: 32
+                    padding: 6
+                    Accessible.name: (showing ? qsTr("Hide %1 hidden") : qsTr("Show %1 hidden")).arg(hiddenCount)
+                    ToolTip.text: Accessible.name
+                    ToolTip.visible: hovered || visualFocus
+                    onClicked: {
+                        if (root.sidebarTab === 1) root.showHiddenRooms = !root.showHiddenRooms
+                        else root.showBlockedPeers = !root.showBlockedPeers
+                    }
+                    readonly property int hiddenCount: root.sidebarTab === 1 ? root.hiddenRoomCount : root.blockedPeerCount
+                    readonly property bool showing: root.sidebarTab === 1 ? root.showHiddenRooms : root.showBlockedPeers
+                    highlighted: showing
+                    enabled: hiddenCount > 0
+                    Text {
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        text: hiddenToggle.hiddenCount
+                        visible: hiddenToggle.hiddenCount > 0
+                        color: Theme.text
+                        font.pixelSize: 10
+                    }
+                }
+                ToolButton {
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/sort.svg"
+                    icon.color: Theme.text
+                    icon.width: 18; icon.height: 18
+                    Layout.preferredWidth: 32; Layout.preferredHeight: 32
+                    padding: 6
+                    Accessible.name: root.sidebarTab === 1 ? qsTr("Sort Rooms") : qsTr("Sort Peers")
+                    ToolTip.text: Accessible.name
+                    ToolTip.visible: hovered || visualFocus
+                    onClicked: root.sidebarTab === 1 ? roomSortMenu.popup() : peerSortMenu.popup()
+                    Menu {
+                        id: roomSortMenu
+                        title: qsTr("Sort rooms")
+
+                        function mark(mode) {
+                            return RoomTree.sortMode(root.roomListOrder) === mode ? "\u2713  " : ""
+                        }
+
+                        MenuItem {
+                            text: roomSortMenu.mark("name_asc") + qsTr("Name (A\u2013Z)")
+                            onTriggered: root.setRoomSort("name_asc")
+                        }
+                        MenuItem {
+                            text: roomSortMenu.mark("name_desc") + qsTr("Name (Z\u2013A)")
+                            onTriggered: root.setRoomSort("name_desc")
+                        }
+                        MenuItem {
+                            text: roomSortMenu.mark("peers_asc") + qsTr("Fewest people")
+                            onTriggered: root.setRoomSort("peers_asc")
+                        }
+                        MenuItem {
+                            text: roomSortMenu.mark("peers_desc") + qsTr("Most people")
+                            onTriggered: root.setRoomSort("peers_desc")
+                        }
+                        MenuItem {
+                            text: roomSortMenu.mark("manual") + qsTr("Manual order")
+                            onTriggered: root.setRoomSort("manual")
+                        }
+                    }
+                    Menu {
+                        id: peerSortMenu
+                        MenuItem { text: qsTr("Name (A\u2013Z)"); onTriggered: { peerList.sortMode = "name_asc"; peerModel.setSortMode("name_asc") } }
+                        MenuItem { text: qsTr("Name (Z\u2013A)"); onTriggered: { peerList.sortMode = "name_desc"; peerModel.setSortMode("name_desc") } }
+                        MenuItem { text: qsTr("Online first"); onTriggered: { peerList.sortMode = "online"; peerModel.setSortMode("online") } }
+                    }
+                }
+                Item { Layout.fillWidth: true }
+                ToolButton {
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
+                    icon.color: Theme.text
+                    icon.width: 18; icon.height: 18
+                    Layout.preferredWidth: 32; Layout.preferredHeight: 32
+                    padding: 6
+                    Accessible.name: qsTr("Refresh")
+                    ToolTip.text: Accessible.name
+                    ToolTip.visible: hovered || visualFocus
+                    onClicked: root.sidebarTab === 1 ? backend.refreshRooms() : backend.refreshPeers()
+
+                }
+            }
+
             // Tab content (hidden while settings nav is active)
             StackLayout {
                 Layout.fillWidth: true
@@ -2406,7 +2413,7 @@ ApplicationWindow {
                             iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
                             iconSize: 30
                             title: "All rooms are hidden"
-                            subtitle: "Use + to show them."
+                            subtitle: "Use Show hidden in the list header to show them."
                         }
 
                         delegate: Item {

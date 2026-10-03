@@ -36,15 +36,16 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.AddCircle
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.automirrored.filled.List
@@ -83,6 +84,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -818,6 +823,38 @@ private fun UnlockScreen(
 
 // ── Home ───────────────────────────────────────────────────────────────────
 
+/** SVG-derived vector icons shared with the desktop controls. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ListActionIcon(
+    drawable: Int,
+    label: String,
+    enabled: Boolean = true,
+    selected: Boolean = false,
+    count: Int = 0,
+    onClick: () -> Unit,
+) {
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        tooltip = { PlainTooltip { Text(label) } },
+        state = rememberTooltipState(),
+    ) {
+        Box {
+            IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    painterResource(drawable), contentDescription = label,
+                    modifier = Modifier.size(18.dp),
+                    tint = if (selected) MaterialTheme.colorScheme.primary else LocalContentColor.current,
+                )
+            }
+            if (count > 0) Text(
+                count.toString(), modifier = Modifier.align(Alignment.TopEnd),
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HomeScreen(
@@ -827,7 +864,9 @@ private fun HomeScreen(
 ) {
     val state by viewModel.state.collectAsState()
     var showAccept by remember { mutableStateOf(false) }
-    var showAddMenu by remember { mutableStateOf(false) }
+    var showSortMenu by remember { mutableStateOf(false) }
+    var peerSortMode by rememberSaveable { mutableStateOf("online") }
+    var inviteText by rememberSaveable { mutableStateOf("") }
     var confirmRemovePeer by remember { mutableStateOf<Peer?>(null) }
     var reportPeer by remember { mutableStateOf<Peer?>(null) }
     var showCreateRoom by remember { mutableStateOf(false) }
@@ -864,112 +903,6 @@ private fun HomeScreen(
                 )
             },
             actions = {
-                Box {
-                    IconButton(onClick = { showAddMenu = true }) {
-                        Icon(
-                            Icons.Filled.Add,
-                            contentDescription = if (state.tab == HomeTab.PEERS) {
-                                "Add a peer"
-                            } else {
-                                "Create or join a room"
-                            },
-                        )
-                    }
-                    DropdownMenu(expanded = showAddMenu, onDismissRequest = { showAddMenu = false }) {
-                        if (state.tab == HomeTab.PEERS) {
-                            DropdownMenuItem(
-                                text = { Text("Create an invite") },
-                                onClick = {
-                                    showAddMenu = false
-                                    viewModel.generateInvite()
-                                },
-                            )
-                        } else {
-                            DropdownMenuItem(
-                                text = { Text("Create a room...") },
-                                enabled = state.supernodes.isNotEmpty(),
-                                onClick = {
-                                    showAddMenu = false
-                                    showCreateRoom = true
-                                },
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = { Text("Join with an invite...") },
-                            onClick = {
-                                showAddMenu = false
-                                showAccept = true
-                            },
-                        )
-                        val blockedCount = state.peers.count { it.blocked }
-                        if (state.tab == HomeTab.PEERS && blockedCount > 0) {
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (state.showBlockedPeers) {
-                                            "Hide $blockedCount blocked"
-                                        } else {
-                                            "Show $blockedCount blocked"
-                                        },
-                                    )
-                                },
-                                onClick = {
-                                    showAddMenu = false
-                                    viewModel.toggleShowBlockedPeers()
-                                },
-                            )
-                        }
-                        val hiddenCount = state.rooms.count { it.hidden }
-                        if (state.tab == HomeTab.ROOMS && hiddenCount > 0) {
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (state.showHiddenRooms) {
-                                            "Hide $hiddenCount hidden"
-                                        } else {
-                                            "Show $hiddenCount hidden"
-                                        },
-                                    )
-                                },
-                                onClick = {
-                                    showAddMenu = false
-                                    viewModel.toggleShowHiddenRooms()
-                                },
-                            )
-                        }
-                        if (state.tab == HomeTab.ROOMS) {
-                            HorizontalDivider()
-                            Text(
-                                "Sort rooms",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                            )
-                            ROOM_SORT_OPTIONS.forEach { (mode, label) ->
-                                val selected = state.prefs.roomListOrder.mode == mode
-                                DropdownMenuItem(
-                                    text = { Text(if (selected) "\u2713  $label" else label) },
-                                    onClick = {
-                                        showAddMenu = false
-                                        viewModel.setRoomSortMode(mode)
-                                    },
-                                )
-                            }
-                            HorizontalDivider()
-                        }
-                        DropdownMenuItem(
-                            text = { Text("Refresh") },
-                            onClick = {
-                                showAddMenu = false
-                                if (state.tab == HomeTab.PEERS) {
-                                    viewModel.refreshPeers()
-                                } else {
-                                    viewModel.refreshRooms()
-                                }
-                            },
-                        )
-                    }
-                }
                 // Your avatar opens Settings on Identity, as the desktop's
                 // title-bar avatar does. The logo's old app menu lives there.
                 IconButton(
@@ -986,12 +919,104 @@ private fun HomeScreen(
             },
         )
 
+        // Compact invite controls stay available on both lists.
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            BasicTextField(
+                value = inviteText,
+                onValueChange = { inviteText = it },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                keyboardActions = KeyboardActions(onGo = {
+                    if (inviteText.isNotBlank()) {
+                        viewModel.acceptInvite(inviteText)
+                        inviteText = ""
+                    }
+                }),
+                modifier = Modifier.weight(1f).height(32.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp))
+                    .semantics { contentDescription = "Invite link or peer ID" },
+                decorationBox = { field ->
+                    Box(Modifier.padding(horizontal = 8.dp), contentAlignment = Alignment.CenterStart) {
+                        if (inviteText.isEmpty()) Text(
+                            "Paste invite\u2026", style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        field()
+                    }
+                },
+            )
+            ListActionIcon(R.drawable.ic_invite_submit, "Accept invite", enabled = inviteText.isNotBlank()) {
+                viewModel.acceptInvite(inviteText)
+                inviteText = ""
+            }
+            ListActionIcon(R.drawable.ic_invite, "Copy invite", enabled = !state.busy) {
+                viewModel.generateInvite(copyToClipboard = true)
+            }
+        }
+
         ConnectionBanner(state.connectionMode)
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val rooms = state.tab == HomeTab.ROOMS
+            val hiddenCount = if (rooms) state.rooms.count { it.hidden } else state.peers.count { it.blocked }
+            val showing = if (rooms) state.showHiddenRooms else state.showBlockedPeers
+            ListActionIcon(
+                if (rooms) R.drawable.ic_list_plus else R.drawable.ic_invite,
+                if (rooms) "Create Room" else "Create an Invite",
+                enabled = if (rooms) state.supernodes.isNotEmpty() else !state.busy,
+            ) {
+                if (rooms) showCreateRoom = true else viewModel.generateInvite(copyToClipboard = true)
+            }
+            ListActionIcon(
+                R.drawable.ic_list_eye,
+                if (showing) "Hide $hiddenCount hidden" else "Show $hiddenCount hidden",
+                enabled = hiddenCount > 0,
+                selected = showing,
+                count = hiddenCount,
+            ) {
+                if (rooms) viewModel.toggleShowHiddenRooms() else viewModel.toggleShowBlockedPeers()
+            }
+            Box {
+                ListActionIcon(R.drawable.ic_list_sort, if (rooms) "Sort Rooms" else "Sort Peers") {
+                    showSortMenu = true
+                }
+                DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
+                    val options = if (rooms) ROOM_SORT_OPTIONS else listOf(
+                        "name_asc" to "Name (A\u2013Z)", "name_desc" to "Name (Z\u2013A)", "online" to "Online first",
+                    )
+                    options.forEach { (mode, label) ->
+                        val selected = mode == if (rooms) state.prefs.roomListOrder.mode else peerSortMode
+                        DropdownMenuItem(
+                            text = { Text(if (selected) "\u2713  $label" else label) },
+                            onClick = {
+                                showSortMenu = false
+                                if (rooms) viewModel.setRoomSortMode(mode) else peerSortMode = mode
+                            },
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            ListActionIcon(R.drawable.ic_list_refresh, "Refresh") {
+                if (rooms) viewModel.refreshRooms() else viewModel.refreshPeers()
+            }
+        }
+
 
         Box(Modifier.weight(1f)) {
             when (state.tab) {
                 HomeTab.PEERS -> PeersList(
                     state = state,
+                    sortMode = peerSortMode,
                     onOpenPeer = viewModel::openChat,
                     onCreateInvite = { viewModel.generateInvite() },
                     onAcceptInvite = { showAccept = true },
@@ -1021,7 +1046,7 @@ private fun HomeScreen(
                                 if (state.rooms.isEmpty()) {
                                     "Rooms you create or are invited to appear here."
                                 } else {
-                                    "Use + to show them."
+                                    "Use Show hidden in the list header to show them."
                                 },
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1110,6 +1135,7 @@ private fun HomeScreen(
 @Composable
 private fun PeersList(
     state: AppState,
+    sortMode: String,
     onOpenPeer: (Peer) -> Unit,
     onCreateInvite: () -> Unit,
     onAcceptInvite: () -> Unit,
@@ -1122,8 +1148,14 @@ private fun PeersList(
         return
     }
     // Blocked peers are the list's hidden ones, as on the desktop: out of the
-    // way until the + menu's "Show blocked".
-    val shown = state.peers.filter { state.showBlockedPeers || !it.blocked }
+    // way until the list header's "Show hidden".
+    val byName = compareBy<Peer> { it.label.lowercase(java.util.Locale.ROOT) }.thenBy { it.peerId }
+    val order = when (sortMode) {
+        "name_desc" -> byName.reversed()
+        "name_asc" -> byName
+        else -> compareBy<Peer> { it.peerId !in state.onlinePeers }.then(byName)
+    }
+    val shown = state.peers.filter { state.showBlockedPeers || !it.blocked }.sortedWith(order)
     if (shown.isEmpty()) {
         Column(
             modifier = Modifier.fillMaxSize().padding(32.dp),
@@ -1133,7 +1165,7 @@ private fun PeersList(
             Text("All peers are blocked", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
             Text(
-                "Use + to show them.",
+                "Use Show hidden in the list header to show them.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

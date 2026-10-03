@@ -1,0 +1,7 @@
+<!-- From rust/doubleslash-client/qml/icons/invite.svg -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="20dp" android:height="20dp" android:viewportWidth="20" android:viewportHeight="20">
+    <path android:pathData="M3.25 7.75H16.75V16.25H3.25V7.75Z" android:fillColor="@android:color/transparent" android:strokeColor="#C8C8C8" android:strokeWidth="1.5" android:strokeLineCap="butt" android:strokeLineJoin="round"/>
+    <path android:pathData="M3.5 8L10 12.75L16.5 8" android:fillColor="@android:color/transparent" android:strokeColor="#C8C8C8" android:strokeWidth="1.5" android:strokeLineCap="round" android:strokeLineJoin="round"/>
+    <path android:pathData="M15.25 2.75V6.75" android:fillColor="@android:color/transparent" android:strokeColor="#C8C8C8" android:strokeWidth="1.4" android:strokeLineCap="round" android:strokeLineJoin="miter"/>
+    <path android:pathData="M13.25 4.75H17.25" android:fillColor="@android:color/transparent" android:strokeColor="#C8C8C8" android:strokeWidth="1.4" android:strokeLineCap="round" android:strokeLineJoin="miter"/>
+</vector>

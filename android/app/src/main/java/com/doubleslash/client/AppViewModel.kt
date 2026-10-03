@@ -1261,9 +1261,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── Invites ───────────────────────────────────────────────────────────
 
-    fun generateInvite() = viewModelScope.launch {
+    fun generateInvite(copyToClipboard: Boolean = false) = viewModelScope.launch {
         _state.update { it.copy(busy = true) }
         val reply = core.command("invite.generate")
+        if (reply.ok && copyToClipboard) {
+            reply.string("invite_url")?.takeIf { it.isNotBlank() }?.let { copyPlain("Invite", it) }
+        }
         _state.update {
             if (reply.ok) {
                 it.copy(busy = false, inviteUrl = reply.string("invite_url"))

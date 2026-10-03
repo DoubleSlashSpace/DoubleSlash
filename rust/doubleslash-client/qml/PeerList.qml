@@ -12,9 +12,10 @@ Rectangle {
     property int peerCount: 0
     property var peerModel: null
     property string selectedPeerId: ""
-    /// Blocked peers are hidden unless this is on — the Peers "+" menu's
-    /// "Show N blocked", matching the phone.
+    /// Blocked peers are hidden unless this is on — the Peers header's
+    /// "Show N hidden", matching the phone.
     property bool showBlocked: false
+    property string sortMode: "online"
     /// How many peers are blocked, so an all-blocked list can say so.
     property int blockedCount: 0
     signal peerSelected(string peerId, string handle)
@@ -38,7 +39,7 @@ Rectangle {
             model: root.peerModel
 
             // Section grouping: Online peers first, then Offline
-            section.property: "online"
+            section.property: root.sortMode === "online" ? "online" : ""
             section.criteria: ViewSection.FullString
             section.delegate: Rectangle {
                 width: peerListView.width
@@ -69,7 +70,7 @@ Rectangle {
                 iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/peers.svg"
                 iconSize: 32
                 title: allHidden ? qsTr("All peers are blocked") : qsTr("No peers yet")
-                subtitle: allHidden ? qsTr("Use + to show them.")
+                subtitle: allHidden ? qsTr("Use Show hidden in the list header to show them.")
                                     : qsTr("Paste an invite above to add a trusted peer.")
             }
 

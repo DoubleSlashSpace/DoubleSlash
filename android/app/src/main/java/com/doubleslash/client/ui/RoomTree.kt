@@ -178,7 +178,7 @@ internal const val ROOM_SORT_MANUAL = "manual"
 internal const val DEFAULT_ROOM_LIST_ORDER_JSON =
     """{"mode":"name_asc","pinned":[],"manual":[]}"""
 
-/** Labels in the + menu, in the same order as the desktop's Sort rooms menu. */
+/** Labels in the list header sort menu, in the same order as the desktop's Sort rooms menu. */
 internal val ROOM_SORT_OPTIONS = listOf(
     ROOM_SORT_NAME_ASC to "Name (A\u2013Z)",
     ROOM_SORT_NAME_DESC to "Name (Z\u2013A)",

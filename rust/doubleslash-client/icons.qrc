@@ -49,5 +49,7 @@
         <file alias="icons/arrow-down.svg">qml/icons/arrow-down.svg</file>
         <file alias="icons/folder.svg">qml/icons/folder.svg</file>
         <file alias="icons/handshake.svg">qml/icons/handshake.svg</file>
+        <file alias="icons/eye.svg">qml/icons/eye.svg</file>
+        <file alias="icons/sort.svg">qml/icons/sort.svg</file>
     </qresource>
 </RCC>

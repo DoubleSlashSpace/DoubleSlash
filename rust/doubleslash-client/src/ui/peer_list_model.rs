@@ -62,6 +62,10 @@ pub mod ffi {
         #[rust_name = "set_peers"]
         fn setPeers(self: Pin<&mut Self>, peers: &QString);
 
+        #[qinvokable]
+        #[rust_name = "set_sort_mode"]
+        fn setSortMode(self: Pin<&mut Self>, mode: &QString);
+
         /// Mark a peer as online/offline.
         #[qinvokable]
         #[rust_name = "set_online"]
@@ -124,6 +128,7 @@ pub struct PeerEntry {
 #[derive(Default)]
 pub struct PeerListModelRust {
     peers: Vec<PeerEntry>,
+    sort_mode: String,
 }
 
 impl ffi::PeerListModel {
@@ -164,16 +169,37 @@ impl ffi::PeerListModel {
     }
 
     fn set_peers(mut self: Pin<&mut Self>, peers_json: &QString) {
-        if let Ok(entries) = parse_peer_entries(&peers_json.to_string()) {
+        if let Ok(mut entries) = parse_peer_entries(&peers_json.to_string()) {
+            sort_peers(&mut entries, &self.sort_mode);
             self.as_mut().begin_reset_model();
             self.as_mut().rust_mut().peers = entries;
             self.as_mut().end_reset_model();
         }
     }
 
+    fn set_sort_mode(mut self: Pin<&mut Self>, mode: &QString) {
+        let mode = mode.to_string();
+        if !matches!(mode.as_str(), "name_asc" | "name_desc" | "online") {
+            return;
+        }
+        self.as_mut().begin_reset_model();
+        let state = self.as_mut().rust_mut().get_mut();
+        state.sort_mode = mode;
+        sort_peers(&mut state.peers, &state.sort_mode);
+        self.as_mut().end_reset_model();
+    }
+
     fn set_online(mut self: Pin<&mut Self>, peer_id: &QString, online: bool) {
         let id = peer_id.to_string();
         if let Some(idx) = self.rust().peers.iter().position(|p| p.peer_id == id) {
+            if self.sort_mode.is_empty() || self.sort_mode == "online" {
+                self.as_mut().begin_reset_model();
+                let state = self.as_mut().rust_mut().get_mut();
+                state.peers[idx].online = online;
+                sort_peers(&mut state.peers, &state.sort_mode);
+                self.as_mut().end_reset_model();
+                return;
+            }
             self.as_mut().rust_mut().peers[idx].online = online;
             emit_row_changed(self.as_mut(), idx as i32, peer_roles::ONLINE);
         }
@@ -202,6 +228,21 @@ impl ffi::PeerListModel {
             self.as_mut().rust_mut().peers[idx].is_typing = is_typing;
             emit_row_changed(self.as_mut(), idx as i32, peer_roles::IS_TYPING);
         }
+    }
+}
+
+fn sort_peers(peers: &mut [PeerEntry], mode: &str) {
+    peers.sort_by_cached_key(|peer| {
+        let label = if peer.handle.is_empty() {
+            &peer.peer_id
+        } else {
+            &peer.handle
+        };
+        let offline = (mode.is_empty() || mode == "online") && !peer.online;
+        (offline, label.to_lowercase(), peer.peer_id.clone())
+    });
+    if mode == "name_desc" {
+        peers.reverse();
     }
 }
 
@@ -251,4 +292,53 @@ fn parse_peer_entries(json: &str) -> Result<Vec<PeerEntry>, serde_json::Error> {
             is_typing: r.is_typing,
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sort_peers, PeerEntry};
+
+    #[test]
+    fn peer_sort_uses_names_presence_and_stable_identity_ties() {
+        let mut peers = vec![
+            PeerEntry {
+                peer_id: "z".into(),
+                handle: "alice".into(),
+                unread_count: 3,
+                ..Default::default()
+            },
+            PeerEntry {
+                peer_id: "b".into(),
+                handle: "Bob".into(),
+                online: true,
+                ..Default::default()
+            },
+            PeerEntry {
+                peer_id: "a".into(),
+                handle: "ALICE".into(),
+                blocked: true,
+                ..Default::default()
+            },
+        ];
+        sort_peers(&mut peers, "name_asc");
+        assert_eq!(
+            peers.iter().map(|p| p.peer_id.as_str()).collect::<Vec<_>>(),
+            ["a", "z", "b"]
+        );
+        sort_peers(&mut peers, "name_desc");
+        assert_eq!(
+            peers.iter().map(|p| p.peer_id.as_str()).collect::<Vec<_>>(),
+            ["b", "z", "a"]
+        );
+        sort_peers(&mut peers, "online");
+        assert_eq!(
+            peers.iter().map(|p| p.peer_id.as_str()).collect::<Vec<_>>(),
+            ["b", "a", "z"]
+        );
+        assert!(peers[1].blocked);
+        assert_eq!(peers[2].unread_count, 3);
+        peers[2].online = true;
+        sort_peers(&mut peers, "online");
+        assert_eq!(peers[0].peer_id, "z");
+    }
 }
