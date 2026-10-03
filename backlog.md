@@ -25,6 +25,16 @@ in [`README.md`](README.md) and on the website must have a home here.
 Fixes and live acceptance of paths the product already advertises. Do not start
 new capture backends or pairing protocols until these have a written result.
 
+### Large file transfer acceptance
+
+The client limit is 4 GiB. Verify a complete maximum-size file between packaged
+desktop and Android clients on direct and relayed paths, including a room pull,
+a slow transfer lasting over an hour, voice during transfer, and disconnect /
+retry and insufficient-disk failures. Boundary and streaming unit tests do not
+establish this live acceptance. Full-file hashing still runs synchronously in
+the connection manager at offer preparation and receive verification; move it
+off the manager loop before claiming uninterrupted voice during large sends.
+
 ### Unified room member list and trust invites
 
 The room member list now lives in the desktop `VoiceRail` and the Android

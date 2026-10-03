@@ -168,7 +168,7 @@ fn checked_file(real: PathBuf, asked: &str) -> Result<PathBuf, String> {
     if !meta.is_file() {
         return Err(format!("'{asked}' is not a file"));
     }
-    if meta.len() > MAX_TRANSFER_SIZE as u64 {
+    if meta.len() > MAX_TRANSFER_SIZE {
         return Err(format!(
             "'{asked}' is {} bytes, over the {MAX_TRANSFER_SIZE}-byte transfer limit",
             meta.len()

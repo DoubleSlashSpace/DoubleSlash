@@ -12,7 +12,7 @@ Peers connect directly over QUIC or through chosen supernodes. Supernodes provid
 
 - Direct and room chat with local history and unread counts. Direct chat includes delivery states and typing indicators. Room history is keyed by room ID, so changing the hosting supernode does not create a new conversation.
 - Opus voice calls with push-to-talk, voice activation, noise suppression, and jitter buffering. Desktop controls include device selection, per-peer volume, and mute.
-- File transfers up to 250 MiB. Files over 8 MiB stream from disk. Room files are advertised first and sent to members who request them; the sender must remain available. Revoking an offer stops further downloads but cannot remove copies already received.
+- File transfers up to 4 GiB. Files over 8 MiB stream from disk. Room files are advertised first and sent to members who request them; the sender must remain available. Revoking an offer stops further downloads but cannot remove copies already received.
 - Local peer blocking, identity-derived avatars, and encrypted peer and room stores.
 
 ### Video & Screen Sharing

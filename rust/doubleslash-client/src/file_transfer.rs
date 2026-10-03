@@ -48,18 +48,20 @@ use crate::protocol::MessageType;
 
 /// Chunk size (65 536 bytes = 64 KiB).
 pub const CHUNK_SIZE: usize = 65_536;
-/// Maximum accepted file size (250 MiB).
+/// Maximum accepted file size (4 GiB), independent of inline decoding limits.
 ///
 /// Anything above [`INLINE_MAX`] is carried by the streaming path, so this
 /// ceiling bounds disk use and transfer duration, not resident memory.
-pub const MAX_TRANSFER_SIZE: usize = 250 * 1024 * 1024;
+pub const MAX_TRANSFER_SIZE: u64 = 4 * 1024 * 1024 * 1024;
 /// Largest file carried entirely in memory (8 MiB).
 ///
 /// At or below this a transfer may be compressed or delta-encoded and is held
 /// as a `Vec<u8>`; above it the streaming path applies. This also caps every
-/// *expansion* bound below (decompression bombs, delta output): only inline
-/// transfers are ever compressed, so nothing can legitimately inflate past it.
+/// reconstructed-file bound below (decompression bombs, delta output).
+/// Delta opcode decoding has a separate allowance for instruction overhead.
 pub const INLINE_MAX: usize = 8 * 1024 * 1024;
+/// Bounded scratch space for decompressed delta instructions, including headers.
+const MAX_DELTA_BYTES: usize = 2 * INLINE_MAX;
 /// Minimum input size before compression is attempted.
 const COMPRESSION_THRESHOLD: usize = 1024;
 /// Delta wire-format magic (identical to Rust crypto crate).
@@ -94,6 +96,9 @@ const STALL_GIVE_UP_SECS: f64 = 120.0;
 /// The supernode caches nothing, so this is the entire window in which a room
 /// member can accept a file and have it re-streamed from the sender's disk.
 pub const OFFER_TTL_SECS: f64 = 3600.0;
+/// Active transfers expire after an hour without progress, not an hour after
+/// the offer. A slow, progressing download may take longer than the offer TTL.
+const TRANSFER_IDLE_SECS: f64 = 3600.0;
 
 /// How long a room pull may wait for its first chunk before it fails.
 ///
@@ -206,6 +211,7 @@ pub struct OutboundTransfer {
     pub compressed: bool,
     pub is_delta: bool,
     pub created_at: f64,
+    last_progress_at: f64,
     /// Room transfers only: the peer this stream is being sent to.
     ///
     /// Empty for a broadcast (1:1, or an offer not yet requested). Set when a
@@ -289,6 +295,7 @@ pub struct InboundTransfer {
     pub is_delta: bool,
     pub base_sha256: String,
     pub created_at: f64,
+    last_progress_at: f64,
     /// Terminal-state timestamp, for eviction. `None` while still active.
     pub finished_at: Option<f64>,
     /// Room pulls only: when we asked the originator to stream. Only matters
@@ -338,6 +345,7 @@ impl InboundTransfer {
             is_delta,
             base_sha256,
             created_at: unix_now_f64(),
+            last_progress_at: unix_now_f64(),
             finished_at: None,
             pull_requested_at: None,
             sink,
@@ -586,6 +594,9 @@ impl FileTransferManager {
         let mut expired_out: Vec<String> = Vec::new();
         self.outbound.retain(|id, x| {
             let keep = match (&x.source, x.finished_at) {
+                (_, None) if x.state == TransferState::Transferring => {
+                    now - x.last_progress_at < TRANSFER_IDLE_SECS
+                }
                 (TransferSource::Inline(_), Some(t)) => now - t < TRANSFER_RETAIN_SECS,
                 _ => now - x.created_at < OFFER_TTL_SECS,
             };
@@ -604,6 +615,9 @@ impl FileTransferManager {
         self.inbound.retain(|_, x| {
             let keep = match x.finished_at {
                 Some(t) => now - t < TRANSFER_RETAIN_SECS,
+                None if x.state == TransferState::Transferring => {
+                    now - x.last_progress_at < TRANSFER_IDLE_SECS
+                }
                 None => now - x.created_at < OFFER_TTL_SECS,
             };
             if !keep {
@@ -640,6 +654,9 @@ impl FileTransferManager {
         requester: &str,
         budget: usize,
     ) -> Vec<TransferEvent> {
+        if self.offer_was_withdrawn(transfer_id) {
+            return vec![];
+        }
         let Some(xfer) = self.outbound.get_mut(transfer_id) else {
             debug!("[file] request for unknown/expired transfer {transfer_id}; ignoring");
             return vec![];
@@ -649,6 +666,7 @@ impl FileTransferManager {
         xfer.chunks_sent = 0;
         xfer.to = requester.to_owned();
         xfer.state = TransferState::Transferring;
+        xfer.last_progress_at = unix_now_f64();
         xfer.finished_at = None;
         let (evs, _done) = next_chunk_events(xfer, budget);
         evs
@@ -706,7 +724,8 @@ impl FileTransferManager {
         }
     }
 
-    /// True if we hold a still-serveable outbound offer for `transfer_id`.
+    /// True if we retain an outbound record, including a stream whose offer
+    /// has expired for new requesters but whose accepted download is active.
     pub fn has_outbound(&self, transfer_id: &str) -> bool {
         self.outbound.contains_key(transfer_id)
     }
@@ -718,6 +737,10 @@ impl FileTransferManager {
     /// not withdrawn.
     pub fn offer_was_withdrawn(&self, transfer_id: &str) -> bool {
         self.revoked.contains_key(transfer_id)
+            || self
+                .outbound
+                .get(transfer_id)
+                .is_some_and(|x| unix_now_f64() - x.created_at >= OFFER_TTL_SECS)
     }
 
     /// True if we have an inbound transfer in flight (offer accepted or pending).
@@ -804,6 +827,7 @@ impl FileTransferManager {
     /// A frame went out: clear any backoff so the stream resumes full pace.
     pub fn note_send_progress(&mut self, transfer_id: &str) {
         if let Some(x) = self.outbound.get_mut(transfer_id) {
+            x.last_progress_at = unix_now_f64();
             x.stall_count = 0;
             x.stalled_since = None;
             x.retry_after = 0.0;
@@ -950,12 +974,13 @@ impl FileTransferManager {
         let len = std::fs::metadata(path)
             .map_err(|e| format!("Cannot stat {}: {e}", path.display()))?
             .len();
-        if len > MAX_TRANSFER_SIZE as u64 {
+        if len > MAX_TRANSFER_SIZE {
             return Err(format!(
                 "File too large ({len} bytes, max {MAX_TRANSFER_SIZE})"
             ));
         }
-        let original_size = len as usize;
+        let original_size = usize::try_from(len)
+            .map_err(|_| "File size is not supported on this platform".to_owned())?;
         let original_sha = sha256_hex_file(path)?;
 
         Ok(self.insert_offer(
@@ -1006,6 +1031,7 @@ impl FileTransferManager {
             compressed: meta.compressed,
             is_delta: meta.is_delta,
             created_at: unix_now_f64(),
+            last_progress_at: unix_now_f64(),
             to: String::new(),
             finished_at: None,
             stall_count: 0,
@@ -1057,6 +1083,7 @@ impl FileTransferManager {
             _ => return vec![],
         };
         xfer.state = TransferState::Transferring;
+        xfer.last_progress_at = unix_now_f64();
         let mut evs = vec![TransferEvent::StateChanged {
             transfer_id: transfer_id.to_owned(),
             state: "transferring".into(),
@@ -1191,7 +1218,7 @@ impl FileTransferManager {
         is_delta: bool,
         base_sha256: &str,
     ) -> Vec<TransferEvent> {
-        if size > MAX_TRANSFER_SIZE {
+        if size as u64 > MAX_TRANSFER_SIZE {
             let mut p = serde_json::Map::new();
             p.insert("transfer_id".into(), Value::String(transfer_id.to_owned()));
             p.insert("reason".into(), Value::String("file_too_large".into()));
@@ -1321,6 +1348,7 @@ impl FileTransferManager {
         };
         xfer.state = TransferState::Transferring;
         let peer_id = xfer.peer_id.clone();
+        xfer.last_progress_at = unix_now_f64();
         let mut p = serde_json::Map::new();
         p.insert("transfer_id".into(), Value::String(transfer_id.to_owned()));
         vec![
@@ -1349,6 +1377,7 @@ impl FileTransferManager {
         }
         xfer.state = TransferState::Transferring;
         xfer.pull_requested_at = Some(unix_now_f64());
+        xfer.last_progress_at = unix_now_f64();
         vec![TransferEvent::StateChanged {
             transfer_id: transfer_id.to_owned(),
             state: "transferring".into(),
@@ -1467,6 +1496,7 @@ impl FileTransferManager {
         if !stored {
             return vec![];
         }
+        xfer.last_progress_at = unix_now_f64();
         let received = xfer.chunks_received();
         let total = xfer.total_chunks;
         let should_finish = xfer.complete_requested && received == total;
@@ -1554,7 +1584,7 @@ impl FileTransferManager {
         let mut assembled = assembled_raw;
 
         if compressed {
-            match zlib_decompress(&assembled) {
+            match zlib_decompress(&assembled, INLINE_MAX) {
                 Ok(d) => assembled = d,
                 Err(e) => {
                     return self.fail_inbound(transfer_id, &format!("decompression failed: {e}"))
@@ -2086,20 +2116,18 @@ fn zlib_compress(data: &[u8], level: u32) -> Result<Vec<u8>, String> {
     enc.finish().map_err(|e| format!("zlib finish: {e}"))
 }
 
-fn zlib_decompress(data: &[u8]) -> Result<Vec<u8>, String> {
+fn zlib_decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, String> {
     let mut dec = ZlibDecoder::new(data);
-    let mut out = Vec::with_capacity(data.len().min(MAX_TRANSFER_SIZE));
+    let mut out = Vec::with_capacity(data.len().min(limit));
     // Cap decompression output to prevent decompression-bomb DoS: a crafted
     // zlib stream can otherwise expand to gigabytes from a tiny payload.
     use std::io::Read as _;
     dec.by_ref()
-        .take((MAX_TRANSFER_SIZE + 1) as u64)
+        .take((limit + 1) as u64)
         .read_to_end(&mut out)
         .map_err(|e| e.to_string())?;
-    if out.len() > MAX_TRANSFER_SIZE {
-        return Err(format!(
-            "decompressed output exceeds {MAX_TRANSFER_SIZE} bytes"
-        ));
+    if out.len() > limit {
+        return Err(format!("decompressed output exceeds {limit} bytes"));
     }
     Ok(out)
 }
@@ -2126,16 +2154,16 @@ fn apply_delta(old: &[u8], delta: &[u8]) -> Result<Vec<u8>, String> {
     if delta.len() < DELTA_MAGIC.len() || &delta[..4] != DELTA_MAGIC {
         return Err("Invalid delta magic".into());
     }
-    let raw = zlib_decompress(&delta[4..])?;
+    let raw = zlib_decompress(&delta[4..], MAX_DELTA_BYTES)?;
     if raw.is_empty() {
         return Err("Empty delta opcode stream".into());
     }
-    let mut out = Vec::with_capacity(old.len());
+    let mut out = Vec::with_capacity(old.len().min(INLINE_MAX));
     let mut off = 0usize;
     // Cap reconstructed output: a malicious peer could otherwise craft a
     // small delta whose COPY opcodes expand to gigabytes (denial of service
     // via memory exhaustion).
-    let max_out = MAX_TRANSFER_SIZE;
+    let max_out = INLINE_MAX;
     while off < raw.len() {
         let tag = raw[off];
         off += 1;
@@ -2157,7 +2185,7 @@ fn apply_delta(old: &[u8], delta: &[u8]) -> Result<Vec<u8>, String> {
                     return Err("COPY out of range".into());
                 }
                 if out.len().saturating_add(len) > max_out {
-                    return Err("delta output exceeds MAX_TRANSFER_SIZE".into());
+                    return Err("delta output exceeds INLINE_MAX".into());
                 }
                 out.extend_from_slice(&old[src..src + len]);
             }
@@ -2174,7 +2202,7 @@ fn apply_delta(old: &[u8], delta: &[u8]) -> Result<Vec<u8>, String> {
                     return Err("INSERT past end".into());
                 }
                 if out.len().saturating_add(len) > max_out {
-                    return Err("delta output exceeds MAX_TRANSFER_SIZE".into());
+                    return Err("delta output exceeds INLINE_MAX".into());
                 }
                 out.extend_from_slice(&raw[off..off + len]);
                 off += len;
@@ -2260,6 +2288,141 @@ fn unix_now_f64() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn four_gib_offer_is_streamed_and_larger_offers_are_rejected() -> Result<(), String> {
+        let size = usize::try_from(MAX_TRANSFER_SIZE).map_err(|e| e.to_string())?;
+        let mut receiver = FileTransferManager::new();
+        let tid = Uuid::new_v4().to_string();
+        let events = receiver.on_offer_received(
+            "sender",
+            &tid,
+            "large.bin",
+            "hash",
+            size,
+            size.div_ceil(CHUNK_SIZE),
+            "file",
+            false,
+            false,
+            "",
+        );
+        assert_eq!(reject_reason(&events), None);
+        let xfer = receiver.inbound.get(&tid).ok_or("missing accepted offer")?;
+        assert!(xfer.is_streaming());
+        assert_eq!(xfer.expected_size as u64, 4_294_967_296);
+        assert_eq!(xfer.total_chunks, 65_536);
+        assert_eq!(xfer.chunks_received(), 0);
+        receiver.discard_inbound(&tid);
+        let events = receiver.on_offer_received(
+            "sender",
+            &tid,
+            "large.bin",
+            "hash",
+            size + 1,
+            (size + 1).div_ceil(CHUNK_SIZE),
+            "file",
+            false,
+            false,
+            "",
+        );
+        assert_eq!(reject_reason(&events).as_deref(), Some("file_too_large"));
+        assert!(!receiver.has_inbound(&tid));
+        Ok(())
+    }
+
+    #[test]
+    fn inline_expansion_stays_bounded_when_file_limit_grows() -> Result<(), String> {
+        let packed = zlib_compress(&vec![0; INLINE_MAX + 1], 6)?;
+        assert!(zlib_decompress(&packed, INLINE_MAX).is_err());
+        let old = vec![7; INLINE_MAX];
+        let mut ops = Vec::new();
+        write_copy(&mut ops, 0, INLINE_MAX as u32);
+        write_copy(&mut ops, 0, 1);
+        let mut delta = DELTA_MAGIC.to_vec();
+        delta.extend(zlib_compress(&ops, 6)?);
+        assert!(apply_delta(&old, &delta).is_err());
+
+        // A valid maximum-size INSERT has five bytes of instruction overhead.
+        ops.clear();
+        write_insert(&mut ops, &old);
+        delta = DELTA_MAGIC.to_vec();
+        delta.extend(zlib_compress(&ops, 6)?);
+        assert_eq!(apply_delta(&[], &delta)?, old);
+
+        delta = DELTA_MAGIC.to_vec();
+        delta.extend(zlib_compress(&vec![0; MAX_DELTA_BYTES + 1], 6)?);
+        assert!(apply_delta(&[], &delta).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn progressing_streams_outlive_offer_ttl_but_idle_streams_expire() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let path = dir.path().join("source.bin");
+        std::fs::write(&path, [1; 32]).map_err(|e| e.to_string())?;
+        let mut sender = FileTransferManager::new();
+        let (tid, _) = sender.offer_file_from_path("peer", "source.bin", &path, "file", false)?;
+        sender.start_stream_for(&tid, "peer", 0);
+        let old = unix_now_f64() - OFFER_TTL_SECS - TRANSFER_IDLE_SECS;
+        {
+            let x = sender.outbound.get_mut(&tid).ok_or("missing outbound")?;
+            x.created_at = old;
+            x.last_progress_at = old;
+        }
+        sender.note_send_progress(&tid);
+        assert_eq!(sender.gc(), 0);
+        assert!(sender.offer_was_withdrawn(&tid));
+        assert!(sender.start_stream_for(&tid, "late-peer", 1).is_empty());
+        assert_eq!(
+            sender.outbound.get(&tid).ok_or("missing outbound")?.to,
+            "peer"
+        );
+        sender
+            .outbound
+            .get_mut(&tid)
+            .ok_or("missing outbound")?
+            .last_progress_at = old;
+        assert_eq!(sender.gc(), 1);
+        assert!(sender.offer_was_withdrawn(&tid));
+
+        let mut receiver = FileTransferManager::new();
+        let size = INLINE_MAX + CHUNK_SIZE;
+        receiver.on_offer_received(
+            "peer",
+            &tid,
+            "source.bin",
+            "hash",
+            size,
+            size.div_ceil(CHUNK_SIZE),
+            "file",
+            false,
+            false,
+            "",
+        );
+        receiver.accept_transfer(&tid);
+        let part = {
+            let x = receiver.inbound.get_mut(&tid).ok_or("missing inbound")?;
+            x.created_at = old;
+            x.last_progress_at = old;
+            match &x.sink {
+                TransferSink::PartFile { path, .. } => path.clone(),
+                _ => return Err("expected disk streaming".into()),
+            }
+        };
+        receiver.on_chunk_bytes_received(&tid, 0, vec![1; CHUNK_SIZE]);
+        assert_eq!(receiver.gc(), 0);
+        assert!(part.exists());
+        receiver
+            .inbound
+            .get_mut(&tid)
+            .ok_or("missing inbound")?
+            .last_progress_at = old;
+        // Duplicate chunks do not keep an abandoned transfer alive.
+        receiver.on_chunk_bytes_received(&tid, 0, vec![1; CHUNK_SIZE]);
+        assert_eq!(receiver.gc(), 1);
+        assert!(!part.exists());
+        Ok(())
+    }
 
     fn reject_reason(evs: &[TransferEvent]) -> Option<String> {
         evs.iter().find_map(|ev| match ev {

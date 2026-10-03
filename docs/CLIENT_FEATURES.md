@@ -292,11 +292,13 @@ meet it.
 
 ### 11. File transfer
 
-* **Core** — `file_transfer.rs`. Streaming to 250 MB, quota-gated through the
+* **Core** — `file_transfer.rs`. Streaming to 4 GiB, quota-gated through the
   feature registry, direct (`core.file.v1`) and room (`room.file.v1`) paths.
   Room files are advertised then pulled rather than pushed. The originator
   refuses a request for an offer it withdrew or let expire; a pull that gets
   no first chunk within 30 seconds fails as "sender did not respond".
+  Active transfers use an idle timeout rather than the offer's one-hour age;
+  decompression and reconstructed delta output remain capped at 8 MiB.
 * **Desktop** — `sendFile`, `acceptFile`, `rejectFile`, `sendRoomFile`,
   `acceptRoomFile`, `declineRoomFile`, `openContainingFolder`.
 * **Android** — `file.send`, `file.accept`, `file.reject`, `file.cancel`, plus

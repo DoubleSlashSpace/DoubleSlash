@@ -1026,7 +1026,7 @@ impl OllamaToolHost {
         let size = std::fs::metadata(&path)
             .map_err(|e| format!("cannot read {name}: {e}"))?
             .len();
-        if size > crate::file_transfer::MAX_TRANSFER_SIZE as u64 {
+        if size > crate::file_transfer::MAX_TRANSFER_SIZE {
             return Err(format!("{name} is over the transfer size limit"));
         }
         let kind = chat_store::message_kind_for_path(&name);

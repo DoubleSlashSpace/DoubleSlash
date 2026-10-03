@@ -5178,7 +5178,7 @@ impl ffi::AppBridge {
                 return;
             }
         };
-        if byte_len > crate::file_transfer::MAX_TRANSFER_SIZE as u64 {
+        if byte_len > crate::file_transfer::MAX_TRANSFER_SIZE {
             warn!(
                 "sendFile: {:?} is {byte_len} bytes, over the {} limit",
                 path,
@@ -5305,7 +5305,7 @@ impl ffi::AppBridge {
                 return;
             }
         };
-        if byte_len > crate::file_transfer::MAX_TRANSFER_SIZE as u64 {
+        if byte_len > crate::file_transfer::MAX_TRANSFER_SIZE {
             warn!(
                 "sendRoomFile: {:?} is {byte_len} bytes, over the {} limit",
                 path,

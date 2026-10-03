@@ -1864,11 +1864,16 @@ impl ConnectionManager {
                         return;
                     }
                 };
-                let size = match msg.payload.get("size").and_then(Value::as_u64) {
-                    Some(n) => n as usize,
+                let size = match msg
+                    .payload
+                    .get("size")
+                    .and_then(Value::as_u64)
+                    .and_then(|n| usize::try_from(n).ok())
+                {
+                    Some(n) => n,
                     None => {
                         warn!(
-                            "FILE_OFFER {} from {} missing/non-numeric size — dropped",
+                            "FILE_OFFER {} from {} missing/unsupported size — dropped",
                             tid,
                             &msg.sender[..8.min(msg.sender.len())]
                         );
@@ -1935,7 +1940,7 @@ impl ConnectionManager {
                 // offer must not refuse: device routing fans the accept to
                 // every endpoint, and a "no longer shared" from the empty one
                 // cancelled a live download on Bobert.
-                if !self.file_mgr.has_outbound(&tid) {
+                if !self.file_mgr.has_outbound(&tid) || self.file_mgr.offer_was_withdrawn(&tid) {
                     if !self.file_mgr.offer_was_withdrawn(&tid) {
                         debug!(
                             "[core.file.v1] {} accepted transfer {} we do not hold; ignoring",
@@ -2283,11 +2288,16 @@ impl ConnectionManager {
                 return;
             }
         };
-        let size = match msg.payload.get("size").and_then(Value::as_u64) {
-            Some(n) => n as usize,
+        let size = match msg
+            .payload
+            .get("size")
+            .and_then(Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+        {
+            Some(n) => n,
             None => {
                 warn!(
-                    "SFU_FILE_OFFER {tid} from {} missing/non-numeric size",
+                    "SFU_FILE_OFFER {tid} from {} missing/unsupported size",
                     &msg.sender[..8.min(msg.sender.len())]
                 );
                 return;
@@ -2461,7 +2471,7 @@ impl ConnectionManager {
         // request to every endpoint of the identity, and a sibling that
         // answers "no longer shared" discards the requester's inbound even
         // while the offering device is streaming.
-        if !self.room_file_mgr.has_outbound(&tid) {
+        if !self.room_file_mgr.has_outbound(&tid) || self.room_file_mgr.offer_was_withdrawn(&tid) {
             if !self.room_file_mgr.offer_was_withdrawn(&tid) {
                 debug!(
                     "[room.file.v1] {} requested transfer {} we do not hold; ignoring",

@@ -123,7 +123,8 @@ See `rust/doubleslash-supernode/src/manifest.rs` for the full schema. The exampl
 - Up to 32 participants per room.
 - Native desktop clients only (in-app portal games do not carry room voice/chat).
 - Room file transfers use signed `SfuFile*` frames and are verified by recipients before saving. They are **advertised, then pulled**: `sfu_file_offer` carries metadata only, and chunks are sent only to members who answer with `sfu_file_request`. The supernode routes those chunks to the single peer named in the frame's `to` field and, as always, stores nothing — a member who accepts late is served by the original sender re-reading the file, not from any relay cache.
-- Files up to 250 MiB are supported; anything over 8 MiB is streamed from and to disk, so neither client holds the file in memory.
+- Updated clients accept files up to 4 GiB (4,294,967,296 bytes); older clients still enforce their own smaller limit. Anything over 8 MiB is streamed from and to disk, so neither client holds the file in memory. This is a client limit; supernode quotas and queues do not increase.
+- Offers remain available for one hour. An accepted transfer can continue past that deadline while it makes progress; an hour without progress expires it. Transfers are not resumed across client restarts.
 - Because the sender holds the only copy, **deleting a file message revokes the share** (`sfu_file_revoke`): members who have not downloaded it yet can no longer obtain it. Members who already downloaded keep their copy.
 - Room membership is enforced at the capability layer (`room-member` auth tier).
 - Operators can restrict which room types peers may **create** via `room.audio.sfu` manifest params:

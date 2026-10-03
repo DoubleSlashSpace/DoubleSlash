@@ -1442,12 +1442,12 @@ fn send_room_file(session: &Session, parsed: &Value) -> Value {
         Ok(m) => m.len(),
         Err(e) => return err(format!("cannot read that file: {e}")),
     };
-    if byte_len > doubleslash_client::file_transfer::MAX_TRANSFER_SIZE as u64 {
+    if byte_len > doubleslash_client::file_transfer::MAX_TRANSFER_SIZE {
         return err(format!(
             "{} is over the {} limit",
             doubleslash_client::chat_store::format_byte_size(byte_len),
             doubleslash_client::chat_store::format_byte_size(
-                doubleslash_client::file_transfer::MAX_TRANSFER_SIZE as u64
+                doubleslash_client::file_transfer::MAX_TRANSFER_SIZE
             ),
         ));
     }
@@ -1524,12 +1524,12 @@ fn send_file(session: &Session, parsed: &Value) -> Value {
         Ok(m) => m.len(),
         Err(e) => return err(format!("cannot read that file: {e}")),
     };
-    if byte_len > doubleslash_client::file_transfer::MAX_TRANSFER_SIZE as u64 {
+    if byte_len > doubleslash_client::file_transfer::MAX_TRANSFER_SIZE {
         return err(format!(
             "{} is over the {} limit",
             doubleslash_client::chat_store::format_byte_size(byte_len),
             doubleslash_client::chat_store::format_byte_size(
-                doubleslash_client::file_transfer::MAX_TRANSFER_SIZE as u64
+                doubleslash_client::file_transfer::MAX_TRANSFER_SIZE
             ),
         ));
     }
