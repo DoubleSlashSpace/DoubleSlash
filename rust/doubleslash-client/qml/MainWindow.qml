@@ -25,6 +25,9 @@ ApplicationWindow {
     // alone omits WS_CAPTION and snap is broken.
     flags: Qt.Window | Qt.CustomizeWindowHint
 
+    // Inherited by controls that do not set their own pixel size, so menus,
+    // combo boxes and the like follow the General font-size setting.
+    font.pixelSize: Theme.fontSizeBody
     Material.theme: Theme.isDark ? Material.Dark : Material.Light
     // The skin's accent, so Material controls (switches, sliders, focus
     // lines) follow a custom colour rather than a fixed blue.
@@ -39,6 +42,12 @@ ApplicationWindow {
         }
         Theme.isDark = useDark
         Material.theme = useDark ? Material.Dark : Material.Light
+    }
+
+    /// `percent` is the General setting: −50…+200, where 0 is the designed size.
+    function applyFontScale(percent) {
+        var p = Math.max(-50, Math.min(200, Math.round(percent)))
+        Theme.fontScale = (100 + p) / 100
     }
 
     function showFilePreview(path) {
@@ -1383,6 +1392,9 @@ ApplicationWindow {
         function onSkin_jsonChanged() {
             Theme.applySkinJson(settingsModel.skin_json)
         }
+        function onFont_scale_percentChanged() {
+            applyFontScale(settingsModel.font_scale_percent)
+        }
         // Keep the bridge's applied avatar config in lockstep with settings so
         // every self-avatar site (voice rail, own room messages, …) resolves to
         // the same config as the Settings preview — including after a profile
@@ -1421,6 +1433,7 @@ ApplicationWindow {
         backend.setAutomaticUpdateChecks(settingsModel.update_check_enabled)
         applyThemePreference(settingsModel.theme)
         Theme.applySkinJson(settingsModel.skin_json)
+        applyFontScale(settingsModel.font_scale_percent)
         root.refreshVideoEncoderAvailable()
 
         // Announce the (empty) watched set. Not a no-op: the supernode treats
@@ -2122,7 +2135,7 @@ ApplicationWindow {
                         text: hiddenToggle.hiddenCount
                         visible: hiddenToggle.hiddenCount > 0
                         color: Theme.text
-                        font.pixelSize: 10
+                        font.pixelSize: Math.max(1, Math.round(10 * Theme.fontScale))
                     }
                 }
                 ToolButton {
@@ -2463,7 +2476,7 @@ ApplicationWindow {
                                 Label {
                                     visible: roomGroup.rooms.length === 0
                                     width: roomColumn.width
-                                    height: 40
+                                    height: Math.max(40, Theme.fontSizeCaption + 16)
                                     verticalAlignment: Text.AlignVCenter
                                     // Named: a bare "No rooms" would not say which
                                     // supernode is the empty one.
@@ -2514,7 +2527,8 @@ ApplicationWindow {
                                                 readonly property bool isPrivate:
                                                     String(row.kind || "").toLowerCase() === "private"
 
-                                                implicitHeight: 34
+                                                // 34 at the designed size; taller once the name no longer fits.
+                                                implicitHeight: Math.max(34, Theme.fontSizeBody + 8)
                                                 padding: 0
 
                                                 background: Rectangle {
@@ -2698,7 +2712,7 @@ ApplicationWindow {
                                                 id: groupRow
                                                 readonly property var row: treeRow.row
                                                 readonly property bool isVoice: row.group === "voice"
-                                                implicitHeight: 26
+                                                implicitHeight: Math.max(26, Theme.fontSizeCaption + 10)
 
                                                 Rectangle {
                                                     anchors.fill: parent
@@ -2724,7 +2738,7 @@ ApplicationWindow {
                                                     Item {
                                                         id: leafToggle
                                                         Layout.fillWidth: true
-                                                        Layout.preferredHeight: 26
+                                                        Layout.preferredHeight: Math.max(26, Theme.fontSizeCaption + 10)
 
                                                         RowLayout {
                                                             anchors.fill: parent
@@ -2774,7 +2788,7 @@ ApplicationWindow {
                                                     Rectangle {
                                                         visible: row.show_join
                                                         implicitWidth: joinText.implicitWidth + Theme.spacingMd
-                                                        implicitHeight: 20
+                                                        implicitHeight: Math.max(20, joinText.implicitHeight + 6)
                                                         color: joinHover.hovered
                                                             ? Theme.semanticTint(Theme.online, 0.3)
                                                             : Theme.semanticTint(Theme.online, 0.16)
@@ -2897,7 +2911,7 @@ ApplicationWindow {
 
                                             Item {
                                                 readonly property var row: treeRow.row
-                                                implicitHeight: 24
+                                                implicitHeight: Math.max(24, Theme.fontSizeCaption + 8)
 
                                                 TreeGuides {
                                                     x: Theme.spacingSm

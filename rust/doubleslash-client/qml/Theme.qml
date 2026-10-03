@@ -160,9 +160,19 @@ QtObject {
     property color divider: "#383A40"
 
     // ── Typography ────────────────────────────────────────────────────────────
-    readonly property int fontSizeBody:    13
-    readonly property int fontSizeCaption: 11
-    readonly property int fontSizeTitle:   15
+    // Multiplier for the sizes below. 1 is the designed size. Settings ›
+    // General owns this (font_scale_percent, −50%…+200% → 0.5…3). A skin
+    // cannot set it: it is not a colour token and applySkinJson ignores it.
+    property real fontScale: 1.0
+    onFontScaleChanged: {
+        var clamped = Math.max(0.5, Math.min(3.0, fontScale))
+        if (fontScale !== clamped)
+            fontScale = clamped
+    }
+
+    readonly property int fontSizeBody:    Math.max(1, Math.round(13 * fontScale))
+    readonly property int fontSizeCaption: Math.max(1, Math.round(11 * fontScale))
+    readonly property int fontSizeTitle:   Math.max(1, Math.round(15 * fontScale))
 
     // ── Geometry ──────────────────────────────────────────────────────────────
     readonly property int radiusSm: 0
@@ -176,17 +186,19 @@ QtObject {
     readonly property int spacingLg: 16
     readonly property int spacingXl: 24
 
-    readonly property int controlHeight: 32
-    readonly property int touchTarget: 44
+    // Grow with the text so a larger font size still fits. At the designed
+    // size (fontScale 1) these stay 32 and 44.
+    readonly property int controlHeight: Math.max(32, fontSizeBody + spacingSm * 2)
+    readonly property int touchTarget: Math.max(44, fontSizeTitle + spacingMd * 2)
     // Wide enough for the Rooms tree: rooms, their Voice / Text-only leaves
     // and members nest three or four levels deep.
     readonly property int sidebarWidth: 280
-    readonly property int titleBarHeight: 44
-    readonly property int bannerHeight: 32
+    readonly property int titleBarHeight: Math.max(44, touchTarget)
+    readonly property int bannerHeight: Math.max(32, fontSizeCaption + spacingSm * 2)
 
     // ── Typography extras ─────────────────────────────────────────────────────
-    readonly property int fontSizeDialog: 18
-    readonly property int fontSizeMicro: 9
+    readonly property int fontSizeDialog: Math.max(1, Math.round(18 * fontScale))
+    readonly property int fontSizeMicro: Math.max(1, Math.round(9 * fontScale))
 
     // Chat link colours (updated per palette in _applyPalette)
     property color linkMine: "#DCE0FF"

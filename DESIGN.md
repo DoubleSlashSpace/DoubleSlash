@@ -68,6 +68,8 @@ Light-mode secondary text uses `#5B5F68`. Both secondary-text colors meet
 ### Typography
 Uses system font (via `Material.Dark` / `SystemDefault`). No custom font loading unless decided later.
 
+Sizes below are at 0% (the designed size). Settings › General › Text scales every token from −50% to +200%. That scale is not part of a skin.
+
 | Token              | Size   | Weight     | Role                          |
 |--------------------|--------|------------|-------------------------------|
 | `fontSizeTitle`    | 15px   | Medium     | Panel titles, peer names      |

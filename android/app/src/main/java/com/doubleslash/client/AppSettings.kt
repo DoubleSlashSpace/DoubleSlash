@@ -29,6 +29,7 @@ class AppSettings(context: Context) {
         put("voice_bitrate", voiceBitrate)
         put("theme", theme)
         put("skin", skin)
+        put("font_scale_percent", fontScalePercent)
         put("room_list_order", roomListOrderJson)
     }
 
@@ -40,6 +41,7 @@ class AppSettings(context: Context) {
         (values["voice_bitrate"] as? JsonPrimitive)?.intOrNull?.let { voiceBitrate = it }
         (values["theme"] as? JsonPrimitive)?.contentOrNull?.takeIf { it in listOf(THEME_SYSTEM, THEME_LIGHT, THEME_DARK) }?.let { theme = it }
         (values["skin"] as? JsonPrimitive)?.contentOrNull?.let { skin = it }
+        (values["font_scale_percent"] as? JsonPrimitive)?.intOrNull?.let { fontScalePercent = it }
         (values["room_list_order"] as? JsonPrimitive)?.contentOrNull?.let { roomListOrderJson = it }
     }
 
@@ -106,6 +108,17 @@ class AppSettings(context: Context) {
         set(value) = prefs.edit().putString(KEY_THEME, value).apply()
 
     /**
+     * Text size adjustment in percent, from [FONT_SCALE_PERCENT_MIN] to
+     * [FONT_SCALE_PERCENT_MAX]. 0 is the designed size. Not part of [skin]:
+     * copying a skin does not copy this.
+     */
+    var fontScalePercent: Int
+        get() = prefs.getInt(KEY_FONT_SCALE, 0).coerceIn(FONT_SCALE_PERCENT_MIN, FONT_SCALE_PERCENT_MAX)
+        set(value) = prefs.edit()
+            .putInt(KEY_FONT_SCALE, value.coerceIn(FONT_SCALE_PERCENT_MIN, FONT_SCALE_PERCENT_MAX))
+            .apply()
+
+    /**
      * The skin: colour overrides on the theme, as the portable skin JSON the
      * desktop reads too (see `ui/Skin.kt`). Empty means the built-in palette.
      */
@@ -147,11 +160,18 @@ class AppSettings(context: Context) {
         const val THEME_LIGHT = "light"
         const val THEME_DARK = "dark"
 
+        /** Half the designed size. */
+        const val FONT_SCALE_PERCENT_MIN = -50
+
+        /** Three times the designed size. */
+        const val FONT_SCALE_PERCENT_MAX = 200
+
         private const val PREFS_NAME = "app_settings"
         private const val KEY_FRONT_CAMERA = "front_camera"
         private const val KEY_VOICE_ACTIVATION = "voice_activation"
         private const val KEY_THEME = "theme"
         private const val KEY_SKIN = "skin"
+        private const val KEY_FONT_SCALE = "font_scale_percent"
         private const val KEY_ROOM_LIST_ORDER = "room_list_order"
         private const val KEY_INPUT_GAIN = "input_gain"
         private const val KEY_OUTPUT_GAIN = "output_gain"

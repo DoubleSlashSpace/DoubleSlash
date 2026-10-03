@@ -18,8 +18,8 @@ Rectangle {
 
     Layout.alignment: Qt.AlignVCenter
     implicitWidth: content.implicitWidth + 10
-    implicitHeight: 20
-    radius: 10
+    implicitHeight: Math.max(20, content.implicitHeight + 6)
+    radius: height / 2
     color: root.active ? Theme.semanticTint(root.tint, 0.16) : Theme.bg2
     border.color: root.active ? root.tint : Theme.divider
     border.width: 1

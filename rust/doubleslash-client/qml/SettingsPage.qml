@@ -176,6 +176,19 @@ Item {
         return ""
     }
 
+    /// Signed percent for the font-size slider: "0%", "-50%", "+200%".
+    function fontScaleLabel(percent) {
+        var n = Math.round(percent)
+        return (n > 0 ? "+" : "") + n + "%"
+    }
+
+    function commitFontScale(value) {
+        if (!root.settings) return
+        var n = Math.max(-50, Math.min(200, Math.round(value)))
+        if (root.settings.font_scale_percent !== n)
+            root.settings.font_scale_percent = n
+    }
+
     function setTheme(value) {
         if (!settings) return
         settings.theme = value
@@ -1839,6 +1852,39 @@ Item {
                     SettingSwitch { title: "Enable UPnP port mapping"; checked: root.settings ? root.settings.upnp_enabled : true; onChanged: if (root.settings) root.settings.upnp_enabled = checked }
                     SettingSwitch { title: "Verbose debug logging"; description: "Write detailed diagnostic logs for troubleshooting. Applies immediately; a RUST_LOG environment variable overrides this."; checked: root.settings ? root.settings.debug_logging : false; onChanged: if (root.settings) root.settings.debug_logging = checked }
 
+                }
+
+                SettingsCard {
+                    title: qsTr("Text")
+                    subtitle: qsTr("Scales text everywhere in DoubleSlash. Themes and skins do not change this.")
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
+
+                        Label {
+                            text: qsTr("Font size")
+                            color: Theme.muted
+                            font.pixelSize: Theme.fontSizeBody
+                        }
+                        Slider {
+                            id: fontScaleSlider
+                            Layout.fillWidth: true
+                            from: -50
+                            to: 200
+                            stepSize: 5
+                            value: root.settings ? root.settings.font_scale_percent : 0
+                            onMoved: root.commitFontScale(value)
+                            onPressedChanged: if (!pressed) root.commitFontScale(value)
+                            Accessible.name: qsTr("Font size")
+                        }
+                        Label {
+                            text: root.fontScaleLabel(fontScaleSlider.value)
+                            color: Theme.text
+                            font.pixelSize: Theme.fontSizeBody
+                            Layout.minimumWidth: implicitWidth
+                        }
+                    }
                 }
 
                 SettingsCard {

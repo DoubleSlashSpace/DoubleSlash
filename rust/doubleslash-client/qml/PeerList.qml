@@ -43,7 +43,7 @@ Rectangle {
             section.criteria: ViewSection.FullString
             section.delegate: Rectangle {
                 width: peerListView.width
-                height: 22
+                height: Math.max(22, Theme.fontSizeCaption + 8)
                 color: "transparent"
 
                 Text {
@@ -79,7 +79,8 @@ Rectangle {
                 width: ListView.view.width
                 // Blocked peers leave the list until "Show blocked" is on.
                 visible: !delegateItem.blocked || root.showBlocked
-                height: visible ? 56 : 0
+                // 56 at the designed size: name plus preview. Grows with those two lines.
+                height: visible ? Math.max(56, Theme.fontSizeBody + Theme.fontSizeCaption + Theme.spacingLg) : 0
                 color: delegateItem.selected
                     ? Theme.selectedFill()
                     : (mouseArea.containsMouse ? Theme.bg3 : "transparent")
@@ -180,7 +181,7 @@ Rectangle {
                     Rectangle {
                         visible: delegateItem.unreadCount > 0
                         width: Math.max(20, badgeText.implicitWidth + 8)
-                        height: 20
+                        height: Math.max(20, badgeText.implicitHeight + 4)
                         radius: Theme.radiusPill
                         color: Theme.danger
                         Layout.alignment: Qt.AlignVCenter

@@ -252,6 +252,7 @@ These are selected **desktop** defaults from [SettingsModel](rust/doubleslash-cl
 | `debug_logging` | `false` | Verbose diagnostics |
 | `theme` | `dark` | `system`, `dark` or `light` base palette |
 | `skin_json` | empty | Built-in palette; otherwise the portable skin JSON (`{"v":1,"name","base","colors":{…}}`) shared with Android |
+| `font_scale_percent` | `0` | Text size adjustment, −50 to +200. 0 is the designed size. Not part of `theme` or `skin_json`. The phone stores the same range |
 | `room_list_order_json` | `{"mode":"name_asc","pinned":[],"manual":[]}` | Rooms list order: name or people count, either way, a manual order, and rooms kept at the top of their group. The phone stores the same JSON |
 
 ## Data and Files

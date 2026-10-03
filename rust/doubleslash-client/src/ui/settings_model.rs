@@ -120,6 +120,11 @@ pub mod ffi {
         /// JSON both clients read (`{"v":1,"name":…,"base":…,"colors":{…}}`).
         /// Empty means the built-in palette.
         #[qproperty(QString, skin_json)]
+        /// Text size adjustment in percent, from −50 to +200. 0 is the
+        /// designed size (−50 draws text at half, +200 at three times).
+        /// Independent of `theme` and `skin_json`: a copied skin does not
+        /// carry it.
+        #[qproperty(i32, font_scale_percent)]
         /// Rooms list order, shared in shape with the phone:
         /// `{"mode":"name_asc"|"name_desc"|"peers_asc"|"peers_desc"|"manual","pinned":["node:room"],"manual":["node:room"]}`.
         /// Pinned rooms stay first among their siblings. Manual is used only
@@ -326,6 +331,10 @@ struct SettingsSnapshot {
     theme: String,
     #[serde(default)]
     skin_json: String,
+    /// See the `font_scale_percent` qproperty. Missing on older files, so
+    /// text stays at the designed size.
+    #[serde(default)]
+    font_scale_percent: i32,
     /// See the `room_list_order_json` qproperty. Missing on older files, so
     /// the default is name A–Z with nothing pinned.
     #[serde(default = "default_room_list_order")]
@@ -437,6 +446,18 @@ fn default_voice_bitrate() -> String {
 fn default_theme() -> String {
     "dark".to_string()
 }
+
+/// Offered range for [`SettingsSnapshot::font_scale_percent`].
+///
+/// −50 is half the designed size and +200 is three times it. 0, the
+/// `serde` default, is the designed size. Kept here so a hand-edited
+/// settings file cannot push text outside what the slider offers.
+const FONT_SCALE_PERCENT_MIN: i32 = -50;
+const FONT_SCALE_PERCENT_MAX: i32 = 200;
+
+fn clamp_font_scale_percent(value: i32) -> i32 {
+    value.clamp(FONT_SCALE_PERCENT_MIN, FONT_SCALE_PERCENT_MAX)
+}
 fn default_room_list_order() -> String {
     r#"{"mode":"name_asc","pinned":[],"manual":[]}"#.to_string()
 }
@@ -494,6 +515,7 @@ impl Default for SettingsSnapshot {
             noise_strength: default_noise_strength(),
             theme: default_theme(),
             skin_json: String::new(),
+            font_scale_percent: 0,
             room_list_order_json: default_room_list_order(),
             relay_allow_gated: true,
             relay_auto_renew: true,
@@ -575,6 +597,7 @@ pub struct SettingsModelRust {
     noise_strength: QString,
     theme: QString,
     skin_json: QString,
+    font_scale_percent: i32,
     room_list_order_json: QString,
     relay_allow_gated: bool,
     relay_auto_renew: bool,
@@ -653,6 +676,7 @@ impl Default for SettingsModelRust {
             noise_strength: QString::from(s.noise_strength.as_str()),
             theme: QString::from(s.theme.as_str()),
             skin_json: QString::from(s.skin_json.as_str()),
+            font_scale_percent: s.font_scale_percent,
             room_list_order_json: QString::from(s.room_list_order_json.as_str()),
             relay_allow_gated: s.relay_allow_gated,
             relay_auto_renew: s.relay_auto_renew,
@@ -823,6 +847,7 @@ impl ffi::SettingsModel {
             noise_strength: r.noise_strength.to_string(),
             theme: r.theme.to_string(),
             skin_json: r.skin_json.to_string(),
+            font_scale_percent: clamp_font_scale_percent(r.font_scale_percent),
             room_list_order_json: r.room_list_order_json.to_string(),
             relay_allow_gated: r.relay_allow_gated,
             relay_auto_renew: r.relay_auto_renew,
@@ -1078,6 +1103,8 @@ impl ffi::SettingsModel {
         self.as_mut()
             .set_skin_json(QString::from(snap.skin_json.as_str()));
         self.as_mut()
+            .set_font_scale_percent(clamp_font_scale_percent(snap.font_scale_percent));
+        self.as_mut()
             .set_room_list_order_json(QString::from(snap.room_list_order_json.as_str()));
         self.as_mut().set_relay_allow_gated(snap.relay_allow_gated);
         self.as_mut().set_relay_auto_renew(snap.relay_auto_renew);
@@ -1101,6 +1128,24 @@ impl ffi::SettingsModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn font_scale_defaults_to_the_designed_size_and_stays_in_range() {
+        assert_eq!(SettingsSnapshot::default().font_scale_percent, 0);
+        match serde_json::to_string(&SettingsSnapshot::default()) {
+            Ok(stored) => assert!(stored.contains("\"font_scale_percent\":0")),
+            Err(e) => panic!("snapshot serializes: {e}"),
+        }
+        // A file from before this setting existed still loads, at the designed size.
+        match serde_json::from_str::<SettingsSnapshot>(r#"{"theme":"light","skin_json":""}"#) {
+            Ok(old) => assert_eq!(old.font_scale_percent, 0),
+            Err(e) => panic!("old settings parse: {e}"),
+        }
+        assert_eq!(clamp_font_scale_percent(-80), FONT_SCALE_PERCENT_MIN);
+        assert_eq!(clamp_font_scale_percent(0), 0);
+        assert_eq!(clamp_font_scale_percent(200), FONT_SCALE_PERCENT_MAX);
+        assert_eq!(clamp_font_scale_percent(900), FONT_SCALE_PERCENT_MAX);
+    }
 
     #[test]
     fn room_list_order_defaults_to_name_ascending() {

@@ -10,6 +10,7 @@ TestCase {
     function cleanup() {
         Theme.applySkinJson("")
         Theme.isDark = true
+        Theme.fontScale = 1
     }
 
     function test_garbage_is_not_a_skin() {
@@ -47,6 +48,45 @@ TestCase {
         Theme.applySkinJson(Theme.skinJson("x", "", { bg0: "#000000" }))
         Theme.applySkinJson("")
         compare(Theme.toHex(Theme.bg0), Theme.basePalettes.dark.bg0.toLowerCase())
+    }
+
+    function test_default_font_scale_keeps_the_designed_sizes() {
+        Theme.fontScale = 1
+        compare(Theme.fontSizeBody, 13)
+        compare(Theme.fontSizeCaption, 11)
+        compare(Theme.fontSizeTitle, 15)
+        compare(Theme.fontSizeDialog, 18)
+        compare(Theme.fontSizeMicro, 9)
+        compare(Theme.controlHeight, 32)
+        compare(Theme.touchTarget, 44)
+        compare(Theme.titleBarHeight, 44)
+        compare(Theme.bannerHeight, 32)
+    }
+
+    function test_font_scale_changes_text_and_not_colours() {
+        var accent = Theme.toHex(Theme.accent)
+        Theme.fontScale = 0.5
+        compare(Theme.fontSizeBody, 7)
+        compare(Theme.fontSizeMicro, 5)
+        Theme.fontScale = 3
+        compare(Theme.fontSizeBody, 39)
+        compare(Theme.fontSizeTitle, 45)
+        verify(Theme.controlHeight >= Theme.fontSizeBody)
+        verify(Theme.titleBarHeight >= Theme.touchTarget)
+        compare(Theme.toHex(Theme.accent), accent)
+        Theme.fontScale = 1
+    }
+
+    function test_a_skin_cannot_set_the_font_scale() {
+        Theme.fontScale = 1
+        Theme.applySkinJson(JSON.stringify({
+            v: 1, name: "Big", base: "dark",
+            colors: { accent: "#112233" },
+            fontScale: 3
+        }))
+        compare(Theme.fontSizeBody, 13)
+        compare(Theme.fontScale, 1)
+        compare(Theme.toHex(Theme.accent), "#112233")
     }
 
     function test_every_preset_round_trips() {

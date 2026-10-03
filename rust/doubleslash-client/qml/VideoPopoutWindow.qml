@@ -34,6 +34,7 @@ Window {
     /// Shared-audio level/mute changed for this popout's peer.
     signal contentAudioChanged(string peerId, bool muted, int volume)
 
+    font.pixelSize: Theme.fontSizeBody
     title: (displayName || peerId) + " — DoubleSlash"
     width: 640
     height: 400

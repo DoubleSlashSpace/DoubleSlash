@@ -8,8 +8,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.lifecycle.ViewModelProvider
 import com.doubleslash.client.ui.AppRoot
 import com.doubleslash.client.ui.DoubleSlashTheme
@@ -28,15 +31,29 @@ class MainActivity : ComponentActivity() {
             // Collected here rather than inside the theme so a change repaints
             // the whole tree, including the system bars.
             val state by viewModel.state.collectAsState()
-            DoubleSlashTheme(
-                darkTheme = when (state.prefs.theme) {
-                    AppSettings.THEME_DARK -> true
-                    AppSettings.THEME_LIGHT -> false
-                    else -> isSystemInDarkTheme()
-                },
-                skinJson = state.prefs.skin,
+            // Text scale sits outside the theme on purpose: it is a device
+            // setting, not a skin. Density stays the system density so layout
+            // dp does not change; only sp text grows or shrinks. The system
+            // font scale is kept and multiplied.
+            val systemDensity = LocalDensity.current
+            val textScale = (100 + state.prefs.fontScalePercent
+                .coerceIn(AppSettings.FONT_SCALE_PERCENT_MIN, AppSettings.FONT_SCALE_PERCENT_MAX)) / 100f
+            CompositionLocalProvider(
+                LocalDensity provides Density(
+                    density = systemDensity.density,
+                    fontScale = systemDensity.fontScale * textScale,
+                ),
             ) {
-                AppRoot(viewModel = viewModel)
+                DoubleSlashTheme(
+                    darkTheme = when (state.prefs.theme) {
+                        AppSettings.THEME_DARK -> true
+                        AppSettings.THEME_LIGHT -> false
+                        else -> isSystemInDarkTheme()
+                    },
+                    skinJson = state.prefs.skin,
+                ) {
+                    AppRoot(viewModel = viewModel)
+                }
             }
         }
 

@@ -294,6 +294,7 @@ fun AppRoot(viewModel: AppViewModel) {
                     onSetFrontCamera = viewModel::setFrontCamera,
                     onSetVoiceActivation = viewModel::setVoiceActivation,
                     onSetTheme = viewModel::setTheme,
+                    onSetFontScale = viewModel::setFontScalePercent,
                     onSetAvatarConfig = viewModel::setAvatarConfig,
                     onPreviewAvatar = viewModel::previewAvatar,
                     onPurgeHistory = viewModel::purgeChatHistory,
@@ -2455,6 +2456,7 @@ private fun SettingsScreen(
     onSetFrontCamera: (Boolean) -> Unit,
     onSetVoiceActivation: (Boolean) -> Unit,
     onSetTheme: (String) -> Unit,
+    onSetFontScale: (Int) -> Unit,
     onSetAvatarConfig: (String) -> Unit,
     onPreviewAvatar: suspend (String) -> AvatarArt?,
     onPurgeHistory: () -> Unit,
@@ -2482,7 +2484,7 @@ private fun SettingsScreen(
     val scope = rememberCoroutineScope()
     // Where each section starts in the scrolling column, for the chips.
     val anchors = remember { mutableStateMapOf<String, Int>() }
-    val sections = listOf("Identity", "Voice", "Appearance", "Network", "Privacy", "About")
+    val sections = listOf("Identity", "Voice", "Text", "Appearance", "Network", "Privacy", "About")
 
     @Composable
     fun SectionTitle(name: String) {
@@ -2673,6 +2675,32 @@ private fun SettingsScreen(
                 // A ceiling, not a promise: the core drops below it under loss.
                 display = "${state.prefs.voiceBitrate / 1000} kbps max",
                 onChange = { onSetVoiceBitrate((it / 1000).toInt() * 1000) },
+            )
+
+            Spacer(Modifier.height(16.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+
+            // ── Text ──────────────────────────────────────────────────────────
+            // Its own section, not part of Appearance: a skin does not carry it.
+            SectionTitle("Text")
+            Text(
+                "Scales text everywhere in DoubleSlash. Themes and skins do not change this.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TuningSlider(
+                label = "Font size",
+                value = state.prefs.fontScalePercent.toFloat(),
+                range = AppSettings.FONT_SCALE_PERCENT_MIN.toFloat()..AppSettings.FONT_SCALE_PERCENT_MAX.toFloat(),
+                // Stops every 5% between the ends: (200 − −50) / 5 − 1.
+                steps = 49,
+                display = fontScaleLabel(state.prefs.fontScalePercent),
+                onChange = { raw ->
+                    val stepped = (kotlin.math.round(raw / 5f).toInt() * 5)
+                        .coerceIn(AppSettings.FONT_SCALE_PERCENT_MIN, AppSettings.FONT_SCALE_PERCENT_MAX)
+                    if (stepped != state.prefs.fontScalePercent) onSetFontScale(stepped)
+                },
             )
 
             Spacer(Modifier.height(16.dp))
@@ -2943,6 +2971,10 @@ private fun AvatarEditorDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
+
+/** Signed percent for the font-size slider: "0%", "-50%", "+200%". */
+private fun fontScaleLabel(percent: Int): String =
+    if (percent > 0) "+$percent%" else "$percent%"
 
 /** A labelled slider that shows the value it is about to set. */
 @Composable

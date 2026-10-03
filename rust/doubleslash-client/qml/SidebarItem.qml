@@ -23,7 +23,7 @@ ItemDelegate {
     property bool selected: false
 
     width: parent ? parent.width : 200
-    height: 44
+    height: Theme.touchTarget
     padding: 0
     topPadding: 0
     bottomPadding: 0
@@ -70,7 +70,7 @@ ItemDelegate {
         Rectangle {
             visible: root.badge > 0
             width: Math.max(18, badgeLabel.width + 8)
-            height: 18
+            height: Math.max(18, badgeLabel.implicitHeight + 4)
             radius: Theme.radiusPill
             color: Theme.accent
 

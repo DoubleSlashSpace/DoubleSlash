@@ -46,7 +46,8 @@ Item {
     /// own: 0 blank, 1 pass-through, 2 last child, 3 child with a sibling below.
     property var guides: []
     readonly property int treeStep: Theme.spacingLg
-    readonly property int rowHeight: 28
+    // 28 at the designed size. The name is caption+1, so the row grows with it.
+    readonly property int rowHeight: Math.max(28, Theme.fontSizeCaption + 1 + Theme.spacingSm)
 
     signal toggleRequested()
     signal watchToggled()
