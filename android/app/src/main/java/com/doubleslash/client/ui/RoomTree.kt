@@ -657,6 +657,8 @@ internal class RoomTreeActions(
     val onCopyInvite: (Room) -> Unit = {},
     /** Pick a contact and copy a link bound to them. */
     val onInviteContact: (Room) -> Unit = {},
+    /** Turn message alerts on or off for this room. */
+    val onSetMessageAlerts: (Room, Boolean) -> Unit = { _, _ -> },
 )
 
 /** Connector lines in the indent, drawn behind the row. */
@@ -726,6 +728,8 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
     val room = row.room
     val reading = (state.screen as? com.doubleslash.client.Screen.RoomChat)?.room?.roomId == room.roomId
     val voiceHere = state.voiceRoom?.roomId == room.roomId
+    val unread = state.roomUnread[room.roomId] ?: 0
+    val alertsOn = room.roomId in state.prefs.roomMessageAlerts
     var menuOpen by remember(room.key) { mutableStateOf(false) }
     Box {
         Row(
@@ -777,12 +781,25 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
             Text(
                 room.label,
                 color = if (voiceHere) ds.online else ds.text,
-                fontWeight = if (reading || voiceHere) FontWeight.Bold else FontWeight.Normal,
+                fontWeight = if (reading || voiceHere || unread > 0) FontWeight.Bold else FontWeight.Normal,
                 fontSize = 15.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false),
             )
+            if (unread > 0) {
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    if (unread > 99) "99+" else unread.toString(),
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .background(ds.danger, RoundedCornerShape(9.dp))
+                        .padding(horizontal = 6.dp, vertical = 1.dp)
+                        .semantics { contentDescription = "$unread unread" },
+                )
+            }
             if (state.prefs.roomListOrder.isPinned(room)) {
                 Spacer(Modifier.width(6.dp))
                 Text("top", color = ds.accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
@@ -888,6 +905,13 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                     },
                 )
             }
+            DropdownMenuItem(
+                text = { Text(if (alertsOn) "Mute message alerts" else "Enable message alerts") },
+                onClick = {
+                    menuOpen = false
+                    actions.onSetMessageAlerts(room, !alertsOn)
+                },
+            )
             HorizontalDivider()
             DropdownMenuItem(
                 text = { Text(if (room.hidden) "Show in list" else "Hide from list") },

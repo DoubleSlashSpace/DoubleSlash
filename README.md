@@ -10,7 +10,7 @@ Peers connect directly over QUIC or through chosen supernodes. Supernodes provid
 
 ### Chat, voice, and files
 
-- Direct and room chat with local history and unread counts. Direct chat includes delivery states and typing indicators. Room history is keyed by room ID, so changing the hosting supernode does not create a new conversation.
+- Direct and room chat with local history. Direct chat includes delivery states, typing indicators, and unread badges. Room text alerts are off until enabled from that room's menu, and muting the room clears them. Room history is keyed by room ID, so changing the hosting supernode does not create a new conversation.
 - Opus voice calls with push-to-talk, voice activation, noise suppression, and jitter buffering. Desktop controls include device selection, per-peer volume, and mute.
 - File transfers up to 4 GiB. Files over 8 MiB stream from disk. Room files are advertised first and sent to members who request them; the sender must remain available. Revoking an offer stops further downloads but cannot remove copies already received.
 - Local peer blocking, identity-derived avatars, and encrypted peer and room stores.
@@ -51,7 +51,7 @@ Seven demos are bundled: Presence Playground, Brick Breaker, Shared Canvas, Task
 
 The desktop UI uses Rust, Qt 6/QML, and CXX-Qt. It includes onboarding, invite links and QR codes, tray notifications, privacy controls, and an optional Ollama assistant (`x.ollama.v1`). Qt WebEngine enables the portal and inline video playback.
 
-Android uses Kotlin/Compose with the same Rust core through JNI. It includes peer and room chat, voice, files, portal access, backups, and camera sending. An unlocked session runs a foreground service with a Disconnect notification action; incoming calls have notification controls. See [Android development](docs/ANDROID.md).
+Android uses Kotlin/Compose with the same Rust core through JNI. It includes peer and room chat, voice, files, portal access, backups, and camera sending. An unlocked session runs a foreground service with a Disconnect notification action; incoming calls have notification controls. Room text alerts stay off until enabled on that room, and then raise a background notification. See [Android development](docs/ANDROID.md).
 
 Both clients share one layout. A Peers | Rooms toggle sits beside the D:// logo at the top, and there is no tab bar at the bottom. Your avatar opens Settings on Identity. The "+" beside it follows the list on screen: invites, blocked peers (hidden until "Show blocked") and Refresh for Peers; creating, joining, hidden rooms and Refresh for Rooms. They also share one palette and skin format: Settings › Appearance offers the built-in skins (DoubleSlash, Midnight, Slate, Forest, High contrast, Paper), per-colour editing, and Copy and Paste of a skin as JSON that either client reads. Android uses this palette rather than the phone's wallpaper colours.
 

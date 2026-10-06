@@ -130,6 +130,9 @@ pub mod ffi {
         /// Pinned rooms stay first among their siblings. Manual is used only
         /// while `mode` is `manual`.
         #[qproperty(QString, room_list_order_json)]
+        /// Room ids whose text messages alert, as a JSON array. Empty means
+        /// every room is muted. Keyed by room id alone, same as room history.
+        #[qproperty(QString, room_message_alerts_json)]
         /// Allow relay-gated (non-direct) connections.
         #[qproperty(bool, relay_allow_gated)]
         /// Auto-renew relay tickets before they expire.
@@ -339,6 +342,10 @@ struct SettingsSnapshot {
     /// the default is name A–Z with nothing pinned.
     #[serde(default = "default_room_list_order")]
     room_list_order_json: String,
+    /// See the `room_message_alerts_json` qproperty. Missing on older files,
+    /// so room text stays quiet until the user enables a room.
+    #[serde(default = "default_room_message_alerts")]
+    room_message_alerts_json: String,
     #[serde(default = "default_true")]
     relay_allow_gated: bool,
     #[serde(default = "default_true")]
@@ -461,6 +468,9 @@ fn clamp_font_scale_percent(value: i32) -> i32 {
 fn default_room_list_order() -> String {
     r#"{"mode":"name_asc","pinned":[],"manual":[]}"#.to_string()
 }
+fn default_room_message_alerts() -> String {
+    "[]".to_string()
+}
 fn default_attestation_policy() -> String {
     "warn".to_string()
 }
@@ -517,6 +527,7 @@ impl Default for SettingsSnapshot {
             skin_json: String::new(),
             font_scale_percent: 0,
             room_list_order_json: default_room_list_order(),
+            room_message_alerts_json: default_room_message_alerts(),
             relay_allow_gated: true,
             relay_auto_renew: true,
             upnp_enabled: true,
@@ -599,6 +610,7 @@ pub struct SettingsModelRust {
     skin_json: QString,
     font_scale_percent: i32,
     room_list_order_json: QString,
+    room_message_alerts_json: QString,
     relay_allow_gated: bool,
     relay_auto_renew: bool,
     upnp_enabled: bool,
@@ -678,6 +690,7 @@ impl Default for SettingsModelRust {
             skin_json: QString::from(s.skin_json.as_str()),
             font_scale_percent: s.font_scale_percent,
             room_list_order_json: QString::from(s.room_list_order_json.as_str()),
+            room_message_alerts_json: QString::from(s.room_message_alerts_json.as_str()),
             relay_allow_gated: s.relay_allow_gated,
             relay_auto_renew: s.relay_auto_renew,
             upnp_enabled: s.upnp_enabled,
@@ -849,6 +862,7 @@ impl ffi::SettingsModel {
             skin_json: r.skin_json.to_string(),
             font_scale_percent: clamp_font_scale_percent(r.font_scale_percent),
             room_list_order_json: r.room_list_order_json.to_string(),
+            room_message_alerts_json: r.room_message_alerts_json.to_string(),
             relay_allow_gated: r.relay_allow_gated,
             relay_auto_renew: r.relay_auto_renew,
             upnp_enabled: r.upnp_enabled,
@@ -1106,6 +1120,8 @@ impl ffi::SettingsModel {
             .set_font_scale_percent(clamp_font_scale_percent(snap.font_scale_percent));
         self.as_mut()
             .set_room_list_order_json(QString::from(snap.room_list_order_json.as_str()));
+        self.as_mut()
+            .set_room_message_alerts_json(QString::from(snap.room_message_alerts_json.as_str()));
         self.as_mut().set_relay_allow_gated(snap.relay_allow_gated);
         self.as_mut().set_relay_auto_renew(snap.relay_auto_renew);
         self.as_mut().set_upnp_enabled(snap.upnp_enabled);
@@ -1153,6 +1169,15 @@ mod tests {
             SettingsSnapshot::default().room_list_order_json,
             r#"{"mode":"name_asc","pinned":[],"manual":[]}"#
         );
+    }
+
+    #[test]
+    fn room_message_alerts_default_to_muted() {
+        assert_eq!(SettingsSnapshot::default().room_message_alerts_json, "[]");
+        match serde_json::from_str::<SettingsSnapshot>(r#"{"theme":"light"}"#) {
+            Ok(old) => assert_eq!(old.room_message_alerts_json, "[]"),
+            Err(e) => panic!("old settings parse: {e}"),
+        }
     }
 
     #[test]

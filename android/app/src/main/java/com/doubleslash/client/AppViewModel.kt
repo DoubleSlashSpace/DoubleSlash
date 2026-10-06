@@ -5,9 +5,12 @@ import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -111,6 +114,14 @@ data class AppState(
     val tab: HomeTab = HomeTab.PEERS,
     /** Live messages for the room currently open. Not persisted anywhere. */
     val roomMessages: List<RoomMessage> = emptyList(),
+    /**
+     * Unread inbound text for rooms with message alerts on, keyed by room id.
+     *
+     * Counts messages that arrived while that room was not on screen. Opening
+     * the room or muting it clears the entry. Messages already in history when
+     * alerts are turned on are not counted.
+     */
+    val roomUnread: Map<String, Int> = emptyMap(),
     /**
      * Voice participants in the open room, by peer id.
      *
@@ -392,6 +403,8 @@ data class Prefs(
     val voiceBitrate: Int = 32_000,
     /** Rooms list order. Same choices as the desktop. */
     val roomListOrder: RoomListOrder = RoomListOrder(),
+    /** Room ids whose text messages alert. Empty mutes every room. */
+    val roomMessageAlerts: Set<String> = emptySet(),
 )
 
 
@@ -405,6 +418,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Device-local preferences; the display name lives on the peer record. */
     private val settings = AppSettings(app)
     private val audioRouter = AudioRouter(app)
+
+    /** Recent room-message ids, so a cluster fan-out does not alert once per node. */
+    private val seenRoomMessages = ArrayDeque<String>()
+
+    /** A room-alert notification tapped before the room list was loaded. */
+    private var pendingAlertRoomId: String? = null
 
     private val _state = MutableStateFlow(AppState())
     val state: StateFlow<AppState> = _state.asStateFlow()
@@ -781,6 +800,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         noiseStrength = settings.noiseStrength,
         voiceBitrate = settings.voiceBitrate,
         roomListOrder = parseRoomListOrder(settings.roomListOrderJson),
+        roomMessageAlerts = settings.roomMessageAlerts,
     )
 
     /**
@@ -793,6 +813,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun resetUiToLocked() {
         IncomingCallNotifier.cancel(getApplication())
+        RoomMessageNotifier.cancelAll(getApplication())
         CameraCapture.stop()
         _state.value = AppState(prefs = prefsSnapshot())
     }
@@ -1216,6 +1237,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val reply = core.command("room.list")
         if (!reply.ok) return@launch
         _state.update { it.copy(rooms = reply.decodeList<Room>(core, "rooms")) }
+        openPendingAlertRoom()
     }
 
     // ── Chat ──────────────────────────────────────────────────────────────
@@ -1478,7 +1500,99 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Order matters — the supernode only forwards room chat to peers it has
      * admitted, so subscribing first would silently receive nothing.
      */
+    /**
+     * Turn message alerts on or off for one room.
+     *
+     * Enabling does not badge history already stored: those rows are marked
+     * read, and only a message that arrives afterwards counts.
+     */
+    fun setRoomMessageAlerts(room: Room, enabled: Boolean) {
+        if (room.roomId.isEmpty()) return
+        val next = settings.roomMessageAlerts.toMutableSet().apply {
+            if (enabled) add(room.roomId) else remove(room.roomId)
+        }
+        settings.roomMessageAlerts = next
+        RoomMessageNotifier.cancel(getApplication(), room.roomId)
+        _state.update {
+            it.copy(
+                prefs = it.prefs.copy(roomMessageAlerts = next),
+                roomUnread = it.roomUnread - room.roomId,
+            )
+        }
+        viewModelScope.launch {
+            core.command("chat.mark_read") { put("peer_id", "room:${room.roomId}") }
+        }
+    }
+
+    /**
+     * The activity came to the foreground. A room already on screen has been
+     * read, so its shade notification goes away. Other rooms keep theirs
+     * until they are opened.
+     */
+    fun onBroughtToFront() {
+        val room = (_state.value.screen as? Screen.RoomChat)?.room ?: return
+        clearRoomAlert(room.roomId)
+    }
+
+    /** Open the room named by a message-alert notification, once it is listed. */
+    fun handleRoomAlertIntent(intent: Intent?) {
+        if (intent?.action != RoomMessageNotifier.ACTION_OPEN) return
+        val roomId = intent.getStringExtra(RoomMessageNotifier.EXTRA_ROOM_ID).orEmpty()
+        if (roomId.isEmpty()) return
+        pendingAlertRoomId = roomId
+        RoomMessageNotifier.cancel(getApplication(), roomId)
+        openPendingAlertRoom()
+    }
+
+    private fun openPendingAlertRoom() {
+        val roomId = pendingAlertRoomId ?: return
+        val screen = _state.value.screen
+        if (screen is Screen.Unlock || screen is Screen.Terms) return
+        val room = _state.value.rooms.firstOrNull { it.roomId == roomId } ?: return
+        pendingAlertRoomId = null
+        openRoom(room)
+    }
+
+    private fun clearRoomAlert(roomId: String) {
+        if (roomId.isEmpty()) return
+        RoomMessageNotifier.cancel(getApplication(), roomId)
+        _state.update { state ->
+            if (roomId !in state.roomUnread) state
+            else state.copy(roomUnread = state.roomUnread - roomId)
+        }
+        viewModelScope.launch {
+            core.command("chat.mark_read") { put("peer_id", "room:$roomId") }
+        }
+    }
+
+    private fun appInForeground(): Boolean =
+        ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+
+    /**
+     * True the first time this room message is seen.
+     *
+     * A cluster delivers the same frame once per member. Alerting each copy
+     * would stack the badge and the shade.
+     */
+    private fun claimRoomMessage(key: String): Boolean {
+        if (key.isEmpty()) return true
+        if (key in seenRoomMessages) return false
+        seenRoomMessages.addLast(key)
+        while (seenRoomMessages.size > 256) seenRoomMessages.removeFirst()
+        return true
+    }
+
+    private fun roomMessageKey(event: JsonObject): String {
+        val id = event.stringOrEmpty("message_id")
+        if (id.isNotEmpty()) return id
+        return event.stringOrEmpty("room_id") + "\u0000" +
+            event.stringOrEmpty("sender_id") + "\u0000" +
+            event.number("timestamp").toString() + "\u0000" +
+            event.stringOrEmpty("body")
+    }
+
     fun openRoom(room: Room) {
+        clearRoomAlert(room.roomId)
         _state.update {
             it.copy(
                 screen = Screen.RoomChat(room),
@@ -2231,8 +2345,49 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             "room_chat_message" -> {
-                if (!isOpenRoom(event)) return@onCoreEvent
+                if (!claimRoomMessage(roomMessageKey(event))) return@onCoreEvent
+                val roomId = event.stringOrEmpty("room_id")
                 val sender = event.stringOrEmpty("sender_id")
+                val self = sender.sameIdentityAs(_state.value.identity.publicId)
+                val open = isOpenRoom(event)
+                val alerting = roomId.isNotEmpty() &&
+                    roomId in _state.value.prefs.roomMessageAlerts
+                // On screen and in front: the user is reading it. Otherwise
+                // an enabled room alerts the way a direct message does — a
+                // badge when the room is not open, and a notification when
+                // the app is not in front.
+                val looking = open && appInForeground()
+                if (alerting && !self && !looking) {
+                    val count = if (open) {
+                        _state.value.roomUnread[roomId] ?: 0
+                    } else {
+                        (_state.value.roomUnread[roomId] ?: 0) + 1
+                    }
+                    if (!open) {
+                        _state.update { it.copy(roomUnread = it.roomUnread + (roomId to count)) }
+                    }
+                    if (!appInForeground()) {
+                        val listed = _state.value.rooms.firstOrNull { it.roomId == roomId }
+                        RoomMessageNotifier.show(
+                            getApplication(),
+                            roomId = roomId,
+                            supernodeId = listed?.supernodeId
+                                ?: event.stringOrEmpty("supernode_id"),
+                            roomName = listed?.roomName?.ifBlank { "Room" } ?: "Room",
+                            sender = event.stringOrEmpty("sender_handle").ifBlank { "Someone" },
+                            body = event.stringOrEmpty("body"),
+                            unread = count.coerceAtLeast(1),
+                        )
+                    }
+                }
+                // The core stores every room message as delivered. A room the
+                // user is reading should not stay unread for a later enable.
+                if (looking && roomId.isNotEmpty()) {
+                    viewModelScope.launch {
+                        core.command("chat.mark_read") { put("peer_id", "room:$roomId") }
+                    }
+                }
+                if (!open) return@onCoreEvent
                 val message = RoomMessage(
                     messageId = event.stringOrEmpty("message_id"),
                     senderId = sender,

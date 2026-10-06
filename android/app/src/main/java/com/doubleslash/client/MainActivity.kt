@@ -59,6 +59,12 @@ class MainActivity : ComponentActivity() {
 
         handleIncomingCall(intent)
         handleInviteIntent(intent)
+        viewModel.handleRoomAlertIntent(intent)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        viewModel.onBroughtToFront()
     }
 
     /**
@@ -72,6 +78,7 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         handleIncomingCall(intent)
         handleInviteIntent(intent)
+        viewModel.handleRoomAlertIntent(intent)
     }
 
     /**

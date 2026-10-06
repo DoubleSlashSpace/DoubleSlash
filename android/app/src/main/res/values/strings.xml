@@ -13,4 +13,6 @@
     <string name="incoming_call_decline">Decline</string>
     <string name="incoming_call_channel">Incoming calls</string>
     <string name="incoming_call_channel_description">Rings when a peer calls and DoubleSlash is in the background.</string>
+    <string name="room_message_channel">Room messages</string>
+    <string name="room_message_channel_description">Alerts for rooms whose message alerts are turned on.</string>
 </resources>

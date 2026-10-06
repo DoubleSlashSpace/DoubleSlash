@@ -31,6 +31,7 @@ class AppSettings(context: Context) {
         put("skin", skin)
         put("font_scale_percent", fontScalePercent)
         put("room_list_order", roomListOrderJson)
+        put("room_message_alerts", roomMessageAlertsJson(roomMessageAlerts))
     }
 
     fun restoreValues(values: JsonObject) {
@@ -43,6 +44,9 @@ class AppSettings(context: Context) {
         (values["skin"] as? JsonPrimitive)?.contentOrNull?.let { skin = it }
         (values["font_scale_percent"] as? JsonPrimitive)?.intOrNull?.let { fontScalePercent = it }
         (values["room_list_order"] as? JsonPrimitive)?.contentOrNull?.let { roomListOrderJson = it }
+        (values["room_message_alerts"] as? JsonPrimitive)?.contentOrNull?.let {
+            roomMessageAlerts = parseRoomMessageAlerts(it)
+        }
     }
 
     private val prefs =
@@ -137,6 +141,17 @@ class AppSettings(context: Context) {
         set(value) = prefs.edit().putString(KEY_ROOM_LIST_ORDER, value).apply()
 
     /**
+     * Room ids whose text messages raise an alert. Empty means every room is
+     * muted. The same JSON array the desktop stores as `room_message_alerts_json`,
+     * keyed by room id alone.
+     */
+    var roomMessageAlerts: Set<String>
+        get() = parseRoomMessageAlerts(prefs.getString(KEY_ROOM_MESSAGE_ALERTS, "[]"))
+        set(value) {
+            prefs.edit().putString(KEY_ROOM_MESSAGE_ALERTS, roomMessageAlertsJson(value)).apply()
+        }
+
+    /**
      * The [Legal.TERMS_VERSION] last accepted on this device, or 0.
      *
      * Play requires terms before user-generated content. Bumping
@@ -173,6 +188,7 @@ class AppSettings(context: Context) {
         private const val KEY_SKIN = "skin"
         private const val KEY_FONT_SCALE = "font_scale_percent"
         private const val KEY_ROOM_LIST_ORDER = "room_list_order"
+        private const val KEY_ROOM_MESSAGE_ALERTS = "room_message_alerts"
         private const val KEY_INPUT_GAIN = "input_gain"
         private const val KEY_OUTPUT_GAIN = "output_gain"
         private const val KEY_NOISE_STRENGTH = "noise_strength"
@@ -182,3 +198,22 @@ class AppSettings(context: Context) {
         private const val KEY_NOTIFICATION_RATIONALE = "notification_rationale_shown"
     }
 }
+
+/**
+ * Room ids from the device's message-alert setting.
+ *
+ * A JSON array of room ids. Missing, blank, or unreadable input mutes every
+ * room. Blank entries are dropped.
+ */
+fun parseRoomMessageAlerts(raw: String?): Set<String> {
+    if (raw.isNullOrBlank()) return emptySet()
+    val array = runCatching { Json.parseToJsonElement(raw) }.getOrNull() as? JsonArray
+        ?: return emptySet()
+    return array.mapNotNull { element ->
+        (element as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotEmpty() }
+    }.toSet()
+}
+
+/** The JSON array [parseRoomMessageAlerts] reads back. */
+fun roomMessageAlertsJson(ids: Set<String>): String =
+    JsonArray(ids.map { JsonPrimitive(it) }).toString()

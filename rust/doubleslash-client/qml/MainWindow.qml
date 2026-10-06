@@ -329,6 +329,77 @@ ApplicationWindow {
         }
     }
 
+    // Room ids whose text alerts. Empty until the user enables a room.
+    // Same JSON array the phone stores. Keyed by room id, not the host.
+    readonly property var roomAlertIds: {
+        var raw = settingsModel ? (settingsModel.room_message_alerts_json || "[]") : "[]"
+        try {
+            var parsed = JSON.parse(raw)
+            return Array.isArray(parsed) ? parsed : []
+        } catch (e) {
+            return []
+        }
+    }
+
+    property var roomUnread: ({})
+
+    function roomAlertsEnabled(roomId) {
+        return roomId !== "" && root.roomAlertIds.indexOf(roomId) >= 0
+    }
+
+    function roomUnreadCount(roomId) {
+        var n = root.roomUnread[roomId]
+        return n > 0 ? n : 0
+    }
+
+    function setRoomUnread(roomId, count) {
+        if (!roomId)
+            return
+        var next = {}
+        var cur = root.roomUnread || {}
+        for (var k in cur) {
+            if (Object.prototype.hasOwnProperty.call(cur, k))
+                next[k] = cur[k]
+        }
+        if (count > 0)
+            next[roomId] = count
+        else
+            delete next[roomId]
+        root.roomUnread = next
+    }
+
+    function setRoomMessageAlerts(roomId, enabled) {
+        if (!settingsModel || !roomId)
+            return
+        var ids = root.roomAlertIds.slice()
+        var at = ids.indexOf(roomId)
+        if (enabled && at < 0)
+            ids.push(roomId)
+        if (!enabled && at >= 0)
+            ids.splice(at, 1)
+        settingsModel.room_message_alerts_json = JSON.stringify(ids)
+        settingsModel.save()
+    }
+
+    function roomNameForAlert(roomId) {
+        for (var i = 0; i < nodeListModel.count; i++) {
+            var node = nodeListModel.get(i)
+            if (!node)
+                continue
+            var rooms = []
+            try {
+                rooms = JSON.parse(node.rooms_json || "[]")
+            } catch (e) {
+                continue
+            }
+            for (var r = 0; r < rooms.length; r++) {
+                if (rooms[r] && rooms[r].room_id === roomId)
+                    return rooms[r].name || rooms[r].room_id
+            }
+        }
+        return ""
+    }
+
     function commitRoomOrder(order) {
         if (!settingsModel)
             return
@@ -1405,6 +1476,9 @@ ApplicationWindow {
         function onUpdate_check_enabledChanged() {
             backend.setAutomaticUpdateChecks(settingsModel.update_check_enabled)
         }
+        function onRoom_message_alerts_jsonChanged() {
+            backend.setRoomMessageAlerts(settingsModel.room_message_alerts_json || "[]")
+        }
     }
 
     Connections {
@@ -1713,6 +1787,9 @@ ApplicationWindow {
         })
 
         backend.initializeBackend()
+        // load() may have pushed this before the chat store existed. Push
+        // again now so stored unread for alerting rooms can publish.
+        backend.setRoomMessageAlerts(settingsModel.room_message_alerts_json || "[]")
         if (!settingsModel.onboarding_complete)
             Qt.callLater(function() {
                 if (backend.public_id && backend.public_id !== "")
@@ -1770,9 +1847,26 @@ ApplicationWindow {
             // checks room_id so history loads / edge races cannot cross-paint.
             roomPanel.appendRoomChat(msgJson)
         }
+        function onRoomUnreadChanged(roomId, count) {
+            root.setRoomUnread(roomId, count)
+        }
+        // Same tray balloon as a direct message, for rooms the user enabled.
+        // The bridge only emits this when that room's alerts are on.
+        function onRoomMessageAlert(roomId, sender, body) {
+            if (root.active || !trayIcon.available || !settingsModel.notifications_enabled)
+                return
+            var title = root.roomNameForAlert(roomId)
+            if (!title)
+                title = qsTr("Room")
+            var who = sender || qsTr("Someone")
+            var text = who + ": " + (body || qsTr("New message"))
+            trayIcon.showMessage(title, text.substring(0, 80),
+                                 Platform.SystemTrayIcon.Information,
+                                 4000)
+        }
         // Show a tray balloon when a message arrives while the window is not active.
         function onChatMessageReceived(msgJson) {
-            if (!root.active && trayIcon.available) {
+            if (!root.active && trayIcon.available && settingsModel.notifications_enabled) {
                 try {
                     var msg = JSON.parse(msgJson)
                     if (!msg.mine) {
@@ -2248,6 +2342,7 @@ ApplicationWindow {
                         readonly property string targetKey: targetSupernodeId + ":" + targetRoomId
                         readonly property bool targetPinned: RoomTree.isPinned(root.roomListOrder, targetKey)
                         readonly property bool targetManual: RoomTree.sortMode(root.roomListOrder) === "manual"
+                        property bool targetAlerts: false
 
                         MenuItem {
                             text: qsTr("Join Voice Room")
@@ -2376,6 +2471,14 @@ ApplicationWindow {
                                 roomContextMenu.targetRoomId,
                                 1,
                                 root.roomListOrder))
+                        }
+                        MenuItem {
+                            text: roomContextMenu.targetAlerts
+                                ? qsTr("Mute message alerts")
+                                : qsTr("Enable message alerts")
+                            onTriggered: root.setRoomMessageAlerts(
+                                roomContextMenu.targetRoomId,
+                                !roomContextMenu.targetAlerts)
                         }
                         MenuSeparator {
                             visible: roomContextMenu.targetCanRemove
@@ -2566,6 +2669,7 @@ ApplicationWindow {
                                                         roomContextMenu.targetCanRemove = roomDelegate.canRemove
                                                         roomContextMenu.targetHidden = row.hidden === true
                                                         roomContextMenu.targetRooms = roomGroup.rooms
+                                                        roomContextMenu.targetAlerts = root.roomAlertsEnabled(row.room_id)
                                                         roomContextMenu.popup()
                                                     }
                                                 }
@@ -2636,8 +2740,30 @@ ApplicationWindow {
                                                             ? Theme.muted
                                                             : (roomDelegate.voiceHere ? Theme.online : Theme.text)
                                                         font.pixelSize: Theme.fontSizeBody
-                                                        font.bold: roomDelegate.roomSelected || roomDelegate.voiceHere
+                                                        font.bold: roomDelegate.roomSelected
+                                                            || roomDelegate.voiceHere
+                                                            || root.roomUnreadCount(row.room_id) > 0
                                                         elide: Text.ElideRight
+                                                    }
+
+                                                    Rectangle {
+                                                        visible: root.roomUnreadCount(row.room_id) > 0
+                                                        width: Math.max(20, roomUnreadText.implicitWidth + 8)
+                                                        height: Math.max(20, roomUnreadText.implicitHeight + 4)
+                                                        radius: Theme.radiusPill
+                                                        color: Theme.danger
+                                                        Layout.alignment: Qt.AlignVCenter
+
+                                                        Text {
+                                                            id: roomUnreadText
+                                                            anchors.centerIn: parent
+                                                            text: root.roomUnreadCount(row.room_id) > 99
+                                                                ? "99+"
+                                                                : root.roomUnreadCount(row.room_id).toString()
+                                                            color: Theme.textInv
+                                                            font.pixelSize: Theme.fontSizeCaption
+                                                            font.bold: true
+                                                        }
                                                     }
 
                                                     Label {

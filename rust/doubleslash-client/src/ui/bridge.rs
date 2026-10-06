@@ -741,6 +741,24 @@ pub mod ffi {
         #[rust_name = "unread_changed"]
         fn unreadChanged(self: Pin<&mut AppBridge>, peer_id: QString, count: i32);
 
+        /// Inbound room text in a room the user asked to be alerted about.
+        ///
+        /// QML shows the tray balloon when the window is not active. Emitted
+        /// for someone else's message even when that room is on screen.
+        #[qsignal]
+        #[rust_name = "room_message_alert"]
+        fn roomMessageAlert(
+            self: Pin<&mut AppBridge>,
+            room_id: QString,
+            sender: QString,
+            body: QString,
+        );
+
+        /// Unread inbound text for one alerting room. Zero clears the badge.
+        #[qsignal]
+        #[rust_name = "room_unread_changed"]
+        fn roomUnreadChanged(self: Pin<&mut AppBridge>, room_id: QString, count: i32);
+
         /// Emitted when the last-message preview for a peer changes.
         #[qsignal]
         #[rust_name = "preview_changed"]
@@ -1129,6 +1147,16 @@ pub mod ffi {
             room_id: &QString,
         );
 
+        /// Replace the set of rooms whose text messages alert.
+        ///
+        /// `room_ids_json` is a JSON array of room ids. Empty mutes every room.
+        /// The first call after startup publishes any unread already stored for
+        /// those rooms. A later call that adds a room marks its history read,
+        /// so turning alerts on does not badge messages from before.
+        #[qinvokable]
+        #[rust_name = "set_room_message_alerts"]
+        fn setRoomMessageAlerts(self: Pin<&mut AppBridge>, room_ids_json: &QString);
+
         /// Normalize a supernode sidebar id (hex `peer_id` or base64url
         /// `identity_pub`) to the canonical `identity_pub` used on the wire.
         /// Returns an empty string for ordinary peers.
@@ -1386,6 +1414,15 @@ pub struct AppBridgeRust {
 
     /// Current SFU room ID (for sendRoomChat).
     current_room_id: String,
+
+    /// Room ids whose inbound text alerts, like a direct message.
+    ///
+    /// Empty until QML pushes the device setting. A room that is absent is muted.
+    room_message_alerts: HashSet<String>,
+    /// True once `setRoomMessageAlerts` has run with a chat store open. The
+    /// first such call publishes stored unread; later additions mark history
+    /// read instead.
+    room_message_alerts_loaded: bool,
 
     /// Active SFU voice session (may differ from chat `current_*` after subscribe).
     voice_supernode_id: String,
@@ -1767,6 +1804,8 @@ impl Default for AppBridgeRust {
             selected_peer_id: String::new(),
             current_supernode_id: String::new(),
             current_room_id: String::new(),
+            room_message_alerts: HashSet::new(),
+            room_message_alerts_loaded: false,
             voice_supernode_id: String::new(),
             voice_room_id: String::new(),
             ptt_stop: None,
@@ -2024,6 +2063,54 @@ fn room_chat_history_key(supernode_id: &str, room_id: &str) -> String {
 /// Deliberately takes no supernode: see [`crate::chat_store::room_conversation_id`].
 fn room_chat_store_peer_id(room_id: &str) -> String {
     crate::chat_store::room_conversation_id(room_id)
+}
+
+/// Taskbar badge: direct unread, plus unread in rooms the user enabled.
+fn notification_badge_total(
+    cs: &crate::chat_store::ChatStore,
+    alert_rooms: &HashSet<String>,
+) -> u32 {
+    let mut total = cs.total_direct_unread_count().unwrap_or(0);
+    for room_id in alert_rooms {
+        total = total.saturating_add(
+            cs.unread_count(&crate::chat_store::room_conversation_id(room_id))
+                .unwrap_or(0),
+        );
+    }
+    u32::try_from(total).unwrap_or(u32::MAX)
+}
+
+fn publish_notification_badge(bridge: &mut Pin<&mut ffi::AppBridge>) {
+    let alerts = bridge.rust().room_message_alerts.clone();
+    let total = bridge
+        .rust()
+        .chat_store
+        .as_ref()
+        .map(|cs| notification_badge_total(cs, &alerts))
+        .unwrap_or(0);
+    bridge.as_mut().rust_mut().unread_chat = total;
+    if total == 0 {
+        crate::platform::clear_taskbar_badge();
+    } else {
+        crate::platform::set_taskbar_badge(total);
+    }
+}
+
+fn mark_room_read(bridge: &ffi::AppBridge, room_id: &str) {
+    if let Some(cs) = bridge.rust().chat_store.as_ref() {
+        if let Err(e) = cs.mark_peer_read(&room_chat_store_peer_id(room_id)) {
+            warn!("chat_store mark_peer_read (room) error: {e}");
+        }
+    }
+}
+
+fn room_unread_count(bridge: &ffi::AppBridge, room_id: &str) -> i32 {
+    bridge
+        .rust()
+        .chat_store
+        .as_ref()
+        .and_then(|cs| cs.unread_count(&room_chat_store_peer_id(room_id)).ok())
+        .unwrap_or(0) as i32
 }
 
 // ---------------------------------------------------------------------------
@@ -3661,6 +3748,14 @@ impl ffi::AppBridge {
     fn load_room_chat_history(mut self: Pin<&mut Self>, supernode_id: &QString, room_id: &QString) {
         let requested = supernode_id.to_string();
         let rid = room_id.to_string();
+        // Opening the room is reading it. Clear the badge before replaying
+        // history so a message that arrives during the load does not stick.
+        if !rid.is_empty() {
+            mark_room_read(&self, &rid);
+            self.as_mut()
+                .room_unread_changed(QString::from(rid.as_str()), 0);
+            publish_notification_badge(&mut self);
+        }
         // Stored history is keyed by room alone, so it needs no host lookup.
         // Only the in-memory fallback below does.
         if let Some(ref cs) = self.rust().chat_store {
@@ -3694,6 +3789,51 @@ impl ffi::AppBridge {
         for msg in msgs {
             self.as_mut()
                 .room_chat_received(QString::from(msg.as_str()));
+        }
+    }
+
+    fn set_room_message_alerts(mut self: Pin<&mut Self>, room_ids_json: &QString) {
+        let next = crate::chat_store::parse_room_alert_ids(&room_ids_json.to_string());
+        let have_store = self.rust().chat_store.is_some();
+        let first = !self.rust().room_message_alerts_loaded;
+        let prev = self.rust().room_message_alerts.clone();
+        self.as_mut().rust_mut().room_message_alerts = next.clone();
+        if have_store {
+            self.as_mut().rust_mut().room_message_alerts_loaded = true;
+        }
+
+        // Collect before emitting: each signal borrows the bridge mutably.
+        let mut clear_ids: Vec<String> = Vec::new();
+        let mut publish_ids: Vec<(String, i32)> = Vec::new();
+        if have_store {
+            if !first {
+                for room_id in next.difference(&prev) {
+                    mark_room_read(&self, room_id);
+                    clear_ids.push(room_id.clone());
+                }
+            } else {
+                for room_id in &next {
+                    let count = room_unread_count(&self, room_id);
+                    if count > 0 {
+                        publish_ids.push((room_id.clone(), count));
+                    }
+                }
+            }
+            for room_id in prev.difference(&next) {
+                mark_room_read(&self, room_id);
+                clear_ids.push(room_id.clone());
+            }
+        }
+        for room_id in clear_ids {
+            self.as_mut()
+                .room_unread_changed(QString::from(room_id.as_str()), 0);
+        }
+        for (room_id, count) in publish_ids {
+            self.as_mut()
+                .room_unread_changed(QString::from(room_id.as_str()), count);
+        }
+        if have_store {
+            publish_notification_badge(&mut self);
         }
     }
 
@@ -4727,18 +4867,7 @@ impl ffi::AppBridge {
     }
 
     fn clear_unread(mut self: Pin<&mut Self>) {
-        let global = self
-            .rust()
-            .chat_store
-            .as_ref()
-            .and_then(|cs| cs.total_unread_count().ok())
-            .unwrap_or(0);
-        self.as_mut().rust_mut().unread_chat = global as u32;
-        if global == 0 {
-            crate::platform::clear_taskbar_badge();
-        } else {
-            crate::platform::set_taskbar_badge(global as u32);
-        }
+        publish_notification_badge(&mut self);
     }
 
     fn avatar_svg(self: Pin<&mut Self>, peer_id: &QString, config_json: &QString) -> QString {
@@ -4979,13 +5108,7 @@ impl ffi::AppBridge {
             if let Err(e) = cs.mark_peer_read(&pid) {
                 warn!("chat_store mark_peer_read error: {e}");
             }
-            let global = cs.total_unread_count().unwrap_or(0);
-            self.as_mut().rust_mut().unread_chat = global as u32;
-            if global == 0 {
-                crate::platform::clear_taskbar_badge();
-            } else {
-                crate::platform::set_taskbar_badge(global as u32);
-            }
+            publish_notification_badge(&mut self);
             self.as_mut().unread_changed(QString::from(pid.as_str()), 0);
         }
 
@@ -8626,13 +8749,7 @@ fn dispatch_event(
                 let peer_unread = chat_store_for_read
                     .unread_count(&peer_id_clone)
                     .unwrap_or(0) as i32;
-                let global = chat_store_for_read.total_unread_count().unwrap_or(0) as u32;
-                bridge.as_mut().rust_mut().unread_chat = global;
-                if global == 0 {
-                    crate::platform::clear_taskbar_badge();
-                } else {
-                    crate::platform::set_taskbar_badge(global);
-                }
+                publish_notification_badge(&mut bridge);
 
                 let status = if is_viewing { "read" } else { "delivered" };
                 let json = serde_json::json!({
@@ -9831,6 +9948,16 @@ fn dispatch_event(
                     && (sender_id.trim_end_matches('=')
                         == bridge.rust().my_public_id.trim_end_matches('=')
                         || sender_id == bridge.rust().my_peer_id);
+                // Alerts are opt-in per room. A muted room is stored as read so
+                // it never joins the badge. An alerting room that is on screen
+                // is read too; one that is not stays delivered.
+                let alerting = bridge.rust().room_message_alerts.contains(&room_id);
+                let viewing = is_selected_text_room(bridge.rust(), &sn, &room_id);
+                let stored_status = if mine || (alerting && !viewing) {
+                    crate::chat_store::MessageStatus::Delivered
+                } else {
+                    crate::chat_store::MessageStatus::Read
+                };
                 let json = serde_json::json!({
                     "msg_id": message_id.clone(),
                     "sender": display_sender.clone(),
@@ -9855,7 +9982,7 @@ fn dispatch_event(
                         body: body.clone(),
                         timestamp,
                         is_self: mine,
-                        status: crate::chat_store::MessageStatus::Delivered,
+                        status: stored_status,
                         kind: crate::chat_store::MessageKind::Text,
                         attachment_name: String::new(),
                         attachment_path: String::new(),
@@ -9882,11 +10009,31 @@ fn dispatch_event(
                     .push(json.clone());
                 // Only paint into the open room panel — other rooms stay
                 // chat-active for history/store, not the visible list.
-                let show = is_selected_text_room(bridge.rust(), &sn, &room_id);
-                if show {
+                if viewing {
+                    // Covers rows that arrived before this room was opened.
+                    mark_room_read(&bridge, &room_id);
                     bridge
                         .as_mut()
                         .room_chat_received(QString::from(json.as_str()));
+                    bridge
+                        .as_mut()
+                        .room_unread_changed(QString::from(room_id.as_str()), 0);
+                    publish_notification_badge(&mut bridge);
+                } else if alerting {
+                    let count = room_unread_count(&bridge, &room_id);
+                    bridge
+                        .as_mut()
+                        .room_unread_changed(QString::from(room_id.as_str()), count);
+                    publish_notification_badge(&mut bridge);
+                }
+                // Tray is the QML side's decision (window inactive). Own
+                // messages, including a sibling device's, do not alert.
+                if alerting && !mine {
+                    bridge.as_mut().room_message_alert(
+                        QString::from(room_id.as_str()),
+                        QString::from(display_sender.as_str()),
+                        QString::from(body.as_str()),
+                    );
                 }
 
                 // Messages from our other devices must not trigger auto-replies.

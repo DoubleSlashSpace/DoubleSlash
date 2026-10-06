@@ -7,6 +7,7 @@
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -141,6 +142,29 @@ impl MessageStatus {
 /// a profile must agree byte-for-byte or each sees only half the history.
 pub fn room_conversation_id(room_id: &str) -> String {
     format!("room:{room_id}")
+}
+
+/// Room ids whose text should alert, from the device setting.
+///
+/// `raw` is a JSON array of room ids. Missing, malformed, or non-array input
+/// means every room stays muted. Keyed by `room_id` alone, the same identity
+/// [`room_conversation_id`] uses, so a failover does not split the preference.
+pub fn parse_room_alert_ids(raw: &str) -> HashSet<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return HashSet::new();
+    };
+    let Some(items) = value.as_array() else {
+        return HashSet::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            item.as_str()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        })
+        .collect()
 }
 
 /// A single chat message as returned from the store.
@@ -804,6 +828,21 @@ impl ChatStore {
         Ok(count as usize)
     }
 
+    /// Unread inbound messages that are not room conversations.
+    ///
+    /// Room alerts are opt-in. A muted room's delivered rows must not move the
+    /// taskbar badge. Callers add [`unread_count`] for each alerting room's
+    /// [`room_conversation_id`] on top of this.
+    pub fn total_direct_unread_count(&self) -> Result<usize> {
+        let conn = self.conn.lock();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE is_self=0 AND status!='read' AND peer_id NOT LIKE 'room:%'",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
     /// Mark all inbound messages for a peer as read. Returns rows updated.
     pub fn mark_peer_read(&self, peer_id: &str) -> Result<usize> {
         let conn = self.conn.lock();
@@ -1215,6 +1254,28 @@ mod tests {
 
         let loaded = store.get_by_id(&inbound.id).unwrap().unwrap();
         assert_eq!(loaded.status, MessageStatus::Read);
+    }
+
+    #[test]
+    fn direct_unread_ignores_room_conversations() {
+        let dir = tempdir().unwrap();
+        let id = Identity::generate();
+        let store = ChatStore::open(&id, Some(&dir.path().join(CHAT_DB_FILENAME))).unwrap();
+
+        store.insert(&make_msg("peer1", "hello", false)).unwrap();
+        let mut room = make_msg("room:abc", "in the room", false);
+        room.peer_id = "room:abc".to_owned();
+        store.insert(&room).unwrap();
+
+        assert_eq!(store.total_unread_count().unwrap(), 2);
+        assert_eq!(store.total_direct_unread_count().unwrap(), 1);
+        assert_eq!(store.unread_count("room:abc").unwrap(), 1);
+        assert_eq!(
+            parse_room_alert_ids(r#"["abc","abc","",7]"#),
+            ["abc".to_owned()].into_iter().collect()
+        );
+        assert!(parse_room_alert_ids("nope").is_empty());
+        assert!(parse_room_alert_ids("{}").is_empty());
     }
 
     #[test]
