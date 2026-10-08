@@ -151,6 +151,8 @@ Supernodes may use peer/device IDs, room/session IDs, membership, indices, signa
 
 ### Android boundary
 
+- Room-alert notification posting belongs to `CoreService`, not the activity's ViewModel. Preserve cluster deduplication, own-device exclusion, and cancellation of pending alerts during metadata lookups when a room is opened/muted or the session ends.
+
 - The JNI bridge uses four lifecycle/command methods **plus** `nativeSubmitCameraFrame` for CameraX buffers and `nativeAttachVideoSurface` / `nativeDetachVideoSurface` for the views received video is drawn into. Add ordinary features through the JSON command/event channel; keep literal event wire names stable. Camera frames and surfaces use their dedicated interfaces, not JSON.
 - Never serialize incoming per-frame audio/video/content-audio events into UI JSON. `session.rs::route_media` must route direct and room voice into `CallController`; simply filtering events would produce silent calls. `route_video` hands `VideoFrameReceived` to the core `VideoReceiver`. An incoming shared-audio consumer is still missing. Portal datagrams are queued for the portal bridge separately.
 - Android video receive is opt-in per peer, like the desktop rail menu. `video.watch` carries the whole watched set: it drives `SetVideoSubscriptions`, a keyframe request for each newly watched sender, and the decode thread, which exists only while the set is non-empty. Publish the set on every room-voice join even when it is empty, because a supernode forwards every sender until told otherwise. The manager suppresses an unchanged set only within one room.

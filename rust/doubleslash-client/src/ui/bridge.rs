@@ -1157,6 +1157,11 @@ pub mod ffi {
         #[rust_name = "set_room_message_alerts"]
         fn setRoomMessageAlerts(self: Pin<&mut AppBridge>, room_ids_json: &QString);
 
+        /// Whether room text is visible in the foreground window.
+        #[qinvokable]
+        #[rust_name = "set_room_chat_visible"]
+        fn setRoomChatVisible(self: Pin<&mut AppBridge>, visible: bool);
+
         /// Normalize a supernode sidebar id (hex `peer_id` or base64url
         /// `identity_pub`) to the canonical `identity_pub` used on the wire.
         /// Returns an empty string for ordinary peers.
@@ -1423,6 +1428,7 @@ pub struct AppBridgeRust {
     /// first such call publishes stored unread; later additions mark history
     /// read instead.
     room_message_alerts_loaded: bool,
+    room_chat_visible: bool,
 
     /// Active SFU voice session (may differ from chat `current_*` after subscribe).
     voice_supernode_id: String,
@@ -1806,6 +1812,7 @@ impl Default for AppBridgeRust {
             current_room_id: String::new(),
             room_message_alerts: HashSet::new(),
             room_message_alerts_loaded: false,
+            room_chat_visible: false,
             voice_supernode_id: String::new(),
             voice_room_id: String::new(),
             ptt_stop: None,
@@ -1847,6 +1854,36 @@ impl Default for AppBridgeRust {
 }
 
 impl AppBridgeRust {
+    /// Defer the initial unread snapshot until unlock has opened the store.
+    fn update_room_message_alerts(&mut self, next: HashSet<String>) -> Vec<(String, i32)> {
+        let prev = std::mem::replace(&mut self.room_message_alerts, next);
+        let Some(cs) = self.chat_store.as_ref() else {
+            return Vec::new();
+        };
+        let first = !std::mem::replace(&mut self.room_message_alerts_loaded, true);
+        let mut updates = Vec::new();
+        if first {
+            for room_id in &self.room_message_alerts {
+                let count = cs
+                    .unread_count(&room_chat_store_peer_id(room_id))
+                    .unwrap_or(0);
+                updates.push((room_id.clone(), count as i32));
+            }
+        }
+        let clear_ids = prev.difference(&self.room_message_alerts).chain(
+            self.room_message_alerts
+                .difference(&prev)
+                .filter(|_| !first),
+        );
+        for room_id in clear_ids {
+            if let Err(e) = cs.mark_peer_read(&room_chat_store_peer_id(room_id)) {
+                warn!("chat_store mark_peer_read (room alerts) error: {e}");
+            }
+            updates.push((room_id.clone(), 0));
+        }
+        updates
+    }
+
     fn resolve_supernode_node_id_str(&self, id: &str) -> Option<String> {
         self.peer_store
             .as_ref()
@@ -2470,6 +2507,10 @@ impl ffi::AppBridge {
             r.ollama_cmd_tx = maybe_ollama_cmd;
             r.ollama_available = ollama_is_available;
         }
+        // Manual unlock completes after QML's startup calls have returned.
+        // Restore badges at the point the store becomes available on every path.
+        let alerts = self.rust().room_message_alerts.clone();
+        self.as_mut().apply_room_message_alerts(alerts);
         if ollama_is_available {
             self.as_mut().set_ollama_available(true);
         }
@@ -3794,45 +3835,27 @@ impl ffi::AppBridge {
 
     fn set_room_message_alerts(mut self: Pin<&mut Self>, room_ids_json: &QString) {
         let next = crate::chat_store::parse_room_alert_ids(&room_ids_json.to_string());
-        let have_store = self.rust().chat_store.is_some();
-        let first = !self.rust().room_message_alerts_loaded;
-        let prev = self.rust().room_message_alerts.clone();
-        self.as_mut().rust_mut().room_message_alerts = next.clone();
-        if have_store {
-            self.as_mut().rust_mut().room_message_alerts_loaded = true;
-        }
+        self.as_mut().apply_room_message_alerts(next);
+    }
 
-        // Collect before emitting: each signal borrows the bridge mutably.
-        let mut clear_ids: Vec<String> = Vec::new();
-        let mut publish_ids: Vec<(String, i32)> = Vec::new();
-        if have_store {
-            if !first {
-                for room_id in next.difference(&prev) {
-                    mark_room_read(&self, room_id);
-                    clear_ids.push(room_id.clone());
-                }
-            } else {
-                for room_id in &next {
-                    let count = room_unread_count(&self, room_id);
-                    if count > 0 {
-                        publish_ids.push((room_id.clone(), count));
-                    }
-                }
-            }
-            for room_id in prev.difference(&next) {
-                mark_room_read(&self, room_id);
-                clear_ids.push(room_id.clone());
-            }
-        }
-        for room_id in clear_ids {
+    fn set_room_chat_visible(mut self: Pin<&mut Self>, visible: bool) {
+        self.as_mut().rust_mut().room_chat_visible = visible;
+        let room_id = self.rust().current_room_id.clone();
+        if visible && !room_id.is_empty() {
+            mark_room_read(&self, &room_id);
             self.as_mut()
                 .room_unread_changed(QString::from(room_id.as_str()), 0);
+            publish_notification_badge(&mut self);
         }
-        for (room_id, count) in publish_ids {
+    }
+
+    fn apply_room_message_alerts(mut self: Pin<&mut Self>, next: HashSet<String>) {
+        let updates = self.as_mut().rust_mut().update_room_message_alerts(next);
+        for (room_id, count) in updates {
             self.as_mut()
                 .room_unread_changed(QString::from(room_id.as_str()), count);
         }
-        if have_store {
+        if self.rust().chat_store.is_some() {
             publish_notification_badge(&mut self);
         }
     }
@@ -6922,6 +6945,10 @@ fn is_active_voice_room(bridge: &AppBridgeRust, supernode_id: &str, room_id: &st
     !rid.is_empty() && rid == room_id && same_cluster_scope(bridge, &sn, supernode_id)
 }
 
+fn is_reading_text_room(bridge: &AppBridgeRust, supernode_id: &str, room_id: &str) -> bool {
+    bridge.room_chat_visible && is_selected_text_room(bridge, supernode_id, room_id)
+}
+
 fn is_selected_text_room(bridge: &AppBridgeRust, supernode_id: &str, room_id: &str) -> bool {
     !bridge.current_room_id.is_empty()
         && bridge.current_room_id == room_id
@@ -9953,7 +9980,8 @@ fn dispatch_event(
                 // is read too; one that is not stays delivered.
                 let alerting = bridge.rust().room_message_alerts.contains(&room_id);
                 let viewing = is_selected_text_room(bridge.rust(), &sn, &room_id);
-                let stored_status = if mine || (alerting && !viewing) {
+                let reading = is_reading_text_room(bridge.rust(), &sn, &room_id);
+                let stored_status = if mine || (alerting && !reading) {
                     crate::chat_store::MessageStatus::Delivered
                 } else {
                     crate::chat_store::MessageStatus::Read
@@ -10010,11 +10038,13 @@ fn dispatch_event(
                 // Only paint into the open room panel — other rooms stay
                 // chat-active for history/store, not the visible list.
                 if viewing {
-                    // Covers rows that arrived before this room was opened.
-                    mark_room_read(&bridge, &room_id);
                     bridge
                         .as_mut()
                         .room_chat_received(QString::from(json.as_str()));
+                }
+                if reading {
+                    // Covers rows that arrived before this room was opened.
+                    mark_room_read(&bridge, &room_id);
                     bridge
                         .as_mut()
                         .room_unread_changed(QString::from(room_id.as_str()), 0);
@@ -10850,6 +10880,76 @@ fn restart_system_loopback_for_default_output(mut bridge: Pin<&mut ffi::AppBridg
         &QString::from(device_id.as_str()),
         &QString::from(mode.as_str()),
     );
+}
+
+#[cfg(test)]
+mod room_alert_tests {
+    use super::*;
+    use crate::chat_store::{ChatMessage, ChatStore, MessageKind, MessageStatus};
+
+    #[test]
+    fn selected_room_is_read_only_while_visible_in_foreground() {
+        let mut state = AppBridgeRust::default();
+        state.current_room_id = "room".into();
+        state.current_supernode_id = "node".into();
+        assert!(is_selected_text_room(&state, "node", "room"));
+        assert!(!is_reading_text_room(&state, "node", "room"));
+        state.room_chat_visible = true;
+        assert!(is_reading_text_room(&state, "node", "room"));
+        assert!(!is_reading_text_room(&state, "node", "other"));
+        state.room_chat_visible = false;
+        assert!(!is_reading_text_room(&state, "node", "room"));
+    }
+
+    #[test]
+    fn manual_unlock_restores_unread_before_later_preference_changes() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let identity = crate::identity::Identity::generate();
+        let cs = Arc::new(ChatStore::open(
+            &identity,
+            Some(&dir.path().join("chat.db")),
+        )?);
+        for room in ["saved", "new"] {
+            cs.insert(&ChatMessage {
+                id: room.into(),
+                peer_id: room_chat_store_peer_id(room),
+                sender: "other".into(),
+                recipient: room.into(),
+                body: "unread".into(),
+                timestamp: 1.0,
+                is_self: false,
+                status: MessageStatus::Delivered,
+                kind: MessageKind::Text,
+                attachment_name: String::new(),
+                attachment_path: String::new(),
+                size_str: String::new(),
+                status_note: String::new(),
+                sender_handle: String::new(),
+            })?;
+        }
+        let mut state = AppBridgeRust::default();
+        let saved = HashSet::from(["saved".to_owned()]);
+        // Settings load and QML startup both happen before manual unlock.
+        for _ in 0..2 {
+            assert!(state.update_room_message_alerts(saved.clone()).is_empty());
+            assert!(!state.room_message_alerts_loaded);
+        }
+        state.chat_store = Some(Arc::clone(&cs));
+        assert_eq!(
+            state.update_room_message_alerts(saved.clone()),
+            [("saved".into(), 1)]
+        );
+        assert_eq!(notification_badge_total(&cs, &saved), 1);
+        assert!(state.update_room_message_alerts(saved).is_empty());
+        // Enabling a room after unlock clears its old history, not saved unread.
+        let both = HashSet::from(["saved".to_owned(), "new".to_owned()]);
+        assert_eq!(state.update_room_message_alerts(both), [("new".into(), 0)]);
+        assert_eq!(cs.unread_count("room:new")?, 0);
+        assert_eq!(cs.unread_count("room:saved")?, 1);
+        state.update_room_message_alerts(HashSet::new());
+        assert_eq!(cs.unread_count("room:saved")?, 0);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

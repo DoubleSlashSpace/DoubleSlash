@@ -349,6 +349,12 @@ intent for the lock screen. Decline is handled by `CoreService` so the
 activity does not have to come up; Answer opens `MainActivity`. Play Console
 needs a **full-screen intent** declaration for calling apps (`USE_FULL_SCREEN_INTENT`).
 
+**Room text alerts while backgrounded.** Opt-in room notifications are posted
+by `CoreService`, so they continue when the activity and its ViewModel are
+destroyed while the session stays connected. Opening or muting a room cancels
+its notification and any pending alert; disconnecting clears all room alerts.
+Cluster copies are deduplicated and messages from our own devices do not alert.
+
 **Dependency notices.** Settings > Legal > Third-party licenses opens an offline
 reader for the packaged Rust and supplemental notices. Source links using HTTPS
 open in the system browser. Distribution reviews are scoped by Rust target and

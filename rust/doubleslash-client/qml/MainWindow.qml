@@ -343,6 +343,10 @@ ApplicationWindow {
 
     property var roomUnread: ({})
 
+    // Selection survives navigation; only visible foreground text is read.
+    readonly property bool readingRoomText: navIndex === 1 && root.active
+    onReadingRoomTextChanged: backend.setRoomChatVisible(readingRoomText)
+
     function roomAlertsEnabled(roomId) {
         return roomId !== "" && root.roomAlertIds.indexOf(roomId) >= 0
     }
@@ -1787,8 +1791,8 @@ ApplicationWindow {
         })
 
         backend.initializeBackend()
-        // load() may have pushed this before the chat store existed. Push
-        // again now so stored unread for alerting rooms can publish.
+        backend.setRoomChatVisible(root.readingRoomText)
+        // Also covers default settings that emitted no change signal on load.
         backend.setRoomMessageAlerts(settingsModel.room_message_alerts_json || "[]")
         if (!settingsModel.onboarding_complete)
             Qt.callLater(function() {

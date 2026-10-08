@@ -79,8 +79,8 @@ class CoreService : Service() {
     private val networkMonitor by lazy { NetworkMonitor(this, DoubleSlashCore.get(this)) }
 
     /**
-     * Event pump for incoming calls. The ViewModel is gone when the activity
-     * is; this scope lives with the session so a ring can still be posted.
+     * Event pump for calls and room alerts. The ViewModel is gone when the
+     * activity is; this scope lives with the session so alerts still arrive.
      */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -104,6 +104,14 @@ class CoreService : Service() {
                     }
                     "call_accepted", "call_ended" ->
                         IncomingCallNotifier.cancel(this@CoreService)
+                }
+            }
+        }
+        // Room metadata reads must not delay incoming-call handling.
+        scope.launch {
+            DoubleSlashCore.get(this@CoreService).events.collect { event ->
+                if (event.eventName() == "room_chat_message") {
+                    RoomMessageNotifier.onMessage(this@CoreService, event)
                 }
             }
         }
@@ -177,6 +185,7 @@ class CoreService : Service() {
         super.onDestroy()
         scope.cancel()
         IncomingCallNotifier.cancel(this)
+        RoomMessageNotifier.cancelAll(this)
         networkMonitor.stop()
         DoubleSlashCore.get(this).stop()
     }

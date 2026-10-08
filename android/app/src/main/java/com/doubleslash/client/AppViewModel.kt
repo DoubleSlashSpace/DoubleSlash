@@ -1582,15 +1582,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return true
     }
 
-    private fun roomMessageKey(event: JsonObject): String {
-        val id = event.stringOrEmpty("message_id")
-        if (id.isNotEmpty()) return id
-        return event.stringOrEmpty("room_id") + "\u0000" +
-            event.stringOrEmpty("sender_id") + "\u0000" +
-            event.number("timestamp").toString() + "\u0000" +
-            event.stringOrEmpty("body")
-    }
-
     fun openRoom(room: Room) {
         clearRoomAlert(room.roomId)
         _state.update {
@@ -2365,19 +2356,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     if (!open) {
                         _state.update { it.copy(roomUnread = it.roomUnread + (roomId to count)) }
-                    }
-                    if (!appInForeground()) {
-                        val listed = _state.value.rooms.firstOrNull { it.roomId == roomId }
-                        RoomMessageNotifier.show(
-                            getApplication(),
-                            roomId = roomId,
-                            supernodeId = listed?.supernodeId
-                                ?: event.stringOrEmpty("supernode_id"),
-                            roomName = listed?.roomName?.ifBlank { "Room" } ?: "Room",
-                            sender = event.stringOrEmpty("sender_handle").ifBlank { "Someone" },
-                            body = event.stringOrEmpty("body"),
-                            unread = count.coerceAtLeast(1),
-                        )
                     }
                 }
                 // The core stores every room message as delivered. A room the

@@ -294,6 +294,16 @@ example"]
 
 ## Key Data Flows
 
+Room alerts are device-local consumers of decrypted room-chat events. Desktop
+`MainWindow` reports foreground room-text visibility to `AppBridge`; selection
+alone does not mark incoming text read. The bridge restores saved room unread
+counts when the chat store opens, including after a manual passphrase unlock.
+On Android, `CoreService` owns notification delivery through
+`RoomMessageNotifier`, independently of the activity's ViewModel. Its separate
+room-event collector deduplicates cluster copies and does not delay call-event
+handling while loading room labels. Opening/muting a room invalidates pending
+notification work, and service shutdown clears the session's alerts.
+
 | Flow | Path |
 |---|---|
 | Peer message | QML → AppBridge → ConnectionManager → tagged QUIC peer stream, or supernode relay fallback → peer |
