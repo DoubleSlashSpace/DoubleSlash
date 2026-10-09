@@ -295,15 +295,18 @@ meet it.
 * **Core** — `file_transfer.rs`. Streaming to 4 GiB, quota-gated through the
   feature registry, direct (`core.file.v1`) and room (`room.file.v1`) paths.
   Room files are advertised then pulled rather than pushed. The originator
-  refuses a request for an offer it withdrew or let expire; a pull that gets
-  no first chunk within 30 seconds fails as "sender did not respond".
+  refuses a request for an offer it withdrew or let expire. A pull that goes
+  30 seconds without a chunk re-asks from the first missing chunk, keeping
+  bytes already stored, up to three times. The next quiet window keeps the
+  partial and offers Retry (`retryFile` / `file.retry`), which starts another
+  cycle. Hash, size, and protocol failures still discard the partial.
   Active transfers use an idle timeout rather than the offer's one-hour age;
   decompression and reconstructed delta output remain capped at 8 MiB.
-* **Desktop** — `sendFile`, `acceptFile`, `rejectFile`, `sendRoomFile`,
-  `acceptRoomFile`, `declineRoomFile`, `openContainingFolder`.
-* **Android** — `file.send`, `file.accept`, `file.reject`, `file.cancel`, plus
-  `file.send_room`, `file.accept_room`, `file.decline_room`. The room path is
-  advertise-then-pull: nothing moves until a member accepts, so accepting is a
+* **Desktop** — `sendFile`, `acceptFile`, `rejectFile`, `retryFile`,
+  `sendRoomFile`, `acceptRoomFile`, `declineRoomFile`, `openContainingFolder`.
+* **Android** — `file.send`, `file.accept`, `file.reject`, `file.cancel`,
+  `file.retry`, plus `file.send_room`, `file.accept_room`, `file.decline_room`.
+  The room path is advertise-then-pull: nothing moves until a member accepts, so accepting is a
   request back to the originator rather than a local decision, and declining
   tells nobody.
 

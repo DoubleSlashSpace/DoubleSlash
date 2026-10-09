@@ -14,6 +14,7 @@ Item {
     signal openAttachmentRequested(string path)
     signal transferAcceptRequested(string transferId)
     signal transferRejectRequested(string transferId)
+    signal transferRetryRequested(string transferId)
 
     property string msgId: ""
     /// Brief outline when a notification opened the conversation on this row.
@@ -47,6 +48,7 @@ Item {
     }
     property string xferState: ""
     property real xferProgress: 0
+    property bool xferRetryable: false
     readonly property bool xferLive: root.xferState === "pending" || root.xferState === "active"
     /// Ours, but sent from our other device: a send made here always records
     /// the local path, so no path means the bytes are still on that device and
@@ -55,6 +57,9 @@ Item {
                                             && root.attachmentPath === ""
     readonly property bool canDownload: (!root.mine || root.fromOtherDevice)
                                         && root.xferState === "pending"
+    readonly property bool canRetry: root.xferState === "failed"
+                                     && root.transferId !== ""
+                                     && root.xferRetryable
     readonly property bool mediaPreviewReady: (root.kind === "image" || root.kind === "video")
         && root.attachmentPath !== ""
         && !root.xferLive
@@ -63,10 +68,14 @@ Item {
         if (!root.fileTransferModel || root.transferId === "") {
             root.xferState = ""
             root.xferProgress = 0
+            root.xferRetryable = false
             return
         }
         root.xferState = root.fileTransferModel.stateFor(root.transferId)
         root.xferProgress = root.fileTransferModel.progressFor(root.transferId)
+        // Copied out of the model: retryableFor() is not a binding, so a
+        // later reset that only flips the flag would leave the button hidden.
+        root.xferRetryable = root.fileTransferModel.retryableFor(root.transferId)
     }
 
     onTransferIdChanged: root.refreshTransfer()
@@ -554,6 +563,23 @@ Item {
                                     root.xferState = "active"
                                     root.xferProgress = Math.max(root.xferProgress, 0.01)
                                     root.transferAcceptRequested(root.transferId)
+                                }
+                            }
+                            ToolButton {
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
+                                icon.width: 14
+                                icon.height: 14
+                                icon.color: Theme.accent
+                                implicitWidth: 28
+                                implicitHeight: 24
+                                flat: true
+                                visible: root.canRetry
+                                ToolTip.text: qsTr("Retry")
+                                ToolTip.visible: hovered
+                                onClicked: {
+                                    if (root.fileTransferModel)
+                                        root.fileTransferModel.setProgress(root.transferId, root.xferProgress)
+                                    root.transferRetryRequested(root.transferId)
                                 }
                             }
                             ToolButton {

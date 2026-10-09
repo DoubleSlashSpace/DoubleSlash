@@ -199,6 +199,11 @@ data class AppState(
     val fileOffer: FileOffer? = null,
     /** Live transfers by id, 0.0-1.0, for the progress line. */
     val transfers: Map<String, Float> = emptyMap(),
+    /**
+     * Interrupted transfers whose partial is still stored, by id, with the
+     * reason to show beside Retry. Cleared when bytes move again.
+     */
+    val fileRetries: Map<String, String> = emptyMap(),
     /** The most recent completed download, offered for saving out. */
     val savedFile: SavedFile? = null,
     /** Device-local preferences. */
@@ -1128,6 +1133,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val clipboard = getApplication<Application>()
             .getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         clipboard?.setPrimaryClip(ClipData.newPlainText(label, text))
+    }
+
+    /**
+     * Continue a transfer that stopped after repeated resumes.
+     *
+     * The core already holds the bytes that arrived. This asks for the rest.
+     */
+    fun retryFile(transferId: String) = viewModelScope.launch {
+        val reply = core.command("file.retry") { put("transfer_id", transferId) }
+        if (!reply.ok) {
+            _state.update { it.copy(error = reply.errorText) }
+            return@launch
+        }
+        _state.update {
+            it.copy(
+                fileRetries = it.fileRetries - transferId,
+                transfers = it.transfers + (transferId to (it.transfers[transferId] ?: 0f)),
+            )
+        }
     }
 
     /** Accept the pending offer, which is what actually starts the download. */
@@ -2328,7 +2352,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             "file_progress" -> {
                 val id = event.stringOrEmpty("transfer_id")
                 val progress = event.number("progress").toFloat()
-                _state.update { it.copy(transfers = it.transfers + (id to progress)) }
+                _state.update {
+                    it.copy(
+                        transfers = it.transfers + (id to progress),
+                        fileRetries = it.fileRetries - id,
+                    )
+                }
             }
 
             "file_complete" -> {
@@ -2338,6 +2367,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update {
                     it.copy(
                         transfers = it.transfers - id,
+                        fileRetries = it.fileRetries - id,
                         // Only a received file can be saved out; our own
                         // completed upload is already on this device.
                         savedFile = if (path.isNotBlank()) SavedFile(name, path) else it.savedFile,
@@ -2354,11 +2384,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
             "file_failed" -> {
                 val id = event.stringOrEmpty("transfer_id")
-                _state.update {
-                    it.copy(
-                        transfers = it.transfers - id,
-                        error = event.stringOrEmpty("reason").ifBlank { "transfer failed" },
-                    )
+                val reason = event.stringOrEmpty("reason").ifBlank { "transfer failed" }
+                // A retryable failure kept the partial. The bubble offers
+                // Retry; a hard failure still uses the error line.
+                if (event.boolean("retryable", false) && id.isNotEmpty()) {
+                    _state.update {
+                        it.copy(
+                            transfers = it.transfers - id,
+                            fileRetries = it.fileRetries + (id to reason),
+                        )
+                    }
+                } else {
+                    _state.update {
+                        it.copy(
+                            transfers = it.transfers - id,
+                            fileRetries = it.fileRetries - id,
+                            error = reason,
+                        )
+                    }
                 }
             }
 

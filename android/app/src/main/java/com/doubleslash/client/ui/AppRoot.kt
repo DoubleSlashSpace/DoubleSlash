@@ -125,6 +125,7 @@ import com.doubleslash.client.roomMembersUnion
 import com.doubleslash.client.ownStatusLabel
 import com.doubleslash.client.R
 import com.doubleslash.client.ChatMessage
+import com.doubleslash.client.transferIdFromMessage
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -326,6 +327,8 @@ fun AppRoot(viewModel: AppViewModel) {
                     onJoinRoom = viewModel::joinRoomFromInvite,
                     joinableRoomIds = state.rooms.map { it.roomId }.toSet(),
                     transfers = state.transfers,
+                    fileRetries = state.fileRetries,
+                    onRetryFile = viewModel::retryFile,
                     onSendFile = viewModel::sendFile,
                 )
 
@@ -356,6 +359,8 @@ fun AppRoot(viewModel: AppViewModel) {
                     onAcceptInvite = viewModel::acceptInvite,
                     onJoinRoom = viewModel::joinRoomFromInvite,
                     transfers = state.transfers,
+                    fileRetries = state.fileRetries,
+                    onRetryFile = viewModel::retryFile,
                     onSendFile = viewModel::sendRoomFile,
                     onShare = viewModel::generateRoomInvite,
                     state = state,
@@ -1606,6 +1611,8 @@ private fun ChatScreen(
     onJoinRoom: (String) -> Unit,
     joinableRoomIds: Set<String>,
     transfers: Map<String, Float>,
+    fileRetries: Map<String, String>,
+    onRetryFile: (String) -> Unit,
     onSendFile: (android.net.Uri) -> Unit,
 ) {
     var draft by remember { mutableStateOf("") }
@@ -1674,6 +1681,8 @@ private fun ChatScreen(
                         onAcceptInvite = onAcceptInvite,
                         onJoinRoom = onJoinRoom,
                         joinableRoomIds = joinableRoomIds,
+                        fileRetries = fileRetries,
+                        onRetryFile = onRetryFile,
                     )
                 }
             }
@@ -1729,6 +1738,8 @@ private fun MessageBubble(
     onAcceptInvite: (String) -> Unit,
     onJoinRoom: (String) -> Unit,
     joinableRoomIds: Set<String>,
+    fileRetries: Map<String, String> = emptyMap(),
+    onRetryFile: (String) -> Unit = {},
 ) {
     val invite = remember(message.body) { findInviteUrl(message.body) }
     // With the link lifted into the card, a message that was only a link has
@@ -1756,12 +1767,18 @@ private fun MessageBubble(
                 // The body of an attachment message is only its label, so the
                 // file itself takes that place — a picture shows as a picture.
                 if (hasAttachment) {
+                    val transferId = transferIdFromMessage(message.id)
+                    val retryReason = transferId?.let { fileRetries[it] }
                     AttachmentContent(
                         kind = message.kind,
                         name = message.attachmentName,
                         path = message.attachmentPath,
                         sizeStr = message.sizeStr,
                         modifier = Modifier.padding(10.dp),
+                        retryReason = retryReason,
+                        onRetry = transferId?.takeIf { retryReason != null }?.let { id ->
+                            { onRetryFile(id) }
+                        },
                     )
                 } else {
                     Text(text, modifier = Modifier.padding(10.dp))
@@ -1855,6 +1872,8 @@ private fun RoomChatScreen(
     onAcceptInvite: (String) -> Unit,
     onJoinRoom: (String) -> Unit,
     transfers: Map<String, Float>,
+    fileRetries: Map<String, String>,
+    onRetryFile: (String) -> Unit,
     onSendFile: (android.net.Uri) -> Unit,
     onShare: () -> Unit,
     state: AppState,
@@ -2041,6 +2060,8 @@ private fun RoomChatScreen(
                             onAcceptInvite = onAcceptInvite,
                             onJoinRoom = onJoinRoom,
                             joinableRoomIds = joinableRoomIds,
+                            fileRetries = fileRetries,
+                            onRetryFile = onRetryFile,
                         )
                     }
                 }
@@ -2050,6 +2071,13 @@ private fun RoomChatScreen(
                     onClick = pinned.jumpToLatest,
                 )
             }
+        }
+
+        transfers.forEach { (_, progress) ->
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+            )
         }
 
         Row(
@@ -2138,6 +2166,8 @@ private fun RoomMessageBubble(
     onAcceptInvite: (String) -> Unit,
     onJoinRoom: (String) -> Unit,
     joinableRoomIds: Set<String>,
+    fileRetries: Map<String, String> = emptyMap(),
+    onRetryFile: (String) -> Unit = {},
 ) {
     val invite = remember(message.body) { findInviteUrl(message.body) }
     val text = if (invite == null) message.body else bodyWithoutInvite(message.body, invite)
@@ -2175,12 +2205,18 @@ private fun RoomMessageBubble(
                 message.attachmentName.isNotBlank() || message.attachmentPath.isNotBlank()
             if (hasAttachment) {
                 Card(colors = CardDefaults.cardColors(containerColor = container)) {
+                    val transferId = transferIdFromMessage(message.messageId)
+                    val retryReason = transferId?.let { fileRetries[it] }
                     AttachmentContent(
                         kind = message.kind,
                         name = message.attachmentName,
                         path = message.attachmentPath,
                         sizeStr = message.sizeStr,
                         modifier = Modifier.padding(10.dp),
+                        retryReason = retryReason,
+                        onRetry = transferId?.takeIf { retryReason != null }?.let { id ->
+                            { onRetryFile(id) }
+                        },
                     )
                 }
             } else if (text.isNotBlank()) {

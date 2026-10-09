@@ -426,7 +426,13 @@ pub fn to_json(event: &ConnectionEvent) -> Option<Value> {
         E::FileFailed {
             transfer_id,
             reason,
-        } => json!({ "event": "file_failed", "transfer_id": transfer_id, "reason": reason }),
+            retryable,
+        } => json!({
+            "event": "file_failed",
+            "transfer_id": transfer_id,
+            "reason": reason,
+            "retryable": retryable,
+        }),
     };
 
     Some(value)

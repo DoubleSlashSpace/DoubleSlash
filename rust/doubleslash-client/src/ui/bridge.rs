@@ -699,6 +699,11 @@ pub mod ffi {
         #[rust_name = "accept_file"]
         fn acceptFile(self: Pin<&mut AppBridge>, transfer_id: &QString);
 
+        /// Continue an interrupted transfer from the bytes already stored.
+        #[qinvokable]
+        #[rust_name = "retry_file"]
+        fn retryFile(self: Pin<&mut AppBridge>, transfer_id: &QString);
+
         /// Reject an inbound file offer by transfer ID.
         #[qinvokable]
         #[rust_name = "reject_file"]
@@ -5333,6 +5338,13 @@ impl ffi::AppBridge {
         let tid = transfer_id.to_string();
         if let Some(ref tx) = self.rust().conn_cmd_tx {
             let _ = tx.try_send(ConnectionCommand::AcceptFile { transfer_id: tid });
+        }
+    }
+
+    fn retry_file(self: Pin<&mut Self>, transfer_id: &QString) {
+        let tid = transfer_id.to_string();
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::RetryFile { transfer_id: tid });
         }
     }
 
@@ -10724,10 +10736,12 @@ fn dispatch_event(
         ConnectionEvent::FileFailed {
             transfer_id,
             reason,
+            retryable,
         } => {
             let json = serde_json::json!({
                 "transfer_id": transfer_id,
                 "reason": reason,
+                "retryable": retryable,
             })
             .to_string();
             let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {

@@ -1696,6 +1696,7 @@ ApplicationWindow {
             try {
                 var o = JSON.parse(json)
                 fileTransferModel.markFailed(o.transfer_id, o.reason || "failed")
+                fileTransferModel.setRetryable(o.transfer_id, !!o.retryable)
             } catch(e) {}
         })
         // Wire peer list badge + preview + typing from bridge signals

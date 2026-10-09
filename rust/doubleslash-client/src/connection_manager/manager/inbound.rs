@@ -1999,7 +1999,12 @@ impl ConnectionManager {
                     self.dispatch_outbound(err).await;
                     return;
                 }
-                let evs = self.file_mgr.on_transfer_accepted(&tid);
+                let resume_from = msg
+                    .payload
+                    .get("resume_from")
+                    .and_then(Value::as_u64)
+                    .map(|n| n as usize);
+                let evs = self.file_mgr.on_transfer_accepted_from(&tid, resume_from);
                 self.dispatch_transfer_events(evs).await;
             }
             MessageType::FileTransferReject => {
@@ -2430,6 +2435,7 @@ impl ConnectionManager {
                 self.emit_event(ConnectionEvent::FileFailed {
                     transfer_id: transfer_id.to_owned(),
                     reason: "offer no longer available".to_owned(),
+                    retryable: false,
                 });
             }
         }
@@ -2446,7 +2452,23 @@ impl ConnectionManager {
         let evs = self.room_file_mgr.accept_transfer_locally(transfer_id);
         self.dispatch_room_transfer_events(evs, supernode_id, room_id)
             .await;
+        self.send_room_file_request(supernode_id, room_id, transfer_id, origin_peer, None)
+            .await;
+    }
 
+    /// Ask the originator to stream `transfer_id`, optionally from a chunk.
+    ///
+    /// `resume_from` is omitted on the first request so an older sender, which
+    /// ignores the field, still starts at chunk 0. The receiver drops the
+    /// duplicate prefix and keeps the hole fill.
+    pub(super) async fn send_room_file_request(
+        &mut self,
+        supernode_id: &str,
+        room_id: &str,
+        transfer_id: &str,
+        origin_peer: &str,
+        resume_from: Option<usize>,
+    ) {
         let route = self.live_room_route(supernode_id);
         let sender = self.identity.public_id();
         let mut msg = SignalingMessage::new(MessageType::SfuFileRequest, sender);
@@ -2460,12 +2482,84 @@ impl ConnectionManager {
         // `to` names the file's originator; the supernode relays to them alone.
         msg.payload
             .insert("to".to_owned(), Value::String(origin_peer.to_owned()));
+        if let Some(from) = resume_from {
+            msg.payload
+                .insert("resume_from".to_owned(), Value::from(from as u64));
+        }
         info!(
-            "[room.file.v1] requesting transfer {} from {}",
+            "[room.file.v1] requesting transfer {} from {}{}",
             &transfer_id[..8.min(transfer_id.len())],
-            &origin_peer[..8.min(origin_peer.len())]
+            &origin_peer[..8.min(origin_peer.len())],
+            resume_from
+                .map(|n| format!(" from chunk {n}"))
+                .unwrap_or_default()
         );
         self.dispatch_outbound(msg).await;
+    }
+
+    /// Re-ask the sender for an interrupted transfer, from its first hole.
+    pub(super) async fn send_file_resume(&mut self, resume: &crate::file_transfer::PullResume) {
+        if resume.room_id.is_empty() {
+            let sender = self.identity.public_id();
+            let mut msg = SignalingMessage::new(MessageType::FileTransferAccept, sender);
+            msg.target = Some(resume.peer_id.clone());
+            msg.payload.insert(
+                "transfer_id".to_owned(),
+                Value::String(resume.transfer_id.clone()),
+            );
+            msg.payload.insert(
+                "resume_from".to_owned(),
+                Value::from(resume.from_chunk as u64),
+            );
+            self.dispatch_outbound(msg).await;
+            return;
+        }
+        let sn = if resume.supernode_id.is_empty() {
+            self.current_supernode_id.clone()
+        } else {
+            resume.supernode_id.clone()
+        };
+        self.send_room_file_request(
+            &sn,
+            &resume.room_id,
+            &resume.transfer_id,
+            &resume.peer_id,
+            Some(resume.from_chunk),
+        )
+        .await;
+    }
+
+    /// The user asked to continue a transfer that stopped after repeated resumes.
+    pub(super) async fn retry_inbound_file(&mut self, transfer_id: &str) {
+        let resume = self
+            .file_mgr
+            .arm_retry(transfer_id)
+            .or_else(|| self.room_file_mgr.arm_retry(transfer_id));
+        let Some(resume) = resume else {
+            // Still in flight, or a hard failure that did not keep a partial.
+            // Only an id this process no longer holds is a visible miss.
+            if self.file_mgr.has_inbound(transfer_id) || self.room_file_mgr.has_inbound(transfer_id)
+            {
+                return;
+            }
+            warn!("RetryFile: unknown transfer {transfer_id}");
+            self.emit_event(ConnectionEvent::FileFailed {
+                transfer_id: transfer_id.to_owned(),
+                reason: "offer no longer available".to_owned(),
+                retryable: false,
+            });
+            return;
+        };
+        let progress = self
+            .file_mgr
+            .inbound_progress(transfer_id)
+            .or_else(|| self.room_file_mgr.inbound_progress(transfer_id))
+            .unwrap_or(0.0);
+        self.emit_event(ConnectionEvent::FileProgress {
+            transfer_id: transfer_id.to_owned(),
+            progress,
+        });
+        self.send_file_resume(&resume).await;
     }
 
     /// A room member accepted our offer → start streaming to them.
@@ -2522,14 +2616,22 @@ impl ConnectionManager {
                 .await;
             return;
         }
+        let resume_from = msg
+            .payload
+            .get("resume_from")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
         info!(
-            "[room.file.v1] {} requested transfer {}; streaming",
+            "[room.file.v1] {} requested transfer {} from chunk {resume_from}; streaming",
             &msg.sender[..8.min(msg.sender.len())],
             &tid[..8.min(tid.len())]
         );
-        let evs = self
-            .room_file_mgr
-            .start_stream_for(&tid, &msg.sender, ROOM_FILE_CHUNK_BUDGET);
+        let evs = self.room_file_mgr.start_stream_from(
+            &tid,
+            &msg.sender,
+            resume_from,
+            ROOM_FILE_CHUNK_BUDGET,
+        );
         self.dispatch_room_transfer_events(evs, supernode_id, &room_id)
             .await;
     }
@@ -2603,6 +2705,7 @@ impl ConnectionManager {
         self.emit_event(ConnectionEvent::FileFailed {
             transfer_id: tid,
             reason: "no longer shared".to_owned(),
+            retryable: false,
         });
     }
 
@@ -2816,6 +2919,7 @@ impl ConnectionManager {
                     self.emit_event(ConnectionEvent::FileFailed {
                         transfer_id,
                         reason,
+                        retryable: false,
                     });
                 }
                 TransferEvent::StateChanged { .. } => {
@@ -2836,6 +2940,7 @@ impl ConnectionManager {
                 self.emit_event(ConnectionEvent::FileFailed {
                     transfer_id: tid,
                     reason,
+                    retryable: false,
                 });
             }
         }
@@ -3047,6 +3152,7 @@ impl ConnectionManager {
                     self.emit_event(ConnectionEvent::FileFailed {
                         transfer_id,
                         reason,
+                        retryable: false,
                     });
                 }
                 TransferEvent::StateChanged { .. } => {}
@@ -3065,6 +3171,7 @@ impl ConnectionManager {
                 self.emit_event(ConnectionEvent::FileFailed {
                     transfer_id: tid,
                     reason,
+                    retryable: false,
                 });
             }
         }

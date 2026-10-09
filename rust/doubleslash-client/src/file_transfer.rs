@@ -100,13 +100,25 @@ pub const OFFER_TTL_SECS: f64 = 3600.0;
 /// the offer. A slow, progressing download may take longer than the offer TTL.
 const TRANSFER_IDLE_SECS: f64 = 3600.0;
 
-/// How long a room pull may wait for its first chunk before it fails.
+/// How long a pull may go without a new or duplicate chunk before it resumes.
 ///
 /// Silence is a possible answer: a sibling device of the originator says
 /// nothing about an offer it never held, and an originator that restarted has
 /// lost its offer table. The originator streams as soon as a request lands,
-/// so a healthy pull sees data well inside this window.
+/// so a healthy pull sees data well inside this window. The same window covers
+/// a transfer that already has bytes and then goes quiet: that is an
+/// interruption, and the pull is asked again from the first missing chunk.
 pub const PULL_ANSWER_TIMEOUT_SECS: f64 = 30.0;
+
+/// Automatic re-requests after silence before the transfer waits for the user.
+///
+/// The accept that started the pull is not one of these. Each quiet window
+/// sends one resume. The next quiet window after this many stops asking and
+/// keeps the partial so a Retry control can start another cycle.
+pub const MAX_AUTO_RESUME: u32 = 3;
+
+/// Shown when automatic resume has stopped and the bytes already stored remain.
+pub const INTERRUPTED_REASON: &str = "Interrupted. Tap Retry to resume.";
 
 // ── Transfer state ────────────────────────────────────────────────────────────
 
@@ -277,6 +289,16 @@ impl TransferSink {
     }
 }
 
+/// What [`InboundTransfer::store_chunk`] did with one frame.
+enum ChunkStored {
+    /// Bytes we did not already hold.
+    New,
+    /// This index was already stored. The sender is still talking.
+    Duplicate,
+    /// The write did not land, so the index is still a hole.
+    Failed,
+}
+
 pub struct InboundTransfer {
     pub transfer_id: String,
     /// Wire peer that offered the file (1:1 peer, or room-file originator).
@@ -297,10 +319,19 @@ pub struct InboundTransfer {
     pub created_at: f64,
     last_progress_at: f64,
     /// Terminal-state timestamp, for eviction. `None` while still active.
+    ///
+    /// A resumable interruption leaves this empty so the partial is kept for
+    /// the idle window instead of the short terminal-record delay.
     pub finished_at: Option<f64>,
-    /// Room pulls only: when we asked the originator to stream. Only matters
-    /// until the first chunk lands; see [`FileTransferManager::take_unanswered_pulls`].
+    /// When we last asked the sender to stream. Silence is measured from the
+    /// later of this and the last chunk that arrived, including a duplicate.
     pull_requested_at: Option<f64>,
+    /// Quiet windows that have already produced a re-request. The original
+    /// accept is not counted. Reset when a chunk we did not already hold arrives.
+    resume_attempts: u32,
+    /// `Failed` after [`MAX_AUTO_RESUME`] resumes, with the partial kept.
+    /// A hard failure (hash, size, protocol) leaves this false and deletes it.
+    resumable: bool,
     /// Where arriving chunks accumulate (memory map, or a sparse `.part` file).
     sink: TransferSink,
     /// COMPLETE arrived before every chunk did. Finish on the last arrival
@@ -326,6 +357,9 @@ impl InboundTransfer {
         base_sha256: String,
         sink: TransferSink,
     ) -> Self {
+        // An update offer accepts itself. Every other pull waits for the user.
+        let auto_accept = purpose == "update";
+        let now = unix_now_f64();
         Self {
             transfer_id,
             peer_id,
@@ -335,7 +369,7 @@ impl InboundTransfer {
             expected_sha256,
             expected_size,
             total_chunks,
-            state: if purpose == "update" {
+            state: if auto_accept {
                 TransferState::Transferring
             } else {
                 TransferState::Pending
@@ -344,10 +378,12 @@ impl InboundTransfer {
             compressed,
             is_delta,
             base_sha256,
-            created_at: unix_now_f64(),
-            last_progress_at: unix_now_f64(),
+            created_at: now,
+            last_progress_at: now,
             finished_at: None,
-            pull_requested_at: None,
+            pull_requested_at: if auto_accept { Some(now) } else { None },
+            resume_attempts: 0,
+            resumable: false,
             sink,
             complete_requested: false,
         }
@@ -358,18 +394,21 @@ impl InboundTransfer {
         matches!(self.sink, TransferSink::PartFile { .. })
     }
 
-    /// Store a chunk; returns `true` if new, `false` if duplicate or invalid.
-    fn store_chunk(&mut self, index: usize, data: Vec<u8>) -> bool {
+    /// Store a chunk.
+    ///
+    /// A duplicate still means the sender is alive. A failed write does not:
+    /// the index stays missing so a later resume can fill it.
+    fn store_chunk(&mut self, index: usize, data: Vec<u8>) -> ChunkStored {
         if index >= self.total_chunks {
-            return false;
+            return ChunkStored::Failed;
         }
         match &mut self.sink {
             TransferSink::Memory(chunks) => {
                 if chunks.contains_key(&index) {
-                    return false;
+                    return ChunkStored::Duplicate;
                 }
                 chunks.insert(index, data);
-                true
+                ChunkStored::New
             }
             TransferSink::PartFile {
                 file,
@@ -378,10 +417,10 @@ impl InboundTransfer {
                 ..
             } => {
                 if received.get(index).copied().unwrap_or(true) {
-                    return false; // duplicate, or out of range
+                    return ChunkStored::Duplicate;
                 }
                 let Some(file) = file.as_mut() else {
-                    return false;
+                    return ChunkStored::Failed;
                 };
                 // Fixed offset — valid only because streaming transfers are
                 // never compressed (see the module docs).
@@ -391,13 +430,37 @@ impl InboundTransfer {
                         "[file] write failed for chunk {index} of {}; dropping",
                         self.transfer_id
                     );
-                    return false;
+                    return ChunkStored::Failed;
                 }
                 received[index] = true;
                 *count += 1;
-                true
+                ChunkStored::New
             }
         }
+    }
+
+    /// Lowest index that has not been stored. Later chunks may already be in.
+    fn first_missing(&self) -> Option<usize> {
+        match &self.sink {
+            TransferSink::Memory(chunks) => {
+                (0..self.total_chunks).find(|i| !chunks.contains_key(i))
+            }
+            TransferSink::PartFile { received, .. } => received.iter().position(|got| !*got),
+        }
+    }
+
+    /// True when this pull has gone quiet with a hole still open.
+    fn is_stalled(&self, now: f64) -> bool {
+        if self.resumable || self.state != TransferState::Transferring {
+            return false;
+        }
+        if self.first_missing().is_none() {
+            return false;
+        }
+        let Some(requested) = self.pull_requested_at else {
+            return false;
+        };
+        now - requested.max(self.last_progress_at) >= PULL_ANSWER_TIMEOUT_SECS
     }
 
     fn chunks_received(&self) -> usize {
@@ -456,6 +519,28 @@ impl TransferPayload {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// Where a stalled inbound transfer should be asked to continue from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullResume {
+    pub transfer_id: String,
+    pub peer_id: String,
+    pub room_id: String,
+    pub supernode_id: String,
+    /// First chunk index the receiver does not hold.
+    pub from_chunk: usize,
+    /// 1..=[`MAX_AUTO_RESUME`] for an automatic resume. 0 is a manual retry.
+    pub attempt: u32,
+}
+
+/// One quiet inbound transfer, either still retrying or waiting on the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InboundStall {
+    /// Send another request. The partial and its clock were kept and reset.
+    Resume(PullResume),
+    /// Automatic resume is exhausted. The partial is still stored.
+    GiveUp { transfer_id: String, reason: String },
 }
 
 /// Events the manager produces; callers poll these to drive UI / bridge.
@@ -576,7 +661,9 @@ impl FileTransferManager {
             }
         }
         for x in self.inbound.values_mut() {
-            if x.finished_at.is_none() && is_terminal(&x.state) {
+            // A resumable interruption is Failed but still holds its partial.
+            // Stamping it here would delete that partial after five minutes.
+            if x.finished_at.is_none() && is_terminal(&x.state) && !x.resumable {
                 x.finished_at = Some(now);
             }
         }
@@ -615,7 +702,7 @@ impl FileTransferManager {
         self.inbound.retain(|_, x| {
             let keep = match x.finished_at {
                 Some(t) => now - t < TRANSFER_RETAIN_SECS,
-                None if x.state == TransferState::Transferring => {
+                None if x.state == TransferState::Transferring || x.resumable => {
                     now - x.last_progress_at < TRANSFER_IDLE_SECS
                 }
                 None => now - x.created_at < OFFER_TTL_SECS,
@@ -661,13 +748,50 @@ impl FileTransferManager {
             debug!("[file] request for unknown/expired transfer {transfer_id}; ignoring");
             return vec![];
         };
-        // Restart from the top for this requester — each acceptor gets their
-        // own pass over the source.
-        xfer.chunks_sent = 0;
+        Self::restart_outbound(xfer, requester, 0, budget)
+    }
+
+    /// [`Self::start_stream_for`] beginning at `from_chunk`.
+    ///
+    /// A receiver that already holds a prefix (or a hole in the middle) asks
+    /// for the first index it is missing. Chunks it already stored are
+    /// duplicates and ignored. `from_chunk == total_chunks` emits COMPLETE only.
+    /// An old peer that does not read `resume_from` restarts at 0; the
+    /// receiver still repairs, it just receives the prefix again.
+    pub fn start_stream_from(
+        &mut self,
+        transfer_id: &str,
+        requester: &str,
+        from_chunk: usize,
+        budget: usize,
+    ) -> Vec<TransferEvent> {
+        if self.offer_was_withdrawn(transfer_id) {
+            return vec![];
+        }
+        let Some(xfer) = self.outbound.get_mut(transfer_id) else {
+            debug!("[file] request for unknown/expired transfer {transfer_id}; ignoring");
+            return vec![];
+        };
+        Self::restart_outbound(xfer, requester, from_chunk, budget)
+    }
+
+    fn restart_outbound(
+        xfer: &mut OutboundTransfer,
+        requester: &str,
+        from_chunk: usize,
+        budget: usize,
+    ) -> Vec<TransferEvent> {
+        // One pass over the source for this requester, from the index they
+        // still need. A Failed or finished offer is live again: the bytes are
+        // still on disk until the offer TTL.
+        xfer.chunks_sent = from_chunk.min(xfer.total_chunks);
         xfer.to = requester.to_owned();
         xfer.state = TransferState::Transferring;
         xfer.last_progress_at = unix_now_f64();
         xfer.finished_at = None;
+        xfer.stall_count = 0;
+        xfer.stalled_since = None;
+        xfer.retry_after = 0.0;
         let (evs, _done) = next_chunk_events(xfer, budget);
         evs
     }
@@ -757,36 +881,90 @@ impl FileTransferManager {
         }
     }
 
-    /// Discard room pulls that heard nothing within [`PULL_ANSWER_TIMEOUT_SECS`].
+    /// Re-request pulls that have gone quiet, or give up once resume is exhausted.
     ///
-    /// A pull that has received any chunk, or its COMPLETE, is being answered
-    /// and is left alone. Returns the discarded ids; the caller surfaces each
-    /// as a failure, the same way a revoke is surfaced.
-    pub fn take_unanswered_pulls(&mut self) -> Vec<String> {
+    /// The partial stays. A pull with no hole (every chunk stored, waiting on
+    /// COMPLETE, or never requested) is left alone. After [`MAX_AUTO_RESUME`]
+    /// quiet windows the transfer is `Failed` and [`Self::arm_retry`] can
+    /// start another cycle. The caller sends the resume frame or surfaces Retry.
+    pub fn take_stalled_inbound(&mut self) -> Vec<InboundStall> {
         let now = unix_now_f64();
-        let silent: Vec<String> = self
+        let due: Vec<String> = self
             .inbound
             .iter()
-            .filter(|(_, x)| {
-                x.state == TransferState::Transferring
-                    && !x.complete_requested
-                    && x.chunks_received() == 0
-                    && x.pull_requested_at
-                        .is_some_and(|t| now - t >= PULL_ANSWER_TIMEOUT_SECS)
-            })
+            .filter(|(_, x)| x.is_stalled(now))
             .map(|(id, _)| id.clone())
             .collect();
-        for id in &silent {
-            self.discard_inbound(id);
+        let mut out = Vec::with_capacity(due.len());
+        for id in due {
+            let Some(x) = self.inbound.get_mut(&id) else {
+                continue;
+            };
+            let from_chunk = x.first_missing().unwrap_or(0);
+            if x.resume_attempts >= MAX_AUTO_RESUME {
+                x.state = TransferState::Failed;
+                x.resumable = true;
+                x.finished_at = None;
+                out.push(InboundStall::GiveUp {
+                    transfer_id: id,
+                    reason: INTERRUPTED_REASON.to_owned(),
+                });
+                continue;
+            }
+            x.resume_attempts = x.resume_attempts.saturating_add(1);
+            let attempt = x.resume_attempts;
+            x.pull_requested_at = Some(now);
+            x.last_progress_at = now;
+            out.push(InboundStall::Resume(PullResume {
+                transfer_id: id,
+                peer_id: x.peer_id.clone(),
+                room_id: x.room_id.clone(),
+                supernode_id: x.supernode_id.clone(),
+                from_chunk,
+                attempt,
+            }));
         }
-        silent
+        out
+    }
+
+    /// Start another resume cycle for a transfer that kept its partial.
+    ///
+    /// Returns where the sender should continue. `None` when this id is not
+    /// waiting on Retry (still running, hard-failed, or unknown).
+    pub fn arm_retry(&mut self, transfer_id: &str) -> Option<PullResume> {
+        let x = self.inbound.get_mut(transfer_id)?;
+        if x.state != TransferState::Failed || !x.resumable {
+            return None;
+        }
+        let now = unix_now_f64();
+        x.state = TransferState::Transferring;
+        x.resumable = false;
+        x.resume_attempts = 0;
+        x.finished_at = None;
+        x.pull_requested_at = Some(now);
+        x.last_progress_at = now;
+        Some(PullResume {
+            transfer_id: transfer_id.to_owned(),
+            peer_id: x.peer_id.clone(),
+            room_id: x.room_id.clone(),
+            supernode_id: x.supernode_id.clone(),
+            from_chunk: x.first_missing().unwrap_or(0),
+            attempt: 0,
+        })
+    }
+
+    /// Fraction of chunks stored, for a UI that is resuming a partial.
+    pub fn inbound_progress(&self, transfer_id: &str) -> Option<f64> {
+        self.inbound.get(transfer_id).map(|x| x.progress())
     }
 
     /// Test-only: pretend the pull for `transfer_id` was requested `secs` ago.
     #[cfg(test)]
     pub(crate) fn test_backdate_pull(&mut self, transfer_id: &str, secs: f64) {
         if let Some(x) = self.inbound.get_mut(transfer_id) {
-            x.pull_requested_at = Some(unix_now_f64() - secs);
+            let then = unix_now_f64() - secs;
+            x.pull_requested_at = Some(then);
+            x.last_progress_at = then;
         }
     }
 
@@ -1078,12 +1256,37 @@ impl FileTransferManager {
     /// the way by [`Self::pump_stream`], so a large 1:1 send does not
     /// materialize thousands of frames in one turn either.
     pub fn on_transfer_accepted(&mut self, transfer_id: &str) -> Vec<TransferEvent> {
-        let xfer = match self.outbound.get_mut(transfer_id) {
-            Some(x) if x.state == TransferState::Pending => x,
-            _ => return vec![],
+        self.on_transfer_accepted_from(transfer_id, None)
+    }
+
+    /// Peer accepted, or asked to continue from `resume_from`.
+    ///
+    /// A first accept (`resume_from == None`) only starts a `Pending` offer.
+    /// A resume restarts a live, failed, or finished offer from that chunk:
+    /// the receiver is repairing a hole, and the bytes are still on disk.
+    pub fn on_transfer_accepted_from(
+        &mut self,
+        transfer_id: &str,
+        resume_from: Option<usize>,
+    ) -> Vec<TransferEvent> {
+        if self.offer_was_withdrawn(transfer_id) {
+            return vec![];
+        }
+        let Some(xfer) = self.outbound.get_mut(transfer_id) else {
+            return vec![];
         };
+        if resume_from.is_none() && xfer.state != TransferState::Pending {
+            return vec![];
+        }
+        if let Some(from) = resume_from {
+            xfer.chunks_sent = from.min(xfer.total_chunks);
+        }
         xfer.state = TransferState::Transferring;
         xfer.last_progress_at = unix_now_f64();
+        xfer.finished_at = None;
+        xfer.stall_count = 0;
+        xfer.stalled_since = None;
+        xfer.retry_after = 0.0;
         let mut evs = vec![TransferEvent::StateChanged {
             transfer_id: transfer_id.to_owned(),
             state: "transferring".into(),
@@ -1348,7 +1551,9 @@ impl FileTransferManager {
         };
         xfer.state = TransferState::Transferring;
         let peer_id = xfer.peer_id.clone();
-        xfer.last_progress_at = unix_now_f64();
+        let now = unix_now_f64();
+        xfer.last_progress_at = now;
+        xfer.pull_requested_at = Some(now);
         let mut p = serde_json::Map::new();
         p.insert("transfer_id".into(), Value::String(transfer_id.to_owned()));
         vec![
@@ -1483,7 +1688,12 @@ impl FileTransferManager {
         chunk: Vec<u8>,
     ) -> Vec<TransferEvent> {
         let xfer = match self.inbound.get_mut(transfer_id) {
-            Some(x) if x.state == TransferState::Transferring => x,
+            Some(x)
+                if x.state == TransferState::Transferring
+                    || (x.state == TransferState::Failed && x.resumable) =>
+            {
+                x
+            }
             _ => return vec![],
         };
         if chunk_index >= xfer.total_chunks {
@@ -1492,11 +1702,44 @@ impl FileTransferManager {
                 &format!("chunk_index {chunk_index} out of range"),
             );
         }
-        let stored = xfer.store_chunk(chunk_index, chunk);
-        if !stored {
-            return vec![];
+        let was_holding = xfer.state == TransferState::Failed;
+        let now = unix_now_f64();
+        match xfer.store_chunk(chunk_index, chunk) {
+            ChunkStored::Failed => return vec![],
+            ChunkStored::Duplicate => {
+                // The sender is still delivering. Restart the quiet window so
+                // a resend of bytes we already hold is not another
+                // interruption. Leave `last_progress_at` alone: only a new
+                // chunk is progress, and an idle partial must still expire.
+                xfer.pull_requested_at = Some(now);
+                if !was_holding {
+                    return vec![];
+                }
+                xfer.state = TransferState::Transferring;
+                xfer.resumable = false;
+                xfer.resume_attempts = 0;
+                xfer.finished_at = None;
+                return vec![
+                    TransferEvent::Progress {
+                        transfer_id: transfer_id.to_owned(),
+                        progress: xfer.progress(),
+                    },
+                    TransferEvent::StateChanged {
+                        transfer_id: transfer_id.to_owned(),
+                        state: "transferring".into(),
+                    },
+                ];
+            }
+            ChunkStored::New => {
+                xfer.last_progress_at = now;
+                xfer.resume_attempts = 0;
+                if was_holding {
+                    xfer.state = TransferState::Transferring;
+                    xfer.resumable = false;
+                    xfer.finished_at = None;
+                }
+            }
         }
-        xfer.last_progress_at = unix_now_f64();
         let received = xfer.chunks_received();
         let total = xfer.total_chunks;
         let should_finish = xfer.complete_requested && received == total;
@@ -1506,7 +1749,9 @@ impl FileTransferManager {
         }
         // Same ~1 % throttle as the sender: per-chunk Progress floods the
         // 256-slot app event channel and can drop FileComplete/FileFailed.
-        if progress_is_reportable(received, total) {
+        // Healing a Retry prompt is the exception: the UI has to leave
+        // "failed" as soon as a missing chunk lands.
+        if was_holding || progress_is_reportable(received, total) {
             vec![TransferEvent::Progress {
                 transfer_id: transfer_id.to_owned(),
                 progress: xfer.progress(),
@@ -1519,9 +1764,20 @@ impl FileTransferManager {
     pub fn on_complete_received(&mut self, transfer_id: &str) -> Vec<TransferEvent> {
         {
             let xfer = match self.inbound.get_mut(transfer_id) {
-                Some(x) if x.state == TransferState::Transferring => x,
+                Some(x)
+                    if x.state == TransferState::Transferring
+                        || (x.state == TransferState::Failed && x.resumable) =>
+                {
+                    x
+                }
                 _ => return vec![],
             };
+            if xfer.state == TransferState::Failed {
+                xfer.state = TransferState::Transferring;
+                xfer.resumable = false;
+                xfer.resume_attempts = 0;
+                xfer.finished_at = None;
+            }
             if xfer.chunks_received() != xfer.total_chunks {
                 // Chunks and COMPLETE can take different transports when the
                 // QUIC signaling queue is full, so COMPLETE can arrive first.
@@ -1804,6 +2060,7 @@ impl FileTransferManager {
             return vec![];
         };
         xfer.state = TransferState::Failed;
+        xfer.resumable = false;
         xfer.finished_at = Some(unix_now_f64());
         let peer_id = xfer.peer_id.clone();
         if let TransferSink::PartFile { file, path, .. } = &mut xfer.sink {
@@ -2813,8 +3070,9 @@ mod tests {
 
     /// A requester may get no answer at all — a sibling device of the
     /// originator stays silent about an offer it never held, and a restarted
-    /// originator has lost its offers — so a silent pull must fail, while one
-    /// that is receiving data (or was never requested) must not.
+    /// originator has lost its offers. The first quiet windows re-ask from
+    /// the first missing chunk and keep the partial. One that is receiving
+    /// data, or was never requested, is left alone.
     #[test]
     fn only_a_silent_pull_times_out() {
         let mut mgr = FileTransferManager::new();
@@ -2841,12 +3099,179 @@ mod tests {
         mgr.test_backdate_pull("tid-streaming", PULL_ANSWER_TIMEOUT_SECS + 1.0);
         mgr.on_chunk_bytes_received("tid-streaming", 0, vec![0u8; 16]);
 
-        assert_eq!(mgr.take_unanswered_pulls(), vec!["tid-silent".to_owned()]);
-        assert!(!mgr.has_inbound("tid-silent"));
+        let stalled = mgr.take_stalled_inbound();
+        assert_eq!(
+            stalled.len(),
+            1,
+            "only the silent pull resumes: {stalled:?}"
+        );
+        match &stalled[0] {
+            InboundStall::Resume(resume) => {
+                assert_eq!(resume.transfer_id, "tid-silent");
+                assert_eq!(resume.from_chunk, 0);
+                assert_eq!(resume.attempt, 1);
+                assert_eq!(resume.peer_id, "origin");
+                assert_eq!(resume.room_id, "room-1");
+            }
+            InboundStall::GiveUp { .. } => panic!("the first quiet window must resume"),
+        }
+        assert!(mgr.has_inbound("tid-silent"));
         for tid in ["tid-streaming", "tid-fresh", "tid-offered"] {
             assert!(mgr.has_inbound(tid), "{tid} must survive");
         }
-        assert!(mgr.take_unanswered_pulls().is_empty());
+        assert!(
+            mgr.take_stalled_inbound().is_empty(),
+            "a resume resets the quiet window"
+        );
+    }
+
+    /// Three quiet windows re-ask. The fourth keeps the partial and waits.
+    #[test]
+    fn interrupted_pull_resumes_three_times_then_waits_for_retry() {
+        let mut mgr = FileTransferManager::new();
+        let size = INLINE_MAX + CHUNK_SIZE;
+        let tid = "tid-resume";
+        mgr.on_offer_received_with_room(
+            "origin",
+            "room-1",
+            "sn",
+            tid,
+            "resume.bin",
+            &"ab".repeat(32),
+            size,
+            size.div_ceil(CHUNK_SIZE),
+            "room_file",
+            false,
+            false,
+            "",
+        );
+        mgr.accept_transfer_locally(tid);
+        // A hole after the first chunk: resume must ask for index 1, not 0.
+        mgr.on_chunk_bytes_received(tid, 0, vec![7u8; CHUNK_SIZE]);
+        let part = download_dir().join("resume.bin.tid-resume.part");
+        assert!(part.exists(), "the partial is on disk");
+
+        for attempt in 1..=MAX_AUTO_RESUME {
+            mgr.test_backdate_pull(tid, PULL_ANSWER_TIMEOUT_SECS + 1.0);
+            let stalled = mgr.take_stalled_inbound();
+            match stalled.as_slice() {
+                [InboundStall::Resume(resume)] => {
+                    assert_eq!(resume.attempt, attempt);
+                    assert_eq!(resume.from_chunk, 1, "repair starts at the first hole");
+                }
+                other => panic!("attempt {attempt} should resume, got {other:?}"),
+            }
+            assert!(part.exists(), "a resume must not delete the partial");
+        }
+
+        mgr.test_backdate_pull(tid, PULL_ANSWER_TIMEOUT_SECS + 1.0);
+        match mgr.take_stalled_inbound().as_slice() {
+            [InboundStall::GiveUp {
+                transfer_id,
+                reason,
+            }] => {
+                assert_eq!(transfer_id, tid);
+                assert_eq!(reason, INTERRUPTED_REASON);
+            }
+            other => panic!("the fourth stall waits for Retry, got {other:?}"),
+        }
+        assert!(mgr.has_inbound(tid));
+        assert_eq!(
+            mgr.gc(),
+            0,
+            "a resumable partial is not collected immediately"
+        );
+        assert!(part.exists(), "giving up keeps the bytes already stored");
+        assert!(
+            mgr.take_stalled_inbound().is_empty(),
+            "a transfer waiting on Retry does not ask again by itself"
+        );
+
+        let retry = mgr.arm_retry(tid).expect("Retry starts another cycle");
+        assert_eq!(retry.from_chunk, 1);
+        assert_eq!(retry.attempt, 0);
+        mgr.test_backdate_pull(tid, PULL_ANSWER_TIMEOUT_SECS + 1.0);
+        match mgr.take_stalled_inbound().as_slice() {
+            [InboundStall::Resume(resume)] => assert_eq!(resume.attempt, 1),
+            other => panic!("a manual retry refills the resume budget, got {other:?}"),
+        }
+
+        // A hard failure still deletes the partial. An out-of-range index is
+        // a protocol error, not an interruption.
+        let failed = mgr.on_chunk_bytes_received(tid, usize::MAX, vec![1]);
+        assert!(failed
+            .iter()
+            .any(|ev| matches!(ev, TransferEvent::Failed { .. })));
+        assert!(
+            !part.exists(),
+            "a protocol failure must not leave a .part behind"
+        );
+    }
+
+    /// The index we ask for is the first hole, even when a later chunk arrived.
+    #[test]
+    fn resume_starts_at_the_first_missing_chunk() {
+        let mut receiver = FileTransferManager::new();
+        let size = CHUNK_SIZE * 2;
+        let tid = "tid-hole";
+        receiver.on_offer_received(
+            "sender", tid, "hole.bin", "00", size, 3, "file", false, false, "",
+        );
+        receiver.accept_transfer_locally(tid);
+        receiver.on_chunk_bytes_received(tid, 0, vec![1u8; CHUNK_SIZE]);
+        receiver.on_chunk_bytes_received(tid, 2, vec![2u8; 10]);
+        receiver.test_backdate_pull(tid, PULL_ANSWER_TIMEOUT_SECS + 1.0);
+        match receiver.take_stalled_inbound().as_slice() {
+            [InboundStall::Resume(resume)] => assert_eq!(resume.from_chunk, 1),
+            other => panic!("expected a resume from the hole, got {other:?}"),
+        }
+        // The chunk we already hold does not count as the hole filling, but
+        // it does prove the sender is still there.
+        receiver.test_backdate_pull(tid, PULL_ANSWER_TIMEOUT_SECS + 1.0);
+        receiver.on_chunk_bytes_received(tid, 0, vec![1u8; CHUNK_SIZE]);
+        assert!(
+            receiver.take_stalled_inbound().is_empty(),
+            "a duplicate chunk refreshes the quiet window"
+        );
+    }
+
+    /// A resume request rewinds a sender that had already moved on, including
+    /// one whose outbound record is no longer Pending.
+    #[test]
+    fn resume_from_rewinds_a_started_send() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wide.bin");
+        // Path offers are uncompressed. `offer_file` would zlib this repeating
+        // pattern under one chunk and there would be nothing to rewind.
+        let data: Vec<u8> = (0..CHUNK_SIZE * 2 + 10).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+        let mut sender = FileTransferManager::new();
+        let (tid, _) = sender
+            .offer_file_from_path("peer-1", "wide.bin", &path, "file", false)
+            .unwrap();
+        let _ = sender.on_transfer_accepted(&tid);
+        assert!(
+            sender.outbound.get(&tid).unwrap().chunks_sent > 1,
+            "the offer must span more than one chunk"
+        );
+
+        let evs = sender.on_transfer_accepted_from(&tid, Some(1));
+        let first = evs.iter().find_map(|ev| match ev {
+            TransferEvent::SendMessage {
+                message_type: MessageType::FileTransferChunk,
+                payload,
+                ..
+            } => payload.get("chunk_index").and_then(Value::as_u64),
+            _ => None,
+        });
+        assert_eq!(first, Some(1), "the resumed send starts at the hole");
+        assert_eq!(
+            sender.outbound.get(&tid).unwrap().state,
+            TransferState::Transferring
+        );
+
+        // A plain accept must not restart a send that is already going.
+        assert!(sender.on_transfer_accepted(&tid).is_empty());
     }
 
     #[test]

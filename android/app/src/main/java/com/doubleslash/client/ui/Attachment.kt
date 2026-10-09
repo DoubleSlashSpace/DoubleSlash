@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -97,37 +98,51 @@ fun AttachmentContent(
     path: String,
     sizeStr: String,
     modifier: Modifier = Modifier,
+    /** Set when this transfer stopped and the partial is still stored. */
+    retryReason: String? = null,
+    onRetry: (() -> Unit)? = null,
 ) {
     val preview = if (kind == "image") rememberPreview(path) else null
     var zoomed by remember { mutableStateOf(false) }
 
-    if (preview == null) {
-        AttachmentLine(kind, name, sizeStr, modifier)
-        return
-    }
     Column(modifier) {
-        Image(
-            bitmap = preview,
-            contentDescription = name,
-            contentScale = ContentScale.Fit,
-            modifier = Modifier
-                .heightIn(max = 240.dp)
-                .widthIn(max = 260.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .clickable { zoomed = true },
-        )
-        if (name.isNotBlank()) {
-            Text(
-                if (sizeStr.isBlank()) name else "$name · $sizeStr",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 4.dp).widthIn(max = 260.dp),
+        if (preview == null) {
+            AttachmentLine(kind, name, sizeStr, Modifier)
+        } else {
+            Image(
+                bitmap = preview,
+                contentDescription = name,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .heightIn(max = 240.dp)
+                    .widthIn(max = 260.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { zoomed = true },
             )
+            if (name.isNotBlank()) {
+                Text(
+                    if (sizeStr.isBlank()) name else "$name · $sizeStr",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 4.dp).widthIn(max = 260.dp),
+                )
+            }
+        }
+        if (onRetry != null) {
+            if (!retryReason.isNullOrBlank()) {
+                Text(
+                    retryReason,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 4.dp).widthIn(max = 260.dp),
+                )
+            }
+            TextButton(onClick = onRetry) { Text("Retry") }
         }
     }
-    if (zoomed) {
+    if (zoomed && preview != null) {
         Dialog(onDismissRequest = { zoomed = false }) {
             Image(
                 bitmap = preview,

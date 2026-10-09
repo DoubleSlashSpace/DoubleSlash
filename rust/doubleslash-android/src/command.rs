@@ -79,6 +79,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "file.accept",
     "file.reject",
     "file.cancel",
+    "file.retry",
     "file.send_room",
     "file.accept_room",
     "file.decline_room",
@@ -932,7 +933,7 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                 ConnectionCommand::DeclineRoomFile { transfer_id }
             }))
         }
-        "file.accept" | "file.reject" | "file.cancel" => {
+        "file.accept" | "file.reject" | "file.cancel" | "file.retry" => {
             let Some(transfer_id) = arg_str(&parsed, "transfer_id") else {
                 return err("a file action requires \"transfer_id\"");
             };
@@ -940,6 +941,7 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
             let command = match cmd.as_str() {
                 "file.accept" => ConnectionCommand::AcceptFile { transfer_id },
                 "file.reject" => ConnectionCommand::RejectFile { transfer_id },
+                "file.retry" => ConnectionCommand::RetryFile { transfer_id },
                 _ => ConnectionCommand::CancelFile { transfer_id },
             };
             queued(session.send(command))

@@ -1802,6 +1802,7 @@ fn file_failed_reason(
         if let ConnectionEvent::FileFailed {
             transfer_id,
             reason,
+            ..
         } = ev
         {
             if transfer_id == tid {
@@ -1941,29 +1942,47 @@ async fn only_the_device_that_withdrew_an_offer_refuses_a_pull() {
 }
 
 /// A pull nobody answers — the originator restarted, or only a sibling that
-/// never held the offer heard the request — must fail visibly.
+/// never held the offer heard the request — re-asks three times, then keeps
+/// the partial and waits for Retry.
 #[tokio::test]
-async fn an_unanswered_room_pull_fails_visibly() {
+async fn an_unanswered_room_pull_resumes_then_waits() {
     let mut t = harness::test_cm();
     seed_room_pull(&mut t, "origin", "tid-silent");
 
-    t.cm.expire_unanswered_room_file_pulls();
+    t.cm.resume_interrupted_transfers().await;
     assert_eq!(
         file_failed_reason(&mut t.events, "tid-silent"),
         None,
         "a fresh pull keeps waiting"
     );
 
+    for _ in 0..crate::file_transfer::MAX_AUTO_RESUME {
+        t.cm.test_room_file_mgr().test_backdate_pull(
+            "tid-silent",
+            crate::file_transfer::PULL_ANSWER_TIMEOUT_SECS + 1.0,
+        );
+        t.cm.resume_interrupted_transfers().await;
+        assert_eq!(
+            file_failed_reason(&mut t.events, "tid-silent"),
+            None,
+            "automatic resume does not fail the pull"
+        );
+        assert!(t.cm.test_room_file_mgr().has_inbound("tid-silent"));
+    }
+
     t.cm.test_room_file_mgr().test_backdate_pull(
         "tid-silent",
         crate::file_transfer::PULL_ANSWER_TIMEOUT_SECS + 1.0,
     );
-    t.cm.expire_unanswered_room_file_pulls();
+    t.cm.resume_interrupted_transfers().await;
     assert_eq!(
         file_failed_reason(&mut t.events, "tid-silent").as_deref(),
-        Some("sender did not respond")
+        Some(crate::file_transfer::INTERRUPTED_REASON)
     );
-    assert!(!t.cm.test_room_file_mgr().has_inbound("tid-silent"));
+    assert!(
+        t.cm.test_room_file_mgr().has_inbound("tid-silent"),
+        "giving up keeps the inbound partial"
+    );
 }
 
 fn signed_room_offer(

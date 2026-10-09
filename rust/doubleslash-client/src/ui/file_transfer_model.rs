@@ -48,6 +48,9 @@ pub struct TransferRow {
     pub purpose: String,
     #[serde(default)]
     pub reason: String,
+    /// The partial is still stored and the chip should offer Retry.
+    #[serde(default)]
+    pub retryable: bool,
 }
 
 fn default_state() -> String {
@@ -149,6 +152,16 @@ pub mod ffi {
         #[rust_name = "reason_for"]
         fn reasonFor(&self, transfer_id: &QString) -> QString;
 
+        /// True when a failed transfer kept its partial and can be resumed.
+        #[qinvokable]
+        #[rust_name = "retryable_for"]
+        fn retryableFor(&self, transfer_id: &QString) -> bool;
+
+        /// Record whether Retry should be offered. A hard failure clears it.
+        #[qinvokable]
+        #[rust_name = "set_retryable"]
+        fn setRetryable(self: Pin<&mut Self>, transfer_id: &QString, retryable: bool);
+
         // ── Qt model lifecycle ────────────────────────────────────────────
         #[inherit]
         #[rust_name = "begin_reset_model"]
@@ -241,8 +254,10 @@ impl ffi::FileTransferModel {
             let rows = &mut self.as_mut().rust_mut().rows;
             if let Some(r) = rows.iter_mut().find(|r| r.transfer_id == tid) {
                 r.progress = progress;
-                if r.state == "pending" {
+                if r.state == "pending" || r.state == "failed" {
                     r.state = "active".to_owned();
+                    r.reason.clear();
+                    r.retryable = false;
                 }
                 true
             } else {
@@ -282,6 +297,7 @@ impl ffi::FileTransferModel {
             if let Some(r) = rows.iter_mut().find(|r| r.transfer_id == tid) {
                 r.state = "failed".to_owned();
                 r.reason = why;
+                r.retryable = false;
                 true
             } else {
                 false
@@ -331,5 +347,31 @@ impl ffi::FileTransferModel {
             .find(|r| r.transfer_id == tid)
             .map(|r| QString::from(r.reason.as_str()))
             .unwrap_or_default()
+    }
+
+    fn retryable_for(&self, transfer_id: &QString) -> bool {
+        let tid = transfer_id.to_string();
+        self.rust()
+            .rows
+            .iter()
+            .find(|r| r.transfer_id == tid)
+            .is_some_and(|r| r.retryable)
+    }
+
+    fn set_retryable(mut self: Pin<&mut Self>, transfer_id: &QString, retryable: bool) {
+        let tid = transfer_id.to_string();
+        let changed = {
+            let rows = &mut self.as_mut().rust_mut().rows;
+            if let Some(r) = rows.iter_mut().find(|r| r.transfer_id == tid) {
+                r.retryable = retryable;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            self.as_mut().begin_reset_model();
+            self.as_mut().end_reset_model();
+        }
     }
 }

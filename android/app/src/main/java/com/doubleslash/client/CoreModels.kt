@@ -83,6 +83,10 @@ data class ChatMessage(
     @SerialName("size_str") val sizeStr: String = "",
 )
 
+/** Transfer id carried by a file bubble, or null when this message is not one. */
+fun transferIdFromMessage(messageId: String): String? =
+    messageId.takeIf { it.startsWith("xfer-") }?.removePrefix("xfer-")?.takeIf { it.isNotEmpty() }
+
 @Serializable
 data class Room(
     @SerialName("room_id") val roomId: String = "",

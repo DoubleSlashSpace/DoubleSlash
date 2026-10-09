@@ -407,6 +407,7 @@ Item {
                 onOpenAttachmentRequested: (path) => root.openAttachment(path)
                 onTransferAcceptRequested: (id) => backend.acceptFile(id)
                 onTransferRejectRequested: (id) => backend.rejectFile(id)
+                onTransferRetryRequested: (id) => backend.retryFile(id)
             }
         }
 

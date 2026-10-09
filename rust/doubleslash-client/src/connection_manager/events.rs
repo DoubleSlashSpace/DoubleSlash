@@ -360,7 +360,14 @@ pub enum ConnectionEvent {
         rel_path: String,
     },
     /// Transfer failed or was rejected.
-    FileFailed { transfer_id: String, reason: String },
+    ///
+    /// `retryable` means the partial is still stored and a Retry control
+    /// should ask for the missing bytes. Hard failures leave it false.
+    FileFailed {
+        transfer_id: String,
+        reason: String,
+        retryable: bool,
+    },
     /// Periodic transport statistics for a connected peer.
     /// `json` = `{peer_id, rtt_ms, packet_loss_pct, jitter_ms, relay, bandwidth_kbps}`.
     ConnectionStats { peer_id: String, json: String },
@@ -589,6 +596,12 @@ pub enum ConnectionCommand {
     },
     /// Cancel an active transfer (inbound or outbound).
     CancelFile {
+        transfer_id: String,
+    },
+    /// Continue an interrupted inbound transfer from the bytes already stored.
+    ///
+    /// Automatic resume has already stopped. This starts another cycle.
+    RetryFile {
         transfer_id: String,
     },
     /// Create a new SFU room on a supernode, or materialize a saved definition.

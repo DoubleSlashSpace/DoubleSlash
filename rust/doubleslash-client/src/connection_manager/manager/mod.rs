@@ -32,7 +32,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, error, info, warn};
 
 use crate::feature_trust::FeatureTrustStore;
-use crate::file_transfer::FileTransferManager;
+use crate::file_transfer::{FileTransferManager, InboundStall, MAX_AUTO_RESUME};
 use crate::group_key::SenderKeysGroup;
 use crate::identity::Identity;
 use crate::peer_store::PeerStore;
@@ -1443,6 +1443,7 @@ impl ConnectionManager {
                             self.emit_event(ConnectionEvent::FileFailed {
                                 transfer_id,
                                 reason: "declined".to_owned(),
+                                retryable: false,
                             });
                         }
                         ConnectionCommand::RejectFile { transfer_id } => {
@@ -1452,6 +1453,9 @@ impl ConnectionManager {
                         ConnectionCommand::CancelFile { transfer_id } => {
                             let evs = self.file_mgr.cancel_transfer(&transfer_id);
                             self.dispatch_transfer_events(evs).await;
+                        }
+                        ConnectionCommand::RetryFile { transfer_id } => {
+                            self.retry_inbound_file(&transfer_id).await;
                         }
                         ConnectionCommand::FetchWebApp { supernode_id, path, query, reply_tx } => {
                             self.handle_fetch_web_app(supernode_id, path, query, reply_tx).await;
@@ -1605,7 +1609,7 @@ impl ConnectionManager {
                 _ = peer_reconnect_interval.tick() => {
                     self.tick_peer_reconnects().await;
                     self.tick_call_fallback_checks().await;
-                    self.expire_unanswered_room_file_pulls();
+                    self.resume_interrupted_transfers().await;
                     self.expire_rejected_invites();
                 }
                 _ = room_join_retry_interval.tick() => {
@@ -1668,20 +1672,46 @@ impl ConnectionManager {
         }
     }
 
-    /// Fail room pulls whose originator never answered.
+    /// Re-ask for inbound transfers that have gone quiet, then wait on Retry.
     ///
-    /// Nothing else ends one: the originator's stall timer only covers a
-    /// stream it started, and the requester has no other clock on a request.
-    pub(super) fn expire_unanswered_room_file_pulls(&mut self) {
-        for tid in self.room_file_mgr.take_unanswered_pulls() {
-            info!(
-                "[room.file.v1] no answer to request for {}; failing",
-                &tid[..8.min(tid.len())]
-            );
-            self.emit_event(ConnectionEvent::FileFailed {
-                transfer_id: tid,
-                reason: "sender did not respond".to_owned(),
-            });
+    /// Covers 1:1 and room pulls. The first [`MAX_AUTO_RESUME`] quiet windows
+    /// send `resume_from` at the first missing chunk and keep the partial.
+    /// The next one surfaces a retryable failure. A hard failure still
+    /// discards its partial on its own path.
+    pub(super) async fn resume_interrupted_transfers(&mut self) {
+        for room in [false, true] {
+            let stalls = if room {
+                self.room_file_mgr.take_stalled_inbound()
+            } else {
+                self.file_mgr.take_stalled_inbound()
+            };
+            for stall in stalls {
+                match stall {
+                    InboundStall::Resume(resume) => {
+                        info!(
+                            "[file] resuming {} from chunk {} (attempt {}/{MAX_AUTO_RESUME})",
+                            &resume.transfer_id[..8.min(resume.transfer_id.len())],
+                            resume.from_chunk,
+                            resume.attempt,
+                        );
+                        self.send_file_resume(&resume).await;
+                    }
+                    InboundStall::GiveUp {
+                        transfer_id,
+                        reason,
+                    } => {
+                        info!(
+                            "[file] {} stopped after {MAX_AUTO_RESUME} resumes; waiting for Retry",
+                            &transfer_id[..8.min(transfer_id.len())]
+                        );
+                        self.emit_event(ConnectionEvent::FileFailed {
+                            transfer_id,
+                            reason,
+                            retryable: true,
+                        });
+                    }
+                }
+            }
         }
     }
 
