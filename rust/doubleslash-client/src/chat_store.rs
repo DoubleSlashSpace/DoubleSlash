@@ -1109,6 +1109,16 @@ mod tests {
         );
         assert_eq!(message_kind_for_path("notes.pdf"), MessageKind::File);
         assert_eq!(format_byte_size(1536), "1.5 KB");
+        // History JSON is what the phone paints. The variant name "Image"
+        // would skip the preview and leave the sender a filename.
+        assert_eq!(
+            serde_json::to_string(&MessageKind::Image).unwrap(),
+            "\"image\""
+        );
+        assert_eq!(
+            serde_json::from_str::<MessageKind>("\"image\"").unwrap(),
+            MessageKind::Image
+        );
     }
 
     #[test]
