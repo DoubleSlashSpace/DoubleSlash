@@ -60,9 +60,23 @@ Item {
     readonly property bool canRetry: root.xferState === "failed"
                                      && root.transferId !== ""
                                      && root.xferRetryable
+    /// This device sent the picture and still has the file, so the bubble can
+    /// show it before anyone pulls the offer. A sibling's offer has no path.
+    readonly property bool ownSentImage: root.kind === "image"
+        && root.mine
+        && !root.fromOtherDevice
+        && root.attachmentPath !== ""
+    /// The sender's last progress report is the whole file. Room sends do not
+    /// get a separate "done" after that, and the picture should not stay
+    /// covered by the transfer card.
+    readonly property bool outboundFinished: root.ownSentImage
+        && root.xferState === "active"
+        && root.xferProgress >= 1
     readonly property bool mediaPreviewReady: (root.kind === "image" || root.kind === "video")
         && root.attachmentPath !== ""
-        && !root.xferLive
+        && (!root.xferLive || root.outboundFinished)
+    readonly property bool showImage: root.ownSentImage
+        || (root.kind === "image" && root.mediaPreviewReady)
 
     function refreshTransfer() {
         if (!root.fileTransferModel || root.transferId === "") {
@@ -408,10 +422,11 @@ Item {
                 }
                 spacing: 6
 
-                // Inline image embed (local file after transfer).
+                // Inline image. A send from this device uses the file already
+                // on disk; a received one waits until the download finishes.
                 Item {
                     id: imageEmbed
-                    visible: root.kind === "image" && root.mediaPreviewReady
+                    visible: root.showImage
                     width: parent.width
                     height: visible ? Math.min(220, Math.max(120, img.implicitHeight || 160)) : 0
 
@@ -491,12 +506,15 @@ Item {
                     }
                 }
 
-                // File / in-progress transfer card. Images and videos switch
-                // to their embeds once the bytes are on disk; this card holds
-                // progress and accept/reject in the message flow.
+                // Transfer card. A picture this device sent is already on disk, so
+                // it shows above this card while the offer is still open. A
+                // received image or video replaces the card once its file is
+                // here. Retry stays on the card after the picture is showing.
                 Rectangle {
                     id: fileChip
-                    visible: root.isAttachment && !root.mediaPreviewReady
+                    // Keep the card while a finished image still needs Retry.
+                    // The picture is already showing; the card is the control.
+                    visible: (root.isAttachment && !root.mediaPreviewReady) || root.canRetry
                     width: parent.width
                     height: visible ? fileChipCol.implicitHeight + 12 : 0
                     radius: Theme.radiusSm
