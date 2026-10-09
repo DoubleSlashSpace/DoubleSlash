@@ -16,6 +16,8 @@ Item {
     signal transferRejectRequested(string transferId)
 
     property string msgId: ""
+    /// Brief outline when a notification opened the conversation on this row.
+    property bool emphasized: false
     property string sender: ""
     /// Ed25519 public id for avatar lookup (room chat).
     property string senderPeerId: ""
@@ -383,6 +385,8 @@ Item {
             implicitHeight: bubbleCol.implicitHeight + Theme.spacingMd
             radius: Theme.radiusMd
             color: root.mine ? Theme.accent : Theme.bg2
+            border.width: root.emphasized ? 2 : 0
+            border.color: root.mine ? Theme.bg0 : Theme.accent
             clip: true
 
             Column {

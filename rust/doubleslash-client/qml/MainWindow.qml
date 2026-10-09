@@ -388,6 +388,14 @@ ApplicationWindow {
     }
 
     function roomNameForAlert(roomId) {
+        var host = root.roomHostForAlert(roomId)
+        return host ? (host.name || "") : ""
+    }
+
+    /// Sidebar node and display name for a room id, including a hidden room.
+    function roomHostForAlert(roomId) {
+        if (!roomId)
+            return null
         for (var i = 0; i < nodeListModel.count; i++) {
             var node = nodeListModel.get(i)
             if (!node)
@@ -400,10 +408,14 @@ ApplicationWindow {
             }
             for (var r = 0; r < rooms.length; r++) {
                 if (rooms[r] && rooms[r].room_id === roomId)
-                    return rooms[r].name || rooms[r].room_id
+                    return {
+                        nodeId: node.node_id,
+                        roomId: roomId,
+                        name: rooms[r].name || rooms[r].room_id
+                    }
             }
         }
-        return ""
+        return null
     }
 
     function commitRoomOrder(order) {
@@ -1859,7 +1871,7 @@ ApplicationWindow {
         }
         // Same tray balloon as a direct message, for rooms the user enabled.
         // The bridge only emits this when that room's alerts are on.
-        function onRoomMessageAlert(roomId, sender, body) {
+        function onRoomMessageAlert(roomId, sender, body, supernodeId, messageId) {
             if (root.active || !trayIcon.available || !settingsModel.notifications_enabled)
                 return
             var title = root.roomNameForAlert(roomId)
@@ -1867,9 +1879,13 @@ ApplicationWindow {
                 title = qsTr("Room")
             var who = sender || qsTr("Someone")
             var text = who + ": " + (body || qsTr("New message"))
-            trayIcon.showMessage(title, text.substring(0, 80),
-                                 Platform.SystemTrayIcon.Information,
-                                 4000)
+            root.showTrayNotice(title, text.substring(0, 80),
+                                Platform.SystemTrayIcon.Information, 4000, {
+                                    kind: "room",
+                                    roomId: roomId,
+                                    supernodeId: supernodeId || "",
+                                    messageId: messageId || ""
+                                })
         }
         // Show a tray balloon when a message arrives while the window is not active.
         function onChatMessageReceived(msgJson) {
@@ -1879,9 +1895,8 @@ ApplicationWindow {
                     if (!msg.mine) {
                         var sender = msg.sender || qsTr("DoubleSlash")
                         var body = (msg.body || qsTr("New message")).substring(0, 80)
-                        trayIcon.showMessage(sender, body,
-                                             Platform.SystemTrayIcon.Information,
-                                             4000)
+                        root.showTrayNotice(sender, body,
+                                            Platform.SystemTrayIcon.Information, 4000, null)
                     }
                 } catch(e) {}
             }
@@ -1889,10 +1904,9 @@ ApplicationWindow {
         // Show a tray balloon when a missed call is recorded.
         function onMissed_callsChanged() {
             if (backend.missed_calls > 0 && trayIcon.available) {
-                trayIcon.showMessage(qsTr("DoubleSlash"),
-                                     qsTr("Missed call"),
-                                     Platform.SystemTrayIcon.Warning,
-                                     5000)
+                root.showTrayNotice(qsTr("DoubleSlash"),
+                                    qsTr("Missed call"),
+                                    Platform.SystemTrayIcon.Warning, 5000, null)
             }
         }
         // Auto-update nodes list with portal info when supernode responds.
@@ -1950,15 +1964,12 @@ ApplicationWindow {
                 // fall back to the bare token if the URL can't be built.
                 var inviteUrl = backend.generateRoomInvite(supernodeId, roomId, roomName)
                 backend.copyToClipboard(inviteUrl !== "" ? inviteUrl : inviteToken)
-                if (trayIcon.available) {
-                    trayIcon.showMessage(
-                        qsTr("Private room created"),
-                        inviteUrl !== ""
-                            ? qsTr("Invite link copied to clipboard.")
-                            : qsTr("Invite token copied to clipboard."),
-                        Platform.SystemTrayIcon.Information,
-                        5000)
-                }
+                root.showTrayNotice(
+                    qsTr("Private room created"),
+                    inviteUrl !== ""
+                        ? qsTr("Invite link copied to clipboard.")
+                        : qsTr("Invite token copied to clipboard."),
+                    Platform.SystemTrayIcon.Information, 5000, null)
             }
         }
         function onRoomInviteReady(supernodeId, roomId, roomName) {
@@ -2390,12 +2401,11 @@ ApplicationWindow {
                                 if (url !== "") {
                                     backend.copyToClipboard(url)
                                     invitePopup.visible = true
-                                } else if (trayIcon.available) {
-                                    trayIcon.showMessage(
+                                } else {
+                                    root.showTrayNotice(
                                         qsTr("Room invite"),
                                         qsTr("Couldn't build the invite — connect to the room's supernode first."),
-                                        Platform.SystemTrayIcon.Warning,
-                                        5000)
+                                        Platform.SystemTrayIcon.Warning, 5000, null)
                                 }
                             }
                         }
@@ -2420,12 +2430,11 @@ ApplicationWindow {
                                         if (url !== "") {
                                             backend.copyToClipboard(url)
                                             invitePopup.visible = true
-                                        } else if (trayIcon.available) {
-                                            trayIcon.showMessage(
+                                        } else {
+                                            root.showTrayNotice(
                                                 qsTr("Room invite"),
                                                 qsTr("Couldn't build the invite — you must own this room's Space and be connected to its supernode."),
-                                                Platform.SystemTrayIcon.Warning,
-                                                5000)
+                                                Platform.SystemTrayIcon.Warning, 5000, null)
                                         }
                                     }
                                 }
@@ -3528,6 +3537,53 @@ ApplicationWindow {
                 }
             }
         }
+
+        // Windows delivers a balloon click here, not as a tray-icon activation.
+        // The hidden tray HWND is what the shell activates, so the main window
+        // has to be shown and pointed at the message ourselves.
+        onMessageClicked: root.openTrayNotice()
+    }
+
+    // The balloon a click will open. Only a room message navigates; the next
+    // balloon replaces it, so a click cannot open a room the user was not shown.
+    property var trayNotice: null
+
+    function showTrayNotice(title, text, icon, msec, notice) {
+        root.trayNotice = notice || null
+        if (trayIcon.available)
+            trayIcon.showMessage(title, text, icon, msec)
+    }
+
+    function openTrayNotice() {
+        var notice = root.trayNotice
+        root.trayNotice = null
+        if (!root.visible || root.visibility === Window.Minimized
+                || root.visibility === Window.Hidden)
+            root.showFromTray()
+        else {
+            root.raise()
+            root.requestActivate()
+        }
+        if (!notice || notice.kind !== "room" || !notice.roomId)
+            return
+        var nodeId = notice.supernodeId || ""
+        var name = root.roomNameForAlert(notice.roomId)
+        if (!nodeId) {
+            var host = root.roomHostForAlert(notice.roomId)
+            if (host) {
+                nodeId = host.nodeId
+                if (!name)
+                    name = host.name
+            }
+        }
+        if (!name)
+            name = notice.roomId
+        if (!nodeId)
+            return
+        roomPanel.armMessageReveal(notice.messageId || "")
+        root.sidebarTab = 1
+        root.openRoomFromTree(nodeId, notice.roomId, name)
+        roomPanel.revealArmedMessage()
     }
 
     // Guard to suppress geometry saves during initial restore.
@@ -3578,11 +3634,10 @@ ApplicationWindow {
     function hideToTray() {
         root.hide()
         if (!root._trayHintShown && trayIcon.available) {
-            trayIcon.showMessage(
+            root.showTrayNotice(
                 qsTr("DoubleSlash is still running"),
                 qsTr("The window was minimized to the tray. Click the tray icon to restore it, or use Quit to exit."),
-                Platform.SystemTrayIcon.Information,
-                5000)
+                Platform.SystemTrayIcon.Information, 5000, null)
             root._trayHintShown = true
         }
     }

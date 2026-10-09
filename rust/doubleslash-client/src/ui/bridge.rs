@@ -751,6 +751,8 @@ pub mod ffi {
         ///
         /// QML shows the tray balloon when the window is not active. Emitted
         /// for someone else's message even when that room is on screen.
+        /// `supernode_id` is the sidebar node and `message_id` is the stored
+        /// row, so a click on the balloon can open that message.
         #[qsignal]
         #[rust_name = "room_message_alert"]
         fn roomMessageAlert(
@@ -758,6 +760,8 @@ pub mod ffi {
             room_id: QString,
             sender: QString,
             body: QString,
+            supernode_id: QString,
+            message_id: QString,
         );
 
         /// Unread inbound text for one alerting room. Zero clears the badge.
@@ -1443,6 +1447,8 @@ pub struct AppBridgeRust {
     room_chat_visible: bool,
     direct_chat_visible: bool,
     self_chat_unread: i32,
+    self_online: bool,
+    own_devices_online: i32,
 
     /// Active SFU voice session (may differ from chat `current_*` after subscribe).
     voice_supernode_id: String,
@@ -1609,6 +1615,9 @@ pub struct AppBridgeRust {
     /// disconnect so a later reconnect still replays rooms. Stops
     /// ClusterMembersUpdated from re-firing CreateRoom → tray spam.
     rematerialized_hosts: HashSet<String>,
+
+    /// Supernodes (pad-normalized) with a live session, for `self_online`.
+    connected_supernode_ids: HashSet<String>,
 }
 
 /// Mint a personal invite through the connection manager, or say why not.
@@ -1829,6 +1838,8 @@ impl Default for AppBridgeRust {
             room_chat_visible: false,
             direct_chat_visible: false,
             self_chat_unread: 0,
+            self_online: false,
+            own_devices_online: 0,
             voice_supernode_id: String::new(),
             voice_room_id: String::new(),
             ptt_stop: None,
@@ -1865,6 +1876,7 @@ impl Default for AppBridgeRust {
             supernode_stats: std::collections::HashMap::new(),
             cluster_member_addrs: std::collections::HashMap::new(),
             rematerialized_hosts: HashSet::new(),
+            connected_supernode_ids: HashSet::new(),
         }
     }
 }
@@ -9068,6 +9080,12 @@ fn dispatch_event(
                 bridge
                     .as_mut()
                     .set_session_banner(QString::from(banner.as_str()));
+                bridge
+                    .as_mut()
+                    .rust_mut()
+                    .connected_supernode_ids
+                    .insert(id.trim_end_matches('=').to_owned());
+                bridge.as_mut().set_self_online(true);
                 // Fold this member's live state into the cluster rollup and push
                 // one patch on the stable representative row (green if ANY member
                 // is up). This runs for roster-learned siblings too, so the
@@ -9094,6 +9112,12 @@ fn dispatch_event(
                     .rust_mut()
                     .rematerialized_hosts
                     .remove(id.trim_end_matches('='));
+                let any_up = {
+                    let mut r = bridge.as_mut().rust_mut();
+                    r.connected_supernode_ids.remove(id.trim_end_matches('='));
+                    !r.connected_supernode_ids.is_empty()
+                };
+                bridge.as_mut().set_self_online(any_up);
                 let Some(key) = bridge.rust().cluster_member_key(&id) else {
                     return;
                 };
@@ -10134,6 +10158,8 @@ fn dispatch_event(
                         QString::from(room_id.as_str()),
                         QString::from(display_sender.as_str()),
                         QString::from(body.as_str()),
+                        QString::from(sn.as_str()),
+                        QString::from(message_id.as_str()),
                     );
                 }
 

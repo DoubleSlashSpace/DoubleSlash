@@ -130,6 +130,7 @@ Item {
         var roomChanged = root.roomId !== newRid || root.supernodeId !== newSn
         if (roomChanged) {
             roomChatModel.clear()
+            root.revealedMsgId = ""
             root.roomName = newName
             root.roomId = newRid
             root.supernodeId = newSn
@@ -144,6 +145,58 @@ Item {
             root.roomId = newRid || root.roomId
             root.supernodeId = newSn || root.supernodeId
         }
+    }
+
+    // Set before the room opens so history load does not snap to the latest
+    // row ahead of the message the notification named.
+    property string pendingRevealId: ""
+    property string revealedMsgId: ""
+
+    Timer {
+        id: revealClearTimer
+        interval: 8000
+        onTriggered: root.revealedMsgId = ""
+    }
+
+    function armMessageReveal(msgId) {
+        root.pendingRevealId = msgId || ""
+        root.revealedMsgId = ""
+    }
+
+    function revealArmedMessage() {
+        if (root._scrollToPending())
+            return
+        root.pendingRevealId = ""
+        if (roomChatModel.count > 0) {
+            roomChat.pinnedToLatest = true
+            roomChat.positionViewAtEnd()
+        }
+    }
+
+    function _scrollToPending() {
+        var id = root.pendingRevealId
+        if (id === "")
+            return false
+        for (var i = 0; i < roomChatModel.count; i++) {
+            if (roomChatModel.get(i).msgId !== id)
+                continue
+            root.pendingRevealId = ""
+            root.revealedMsgId = id
+            revealClearTimer.restart()
+            var atEnd = i >= roomChatModel.count - 1
+            roomChat.pinnedToLatest = atEnd
+            roomChat.forceLayout()
+            roomChat.positionViewAtIndex(i, ListView.Center)
+            var row = i
+            Qt.callLater(function() {
+                if (row < roomChatModel.count && roomChatModel.get(row).msgId === id) {
+                    roomChat.forceLayout()
+                    roomChat.positionViewAtIndex(row, ListView.Center)
+                }
+            })
+            return true
+        }
+        return false
     }
 
     // The member whose stats the header reports: the one serving the room when
@@ -570,8 +623,15 @@ Item {
             onHeightChanged: _restPosition()
 
             onCountChanged: {
+                if (root.pendingRevealId !== "")
+                    return
                 if (pinnedToLatest)
-                    Qt.callLater(function() { roomChat.positionViewAtEnd() })
+                    Qt.callLater(function() {
+                        if (root.pendingRevealId !== "")
+                            return
+                        if (roomChat.pinnedToLatest)
+                            roomChat.positionViewAtEnd()
+                    })
             }
 
             // A plain child of a ListView is parented to the view itself, not
@@ -600,6 +660,7 @@ Item {
             }
 
             delegate: ChatRichMessageDelegate {
+                emphasized: root.revealedMsgId !== "" && (model.msgId || "") === root.revealedMsgId
                 msgId: model.msgId || ""
                 sender: model.sender || ""
                 senderPeerId: model.senderPeerId || ""

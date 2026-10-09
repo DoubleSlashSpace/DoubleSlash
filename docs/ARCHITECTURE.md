@@ -296,7 +296,8 @@ example"]
 
 Room alerts are device-local consumers of decrypted room-chat events. Desktop
 `MainWindow` reports foreground room-text visibility to `AppBridge`; selection
-alone does not mark incoming text read. The bridge restores saved room unread
+alone does not mark incoming text read. Clicking the desktop balloon opens
+that room on the message that raised it. The bridge restores saved room unread
 counts when the chat store opens, including after a manual passphrase unlock.
 On Android, `CoreService` owns notification delivery through
 `RoomMessageNotifier`, independently of the activity's ViewModel. Its separate
