@@ -392,7 +392,7 @@ fn spawn_event_pump(
                 route_video(&video_in, &ev);
                 record_peer_codecs(&peer_video_codecs, &ev);
                 persist_if_chat(&chat_store, &ev);
-                persist_if_room_chat(&chat_store, &my_public_id, &ev);
+                persist_if_room_chat(&chat_store, &ev);
                 persist_if_room_file_offer(&chat_store, &my_public_id, &ev);
                 persist_if_room_created(
                     &room_store,
@@ -575,7 +575,7 @@ fn route_media(call_tx: &mpsc::Sender<CallCommand>, event: &ConnectionEvent) {
 }
 
 /// Persist inbound room chat, so history survives leaving the room.
-fn persist_if_room_chat(chat_store: &ChatStore, my_public_id: &str, event: &ConnectionEvent) {
+fn persist_if_room_chat(chat_store: &ChatStore, event: &ConnectionEvent) {
     use doubleslash_client::chat_store::{ChatMessage, MessageKind, MessageStatus};
 
     let ConnectionEvent::RoomChatMessage {
@@ -608,8 +608,6 @@ fn persist_if_room_chat(chat_store: &ChatStore, my_public_id: &str, event: &Conn
         return;
     }
 
-    let is_self = sender_id.trim_end_matches('=') == my_public_id.trim_end_matches('=');
-
     let msg = ChatMessage {
         id: message_id,
         // Keyed on the room alone: a room_id is already a hash over the
@@ -620,7 +618,9 @@ fn persist_if_room_chat(chat_store: &ChatStore, my_public_id: &str, event: &Conn
         recipient: String::new(),
         body: body.clone(),
         timestamp: *timestamp,
-        is_self,
+        // A received sibling message is inbound for unread accounting. The
+        // room UI derives authorship from sender_id independently.
+        is_self: false,
         status: MessageStatus::Delivered,
         kind: MessageKind::Text,
         attachment_name: String::new(),

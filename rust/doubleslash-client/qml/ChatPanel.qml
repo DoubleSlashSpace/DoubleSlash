@@ -13,6 +13,7 @@ Item {
 
     property string selectedPeerId: ""
     property string selectedPeerName: ""
+    readonly property bool selfChat: selectedPeerId !== "" && selectedPeerId === backend.selfChatPeerId()
     /// True while a direct call with `selectedPeerId` is already up. Hides the
     /// dial button, exactly as Join Voice hides when voice is already in this
     /// room: the voice dock's hang-up is the end control, and a second dial would
@@ -194,7 +195,7 @@ Item {
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
                     icon.width: 18
                     icon.height: 18
-                    visible: root.selectedPeerId !== "" && !root.callActiveWithPeer
+                    visible: root.selectedPeerId !== "" && !root.callActiveWithPeer && !root.selfChat
                     flat: true
                     onClicked: root.startCall(root.selectedPeerId)
                 }
@@ -507,7 +508,7 @@ Item {
             Layout.margins: Theme.spacingSm
             targetName: root.selectedPeerName || root.selectedPeerId
             enabledForTarget: root.selectedPeerId !== ""
-            fileTransferEnabled: true
+            fileTransferEnabled: !root.selfChat
             aiEnabled: backend.ollama_available
             aiStreaming: root.aiStreaming
             onComposing: function(active) {

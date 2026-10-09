@@ -346,6 +346,8 @@ ApplicationWindow {
     // Selection survives navigation; only visible foreground text is read.
     readonly property bool readingRoomText: navIndex === 1 && root.active
     onReadingRoomTextChanged: backend.setRoomChatVisible(readingRoomText)
+    readonly property bool readingDirectText: navIndex === 0 && root.active
+    onReadingDirectTextChanged: backend.setDirectChatVisible(readingDirectText)
 
     function roomAlertsEnabled(roomId) {
         return roomId !== "" && root.roomAlertIds.indexOf(roomId) >= 0
@@ -1792,6 +1794,7 @@ ApplicationWindow {
 
         backend.initializeBackend()
         backend.setRoomChatVisible(root.readingRoomText)
+        backend.setDirectChatVisible(root.readingDirectText)
         // Also covers default settings that emitted no change signal on load.
         backend.setRoomMessageAlerts(settingsModel.room_message_alerts_json || "[]")
         if (!settingsModel.onboarding_complete)
@@ -2294,6 +2297,20 @@ ApplicationWindow {
                     ToolTip.visible: hovered || visualFocus
                     onClicked: root.sidebarTab === 1 ? backend.refreshRooms() : backend.refreshPeers()
 
+                }
+            }
+
+            Button {
+                Layout.fillWidth: true
+                visible: root.sidebarTab === 0 && navIndex !== 2
+                text: qsTr("Message myself") + (backend.self_chat_unread > 0
+                    ? " (" + backend.self_chat_unread + ")" : "")
+                Accessible.name: qsTr("Message myself")
+                onClicked: {
+                    chatPanel.selectedPeerId = backend.selfChatPeerId()
+                    chatPanel.selectedPeerName = qsTr("Message myself")
+                    backend.selectPeer(chatPanel.selectedPeerId)
+                    navIndex = 0
                 }
             }
 

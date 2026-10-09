@@ -314,6 +314,7 @@ fun AppRoot(viewModel: AppViewModel) {
 
                 is Screen.Chat -> ChatScreen(
                     peer = screen.peer,
+                    selfChat = screen.peer.peerId == state.identity.peerId,
                     messages = state.messages,
                     onBack = viewModel::closeChat,
                     onSend = viewModel::sendChat,
@@ -1014,6 +1015,12 @@ private fun HomeScreen(
         }
 
 
+        if (state.tab == HomeTab.PEERS) {
+            TextButton(onClick = viewModel::openSelfChat, modifier = Modifier.fillMaxWidth()) {
+                Text("Message myself")
+            }
+        }
+
         Box(Modifier.weight(1f)) {
             when (state.tab) {
                 HomeTab.PEERS -> PeersList(
@@ -1535,6 +1542,7 @@ private fun EmptyPeers(onCreateInvite: () -> Unit, onAcceptInvite: () -> Unit) {
 @Composable
 private fun ChatScreen(
     peer: Peer,
+    selfChat: Boolean,
     messages: List<ChatMessage>,
     onBack: () -> Unit,
     onSend: (String) -> Unit,
@@ -1593,7 +1601,7 @@ private fun ChatScreen(
                 }
             },
             actions = {
-                IconButton(onClick = { requestMic() }) {
+                if (!selfChat) IconButton(onClick = { requestMic() }) {
                     Icon(Icons.Filled.Phone, contentDescription = "Call")
                 }
             },
@@ -1634,7 +1642,7 @@ private fun ChatScreen(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = { pickFile.launch(arrayOf("*/*")) }) {
+            if (!selfChat) IconButton(onClick = { pickFile.launch(arrayOf("*/*")) }) {
                 Icon(Icons.Filled.AddCircle, contentDescription = "Attach a file")
             }
             OutlinedTextField(

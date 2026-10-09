@@ -1242,6 +1242,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── Chat ──────────────────────────────────────────────────────────────
 
+    fun openSelfChat() {
+        val identity = _state.value.identity
+        if (identity.peerId.isEmpty()) return
+        openChat(Peer(peerId = identity.peerId, identityPub = identity.publicId,
+            displayName = "Message myself"))
+    }
+
     fun openChat(peer: Peer) {
         _state.update { it.copy(screen = Screen.Chat(peer), messages = emptyList()) }
         viewModelScope.launch {
@@ -1639,7 +1646,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 senderHandle = it.senderHandle,
                 body = it.body,
                 timestamp = it.timestamp,
-                isSelf = it.isSelf,
+                isSelf = it.isSelf || it.sender.sameIdentityAs(_state.value.identity.publicId),
                 kind = it.kind,
                 attachmentName = it.attachmentName,
                 attachmentPath = it.attachmentPath,
@@ -2072,7 +2079,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (open != null && open.peerId == peerId) {
                     viewModelScope.launch {
                         loadHistory(peerId)
-                        core.command("chat.mark_read") { put("peer_id", peerId) }
+                        if (appInForeground()) {
+                            core.command("chat.mark_read") { put("peer_id", peerId) }
+                        }
                     }
                 }
             }
@@ -2339,7 +2348,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (!claimRoomMessage(roomMessageKey(event))) return@onCoreEvent
                 val roomId = event.stringOrEmpty("room_id")
                 val sender = event.stringOrEmpty("sender_id")
-                val self = sender.sameIdentityAs(_state.value.identity.publicId)
                 val open = isOpenRoom(event)
                 val alerting = roomId.isNotEmpty() &&
                     roomId in _state.value.prefs.roomMessageAlerts
@@ -2348,15 +2356,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // badge when the room is not open, and a notification when
                 // the app is not in front.
                 val looking = open && appInForeground()
-                if (alerting && !self && !looking) {
-                    val count = if (open) {
-                        _state.value.roomUnread[roomId] ?: 0
-                    } else {
-                        (_state.value.roomUnread[roomId] ?: 0) + 1
-                    }
-                    if (!open) {
-                        _state.update { it.copy(roomUnread = it.roomUnread + (roomId to count)) }
-                    }
+                if (alerting && !looking) {
+                    val count = (_state.value.roomUnread[roomId] ?: 0) + 1
+                    _state.update { it.copy(roomUnread = it.roomUnread + (roomId to count)) }
                 }
                 // The core stores every room message as delivered. A room the
                 // user is reading should not stay unread for a later enable.

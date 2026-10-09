@@ -56,6 +56,7 @@ pub mod ffi {
         #[qproperty(QString, session_banner)]
         #[qproperty(QString, call_state)]
         #[qproperty(QString, public_id)]
+        #[qproperty(i32, self_chat_unread)]
         /// Our embedded build ID (for reproducible build attestation).
         #[qproperty(QString, build_id)]
         #[qproperty(QString, invite_url)]
@@ -1161,6 +1162,12 @@ pub mod ffi {
         #[qinvokable]
         #[rust_name = "set_room_chat_visible"]
         fn setRoomChatVisible(self: Pin<&mut AppBridge>, visible: bool);
+        #[qinvokable]
+        #[rust_name = "set_direct_chat_visible"]
+        fn setDirectChatVisible(self: Pin<&mut AppBridge>, visible: bool);
+        #[qinvokable]
+        #[rust_name = "self_chat_peer_id"]
+        fn selfChatPeerId(self: &AppBridge) -> QString;
 
         /// Normalize a supernode sidebar id (hex `peer_id` or base64url
         /// `identity_pub`) to the canonical `identity_pub` used on the wire.
@@ -1429,6 +1436,8 @@ pub struct AppBridgeRust {
     /// read instead.
     room_message_alerts_loaded: bool,
     room_chat_visible: bool,
+    direct_chat_visible: bool,
+    self_chat_unread: i32,
 
     /// Active SFU voice session (may differ from chat `current_*` after subscribe).
     voice_supernode_id: String,
@@ -1813,6 +1822,8 @@ impl Default for AppBridgeRust {
             room_message_alerts: HashSet::new(),
             room_message_alerts_loaded: false,
             room_chat_visible: false,
+            direct_chat_visible: false,
+            self_chat_unread: 0,
             voice_supernode_id: String::new(),
             voice_room_id: String::new(),
             ptt_stop: None,
@@ -2118,6 +2129,14 @@ fn notification_badge_total(
 }
 
 fn publish_notification_badge(bridge: &mut Pin<&mut ffi::AppBridge>) {
+    let own_unread = bridge
+        .rust()
+        .chat_store
+        .as_ref()
+        .and_then(|cs| cs.unread_count(&bridge.rust().my_peer_id).ok())
+        .unwrap_or(0)
+        .min(i32::MAX as usize) as i32;
+    bridge.as_mut().set_self_chat_unread(own_unread);
     let alerts = bridge.rust().room_message_alerts.clone();
     let total = bridge
         .rust()
@@ -3845,6 +3864,25 @@ impl ffi::AppBridge {
             mark_room_read(&self, &room_id);
             self.as_mut()
                 .room_unread_changed(QString::from(room_id.as_str()), 0);
+            publish_notification_badge(&mut self);
+        }
+    }
+
+    fn self_chat_peer_id(&self) -> QString {
+        QString::from(self.rust().my_peer_id.as_str())
+    }
+
+    fn set_direct_chat_visible(mut self: Pin<&mut Self>, visible: bool) {
+        self.as_mut().rust_mut().direct_chat_visible = visible;
+        let peer_id = self.rust().selected_peer_id.clone();
+        if visible && !peer_id.is_empty() {
+            if let Some(cs) = &self.rust().chat_store {
+                if let Err(e) = cs.mark_peer_read(&peer_id) {
+                    warn!("chat_store mark_peer_read (visible) error: {e}");
+                }
+            }
+            self.as_mut()
+                .unread_changed(QString::from(peer_id.as_str()), 0);
             publish_notification_badge(&mut self);
         }
     }
@@ -6314,7 +6352,8 @@ fn room_chat_message_to_json(
         "body": msg.body,
         "timestamp": msg.timestamp,
         "kind": msg.kind.as_str(),
-        "mine": msg.is_self,
+        "mine": msg.is_self || (!bridge.my_public_id.is_empty()
+            && msg.sender.trim_end_matches('=') == bridge.my_public_id.trim_end_matches('=')),
         "is_room": true,
         "status": msg.status.as_str(),
         "attachment_name": msg.attachment_name,
@@ -8766,7 +8805,8 @@ fn dispatch_event(
             let body_clone = body.clone();
             let chat_store_for_read = Arc::clone(chat_store);
             let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
-                let is_viewing = bridge.rust().selected_peer_id == peer_id_clone;
+                let is_viewing = bridge.rust().direct_chat_visible
+                    && bridge.rust().selected_peer_id == peer_id_clone;
                 if is_viewing {
                     if let Err(e) = chat_store_for_read.mark_peer_read(&peer_id_clone) {
                         warn!("chat_store mark_peer_read (live) error: {e}");
@@ -8808,15 +8848,17 @@ fn dispatch_event(
                     QString::from(preview_text.as_str()),
                 );
 
-                // Optional Ollama auto-reply for direct messages.
-                maybe_start_auto_reply(
-                    bridge.as_mut(),
-                    AutoReplyTarget::Direct {
-                        peer_id: peer_id_clone,
-                    },
-                    &body_clone,
-                    &message_id_clone,
-                );
+                // Never auto-reply to messages from our other devices.
+                if peer_id_clone != bridge.rust().my_peer_id {
+                    maybe_start_auto_reply(
+                        bridge.as_mut(),
+                        AutoReplyTarget::Direct {
+                            peer_id: peer_id_clone,
+                        },
+                        &body_clone,
+                        &message_id_clone,
+                    );
+                }
             });
         }
         ConnectionEvent::ChatAck {
@@ -9981,7 +10023,7 @@ fn dispatch_event(
                 let alerting = bridge.rust().room_message_alerts.contains(&room_id);
                 let viewing = is_selected_text_room(bridge.rust(), &sn, &room_id);
                 let reading = is_reading_text_room(bridge.rust(), &sn, &room_id);
-                let stored_status = if mine || (alerting && !reading) {
+                let stored_status = if alerting && !reading {
                     crate::chat_store::MessageStatus::Delivered
                 } else {
                     crate::chat_store::MessageStatus::Read
@@ -10009,7 +10051,9 @@ fn dispatch_event(
                         recipient: room_id.clone(),
                         body: body.clone(),
                         timestamp,
-                        is_self: mine,
+                        // This event is inbound: a sibling's message is unread
+                        // even though its bubble belongs to our identity.
+                        is_self: false,
                         status: stored_status,
                         kind: crate::chat_store::MessageKind::Text,
                         attachment_name: String::new(),
@@ -10056,9 +10100,9 @@ fn dispatch_event(
                         .room_unread_changed(QString::from(room_id.as_str()), count);
                     publish_notification_badge(&mut bridge);
                 }
-                // Tray is the QML side's decision (window inactive). Own
-                // messages, including a sibling device's, do not alert.
-                if alerting && !mine {
+                // Only inbound events reach here, including our other devices.
+                // The sending device echoes locally and does not notify itself.
+                if alerting {
                     bridge.as_mut().room_message_alert(
                         QString::from(room_id.as_str()),
                         QString::from(display_sender.as_str()),
@@ -10899,6 +10943,47 @@ mod room_alert_tests {
         assert!(!is_reading_text_room(&state, "node", "other"));
         state.room_chat_visible = false;
         assert!(!is_reading_text_room(&state, "node", "room"));
+    }
+
+    #[test]
+    fn sibling_room_message_is_ours_visually_but_counts_as_inbound() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let identity = crate::identity::Identity::generate();
+        let cs = ChatStore::open(&identity, Some(&dir.path().join("chat.db")))?;
+        let mut state = AppBridgeRust::default();
+        state.my_public_id = identity.public_id();
+        let mut message = ChatMessage {
+            id: "sibling".into(),
+            peer_id: "room:notes".into(),
+            sender: state.my_public_id.trim_end_matches('=').into(),
+            recipient: "notes".into(),
+            body: "from phone".into(),
+            timestamp: 1.0,
+            is_self: false,
+            status: MessageStatus::Delivered,
+            kind: MessageKind::Text,
+            attachment_name: String::new(),
+            attachment_path: String::new(),
+            size_str: String::new(),
+            status_note: String::new(),
+            sender_handle: "Me".into(),
+        };
+        cs.insert(&message)?;
+        assert_eq!(
+            room_chat_message_to_json(&state, &message, "node")["mine"],
+            true
+        );
+        message.id = "local".into();
+        message.is_self = true;
+        cs.insert(&message)?;
+        assert_eq!(cs.unread_count("room:notes")?, 1);
+        assert_eq!(
+            notification_badge_total(&cs, &HashSet::from(["notes".into()])),
+            1
+        );
+        cs.mark_peer_read("room:notes")?;
+        assert_eq!(cs.unread_count("room:notes")?, 0);
+        Ok(())
     }
 
     #[test]

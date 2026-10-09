@@ -108,6 +108,28 @@ impl ConnectionManager {
         } else {
             None
         };
+        // Self-chat uses the root identity's existing device routes. Always
+        // address it by public ID so it does not depend on a self peer record.
+        let own_chat = msg.target.as_ref().is_some_and(|target| {
+            target == &self.identity.peer_id()
+                || target.trim_end_matches('=') == self.identity.public_id().trim_end_matches('=')
+        }) && matches!(
+            msg.msg_type,
+            MessageType::ChatMessage | MessageType::ChatAck | MessageType::ChatTyping
+        );
+        if own_chat {
+            if self.device_id.is_none() {
+                if let Some((peer_id, message_id)) = chat_attempt {
+                    self.emit_event(ConnectionEvent::ChatSendFailed {
+                        peer_id,
+                        message_id,
+                        reason: "device routing is unavailable".to_owned(),
+                    });
+                }
+                return false;
+            }
+            msg.target = Some(self.identity.public_id());
+        }
         if let Some((peer_id, message_id)) = chat_attempt.clone() {
             let direct_connected = self
                 .peers
@@ -250,9 +272,11 @@ impl ConnectionManager {
         // always uses the plaintext `json`; `relay_json` is used only on the
         // supernode-WS relay routes. Falls back to plaintext when no pairwise
         // key is derivable (supernode target, not-yet-paired peer, broadcast).
-        let relay_json = self
-            .maybe_wrap_for_relay(&msg, &json)
-            .unwrap_or_else(|| json.clone());
+        let relay_json = match self.maybe_wrap_for_relay(&msg, &json) {
+            Some(sealed) => sealed,
+            None if own_chat => return false,
+            None => json.clone(),
+        };
 
         // Route: QUIC direct > relay WS > supernode WS fallback
         let mut direct_delivered = false;
@@ -508,17 +532,20 @@ impl ConnectionManager {
             return None;
         }
         let target = inner.target.as_ref()?;
-        let peer_identity_pub = {
-            let store = self.peer_store.read();
-            // Never encrypt toward a supernode — it is the recipient, not a relay.
-            if store.is_supernode_id(target) {
-                return None;
-            }
-            store
-                .get(target)
-                .or_else(|| store.get_by_identity(target))
-                .map(|r| r.identity_pub.clone())?
-        };
+        let peer_identity_pub =
+            if target.trim_end_matches('=') == self.identity.public_id().trim_end_matches('=') {
+                self.identity.public_id()
+            } else {
+                let store = self.peer_store.read();
+                // Never encrypt toward a supernode — it is the recipient, not a relay.
+                if store.is_supernode_id(target) {
+                    return None;
+                }
+                store
+                    .get(target)
+                    .or_else(|| store.get_by_identity(target))
+                    .map(|r| r.identity_pub.clone())?
+            };
         if peer_identity_pub.is_empty() {
             return None;
         }

@@ -204,6 +204,25 @@ impl ConnectionManager {
         // receiver-side trust check an untrusted peer sharing the same
         // supernode could inject chat/call/file messages. With it, relay assist
         // works *only* between two mutually-trusted peers.
+        // Root-authorized sibling chat is accepted only inside a sealed
+        // envelope from another device. Never let a self peer-store record
+        // authorize cleartext, a local echo, or calls/files through this path.
+        let own_chat = matches!(
+            msg.msg_type,
+            MessageType::ChatMessage | MessageType::ChatAck | MessageType::ChatTyping
+        ) && msg.sender.trim_end_matches('=')
+            == self.identity.public_id().trim_end_matches('=');
+        if own_chat
+            && (!encrypted
+                || self.device_id.is_none()
+                || msg.source_device.is_none()
+                || msg.source_device == self.device_id
+                || msg.target.as_deref().is_none_or(|target| {
+                    target.trim_end_matches('=') != self.identity.public_id().trim_end_matches('=')
+                }))
+        {
+            return;
+        }
         if matches!(
             msg.msg_type,
             MessageType::ChatMessage
@@ -220,7 +239,8 @@ impl ConnectionManager {
                 | MessageType::FileTransferComplete
                 | MessageType::FileTransferAck
                 | MessageType::FileTransferError
-        ) && !Self::is_trusted_sender(&self.peer_store, &msg.sender)
+        ) && !own_chat
+            && !Self::is_trusted_sender(&self.peer_store, &msg.sender)
         {
             warn!(
                 "[signaling] dropping {:?} from untrusted or blocked peer {}",
@@ -365,6 +385,9 @@ impl ConnectionManager {
                     let mut ack =
                         SignalingMessage::new(MessageType::ChatAck, self.identity.public_id());
                     ack.target = Some(sender_peer_id.clone());
+                    if own_chat {
+                        ack.target_device = msg.source_device;
+                    }
                     ack.payload
                         .insert("message_id".to_string(), Value::String(msg_id.clone()));
                     self.dispatch_outbound(ack).await;
@@ -3188,6 +3211,9 @@ impl ConnectionManager {
     }
 
     pub(super) fn canonical_peer_id_for_sender(&self, sender: &str) -> String {
+        if sender.trim_end_matches('=') == self.identity.public_id().trim_end_matches('=') {
+            return self.identity.peer_id();
+        }
         let store = self.peer_store.read();
         store
             .get(sender)

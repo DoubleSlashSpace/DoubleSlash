@@ -42,14 +42,12 @@ object RoomMessageNotifier {
             return
         }
         val core = DoubleSlashCore.get(app)
-        val identity = core.command("identity.info")
         val rooms = core.command("room.list").decodeList<Room>(core, "rooms")
         val room = rooms.firstOrNull { it.roomId == roomId }
         // Metadata reads suspend. Opening/muting the room invalidates the
         // ticket; foreground and preferences are checked again before posting.
         val count = delivery.finish(roomId, ticket, core.isRunning && roomAlertEligible(
             sender = event.stringOrEmpty("sender_id"),
-            ownId = identity.stringOrEmpty("public_id"),
             enabled = roomId in settings.roomMessageAlerts,
             foreground = inForeground(),
         )) ?: return

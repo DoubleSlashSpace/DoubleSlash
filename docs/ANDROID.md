@@ -353,7 +353,9 @@ needs a **full-screen intent** declaration for calling apps (`USE_FULL_SCREEN_IN
 by `CoreService`, so they continue when the activity and its ViewModel are
 destroyed while the session stays connected. Opening or muting a room cancels
 its notification and any pending alert; disconnecting clears all room alerts.
-Cluster copies are deduplicated and messages from our own devices do not alert.
+Cluster copies are deduplicated. Messages received from our other devices alert
+too; local sends do not. The Peers page also offers **Message myself** for a
+dedicated text conversation between connected devices using the same identity.
 
 **Dependency notices.** Settings > Legal > Third-party licenses opens an offline
 reader for the packaged Rust and supplemental notices. Source links using HTTPS

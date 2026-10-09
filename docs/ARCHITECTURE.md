@@ -303,6 +303,16 @@ On Android, `CoreService` owns notification delivery through
 room-event collector deduplicates cluster copies and does not delay call-event
 handling while loading room labels. Opening/muting a room invalidates pending
 notification work, and service shutdown clears the session's alerts.
+Room text received from a sibling device is inbound for unread accounting;
+the bubble still uses the sender identity to show it as authored by the user.
+
+**Message myself** uses `core.chat.v1` and the existing root-authorized device
+routes. Own-identity chat, acknowledgements and typing must be sealed inside
+`EncryptedSignal`, signed, fresh, addressed to our identity, and from another
+device. Acknowledgements target the sending device. Replay and feature quotas
+still apply; the ordinary peer trust gate is unchanged for foreign identities.
+Self-chat never triggers automatic replies. It is live text delivery with local
+history, not offline store-and-forward or continuous history synchronization.
 
 | Flow | Path |
 |---|---|

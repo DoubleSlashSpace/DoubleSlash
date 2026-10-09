@@ -36,11 +36,11 @@ class RoomAlertDeliveryTest {
     }
 
     @Test
-    fun `eligibility excludes own devices muted rooms and foreground`() {
-        assertTrue(roomAlertEligible("other", "me=", true, false))
-        assertFalse(roomAlertEligible("me", "me=", true, false))
-        assertFalse(roomAlertEligible("other", "me", false, false))
-        assertFalse(roomAlertEligible("other", "me", true, true))
-        assertFalse(roomAlertEligible("other", "", true, false))
+    fun `inbound own-device messages alert while muted rooms and foreground do not`() {
+        assertTrue(roomAlertEligible("other", true, false))
+        assertTrue(roomAlertEligible("me", true, false))
+        assertFalse(roomAlertEligible("other", false, false))
+        assertFalse(roomAlertEligible("other", true, true))
+        assertFalse(roomAlertEligible("", true, false))
     }
 }

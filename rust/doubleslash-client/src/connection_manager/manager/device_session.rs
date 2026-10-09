@@ -608,6 +608,105 @@ mod tests {
         changed
     }
 
+    #[tokio::test]
+    async fn self_chat_is_sealed_deduplicated_and_acked_only_to_the_sending_device() {
+        use crate::connection_manager::ConnectionEvent;
+        let identity = Arc::new(crate::identity::Identity::generate());
+        let mut phone = client(identity.clone(), 1);
+        let mut desktop = client(identity.clone(), 2);
+        let mut message = SignalingMessage::new(MessageType::ChatMessage, identity.public_id());
+        message.target = Some(identity.peer_id());
+        message
+            .payload
+            .insert("body".into(), json!("private self-chat acceptance"));
+        message
+            .payload
+            .insert("message_id".into(), json!("self-chat-1"));
+        assert!(phone.manager.dispatch_outbound(message).await);
+        let Message::Text(raw) = phone.outgoing.try_recv().unwrap() else {
+            panic!("expected text envelope")
+        };
+        assert!(!raw.contains("private self-chat acceptance"));
+        let sealed = SignalingMessage::from_json(&raw).unwrap();
+        assert_eq!(sealed.msg_type, MessageType::EncryptedSignal);
+        for receiver in [&mut phone, &mut desktop] {
+            for _ in 0..2 {
+                receiver
+                    .manager
+                    .handle_inbound_from_supernode("host".into(), sealed.clone())
+                    .await;
+            }
+        }
+        assert!(phone.events.try_recv().is_err());
+        assert!(
+            matches!(desktop.events.try_recv().unwrap(), ConnectionEvent::ChatMessage { peer_id, message_id, .. }
+            if peer_id == identity.peer_id() && message_id == "self-chat-1")
+        );
+        assert!(desktop.events.try_recv().is_err());
+        let Message::Text(ack_raw) = desktop.outgoing.try_recv().unwrap() else {
+            panic!("expected ack envelope")
+        };
+        let ack = SignalingMessage::from_json(&ack_raw).unwrap();
+        assert_eq!(ack.msg_type, MessageType::EncryptedSignal);
+        assert_eq!(ack.target_device, phone.manager.device_id);
+        phone
+            .manager
+            .handle_inbound_from_supernode("host".into(), ack)
+            .await;
+        assert!(
+            matches!(phone.events.try_recv().unwrap(), ConnectionEvent::ChatAck { message_id, .. }
+            if message_id == "self-chat-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn self_chat_rejects_cleartext_foreign_missing_device_and_wrong_target() {
+        let identity = Arc::new(crate::identity::Identity::generate());
+        let mut phone = client(identity.clone(), 1);
+        let mut desktop = client(identity.clone(), 2);
+        let mut stranger = client(Arc::new(crate::identity::Identity::generate()), 3);
+        for case in 0..5 {
+            let sender = if case == 1 { &mut stranger } else { &mut phone };
+            let mut message = SignalingMessage::new(
+                MessageType::ChatMessage,
+                sender.manager.identity.public_id(),
+            );
+            message.target = Some(if case == 3 {
+                "another-recipient".into()
+            } else {
+                identity.public_id()
+            });
+            message
+                .payload
+                .insert("body".into(), json!("must be rejected"));
+            message
+                .payload
+                .insert("message_id".into(), json!(format!("bad-{case}")));
+            if case == 2 {
+                sender.manager.device_id = None;
+            }
+            if case == 4 {
+                sender.manager.device_id = desktop.manager.device_id;
+            }
+            sender.manager.sign_message_json(&mut message).unwrap();
+            let inbound = if case == 0 {
+                message
+            } else {
+                sender
+                    .manager
+                    .seal_signal_to_member(&message, &identity.public_id())
+                    .unwrap()
+            };
+            desktop
+                .manager
+                .handle_inbound_from_supernode("host".into(), inbound)
+                .await;
+            assert!(desktop.events.try_recv().is_err(), "case {case}");
+            assert!(desktop.outgoing.try_recv().is_err(), "case {case}");
+            phone.manager.device_id = Some(DeviceId([1; 32]));
+        }
+    }
+
     async fn settle(a: &mut Client, b: &mut Client) {
         for _ in 0..32 {
             let changed_a = forward(a, b).await;

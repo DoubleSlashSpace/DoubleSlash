@@ -46,8 +46,6 @@ internal fun roomMessageKey(event: JsonObject): String {
 
 internal fun roomAlertEligible(
     sender: String,
-    ownId: String,
     enabled: Boolean,
     foreground: Boolean,
-): Boolean = enabled && !foreground && ownId.isNotEmpty() &&
-    sender.isNotEmpty() && sender.trimEnd('=') != ownId.trimEnd('=')
+): Boolean = enabled && !foreground && sender.isNotEmpty()
