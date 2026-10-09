@@ -1363,6 +1363,7 @@ async fn handle_event(
         | ConnectionEvent::RoomListReceived { .. }
         | ConnectionEvent::RoomInviteReady { .. }
         | ConnectionEvent::PresenceUpdated { .. }
+        | ConnectionEvent::OwnDevicesOnline { .. }
         | ConnectionEvent::InviteAccepted { .. }
         | ConnectionEvent::InviteFailed { .. }
         // Nobody to ask: a headless client never accepts an offer of trust.

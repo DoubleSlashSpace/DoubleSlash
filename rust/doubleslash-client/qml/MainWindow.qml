@@ -2300,20 +2300,6 @@ ApplicationWindow {
                 }
             }
 
-            Button {
-                Layout.fillWidth: true
-                visible: root.sidebarTab === 0 && navIndex !== 2
-                text: qsTr("Message myself") + (backend.self_chat_unread > 0
-                    ? " (" + backend.self_chat_unread + ")" : "")
-                Accessible.name: qsTr("Message myself")
-                onClicked: {
-                    chatPanel.selectedPeerId = backend.selfChatPeerId()
-                    chatPanel.selectedPeerName = qsTr("Message myself")
-                    backend.selectPeer(chatPanel.selectedPeerId)
-                    navIndex = 0
-                }
-            }
-
             // Tab content (hidden while settings nav is active)
             StackLayout {
                 Layout.fillWidth: true
@@ -2329,6 +2315,19 @@ ApplicationWindow {
                     selectedPeerId: chatPanel.selectedPeerId
                     showBlocked: root.showBlockedPeers
                     blockedCount: root.blockedPeerCount
+                    // Re-read once the identity loads; a bare call never re-evaluates.
+                    selfPeerId: backend.public_id !== "" ? backend.selfChatPeerId() : ""
+                    selfAvatarId: backend.public_id
+                    selfHandle: settingsModel.local_handle
+                    selfOnline: backend.self_online
+                    ownDevicesOnline: backend.own_devices_online
+                    selfUnread: backend.self_chat_unread
+                    onSelfSelected: {
+                        chatPanel.selectedPeerId = backend.selfChatPeerId()
+                        chatPanel.selectedPeerName = qsTr("Message myself")
+                        backend.selectPeer(chatPanel.selectedPeerId)
+                        navIndex = 0
+                    }
                     onPeerSelected: function(peerId, handle) {
                         chatPanel.selectedPeerId = peerId
                         chatPanel.selectedPeerName = handle

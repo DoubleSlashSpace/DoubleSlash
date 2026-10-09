@@ -354,8 +354,10 @@ by `CoreService`, so they continue when the activity and its ViewModel are
 destroyed while the session stays connected. Opening or muting a room cancels
 its notification and any pending alert; disconnecting clears all room alerts.
 Cluster copies are deduplicated. Messages received from our other devices alert
-too; local sends do not. The Peers page also offers **Message myself** for a
-dedicated text conversation between connected devices using the same identity.
+too; local sends do not. The Peers page pins our own row above the peers: it
+shows whether this device is online and how many other devices using the same
+identity are connected, and tapping it (**Message myself**) opens a dedicated
+text conversation between those devices.
 
 The connection notification's **Disconnect** action stops the session, clears
 its notifications, and closes the app task. It preserves the identity and the

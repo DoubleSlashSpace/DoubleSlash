@@ -24,6 +24,9 @@ pub enum ConnectionEvent {
     /// room's rosters are dropped (leave, disconnect), so a later rejoin warns
     /// again.
     OwnDeviceOutdated { room_id: String, outdated: bool },
+    /// How many other devices signed in as us are online, from their sealed
+    /// presence announces. Sent when the count changes.
+    OwnDevicesOnline { count: usize },
     /// Another of our devices sent its rooms and Space trees. The app layer
     /// merges them into its room store, and when `reply_wanted` answers with
     /// its own through `ConnectionCommand::SyncOwnRooms`.

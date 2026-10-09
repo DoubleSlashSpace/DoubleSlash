@@ -57,6 +57,11 @@ pub mod ffi {
         #[qproperty(QString, call_state)]
         #[qproperty(QString, public_id)]
         #[qproperty(i32, self_chat_unread)]
+        /// True while at least one supernode session is up: how our own row in
+        /// the Peers list shows this device as online.
+        #[qproperty(bool, self_online)]
+        /// Other devices signed in as us that are online now.
+        #[qproperty(i32, own_devices_online)]
         /// Our embedded build ID (for reproducible build attestation).
         #[qproperty(QString, build_id)]
         #[qproperty(QString, invite_url)]
@@ -6708,15 +6713,31 @@ fn resolved_room_member_pids(bridge: &AppBridgeRust, member_ids: &[String]) -> V
         .collect()
 }
 
+/// Whether `record` is our own identity, under either id spelling. Our own
+/// row is drawn pinned above the list, so it must not also appear in it.
+fn is_own_peer_record(
+    record: &crate::peer_store::PeerRecord,
+    my_peer_id: &str,
+    my_public_id: &str,
+) -> bool {
+    (!my_peer_id.is_empty() && record.peer_id == my_peer_id)
+        || (!my_public_id.is_empty()
+            && !record.identity_pub.is_empty()
+            && record.identity_pub.trim_end_matches('=') == my_public_id.trim_end_matches('='))
+}
+
 fn emit_peers_updated(mut bridge: Pin<&mut ffi::AppBridge>) {
     let online = bridge.rust().online_peer_ids.clone();
     let in_call = bridge.rust().in_call_peer_ids.clone();
+    let my_peer_id = bridge.rust().my_peer_id.clone();
+    let my_public_id = bridge.rust().my_public_id.clone();
     let json = bridge.rust().peer_store.as_ref().map(|ps| {
         let store = ps.read();
         serde_json::to_string(
             &store
                 .list_non_supernode_peers()
                 .iter()
+                .filter(|p| !is_own_peer_record(p, &my_peer_id, &my_public_id))
                 .map(|p| peer_row_json_with_presence(p, &online, &in_call))
                 .collect::<Vec<_>>(),
         )
@@ -9119,6 +9140,12 @@ fn dispatch_event(
                 merge_own_rooms(bridge, snapshot, reply_wanted);
             });
         }
+        ConnectionEvent::OwnDevicesOnline { count } => {
+            let count = i32::try_from(count).unwrap_or(i32::MAX);
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                bridge.as_mut().set_own_devices_online(count);
+            });
+        }
         ConnectionEvent::OwnDeviceOutdated { room_id, outdated } => {
             let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
                 let json = {
@@ -11034,6 +11061,39 @@ mod room_alert_tests {
         state.update_room_message_alerts(HashSet::new());
         assert_eq!(cs.unread_count("room:saved")?, 0);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod own_peer_row_tests {
+    use super::is_own_peer_record;
+    use crate::peer_store::PeerRecord;
+
+    fn record(peer_id: &str, identity_pub: &str) -> PeerRecord {
+        PeerRecord {
+            peer_id: peer_id.to_owned(),
+            identity_pub: identity_pub.to_owned(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn our_own_record_is_kept_out_of_the_peer_list_under_either_spelling() {
+        let me = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ=";
+        assert!(is_own_peer_record(&record("myhex", ""), "myhex", me));
+        assert!(is_own_peer_record(
+            &record("otherhex", me.trim_end_matches('=')),
+            "myhex",
+            me
+        ));
+        assert!(!is_own_peer_record(
+            &record("friendhex", "friendpub"),
+            "myhex",
+            me
+        ));
+        // An unknown own id (no identity loaded yet) never matches a stranger's
+        // empty fields.
+        assert!(!is_own_peer_record(&record("", ""), "", ""));
     }
 }
 

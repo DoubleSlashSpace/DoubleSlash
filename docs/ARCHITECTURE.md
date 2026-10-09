@@ -314,6 +314,14 @@ still apply; the ordinary peer trust gate is unchanged for foreign identities.
 Self-chat never triggers automatic replies. It is live text delivery with local
 history, not offline store-and-forward or continuous history synchronization.
 
+The Peers list pins our own row above the contacts and keeps any peer-store
+record of our identity out of them. Its device count comes from own-device
+presence: each device sends `PresenceUpdate` to our identity, sealed in
+`EncryptedSignal`, on the presence tick and on its first supernode connect. A
+device seen for the first time is answered once, targeted at it. Entries age
+out after the same TTL as peer presence and are dropped when no path is left.
+The result is `OwnDevicesOnline { count }`; it never reaches peer presence.
+
 | Flow | Path |
 |---|---|
 | Peer message | QML → AppBridge → ConnectionManager → tagged QUIC peer stream, or supernode relay fallback → peer |

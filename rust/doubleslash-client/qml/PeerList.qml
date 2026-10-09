@@ -18,6 +18,16 @@ Rectangle {
     property string sortMode: "online"
     /// How many peers are blocked, so an all-blocked list can say so.
     property int blockedCount: 0
+    /// Our own row, pinned above the list and outside its Online/Offline
+    /// sections. Opening it is self-chat, which reaches every device of ours.
+    property string selfPeerId: ""
+    property string selfAvatarId: ""
+    property string selfHandle: ""
+    property bool selfOnline: false
+    /// Our other devices online now.
+    property int ownDevicesOnline: 0
+    property int selfUnread: 0
+    signal selfSelected()
     signal peerSelected(string peerId, string handle)
     signal startCallRequested(string peerId)
     signal removePeerRequested(string peerId)
@@ -29,6 +39,107 @@ Rectangle {
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
+
+        // ── Our own row ──────────────────────────────────────────────────
+        Rectangle {
+            id: selfRow
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.max(56, Theme.fontSizeBody + Theme.fontSizeCaption + Theme.spacingLg)
+            readonly property bool selected: root.selfPeerId !== "" && root.selfPeerId === root.selectedPeerId
+            color: selfRow.selected
+                ? Theme.selectedFill()
+                : (selfMouse.containsMouse ? Theme.bg3 : "transparent")
+            Accessible.role: Accessible.Button
+            Accessible.name: qsTr("Message myself")
+            Accessible.description: selfStatus.text
+
+            ToolTip.visible: selfMouse.containsMouse
+            ToolTip.text: qsTr("Message myself")
+            ToolTip.delay: 500
+
+            Behavior on color { ColorAnimation { duration: Theme.animNormal } }
+
+            Rectangle {
+                visible: selfRow.selected || root.selfUnread > 0
+                width: 3
+                anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+                color: Theme.accent
+            }
+
+            RowLayout {
+                anchors {
+                    fill: parent
+                    leftMargin: Theme.spacingMd
+                    rightMargin: Theme.spacingSm
+                    topMargin: Theme.spacingXs
+                    bottomMargin: Theme.spacingXs
+                }
+                spacing: Theme.spacingSm
+
+                Avatar {
+                    id: selfAvatar
+                    peerId: root.selfAvatarId
+                    size: 36
+                    showRing: true
+                    ringColor: root.selfOnline ? Theme.online : selfAvatar.tintColor
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+
+                    Text {
+                        text: qsTr("%1 (you)").arg(root.selfHandle !== "" ? root.selfHandle : qsTr("Me"))
+                        color: Theme.text
+                        font.pixelSize: Theme.fontSizeBody
+                        font.bold: root.selfUnread > 0
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
+
+                    Text {
+                        id: selfStatus
+                        text: !root.selfOnline
+                            ? qsTr("Offline")
+                            : root.ownDevicesOnline === 0
+                                ? qsTr("Online · this device only")
+                                : root.ownDevicesOnline === 1
+                                    ? qsTr("Online · 1 other device")
+                                    : qsTr("Online · %1 other devices").arg(root.ownDevicesOnline)
+                        color: Theme.muted
+                        font.pixelSize: Theme.fontSizeCaption
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
+                }
+
+                Rectangle {
+                    visible: root.selfUnread > 0
+                    width: Math.max(20, selfBadge.implicitWidth + 8)
+                    height: Math.max(20, selfBadge.implicitHeight + 4)
+                    radius: Theme.radiusPill
+                    color: Theme.danger
+                    Layout.alignment: Qt.AlignVCenter
+
+                    Text {
+                        id: selfBadge
+                        anchors.centerIn: parent
+                        text: root.selfUnread > 99 ? "99+" : root.selfUnread.toString()
+                        color: Theme.textInv
+                        font.pixelSize: Theme.fontSizeCaption
+                        font.bold: true
+                    }
+                }
+            }
+
+            MouseArea {
+                id: selfMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                onClicked: root.selfSelected()
+            }
+        }
 
         // Peer list backed by PeerListModel — with section grouping by online status
         ListView {

@@ -1522,6 +1522,16 @@ impl ConnectionManager {
                     reason,
                 });
             }
+            MessageType::PresenceUpdate
+                if msg.sender.trim_end_matches('=')
+                    == self.identity.public_id().trim_end_matches('=') =>
+            {
+                // Our other devices: sealed only, like every other message
+                // between them.
+                if encrypted {
+                    self.note_own_device_presence(&msg).await;
+                }
+            }
             MessageType::PresenceUpdate => {
                 let status = msg
                     .payload

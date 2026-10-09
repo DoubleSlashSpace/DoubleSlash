@@ -122,6 +122,7 @@ import androidx.compose.ui.unit.dp
 import com.doubleslash.client.AppViewModel
 import com.doubleslash.client.roomHeadcount
 import com.doubleslash.client.roomMembersUnion
+import com.doubleslash.client.ownStatusLabel
 import com.doubleslash.client.R
 import com.doubleslash.client.ChatMessage
 import kotlinx.coroutines.flow.drop
@@ -1016,9 +1017,8 @@ private fun HomeScreen(
 
 
         if (state.tab == HomeTab.PEERS) {
-            TextButton(onClick = viewModel::openSelfChat, modifier = Modifier.fillMaxWidth()) {
-                Text("Message myself")
-            }
+            OwnPeerRow(state = state, onClick = viewModel::openSelfChat)
+            HorizontalDivider()
         }
 
         Box(Modifier.weight(1f)) {
@@ -1201,6 +1201,59 @@ private fun PeersList(
                 modifier = Modifier.fillMaxWidth().padding(16.dp),
             ) { Text("Accept an invite") }
         }
+    }
+}
+
+/**
+ * Our own row, pinned above the peers and outside their online/offline order.
+ * Opening it is self-chat, which reaches every device signed in as us.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun OwnPeerRow(state: AppState, onClick: () -> Unit) {
+    val online = state.connectedSupernodes.isNotEmpty()
+    val name = state.identity.handle.ifEmpty { "Me" }
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        tooltip = { PlainTooltip { Text("Message myself") } },
+        state = rememberTooltipState(),
+    ) {
+        ListItem(
+            headlineContent = { Text("$name (you)") },
+            supportingContent = {
+                Text(
+                    ownStatusLabel(online, state.ownDevicesOnline),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            },
+            leadingContent = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (online) Color(0xFF16A34A) else MaterialTheme.colorScheme.outlineVariant,
+                            ),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    val avatar = state.avatars[state.identity.peerId]
+                    if (avatar != null) {
+                        Avatar(avatar, Modifier.size(36.dp))
+                    } else {
+                        Box(
+                            Modifier
+                                .size(36.dp)
+                                .clip(RoundedCornerShape(percent = 18))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                        )
+                    }
+                }
+            },
+            modifier = Modifier.clickable(onClickLabel = "Message myself", onClick = onClick),
+        )
     }
 }
 

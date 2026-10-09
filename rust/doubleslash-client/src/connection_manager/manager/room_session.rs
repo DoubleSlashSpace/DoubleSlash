@@ -679,6 +679,8 @@ impl ConnectionManager {
     /// Addressed to the elected keyer *identity*, not a device — device routing
     /// fans it to all of that identity's endpoints and the one that is the
     /// elected device answers, exactly as `SfuGroupKeyAck` already behaves.
+    /// When that identity is ours and another of our devices is elected, the
+    /// own-device handoff is re-asked instead.
     pub(super) async fn request_group_key(&mut self, room_id: &str) {
         // Holding the room's key is the whole point; stop asking the moment we
         // do. An old epoch does not count once the wire shows a newer one.
@@ -699,9 +701,16 @@ impl ConnectionManager {
         let Some(keyer) = elected_keyer_for(&present) else {
             return;
         };
-        if keyer.trim_end_matches('=') == me.trim_end_matches('=') {
-            // We are the keyer. Minting is `sync_room_membership`'s job (it
-            // waits for a second member first); asking ourselves is not a path.
+        let own_identity_keys = keyer.trim_end_matches('=') == me.trim_end_matches('=');
+        if own_identity_keys
+            && (self.elected_room_device(room_id, &me, self.device_id)
+                || !present
+                    .iter()
+                    .any(|m| m.trim_end_matches('=') != me.trim_end_matches('=')))
+        {
+            // We are the keyer device: minting is `sync_room_membership`'s job
+            // (it waits for a second member first), and asking ourselves is not
+            // a path. Or only our own devices are here, which is not a strand.
             self.group_key_requests.remove(room_id);
             return;
         }
@@ -717,6 +726,31 @@ impl ConnectionManager {
             Some(req) => req.attempts.saturating_add(1),
             None => 0,
         };
+
+        if own_identity_keys {
+            // Another device of ours keys this room, and keys pass between our
+            // own devices through the roster- and challenge-bound handoff, not
+            // `SfuGroupKeyRequest`. That round may already have settled on an
+            // answer the sibling gave before it held a key, which left this
+            // device unable to open or send room frames until the next rotation.
+            if !self.reopen_own_room_key_round(room_id) {
+                return;
+            }
+            info!(
+                "[group-key] no key for room {}; asking our elected device (attempt {})",
+                &room_id[..8.min(room_id.len())],
+                attempts + 1
+            );
+            self.request_own_room_key(room_id).await;
+            self.group_key_requests.insert(
+                room_id.to_owned(),
+                GroupKeyRequest {
+                    last_sent: now,
+                    attempts,
+                },
+            );
+            return;
+        }
 
         let mut inner =
             SignalingMessage::new(MessageType::SfuGroupKeyRequest, self.identity.public_id());

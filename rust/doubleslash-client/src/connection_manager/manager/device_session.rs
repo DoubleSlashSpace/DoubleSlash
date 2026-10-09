@@ -240,6 +240,25 @@ impl ConnectionManager {
         devices.first().is_some_and(|first| *first == device)
     }
 
+    /// Start `room`'s round over with a fresh challenge, so the next
+    /// [`Self::request_own_room_key`] asks every sibling again.
+    ///
+    /// A round settles once each sibling has answered, and an answer from a
+    /// sibling that held no key yet settles it just the same. When our identity
+    /// keys the room from another device, that sibling is our only source of the
+    /// key, so a device still keyless once others are present re-asks rather
+    /// than wait for a rotation. The fresh challenge makes any reply to the
+    /// earlier request stale.
+    pub(super) fn reopen_own_room_key_round(&mut self, room: &str) -> bool {
+        let Some(round) = self.own_room_key_rounds.get_mut(room) else {
+            return false;
+        };
+        round.heard.clear();
+        round.last_request = None;
+        rand::rngs::OsRng.fill_bytes(&mut round.challenge);
+        true
+    }
+
     pub(super) async fn retry_own_room_key_sync(&mut self) {
         let rooms: Vec<_> = self.own_room_key_rounds.keys().cloned().collect();
         for room in rooms {
@@ -431,6 +450,94 @@ impl ConnectionManager {
                 reply_wanted,
             },
         );
+    }
+
+    /// Tell our other devices this one is up, sealed to our own identity.
+    ///
+    /// `reply_to` answers one device that has just announced, so it counts us
+    /// at once instead of after a full presence interval. Replies are never
+    /// themselves answered, which keeps two devices from trading announces.
+    pub(super) async fn announce_to_own_devices(&mut self, reply_to: Option<DeviceId>) {
+        // Without device routing a sibling cannot be told apart from us.
+        if self.device_id.is_none() || !self.supernodes.values().any(|sn| sn.connected) {
+            return;
+        }
+        let me = self.identity.public_id();
+        let mut inner = SignalingMessage::new(MessageType::PresenceUpdate, me.clone());
+        inner.target = Some(me.clone());
+        inner.target_device = reply_to;
+        inner
+            .payload
+            .insert("status".to_owned(), Value::String("online".to_owned()));
+        if reply_to.is_some() {
+            inner.payload.insert("reply".to_owned(), Value::Bool(true));
+        }
+        if self.sign_message_json(&mut inner).is_none() {
+            return;
+        }
+        let Some(envelope) = self.seal_signal_to_member(&inner, &me) else {
+            return;
+        };
+        self.dispatch_outbound(envelope).await;
+    }
+
+    /// A presence announce from another device of ours.
+    ///
+    /// Accepted only sealed (checked by the caller), signed by our own
+    /// identity, and from another device of it. It never reaches the peer
+    /// presence path: we are not a contact of ourselves.
+    pub(super) async fn note_own_device_presence(&mut self, message: &SignalingMessage) {
+        let Some(me) = self.device_id else {
+            return;
+        };
+        let Some(device) = message.source_device.filter(|device| *device != me) else {
+            return;
+        };
+        if message.target_device.is_some_and(|target| target != me)
+            || message.sender.trim_end_matches('=')
+                != self.identity.public_id().trim_end_matches('=')
+        {
+            return;
+        }
+        let status = message
+            .payload
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("online");
+        let is_reply = message
+            .payload
+            .get("reply")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let known = self.own_device_presence.contains_key(&device);
+        if status == "offline" {
+            self.own_device_presence.remove(&device);
+        } else {
+            self.own_device_presence.insert(device, Instant::now());
+        }
+        self.report_own_devices();
+        if !known && !is_reply && status != "offline" {
+            self.announce_to_own_devices(Some(device)).await;
+        }
+    }
+
+    /// Retire our other devices whose last announce aged out.
+    pub(super) fn expire_own_device_presence(&mut self) {
+        let ttl = Duration::from_secs(super::PRESENCE_TTL_S);
+        self.own_device_presence
+            .retain(|_, seen| seen.elapsed() < ttl);
+        self.report_own_devices();
+    }
+
+    /// Emit `OwnDevicesOnline` when the number of our other devices changed.
+    pub(super) fn report_own_devices(&mut self) {
+        let count = self.own_device_presence.len();
+        if count == self.own_devices_reported {
+            return;
+        }
+        tracing::info!("[presence] {count} other device(s) of ours online");
+        self.own_devices_reported = count;
+        self.emit_event(crate::connection_manager::ConnectionEvent::OwnDevicesOnline { count });
     }
 
     pub(super) async fn handle_own_room_key_sync(&mut self, message: &SignalingMessage) {
@@ -927,6 +1034,118 @@ mod tests {
                 Some([55; 32])
             );
         }
+    }
+
+    fn own_device_counts(client: &mut Client) -> Vec<usize> {
+        use crate::connection_manager::ConnectionEvent;
+        let mut counts = Vec::new();
+        while let Ok(event) = client.events.try_recv() {
+            match event {
+                ConnectionEvent::OwnDevicesOnline { count } => counts.push(count),
+                ConnectionEvent::PresenceUpdated { .. } => {
+                    panic!("our own device surfaced as a contact's presence")
+                }
+                _ => {}
+            }
+        }
+        counts
+    }
+
+    #[tokio::test]
+    async fn own_devices_count_each_other_from_sealed_announces_and_age_out() {
+        let identity = Arc::new(crate::identity::Identity::generate());
+        let mut phone = client(identity.clone(), 1);
+        let mut desktop = client(identity.clone(), 2);
+
+        // Cleartext, though correctly signed by our identity, is not counted.
+        let mut bare = SignalingMessage::new(MessageType::PresenceUpdate, identity.public_id());
+        bare.target = Some(identity.public_id());
+        bare.payload.insert("status".into(), json!("online"));
+        phone.manager.sign_message_json(&mut bare).unwrap();
+        desktop
+            .manager
+            .handle_inbound_from_supernode("host".into(), bare)
+            .await;
+        assert!(own_device_counts(&mut desktop).is_empty());
+
+        // One announce; the desktop answers once and the answer is not answered.
+        phone.manager.announce_to_own_devices(None).await;
+        settle(&mut phone, &mut desktop).await;
+        assert_eq!(own_device_counts(&mut desktop), vec![1]);
+        assert_eq!(own_device_counts(&mut phone), vec![1]);
+
+        // A repeat announce refreshes without re-emitting or re-answering.
+        phone.manager.announce_to_own_devices(None).await;
+        settle(&mut phone, &mut desktop).await;
+        assert!(own_device_counts(&mut desktop).is_empty());
+        assert!(own_device_counts(&mut phone).is_empty());
+
+        let stale = Instant::now() - Duration::from_secs(super::super::PRESENCE_TTL_S + 1);
+        for seen in desktop.manager.own_device_presence.values_mut() {
+            *seen = stale;
+        }
+        desktop.manager.expire_own_device_presence();
+        assert_eq!(own_device_counts(&mut desktop), vec![0]);
+    }
+
+    /// The desktop asked the elected phone for the room key before the phone
+    /// held one, so its handoff round settled empty. When the phone then keyed
+    /// the room with another member, the desktop had no way to ask again and
+    /// stayed unable to open or send audio until a rotation.
+    #[tokio::test]
+    async fn keyless_sibling_reasks_elected_device_once_others_are_present() {
+        let identity = Arc::new(crate::identity::Identity::generate());
+        let me = identity.public_id();
+        let stranger = std::iter::repeat_with(crate::identity::Identity::generate)
+            .find(|other| {
+                super::super::elected_keyer_for(&[me.clone(), other.public_id()]) == Some(&me)
+            })
+            .unwrap()
+            .public_id();
+        let mut phone = client(identity.clone(), 1);
+        let mut desktop = client(identity, 2);
+        let roster = json!([
+            {"identity": me, "device": phone.manager.device_id, "voice": false},
+            {"identity": me, "device": desktop.manager.device_id, "voice": true},
+        ]);
+        for client in [&mut phone, &mut desktop] {
+            assert!(client
+                .manager
+                .record_room_devices("host", "room", Some(&roster)));
+        }
+        assert!(phone
+            .manager
+            .elected_room_device("room", &me, phone.manager.device_id));
+
+        // The phone answers while it holds no key: the round settles empty.
+        desktop.manager.request_own_room_key("room").await;
+        settle(&mut desktop, &mut phone).await;
+        assert!(!desktop.manager.group_keys.has_real_key("room"));
+
+        // Only our own devices present: nothing to ask, nothing sent.
+        desktop
+            .manager
+            .sync_room_membership("host", "room", std::slice::from_ref(&me))
+            .await;
+        assert!(desktop.outgoing.try_recv().is_err());
+
+        // The phone keys the room with another member; the desktop sees them.
+        phone.manager.group_keys.install("room", 2, [77; 32]);
+        desktop
+            .manager
+            .sync_room_membership("host", "room", &[me.clone(), stranger])
+            .await;
+        settle(&mut desktop, &mut phone).await;
+        assert_eq!(desktop.manager.group_keys.current_epoch("room"), 2);
+        assert_eq!(
+            desktop.manager.group_keys.epoch_key("room", 2),
+            Some([77; 32])
+        );
+
+        // Holding the key ends the requests.
+        desktop.manager.request_group_key("room").await;
+        assert!(!desktop.manager.group_key_requests.contains_key("room"));
+        assert!(desktop.outgoing.try_recv().is_err());
     }
 
     #[tokio::test]

@@ -110,6 +110,10 @@ data class AppState(
      * vouches for.
      */
     val relayPresentPeers: Set<String> = emptySet(),
+    /** Supernodes with a live session; our own row shows online while any is. */
+    val connectedSupernodes: Set<String> = emptySet(),
+    /** Other devices signed in as us that are online now. */
+    val ownDevicesOnline: Int = 0,
     val inviteUrl: String? = null,
     val tab: HomeTab = HomeTab.PEERS,
     /** Live messages for the room currently open. Not persisted anywhere. */
@@ -887,7 +891,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val all = reply.decodeList<Peer>(core, "peers")
         _state.update {
             it.copy(
-                peers = all.filterNot { p -> p.isSupernode },
+                // Our own identity is the pinned row above the list instead.
+                peers = all.filterNot { p -> p.isSupernode || p.isOwnIdentity(it.identity) },
                 // Kept rather than discarded: creating a room needs a host to
                 // create it on, and this is the only list of them we have.
                 supernodes = all.filter { p -> p.isSupernode },
@@ -2048,8 +2053,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             "supernode_connected" -> {
+                val id = event.stringOrEmpty("supernode_id")
                 _state.update {
-                    it.copy(connectionMode = maxOf(it.connectionMode, ConnectionMode.RELAY))
+                    it.copy(
+                        connectionMode = maxOf(it.connectionMode, ConnectionMode.RELAY),
+                        connectedSupernodes = it.connectedSupernodes + id.trimEnd('='),
+                    )
                 }
                 // Rejoin every room we hold on this node, not just the one on
                 // screen. Membership is not a view state: being a member of
@@ -2058,7 +2067,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // its group key rotated to an epoch we were never offered.
                 // The desktop and headless clients have always done this on
                 // connect.
-                val id = event.stringOrEmpty("supernode_id")
                 if (id.isNotEmpty()) {
                     viewModelScope.launch {
                         core.command("room.resubscribe_all") { put("supernode_id", id) }
@@ -2067,8 +2075,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
 
-            "supernode_disconnected" ->
-                _state.update { it.copy(connectionMode = ConnectionMode.OFFLINE) }
+            "supernode_disconnected" -> {
+                val id = event.stringOrEmpty("supernode_id").trimEnd('=')
+                _state.update {
+                    it.copy(
+                        connectionMode = ConnectionMode.OFFLINE,
+                        connectedSupernodes = it.connectedSupernodes - id,
+                    )
+                }
+            }
+
+            "own_devices_online" ->
+                _state.update { it.copy(ownDevicesOnline = event.number("count").toInt()) }
 
             // Chat is already persisted by the core before this arrives, so
             // reloading is enough — there is no separate in-memory append that

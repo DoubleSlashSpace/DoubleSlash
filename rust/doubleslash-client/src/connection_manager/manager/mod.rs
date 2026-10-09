@@ -253,6 +253,11 @@ pub struct ConnectionManager {
     /// `PeerRecord::peer_id`. Entries older than `PRESENCE_TTL_S` are retired
     /// by `expire_stale_presence`.
     peer_presence_seen: HashMap<String, Instant>,
+    /// Last presence announce from each of our other devices, retired after
+    /// `PRESENCE_TTL_S` like `peer_presence_seen`.
+    own_device_presence: HashMap<doubleslash_features::DeviceId, Instant>,
+    /// The count last sent as `OwnDevicesOnline`, so only changes are emitted.
+    own_devices_reported: usize,
     /// WS Ping/Pong RTT trackers keyed by supernode identity pubkey.
     supernode_ping: HashMap<String, SupernodePingTracker>,
     /// `supernode_id:room_id` → count of in-flight materialize-only creates.
@@ -590,6 +595,8 @@ impl ConnectionManager {
             replay_guard: ReplayGuard::new(Self::MAX_MESSAGE_AGE_SECS),
             transport_stats: HashMap::new(),
             peer_presence_seen: HashMap::new(),
+            own_device_presence: HashMap::new(),
+            own_devices_reported: 0,
             supernode_ping: HashMap::new(),
             pending_materialize: HashMap::new(),
             pending_private_room_joins: HashSet::new(),
@@ -1609,7 +1616,9 @@ impl ConnectionManager {
                 }
                 _ = presence_interval.tick() => {
                     self.broadcast_presence().await;
+                    self.announce_to_own_devices(None).await;
                     self.expire_stale_presence();
+                    self.expire_own_device_presence();
                 }
                 _ = transfer_gc_interval.tick() => {
                     // Neither map used to be pruned, so every payload ever sent
@@ -2111,6 +2120,12 @@ impl ConnectionManager {
                 // This node came back — allow a future failover away from it.
                 self.failover_in_progress.remove(&peer_id);
                 self.emit_event(ConnectionEvent::SupernodeConnected(peer_id.clone()));
+                // First way out to the network: tell our other devices now
+                // rather than at the next presence tick. Later cluster members
+                // reach the same devices, so they add nothing.
+                if self.supernodes.values().filter(|sn| sn.connected).count() == 1 {
+                    self.announce_to_own_devices(None).await;
+                }
                 // Auto-request the SFU room list so the Rooms tab populates.
                 self.send_room_list_request(&peer_id).await;
                 // Request supernode info (portal URL, title) for the Nodes tab.
@@ -2653,6 +2668,11 @@ impl ConnectionManager {
             // a dropped-relay warning per trusted peer per tick, so a client
             // sitting on a dead network fills the log with one line per
             // contact every 30 seconds.
+            //
+            // Nor can anything reach our other devices, so stop counting them
+            // rather than show them for another full TTL.
+            self.own_device_presence.clear();
+            self.report_own_devices();
             return;
         }
         let targets = self.presence_targets();
@@ -2704,7 +2724,10 @@ impl ConnectionManager {
     /// interval. Replies are never themselves answered — that is what keeps
     /// two clients from trading announces forever.
     pub(super) async fn send_presence_to(&mut self, target: &str, reply: bool) {
-        if target.is_empty() || target == self.identity.public_id() {
+        // Our own devices are announced sealed by `announce_to_own_devices`.
+        if target.is_empty()
+            || target.trim_end_matches('=') == self.identity.public_id().trim_end_matches('=')
+        {
             return;
         }
         let sender = self.identity.public_id();

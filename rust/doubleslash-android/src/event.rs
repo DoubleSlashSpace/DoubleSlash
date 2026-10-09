@@ -344,6 +344,9 @@ pub fn to_json(event: &ConnectionEvent) -> Option<Value> {
         E::OwnDeviceOutdated { room_id, outdated } => {
             json!({ "event": "own_device_outdated", "room_id": room_id, "outdated": outdated })
         }
+        E::OwnDevicesOnline { count } => {
+            json!({ "event": "own_devices_online", "count": count })
+        }
 
         // ── Capabilities ──────────────────────────────────────────────────
         E::CapabilityAnnounced { peer_id, caps_json } => json!({
@@ -598,6 +601,10 @@ mod tests {
                 error: String::new(),
             }),
             "trust_invite_result",
+        );
+        assert_eq!(
+            name_of(&ConnectionEvent::OwnDevicesOnline { count: 1 }),
+            "own_devices_online",
         );
     }
 
