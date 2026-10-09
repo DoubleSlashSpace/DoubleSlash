@@ -304,6 +304,9 @@ meet it.
   decompression and reconstructed delta output remain capped at 8 MiB.
 * **Desktop** — `sendFile`, `acceptFile`, `rejectFile`, `retryFile`,
   `sendRoomFile`, `acceptRoomFile`, `declineRoomFile`, `openContainingFolder`.
+  A picture sent from this device is drawn from the local file as soon as the
+  offer is in the chat. The transfer card stays underneath until the send
+  finishes or fails. A received picture appears once its download has a path.
 * **Android** — `file.send`, `file.accept`, `file.reject`, `file.cancel`,
   `file.retry`, plus `file.send_room`, `file.accept_room`, `file.decline_room`.
   The room path is advertise-then-pull: nothing moves until a member accepts, so accepting is a
