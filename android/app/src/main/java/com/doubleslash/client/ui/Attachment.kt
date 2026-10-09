@@ -102,7 +102,7 @@ fun AttachmentContent(
     retryReason: String? = null,
     onRetry: (() -> Unit)? = null,
 ) {
-    val preview = if (kind == "image") rememberPreview(path) else null
+    val preview = if (kind.equals("image", ignoreCase = true)) rememberPreview(path) else null
     var zoomed by remember { mutableStateOf(false) }
 
     Column(modifier) {
@@ -159,7 +159,7 @@ fun AttachmentContent(
 private fun AttachmentLine(kind: String, name: String, sizeStr: String, modifier: Modifier) {
     Row(modifier.padding(2.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(
-            when (kind) {
+            when (kind.lowercase()) {
                 "image" -> "🖼"
                 "video" -> "🎬"
                 else -> "📎"
