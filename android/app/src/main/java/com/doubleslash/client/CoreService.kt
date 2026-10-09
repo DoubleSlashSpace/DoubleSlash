@@ -1,6 +1,7 @@
 package com.doubleslash.client
 
 import android.Manifest
+import android.app.ActivityManager
 import android.app.Notification
 import android.app.Notification.Action
 import android.app.NotificationChannel
@@ -121,8 +122,17 @@ class CoreService : Service() {
         if (intent?.action == ACTION_DISCONNECT) {
             Log.i(TAG, "disconnect requested from the notification")
             IncomingCallNotifier.cancel(this)
+            RoomMessageNotifier.cancelAll(this)
+            DoubleSlashCore.get(this).stop()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
+            // Disconnect is Quit, not Lock identity. Finish the activity too,
+            // otherwise its surviving ViewModel stays on the unlock screen
+            // and never runs the saved-login startup path on the next launch.
+            // Leave IdentityVault and the user's stay-unlocked choice intact.
+            getSystemService(ActivityManager::class.java)?.appTasks?.forEach {
+                it.finishAndRemoveTask()
+            }
             return START_NOT_STICKY
         }
 

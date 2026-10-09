@@ -56,8 +56,9 @@ class DoubleSlashCore private constructor(context: Context) : NativeCore.EventSi
      * Fires once each time [stop] actually tears a core down.
      *
      * The notification Disconnect action (and an FGS timeout) stop the core
-     * from outside the ViewModel; this is how the UI learns to return to the
-     * unlock screen instead of sitting on a dead session.
+     * from outside the ViewModel; this clears stale UI session state. The
+     * Disconnect action also finishes the app task without forgetting the
+     * saved login, so the next launch follows the normal auto-unlock path.
      */
     private val _stopped = MutableSharedFlow<Unit>(
         extraBufferCapacity = 1,

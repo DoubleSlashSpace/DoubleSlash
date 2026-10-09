@@ -357,6 +357,12 @@ Cluster copies are deduplicated. Messages received from our other devices alert
 too; local sends do not. The Peers page also offers **Message myself** for a
 dedicated text conversation between connected devices using the same identity.
 
+The connection notification's **Disconnect** action stops the session, clears
+its notifications, and closes the app task. It preserves the identity and the
+existing **Stay unlocked** choice, so reopening uses the saved login when that
+option is enabled. **Lock identity** remains the separate action that forgets
+the saved key and requires unlocking again.
+
 **Dependency notices.** Settings > Legal > Third-party licenses opens an offline
 reader for the packaged Rust and supplemental notices. Source links using HTTPS
 open in the system browser. Distribution reviews are scoped by Rust target and
