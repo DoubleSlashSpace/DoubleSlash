@@ -1768,6 +1768,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         enterVoiceRoute()
 
         viewModelScope.launch {
+            // Voice rides the room join, and leaving voice dropped it, so join
+            // again first: rejoining from the same open room would otherwise
+            // send audio without being in the room's voice. A node that still
+            // has us simply keeps us.
+            val join = core.command("room.join") {
+                put("supernode_id", room.supernodeId)
+                put("room_id", room.roomId)
+                put("invite_token", room.inviteToken)
+            }
+            if (!join.ok) {
+                _state.update { it.copy(error = join.errorText) }
+                CoreService.setMediaActive(getApplication(), microphone = false, camera = false)
+                leaveVoiceRoute()
+                return@launch
+            }
             val reply = core.command("room.voice.join") {
                 put("supernode_id", room.supernodeId)
                 put("room_id", room.roomId)
@@ -1793,11 +1808,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun leaveRoomVoice() {
+        val voice = _state.value.voiceRoom
         // Speaking edges stop with the session; a ring left on would lie.
         _state.update { it.copy(roomVoiceActive = false, voiceRoom = null, speakingPeers = emptySet()) }
         keepVideoOnlyFor(_state.value.call?.peerId)
         viewModelScope.launch {
             core.command("room.voice.leave")
+            // `room.voice.leave` only stops local audio. Our voice membership
+            // at the supernode is the room join, so leaving has to say so:
+            // without this the node, and every member's tree, listed us in
+            // voice until the room screen happened to close, and hanging up
+            // from the Rooms tree never left at all. This is the desktop's
+            // leave: SfuLeave to every cluster member, with text chat kept
+            // subscribed, then a fresh list so the rosters redraw.
+            if (voice != null) {
+                core.command("room.leave") {
+                    put("supernode_id", voice.supernodeId)
+                    put("room_id", voice.roomId)
+                }
+                core.command("room.request_list") { put("supernode_id", voice.supernodeId) }
+            }
             CoreService.setMediaActive(getApplication(), microphone = false, camera = false)
             leaveVoiceRoute()
         }
