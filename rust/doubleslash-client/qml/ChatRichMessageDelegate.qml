@@ -329,7 +329,7 @@ Item {
 
     function timestampText() {
         if (root.timestamp <= 0) return ""
-        return Qt.formatDateTime(new Date(root.timestamp * 1000), "MMM d, yyyy hh:mm")
+        return Theme.formatChatDateTime(new Date(root.timestamp * 1000))
     }
 
     /// Plain text suitable for clipboard (full message, not rich HTML).

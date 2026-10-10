@@ -406,6 +406,8 @@ data class Prefs(
     val skin: String = "",
     /** Text size adjustment in percent, −50…+200. 0 is the designed size. Not part of [skin]. */
     val fontScalePercent: Int = 0,
+    /** Chat date and time layout. Same ids as the desktop. Not part of [skin]. */
+    val timeFormat: String = DateTimeFormats.DEFAULT,
     val inputGain: Int = 100,
     val outputGain: Int = 100,
     val noiseStrength: Int = 2,
@@ -614,6 +616,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(prefs = it.prefs.copy(fontScalePercent = settings.fontScalePercent)) }
     }
 
+    /** Chat date and time layout. Unknown ids are stored as the 12-hour default. */
+    fun setTimeFormat(id: String) {
+        settings.timeFormat = id
+        _state.update { it.copy(prefs = it.prefs.copy(timeFormat = settings.timeFormat)) }
+    }
+
     /** Apply and keep a skin (portable JSON, or "" for the built-in palette). */
     fun setSkin(skin: String) {
         settings.skin = skin
@@ -804,6 +812,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         theme = settings.theme,
         skin = settings.skin,
         fontScalePercent = settings.fontScalePercent,
+        timeFormat = settings.timeFormat,
         inputGain = settings.inputGain,
         outputGain = settings.outputGain,
         noiseStrength = settings.noiseStrength,

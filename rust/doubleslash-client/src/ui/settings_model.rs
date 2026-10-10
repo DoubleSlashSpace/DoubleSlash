@@ -125,6 +125,10 @@ pub mod ffi {
         /// Independent of `theme` and `skin_json`: a copied skin does not
         /// carry it.
         #[qproperty(i32, font_scale_percent)]
+        /// Chat date and time layout. One of `ampm` (default, 12-hour),
+        /// `military` (24-hour), `us`, `uk`, `eu`, `iso`, `east_asia`.
+        /// Not part of the skin. The phone stores the same id.
+        #[qproperty(QString, time_format)]
         /// Rooms list order, shared in shape with the phone:
         /// `{"mode":"name_asc"|"name_desc"|"peers_asc"|"peers_desc"|"manual","pinned":["node:room"],"manual":["node:room"]}`.
         /// Pinned rooms stay first among their siblings. Manual is used only
@@ -338,6 +342,10 @@ struct SettingsSnapshot {
     /// text stays at the designed size.
     #[serde(default)]
     font_scale_percent: i32,
+    /// See the `time_format` qproperty. Missing on older files, so chat
+    /// uses local 12-hour time with AM/PM.
+    #[serde(default = "default_time_format")]
+    time_format: String,
     /// See the `room_list_order_json` qproperty. Missing on older files, so
     /// the default is name A–Z with nothing pinned.
     #[serde(default = "default_room_list_order")]
@@ -450,6 +458,18 @@ fn default_overlays_blob() -> String {
 fn default_voice_bitrate() -> String {
     "ultra".to_string()
 }
+fn default_time_format() -> String {
+    "ampm".to_owned()
+}
+
+/// Ids both clients understand. Anything else is the 12-hour default.
+fn normalize_time_format(value: &str) -> String {
+    match value {
+        "ampm" | "military" | "us" | "uk" | "eu" | "iso" | "east_asia" => value.to_owned(),
+        _ => default_time_format(),
+    }
+}
+
 fn default_theme() -> String {
     "dark".to_string()
 }
@@ -526,6 +546,7 @@ impl Default for SettingsSnapshot {
             theme: default_theme(),
             skin_json: String::new(),
             font_scale_percent: 0,
+            time_format: default_time_format(),
             room_list_order_json: default_room_list_order(),
             room_message_alerts_json: default_room_message_alerts(),
             relay_allow_gated: true,
@@ -609,6 +630,7 @@ pub struct SettingsModelRust {
     theme: QString,
     skin_json: QString,
     font_scale_percent: i32,
+    time_format: QString,
     room_list_order_json: QString,
     room_message_alerts_json: QString,
     relay_allow_gated: bool,
@@ -689,6 +711,7 @@ impl Default for SettingsModelRust {
             theme: QString::from(s.theme.as_str()),
             skin_json: QString::from(s.skin_json.as_str()),
             font_scale_percent: s.font_scale_percent,
+            time_format: QString::from(s.time_format.as_str()),
             room_list_order_json: QString::from(s.room_list_order_json.as_str()),
             room_message_alerts_json: QString::from(s.room_message_alerts_json.as_str()),
             relay_allow_gated: s.relay_allow_gated,
@@ -861,6 +884,7 @@ impl ffi::SettingsModel {
             theme: r.theme.to_string(),
             skin_json: r.skin_json.to_string(),
             font_scale_percent: clamp_font_scale_percent(r.font_scale_percent),
+            time_format: normalize_time_format(&r.time_format.to_string()),
             room_list_order_json: r.room_list_order_json.to_string(),
             room_message_alerts_json: r.room_message_alerts_json.to_string(),
             relay_allow_gated: r.relay_allow_gated,
@@ -1118,6 +1142,9 @@ impl ffi::SettingsModel {
             .set_skin_json(QString::from(snap.skin_json.as_str()));
         self.as_mut()
             .set_font_scale_percent(clamp_font_scale_percent(snap.font_scale_percent));
+        self.as_mut().set_time_format(QString::from(
+            normalize_time_format(&snap.time_format).as_str(),
+        ));
         self.as_mut()
             .set_room_list_order_json(QString::from(snap.room_list_order_json.as_str()));
         self.as_mut()
@@ -1161,6 +1188,22 @@ mod tests {
         assert_eq!(clamp_font_scale_percent(0), 0);
         assert_eq!(clamp_font_scale_percent(200), FONT_SCALE_PERCENT_MAX);
         assert_eq!(clamp_font_scale_percent(900), FONT_SCALE_PERCENT_MAX);
+    }
+
+    #[test]
+    fn time_format_defaults_to_local_am_pm_and_rejects_unknown_ids() {
+        assert_eq!(SettingsSnapshot::default().time_format, "ampm");
+        match serde_json::from_str::<SettingsSnapshot>(r#"{"theme":"light"}"#) {
+            Ok(old) => assert_eq!(old.time_format, "ampm"),
+            Err(e) => panic!("old settings parse: {e}"),
+        }
+        match serde_json::from_str::<SettingsSnapshot>(r#"{"time_format":"military"}"#) {
+            Ok(kept) => assert_eq!(kept.time_format, "military"),
+            Err(e) => panic!("military setting parses: {e}"),
+        }
+        assert_eq!(normalize_time_format("iso"), "iso");
+        assert_eq!(normalize_time_format("24h"), "ampm");
+        assert_eq!(normalize_time_format(""), "ampm");
     }
 
     #[test]

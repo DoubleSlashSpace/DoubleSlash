@@ -53,6 +53,10 @@ ApplicationWindow {
         Theme.fontScale = (100 + p) / 100
     }
 
+    function applyTimeFormat(id) {
+        Theme.timeFormat = Theme.normalizeTimeFormat(id)
+    }
+
     function showFilePreview(path) {
         if (!path || path === "") return
         // FilePreviewPanel requires the webengine feature. Fall back to the
@@ -1486,6 +1490,9 @@ ApplicationWindow {
         function onFont_scale_percentChanged() {
             applyFontScale(settingsModel.font_scale_percent)
         }
+        function onTime_formatChanged() {
+            applyTimeFormat(settingsModel.time_format)
+        }
         // Keep the bridge's applied avatar config in lockstep with settings so
         // every self-avatar site (voice rail, own room messages, …) resolves to
         // the same config as the Settings preview — including after a profile
@@ -1528,6 +1535,7 @@ ApplicationWindow {
         applyThemePreference(settingsModel.theme)
         Theme.applySkinJson(settingsModel.skin_json)
         applyFontScale(settingsModel.font_scale_percent)
+        applyTimeFormat(settingsModel.time_format)
         root.refreshVideoEncoderAvailable()
 
         // Announce the (empty) watched set. Not a no-op: the supernode treats

@@ -550,7 +550,7 @@ Item {
             return "Today"
         if (root.sameCalendarDay(d, yesterday))
             return "Yesterday"
-        return Qt.formatDate(d, "MMM d, yyyy")
+        return Theme.formatChatDate(d)
     }
 
     function dateSeparatorForIndex(idx, ts) {

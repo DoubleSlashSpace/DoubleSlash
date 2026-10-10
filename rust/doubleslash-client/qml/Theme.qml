@@ -174,6 +174,45 @@ QtObject {
     readonly property int fontSizeCaption: Math.max(1, Math.round(11 * fontScale))
     readonly property int fontSizeTitle:   Math.max(1, Math.round(15 * fontScale))
 
+    // Chat stamps. Settings › General owns `timeFormat`. The ids match the
+    // phone. A skin cannot set this. The default is 12-hour with AM/PM;
+    // military is the previous 24-hour stamp.
+    property string timeFormat: "ampm"
+    readonly property var timeFormats: [
+        { "id": "ampm", "label": qsTr("Local, AM/PM"), "date": "MMM d, yyyy", "dateTime": "MMM d, yyyy h:mm AP" },
+        { "id": "military", "label": qsTr("Military, 24-hour"), "date": "MMM d, yyyy", "dateTime": "MMM d, yyyy HH:mm" },
+        { "id": "us", "label": qsTr("United States"), "date": "M/d/yyyy", "dateTime": "M/d/yyyy h:mm AP" },
+        { "id": "uk", "label": qsTr("United Kingdom"), "date": "dd/MM/yyyy", "dateTime": "dd/MM/yyyy HH:mm" },
+        { "id": "eu", "label": qsTr("Europe"), "date": "dd.MM.yyyy", "dateTime": "dd.MM.yyyy HH:mm" },
+        { "id": "iso", "label": qsTr("ISO 8601"), "date": "yyyy-MM-dd", "dateTime": "yyyy-MM-dd HH:mm" },
+        { "id": "east_asia", "label": qsTr("East Asia"), "date": "yyyy/MM/dd", "dateTime": "yyyy/MM/dd HH:mm" }
+    ]
+
+    function normalizeTimeFormat(id) {
+        for (var i = 0; i < timeFormats.length; i++) {
+            if (timeFormats[i].id === id)
+                return id
+        }
+        return "ampm"
+    }
+
+    function timeFormatById(id) {
+        var want = normalizeTimeFormat(id)
+        for (var i = 0; i < timeFormats.length; i++) {
+            if (timeFormats[i].id === want)
+                return timeFormats[i]
+        }
+        return timeFormats[0]
+    }
+
+    function formatChatDate(date) {
+        return Qt.formatDate(date, timeFormatById(timeFormat).date)
+    }
+
+    function formatChatDateTime(date) {
+        return Qt.formatDateTime(date, timeFormatById(timeFormat).dateTime)
+    }
+
     // ── Geometry ──────────────────────────────────────────────────────────────
     // Angular throughout: no rounded corners, circles or pills. Icons are SVG
     // drawn with square ends and mitred corners. Material's round controls

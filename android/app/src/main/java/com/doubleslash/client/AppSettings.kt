@@ -30,6 +30,7 @@ class AppSettings(context: Context) {
         put("theme", theme)
         put("skin", skin)
         put("font_scale_percent", fontScalePercent)
+        put("time_format", timeFormat)
         put("room_list_order", roomListOrderJson)
         put("room_message_alerts", roomMessageAlertsJson(roomMessageAlerts))
     }
@@ -43,6 +44,7 @@ class AppSettings(context: Context) {
         (values["theme"] as? JsonPrimitive)?.contentOrNull?.takeIf { it in listOf(THEME_SYSTEM, THEME_LIGHT, THEME_DARK) }?.let { theme = it }
         (values["skin"] as? JsonPrimitive)?.contentOrNull?.let { skin = it }
         (values["font_scale_percent"] as? JsonPrimitive)?.intOrNull?.let { fontScalePercent = it }
+        (values["time_format"] as? JsonPrimitive)?.contentOrNull?.let { timeFormat = it }
         (values["room_list_order"] as? JsonPrimitive)?.contentOrNull?.let { roomListOrderJson = it }
         (values["room_message_alerts"] as? JsonPrimitive)?.contentOrNull?.let {
             roomMessageAlerts = parseRoomMessageAlerts(it)
@@ -123,6 +125,16 @@ class AppSettings(context: Context) {
             .apply()
 
     /**
+     * Chat date and time layout. Same ids as the desktop `time_format`.
+     * Not part of [skin].
+     */
+    var timeFormat: String
+        get() = DateTimeFormats.normalize(prefs.getString(KEY_TIME_FORMAT, DateTimeFormats.DEFAULT))
+        set(value) = prefs.edit()
+            .putString(KEY_TIME_FORMAT, DateTimeFormats.normalize(value))
+            .apply()
+
+    /**
      * The skin: colour overrides on the theme, as the portable skin JSON the
      * desktop reads too (see `ui/Skin.kt`). Empty means the built-in palette.
      */
@@ -187,6 +199,7 @@ class AppSettings(context: Context) {
         private const val KEY_THEME = "theme"
         private const val KEY_SKIN = "skin"
         private const val KEY_FONT_SCALE = "font_scale_percent"
+        private const val KEY_TIME_FORMAT = "time_format"
         private const val KEY_ROOM_LIST_ORDER = "room_list_order"
         private const val KEY_ROOM_MESSAGE_ALERTS = "room_message_alerts"
         private const val KEY_INPUT_GAIN = "input_gain"

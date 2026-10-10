@@ -1888,6 +1888,37 @@ Item {
                 }
 
                 SettingsCard {
+                    title: qsTr("Date and time")
+                    subtitle: qsTr("Chat times use this computer's clock. Military is the previous 24-hour stamp.")
+
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: 2
+                        columnSpacing: Theme.spacingXl
+                        rowSpacing: Theme.spacingMd
+
+                        Label { text: qsTr("Format"); color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            // String rows, not object roles: a JS object model
+                            // leaves the closed box blank. Each row shows the
+                            // layout against this computer's clock.
+                            model: Theme.timeFormats.map(function (f) {
+                                return f.label + " · " + Qt.formatDateTime(new Date(), f.dateTime)
+                            })
+                            currentIndex: {
+                                var ids = Theme.timeFormats.map(function (f) { return f.id })
+                                return root.indexOf(ids, root.settings ? root.settings.time_format : "ampm", 0)
+                            }
+                            onActivated: {
+                                if (root.settings && currentIndex >= 0)
+                                    root.settings.time_format = Theme.timeFormats[currentIndex].id
+                            }
+                        }
+                    }
+                }
+
+                SettingsCard {
                     title: qsTr("Appearance")
                     subtitle: qsTr("Theme, skin and colours. A skin copied here pastes into the Android app too.")
 

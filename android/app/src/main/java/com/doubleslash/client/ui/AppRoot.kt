@@ -153,8 +153,7 @@ import com.doubleslash.client.TrustOffer
 import androidx.compose.ui.draw.alpha
 import com.doubleslash.client.VideoSize
 import com.doubleslash.client.Screen
-import java.text.DateFormat
-import java.util.Date
+import com.doubleslash.client.DateTimeFormats
 
 @Composable
 fun AppRoot(viewModel: AppViewModel) {
@@ -298,6 +297,7 @@ fun AppRoot(viewModel: AppViewModel) {
                     onSetVoiceActivation = viewModel::setVoiceActivation,
                     onSetTheme = viewModel::setTheme,
                     onSetFontScale = viewModel::setFontScalePercent,
+                    onSetTimeFormat = viewModel::setTimeFormat,
                     onSetAvatarConfig = viewModel::setAvatarConfig,
                     onPreviewAvatar = viewModel::previewAvatar,
                     onPurgeHistory = viewModel::purgeChatHistory,
@@ -330,6 +330,7 @@ fun AppRoot(viewModel: AppViewModel) {
                     fileRetries = state.fileRetries,
                     onRetryFile = viewModel::retryFile,
                     onSendFile = viewModel::sendFile,
+                    timeFormat = state.prefs.timeFormat,
                 )
 
                 is Screen.RoomChat -> RoomChatScreen(
@@ -1614,6 +1615,7 @@ private fun ChatScreen(
     fileRetries: Map<String, String>,
     onRetryFile: (String) -> Unit,
     onSendFile: (android.net.Uri) -> Unit,
+    timeFormat: String,
 ) {
     var draft by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -1683,6 +1685,7 @@ private fun ChatScreen(
                         joinableRoomIds = joinableRoomIds,
                         fileRetries = fileRetries,
                         onRetryFile = onRetryFile,
+                        timeFormat = timeFormat,
                     )
                 }
             }
@@ -1740,6 +1743,7 @@ private fun MessageBubble(
     joinableRoomIds: Set<String>,
     fileRetries: Map<String, String> = emptyMap(),
     onRetryFile: (String) -> Unit = {},
+    timeFormat: String = DateTimeFormats.DEFAULT,
 ) {
     val invite = remember(message.body) { findInviteUrl(message.body) }
     // With the link lifted into the card, a message that was only a link has
@@ -1830,7 +1834,7 @@ private fun MessageBubble(
         val note = if (message.status == "failed") {
             message.statusNote.ifBlank { "not delivered" }
         } else {
-            formatTime(message.timestamp)
+            DateTimeFormats.format(message.timestamp, timeFormat)
         }
         Text(
             note,
@@ -2062,6 +2066,7 @@ private fun RoomChatScreen(
                             joinableRoomIds = joinableRoomIds,
                             fileRetries = fileRetries,
                             onRetryFile = onRetryFile,
+                            timeFormat = state.prefs.timeFormat,
                         )
                     }
                 }
@@ -2168,6 +2173,7 @@ private fun RoomMessageBubble(
     joinableRoomIds: Set<String>,
     fileRetries: Map<String, String> = emptyMap(),
     onRetryFile: (String) -> Unit = {},
+    timeFormat: String = DateTimeFormats.DEFAULT,
 ) {
     val invite = remember(message.body) { findInviteUrl(message.body) }
     val text = if (invite == null) message.body else bodyWithoutInvite(message.body, invite)
@@ -2235,7 +2241,7 @@ private fun RoomMessageBubble(
                 )
             }
             Text(
-                formatTime(message.timestamp),
+                DateTimeFormats.format(message.timestamp, timeFormat),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 4.dp),
@@ -2556,6 +2562,7 @@ private fun SettingsScreen(
     onSetVoiceActivation: (Boolean) -> Unit,
     onSetTheme: (String) -> Unit,
     onSetFontScale: (Int) -> Unit,
+    onSetTimeFormat: (String) -> Unit,
     onSetAvatarConfig: (String) -> Unit,
     onPreviewAvatar: suspend (String) -> AvatarArt?,
     onPurgeHistory: () -> Unit,
@@ -2583,7 +2590,7 @@ private fun SettingsScreen(
     val scope = rememberCoroutineScope()
     // Where each section starts in the scrolling column, for the chips.
     val anchors = remember { mutableStateMapOf<String, Int>() }
-    val sections = listOf("Identity", "Voice", "Text", "Appearance", "Network", "Privacy", "About")
+    val sections = listOf("Identity", "Voice", "Text", "Date", "Appearance", "Network", "Privacy", "About")
 
     @Composable
     fun SectionTitle(name: String) {
@@ -2801,6 +2808,40 @@ private fun SettingsScreen(
                     if (stepped != state.prefs.fontScalePercent) onSetFontScale(stepped)
                 },
             )
+
+            Spacer(Modifier.height(16.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+
+            // ── Date and time ─────────────────────────────────────────────
+            SectionTitle("Date")
+            Text(
+                "Chat times use this phone's clock. Military is the previous 24-hour stamp.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            DateTimeFormats.all.forEach { format ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSetTimeFormat(format.id) }
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(
+                        selected = state.prefs.timeFormat == format.id,
+                        onClick = { onSetTimeFormat(format.id) },
+                    )
+                    Column(Modifier.padding(start = 8.dp)) {
+                        Text(format.label)
+                        Text(
+                            DateTimeFormats.format(System.currentTimeMillis() / 1000.0, format.id),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
 
             Spacer(Modifier.height(16.dp))
             HorizontalDivider()
@@ -3276,11 +3317,6 @@ private fun AcceptInviteDialog(onDismiss: () -> Unit, onAccept: (String) -> Unit
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
-
-// ── Small helpers ──────────────────────────────────────────────────────────
-
-private fun formatTime(epochSeconds: Double): String =
-    DateFormat.getTimeInstance(DateFormat.SHORT).format(Date((epochSeconds * 1000).toLong()))
 
 // ── Jump to current ────────────────────────────────────────────────────────
 
