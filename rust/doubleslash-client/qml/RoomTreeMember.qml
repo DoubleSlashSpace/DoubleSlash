@@ -116,7 +116,7 @@ Item {
     Rectangle {
         anchors.fill: parent
         color: root.expanded ? Theme.semanticTint(Theme.accent, 0.10)
-            : (rowHover.hovered ? Theme.bg2 : "transparent")
+            : (rowHover.hovered ? Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, 0.08) : "transparent")
         Behavior on color { ColorAnimation { duration: Theme.animFast } }
     }
 
