@@ -29,7 +29,7 @@ Rectangle {
             height: Theme.touchTarget
             color: Theme.bg2
 
-            ToolButton {
+            IconButton {
                 id: backButton
                 anchors.left: parent.left
                 anchors.leftMargin: Theme.spacingXs

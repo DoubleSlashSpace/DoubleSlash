@@ -406,6 +406,11 @@ fn build_qt_ui() {
         QmlFile::from("qml/ConnectionStatsChip.qml"),
         QmlFile::from("qml/VoiceDock.qml"),
         QmlFile::from("qml/Avatar.qml"),
+        // Angular stand-ins for Material's round controls.
+        QmlFile::from("qml/IconButton.qml"),
+        QmlFile::from("qml/SquareSwitch.qml"),
+        QmlFile::from("qml/SquareSlider.qml"),
+        QmlFile::from("qml/SquareBusyIndicator.qml"),
     ];
     #[cfg(feature = "webengine")]
     let qml_files: Vec<QmlFile> = {

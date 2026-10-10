@@ -70,7 +70,7 @@ Rectangle {
                 Layout.fillWidth: true
             }
             Rectangle {
-                width: 8; height: 8; radius: Theme.radiusPill
+                width: 8; height: 8
                 color: root.modeColor
             }
             Text {

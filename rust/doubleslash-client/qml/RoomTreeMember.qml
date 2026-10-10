@@ -55,7 +55,6 @@ Item {
     signal localAudioChanged(bool muted, int volume)
     signal messageRequested()
     signal inviteRequested()
-    signal copyIdRequested()
 
     readonly property real visualLevel:
         (!inSession || isMuted) ? 0.0 : Math.max(0.0, Math.min(1.0, audioLevel))
@@ -81,18 +80,54 @@ Item {
 
     readonly property bool canWatch:
         root.inSession && !root.isSelf && (root.videoActive || root.watching)
+    readonly property bool canPopout: root.inSession && !root.isSelf && root.videoActive
+    // Trusted peers can be messaged; anyone else can be offered trust, from a
+    // room we are in. Only one of the two ever shows.
+    readonly property bool canMessage: root.trusted && root.listPeerId !== ""
+    readonly property bool canOfferTrust: !root.trusted && root.canInvite
+    // Decided from the conditions, not the icons' own visibility: a child of a
+    // hidden row reads as hidden, so the row could never turn itself on.
+    readonly property bool hasActionIcons:
+        root.canWatch || root.canPopout || root.canMessage || root.canOfferTrust
 
-    implicitHeight: rowHeight + (root.expanded ? actions.implicitHeight : 0)
+    implicitHeight: rowHeight + (root.expanded ? actions.implicitHeight + Theme.spacingSm : 0)
     clip: true
 
     Behavior on implicitHeight {
         NumberAnimation { duration: Theme.animFast; easing.type: Easing.OutQuad }
     }
 
+    /// One action under an open row: an SVG icon, named by its tooltip.
+    component ActionIcon: IconButton {
+        property string tip: ""
+        implicitWidth: 28
+        implicitHeight: 28
+        padding: 0
+        icon.width: 16
+        icon.height: 16
+        icon.color: Theme.text
+        Accessible.name: tip
+        ToolTip.text: tip
+        ToolTip.visible: hovered
+        ToolTip.delay: 300
+    }
+
     // Open row background, reaching under the actions.
     Rectangle {
         anchors.fill: parent
-        color: root.expanded ? Theme.bg2 : (rowHover.hovered ? Theme.bg2 : "transparent")
+        color: root.expanded ? Theme.semanticTint(Theme.accent, 0.10)
+            : (rowHover.hovered ? Theme.bg2 : "transparent")
+        Behavior on color { ColorAnimation { duration: Theme.animFast } }
+    }
+
+    // Open: an accent edge down the row and its actions, so it is plain which
+    // person the panel belongs to.
+    Rectangle {
+        visible: root.expanded
+        x: root.indent - 4
+        width: 2
+        height: root.height
+        color: Theme.accent
     }
 
     // Tree connectors: ancestor columns run the full height (through the
@@ -172,7 +207,6 @@ Item {
                     anchors.centerIn: parent
                     width: 24 + root.quantizedLevel * 3
                     height: width
-                    radius: width / 2
                     color: "transparent"
                     border.width: 2
                     border.color: root.activityColor
@@ -185,7 +219,7 @@ Item {
                 Rectangle {
                     visible: root.locallyMuted && root.inSession
                     anchors.centerIn: parent
-                    width: 26; height: 26; radius: 13
+                    width: 26; height: 26
                     color: "transparent"
                     border.width: 2
                     border.color: Theme.danger
@@ -195,7 +229,7 @@ Item {
                 Rectangle {
                     visible: root.isMuted && root.inSession
                     anchors { right: parent.right; bottom: parent.bottom; rightMargin: -2; bottomMargin: -2 }
-                    width: 12; height: 12; radius: 6
+                    width: 12; height: 12
                     color: Theme.danger
 
                     Image {
@@ -213,7 +247,7 @@ Item {
                 text: root.label
                 color: root.trusted || root.isSelf ? Theme.text : Theme.muted
                 font.pixelSize: Theme.fontSizeCaption + 1
-                font.bold: root.speaking
+                font.bold: root.speaking || root.expanded
                 // Not someone we trust: the name is only what the room says.
                 font.italic: !root.trusted && !root.isSelf
                 elide: Text.ElideRight
@@ -225,7 +259,6 @@ Item {
                 Layout.preferredWidth: 20
                 Layout.preferredHeight: 20
                 Layout.alignment: Qt.AlignVCenter
-                radius: 10
                 color: root.watching ? Theme.accent : "transparent"
                 border.color: Theme.accent
                 border.width: 1
@@ -256,94 +289,146 @@ Item {
                 ToolTip.visible: videoArea.containsMouse
                 ToolTip.delay: 300
             }
+
+            // Expand state: points right while shut, down while open. Shown
+            // on hover too, so a row reads as something that opens.
+            Image {
+                visible: !root.isSelf
+                source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
+                sourceSize.width: 20; sourceSize.height: 20
+                Layout.preferredWidth: 10
+                Layout.preferredHeight: 10
+                Layout.alignment: Qt.AlignVCenter
+                Layout.rightMargin: 2
+                rotation: root.expanded ? 90 : 0
+                opacity: root.expanded ? 1.0 : (rowHover.hovered ? 0.7 : 0.0)
+                Behavior on rotation { NumberAnimation { duration: Theme.animFast } }
+                Behavior on opacity { NumberAnimation { duration: Theme.animFast } }
+            }
         }
     }
 
     // ── Actions, under the row ──────────────────────────────────────────────
-    ColumnLayout {
+    // A framed panel: the volume first, for someone whose voice reaches us
+    // through this session, then one icon per action, named by its tooltip.
+    Rectangle {
         id: actions
         x: root.indent + 30
         y: root.rowHeight
         width: root.width - x - Theme.spacingSm
-        spacing: Theme.spacingXs
+        implicitHeight: actionColumn.implicitHeight + Theme.spacingXs * 2
         visible: root.expanded
+        color: Theme.bg1
+        border.width: 1
+        border.color: Theme.divider
 
-        // Volume, for someone whose voice reaches us through this session.
-        RowLayout {
-            visible: root.inSession && !root.isSelf
-            Layout.fillWidth: true
-            Layout.topMargin: 2
-            spacing: Theme.spacingXs
+        ColumnLayout {
+            id: actionColumn
+            anchors {
+                left: parent.left
+                right: parent.right
+                top: parent.top
+                margins: Theme.spacingXs
+            }
+            spacing: 2
 
-            Image {
-                source: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
-                sourceSize.width: 12; sourceSize.height: 12
-                Layout.preferredWidth: 12
-                Layout.preferredHeight: 12
-                Layout.alignment: Qt.AlignVCenter
-                opacity: 0.8
-            }
-            Slider {
-                id: volumeSlider
-                Layout.fillWidth: true
-                Layout.preferredHeight: 24
-                from: 0; to: 200; stepSize: 5
-                value: root.locallyMuted ? 0 : root.localVolume
-                // Moving it off zero unmutes, so the slider and the mute never
-                // disagree about whether you can hear them.
-                onMoved: root.localAudioChanged(value === 0, Math.round(value))
-                Accessible.name: qsTr("Volume for %1").arg(root.label)
-            }
-            Text {
-                text: Math.round(volumeSlider.value) + "%"
-                color: Theme.muted
-                font.pixelSize: Theme.fontSizeMicro + 1
-                Layout.preferredWidth: 30
-                horizontalAlignment: Text.AlignRight
-            }
-        }
-
-        Flow {
-            Layout.fillWidth: true
-            Layout.bottomMargin: Theme.spacingSm
-            spacing: Theme.spacingXs
-
-            StyledButton {
-                visible: root.canWatch
-                primary: !root.watching
-                text: root.watching ? qsTr("Stop watching") : qsTr("Watch video")
-                onClicked: root.watchToggled()
-            }
-            StyledButton {
-                visible: root.inSession && !root.isSelf && root.videoActive
-                text: qsTr("Pop out")
-                onClicked: root.popoutRequested()
-            }
-            StyledButton {
+            RowLayout {
                 visible: root.inSession && !root.isSelf
-                text: root.locallyMuted ? qsTr("Unmute for me") : qsTr("Mute for me")
-                onClicked: root.localAudioChanged(!root.locallyMuted,
-                    root.localVolume > 0 ? root.localVolume : 100)
+                Layout.fillWidth: true
+                spacing: Theme.spacingXs
+
+                // Mute for me, beside the volume it zeroes.
+                ActionIcon {
+                    icon.source: root.locallyMuted
+                        ? "qrc:/qt/qml/DoubleSlash/Client/icons/speaker-off.svg"
+                        : "qrc:/qt/qml/DoubleSlash/Client/icons/speaker.svg"
+                    icon.color: root.locallyMuted ? Theme.danger : Theme.text
+                    checked: root.locallyMuted
+                    tip: root.locallyMuted ? qsTr("Unmute for me") : qsTr("Mute for me")
+                    onClicked: root.localAudioChanged(!root.locallyMuted,
+                        root.localVolume > 0 ? root.localVolume : 100)
+                }
+                SquareSlider {
+                    id: volumeSlider
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 24
+                    from: 0; to: 200; stepSize: 5
+                    value: root.locallyMuted ? 0 : root.localVolume
+                    // Moving it off zero unmutes, so the slider and the mute never
+                    // disagree about whether you can hear them.
+                    onMoved: root.localAudioChanged(value === 0, Math.round(value))
+                    Accessible.name: qsTr("Volume for %1").arg(root.label)
+                }
+                Text {
+                    text: Math.round(volumeSlider.value) + "%"
+                    color: Theme.muted
+                    font.pixelSize: Theme.fontSizeMicro + 1
+                    Layout.preferredWidth: 30
+                    horizontalAlignment: Text.AlignRight
+                }
             }
-            // Trusted peers can be messaged; anyone else can be offered trust,
-            // from a room we are in. Only one of the two ever shows.
-            StyledButton {
-                visible: root.trusted && root.listPeerId !== ""
-                text: qsTr("Message")
-                onClicked: root.messageRequested()
+
+            Row {
+                id: actionIcons
+                // Nothing to do here when every action is hidden, e.g. an
+                // untrusted member of a room we are not in.
+                visible: root.hasActionIcons
+                spacing: 2
+
+                ActionIcon {
+                    id: watchIcon
+                    visible: root.canWatch
+                    icon.source: root.watching
+                        ? "qrc:/qt/qml/DoubleSlash/Client/icons/video-off.svg"
+                        : "qrc:/qt/qml/DoubleSlash/Client/icons/video.svg"
+                    icon.color: root.watching ? Theme.text : Theme.accent
+                    checked: root.watching
+                    tip: root.watching ? qsTr("Stop watching") : qsTr("Watch video")
+                    onClicked: root.watchToggled()
+                }
+                ActionIcon {
+                    id: popoutIcon
+                    visible: root.canPopout
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/popout.svg"
+                    tip: qsTr("Pop out video")
+                    onClicked: root.popoutRequested()
+                }
+                // Trusted peers can be messaged; anyone else can be offered
+                // trust, from a room we are in. Only one of the two ever shows.
+                ActionIcon {
+                    id: messageIcon
+                    visible: root.canMessage
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
+                    tip: qsTr("Message")
+                    onClicked: root.messageRequested()
+                }
+                ActionIcon {
+                    id: inviteIcon
+                    visible: root.canOfferTrust
+                    enabled: root.inviteState === ""
+                    icon.source: root.inviteState === "sent"
+                        ? "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg"
+                        : "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
+                    icon.color: root.inviteState === "" ? Theme.accent : Theme.muted
+                    tip: root.inviteState === "sent" ? qsTr("Invite sent")
+                        : root.inviteState === "pending" ? qsTr("Sending invite…")
+                        : qsTr("Invite to trusted peers")
+                    // A disabled button shows no tooltip of its own; say why here.
+                    ToolTip.visible: hovered || (inviteHover.hovered && !enabled)
+                    HoverHandler { id: inviteHover }
+                    onClicked: root.inviteRequested()
+                }
             }
-            StyledButton {
-                visible: !root.trusted && root.canInvite
-                primary: root.inviteState === ""
-                enabled: root.inviteState === ""
-                text: root.inviteState === "sent" ? qsTr("Invite sent")
-                    : root.inviteState === "pending" ? qsTr("Sending invite…")
-                    : qsTr("Invite to trusted peers")
-                onClicked: root.inviteRequested()
-            }
-            StyledButton {
-                text: qsTr("Copy peer ID")
-                onClicked: root.copyIdRequested()
+
+            // Nothing applies: say so rather than open an empty panel.
+            Text {
+                visible: !root.hasActionIcons && !(root.inSession && !root.isSelf)
+                Layout.fillWidth: true
+                Layout.margins: Theme.spacingXs
+                text: qsTr("Open this room to offer them trust.")
+                color: Theme.muted
+                font.pixelSize: Theme.fontSizeCaption
+                wrapMode: Text.WordWrap
             }
         }
     }

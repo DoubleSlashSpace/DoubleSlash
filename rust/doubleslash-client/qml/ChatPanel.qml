@@ -173,7 +173,7 @@ Item {
                     onToggleExpanded: root._statsPanelOpen = !root._statsPanelOpen
                 }
 
-                ToolButton {
+                IconButton {
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/search.svg"
                     icon.width: 18
                     icon.height: 18
@@ -238,7 +238,7 @@ Item {
                     font.pixelSize: Theme.fontSizeCaption
                 }
 
-                ToolButton {
+                IconButton {
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                     icon.width: 12
                     icon.height: 12
@@ -462,7 +462,7 @@ Item {
                             root.aiStreaming = false
                         }
                     }
-                    ToolButton {
+                    IconButton {
                         icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                         icon.width: 12
                         icon.height: 12
@@ -506,7 +506,7 @@ Item {
         }
 
         RichChatComposer {
-            Layout.margins: Theme.spacingSm
+            Layout.margins: Theme.barMargin
             targetName: root.selectedPeerName || root.selectedPeerId
             enabledForTarget: root.selectedPeerId !== ""
             fileTransferEnabled: !root.selfChat

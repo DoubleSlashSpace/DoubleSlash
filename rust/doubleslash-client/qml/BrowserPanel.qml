@@ -67,7 +67,7 @@ Item {
             }
             spacing: Theme.spacingXs
 
-            ToolButton {
+            IconButton {
                 id: _backBtn
                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/connect.svg"
                 icon.width: 14
@@ -82,7 +82,7 @@ Item {
                 ToolTip.visible: hovered
             }
 
-            ToolButton {
+            IconButton {
                 id: _fwdBtn
                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/send.svg"
                 icon.width: 14
@@ -97,7 +97,7 @@ Item {
                 ToolTip.visible: hovered
             }
 
-            ToolButton {
+            IconButton {
                 id: _reloadBtn
                 icon.source: _webView.loading
                     ? "qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg"
@@ -133,7 +133,7 @@ Item {
                 }
             }
 
-            ToolButton {
+            IconButton {
                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
                 icon.width: 14
                 icon.height: 14
@@ -197,7 +197,7 @@ Item {
                 color: Theme.muted
                 font.pixelSize: Theme.fontSizeCaption
             }
-            ToolButton {
+            IconButton {
                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                 icon.width: 12
                 icon.height: 12

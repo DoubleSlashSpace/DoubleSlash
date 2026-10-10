@@ -49,11 +49,9 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.layout
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -1000,7 +998,6 @@ private fun LeafRow(row: TreeRow.Leaf, fold: TreeFold, actions: RoomTreeActions)
 @Composable
 private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, actions: RoomTreeActions) {
     val ds = LocalDsColors.current
-    val clipboard = LocalClipboardManager.current
     val key = row.id.videoKey()
     val isSelf = key == state.identity.publicId.videoKey()
     val trusted = state.trustedPeer(row.id)
@@ -1164,7 +1161,6 @@ private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, acti
                             enabled = inviteState.isEmpty(),
                         ) { actions.members.onInvite(row.room.roomId, row.id) }
                     }
-                    ActionButton("Copy ID") { clipboard.setText(AnnotatedString(row.id)) }
                 }
             }
         }

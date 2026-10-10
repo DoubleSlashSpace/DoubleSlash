@@ -199,7 +199,7 @@ Dialog {
                 }
             }
 
-            Switch {
+            SquareSwitch {
                 id: privateSwitch
                 checked: false
             }
@@ -237,7 +237,7 @@ Dialog {
                 }
             }
 
-            Switch {
+            SquareSwitch {
                 id: membersCanInviteSwitch
                 checked: false
             }

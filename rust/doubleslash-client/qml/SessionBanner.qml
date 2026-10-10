@@ -38,7 +38,7 @@ Rectangle {
 
         // Status dot
         Rectangle {
-            width: 7; height: 7; radius: 3.5
+            width: 7; height: 7
             color: root._dotColor
             Behavior on color { ColorAnimation { duration: Theme.animSlow } }
         }

@@ -132,7 +132,7 @@ Item {
                     elide: Text.ElideMiddle
                 }
 
-                ToolButton {
+                IconButton {
                     visible: root._selectedFilePath !== ""
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                     icon.width: 14

@@ -20,7 +20,7 @@ Rectangle {
     property bool aiStreaming: false
 
     Layout.fillWidth: true
-    implicitHeight: composerLayout.implicitHeight + Theme.spacingMd
+    implicitHeight: composerLayout.implicitHeight + Theme.barPadding * 2
     color: Theme.bg3
     radius: Theme.radiusMd
 
@@ -63,102 +63,120 @@ Rectangle {
         onAccepted: root.sendFile(selectedFile.toString())
     }
 
+    /// One formatting control. Square at the control height, so it grows with
+    /// the font-size setting along with its label.
+    component FormatButton: IconButton {
+        property string tip: ""
+        enabled: root.enabledForTarget
+        flat: true
+        implicitWidth: Theme.barTopRowHeight
+        implicitHeight: Theme.barTopRowHeight
+        padding: 0
+        font.pixelSize: Theme.fontSizeTitle
+        icon.width: 18
+        icon.height: 18
+        icon.color: Theme.muted
+        Material.foreground: Theme.muted
+        Accessible.name: tip
+        ToolTip.text: tip
+        ToolTip.visible: hovered
+    }
+
+    /// The input row's actions: attach on the left, send on the right.
+    component ActionButton: IconButton {
+        property string tip: ""
+        flat: true
+        implicitWidth: Theme.barActionSize
+        implicitHeight: Theme.barActionSize
+        padding: 0
+        icon.width: 20
+        icon.height: 20
+        Layout.alignment: Qt.AlignBottom
+        Accessible.name: tip
+        ToolTip.text: tip
+        ToolTip.visible: hovered
+    }
+
     ColumnLayout {
         id: composerLayout
         anchors.fill: parent
-        anchors.margins: Theme.spacingSm
-        spacing: Theme.spacingXs
+        anchors.margins: Theme.barPadding
+        spacing: Theme.barRowGap
 
         RowLayout {
             Layout.fillWidth: true
             spacing: 2
 
-            ToolButton {
+            FormatButton {
                 text: "B"
-                enabled: root.enabledForTarget
-                flat: true
                 font.bold: true
-                implicitWidth: 28
-                implicitHeight: 24
-                ToolTip.text: "Bold"
-                ToolTip.visible: hovered
+                tip: "Bold"
                 onClicked: root.wrapSelection("**", "**")
             }
-            ToolButton {
+            FormatButton {
                 text: "I"
-                enabled: root.enabledForTarget
-                flat: true
                 font.italic: true
-                implicitWidth: 28
-                implicitHeight: 24
-                ToolTip.text: "Italic"
-                ToolTip.visible: hovered
+                tip: "Italic"
                 onClicked: root.wrapSelection("*", "*")
             }
-            ToolButton {
+            FormatButton {
                 text: "U"
-                enabled: root.enabledForTarget
-                flat: true
                 font.underline: true
-                implicitWidth: 28
-                implicitHeight: 24
-                ToolTip.text: "Underline"
-                ToolTip.visible: hovered
+                tip: "Underline"
                 onClicked: root.wrapSelection("__", "__")
             }
-            ToolButton {
+            FormatButton {
                 text: "</>"
-                enabled: root.enabledForTarget
-                flat: true
-                implicitWidth: 36
-                implicitHeight: 24
-                ToolTip.text: "Code"
-                ToolTip.visible: hovered
+                implicitWidth: Theme.barTopRowHeight + Theme.spacingSm
+                font.pixelSize: Theme.fontSizeBody
+                font.bold: true
+                tip: "Code"
                 onClicked: root.wrapSelection("`", "`")
             }
-            ToolButton {
+
+            Rectangle {
+                Layout.preferredWidth: 1
+                Layout.preferredHeight: Theme.barTopRowHeight - Theme.spacingSm * 2
+                Layout.leftMargin: Theme.spacingXs
+                Layout.rightMargin: Theme.spacingXs
+                color: Theme.muted
+                opacity: 0.35
+            }
+
+            FormatButton {
                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/chain.svg"
-                icon.width: 14
-                icon.height: 14
-                icon.color: Theme.muted
-                enabled: root.enabledForTarget
-                flat: true
-                implicitWidth: 28
-                implicitHeight: 24
-                ToolTip.text: "Link"
-                ToolTip.visible: hovered
+                tip: "Link"
                 onClicked: root.insertLink()
             }
 
             Item { Layout.fillWidth: true }
-
-            ToolButton {
-                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/attach.svg"
-                icon.width: 16
-                icon.height: 16
-                enabled: root.enabledForTarget && root.fileTransferEnabled
-                flat: true
-                implicitWidth: 32
-                implicitHeight: 24
-                ToolTip.text: root.fileTransferEnabled ? root.fileTransferTooltip : "Room file transfer is not available yet"
-                ToolTip.visible: hovered
-                onClicked: fileDialog.open()
-            }
         }
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: 8
+            spacing: Theme.spacingXs
+
+            ActionButton {
+                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/attach.svg"
+                icon.color: enabled ? Theme.text : Theme.muted
+                enabled: root.enabledForTarget && root.fileTransferEnabled
+                tip: root.fileTransferEnabled ? root.fileTransferTooltip : "Room file transfer is not available yet"
+                onClicked: fileDialog.open()
+            }
 
             Item {
                 Layout.fillWidth: true
-                Layout.preferredHeight: Math.min(92, Math.max(34, composer.implicitHeight))
+                Layout.preferredHeight: Math.min(92, Math.max(Theme.barActionSize, composer.implicitHeight))
 
                 TextArea {
                     id: composer
                     anchors.fill: parent
                     enabled: root.enabledForTarget
                     background: Item {}
+                    // The attach button already sets the text off from the
+                    // edge; Material's own inset left a wide gap after it.
+                    leftPadding: Theme.spacingXs
+                    rightPadding: Theme.spacingXs
                     color: Theme.text
                     wrapMode: TextEdit.Wrap
                     selectByMouse: true
@@ -185,21 +203,16 @@ Rectangle {
                 }
             }
 
-            ToolButton {
+            ActionButton {
                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/send.svg"
-                icon.width: 16
-                icon.height: 16
-                icon.color: composer.text.trim() !== "" && root.enabledForTarget ? Theme.accent : Theme.muted
+                icon.color: enabled ? Theme.accent : Theme.muted
                 enabled: composer.text.trim() !== "" && root.enabledForTarget
-                flat: true
-                implicitWidth: 32
-                implicitHeight: 32
-                ToolTip.text: "Send"
-                ToolTip.visible: hovered
+                tip: "Send"
                 onClicked: root.submit()
             }
 
             Button {
+                Layout.alignment: Qt.AlignBottom
                 text: root.aiStreaming ? "..." : "AI"
                 visible: root.aiEnabled
                 enabled: !root.aiStreaming

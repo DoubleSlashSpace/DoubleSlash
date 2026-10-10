@@ -29,7 +29,6 @@ Rectangle {
         Rectangle {
             width: 10
             height: 10
-            radius: Theme.radiusPill
               color: root.callState === "in_call" ? Theme.online
                   : root.callState === "connecting" ? Theme.warn
                   : Theme.danger
@@ -59,7 +58,7 @@ Rectangle {
             }
         }
 
-        ToolButton {
+        IconButton {
             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg"
             icon.width: 16
             icon.height: 16

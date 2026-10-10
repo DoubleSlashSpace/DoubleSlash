@@ -370,9 +370,6 @@ pub fn build_avatar_svg(peer_id: &str, config: &AvatarConfig) -> String {
         "#2B2D31".to_owned()
     };
 
-    // Clip-path border-radius: 18% of grid units (matches canvas `width * 0.18`).
-    let corner_r = grid as f32 * 0.18;
-
     // SVG root attributes.
     let sr = if config.svg_crisp {
         "crispEdges"
@@ -387,8 +384,10 @@ pub fn build_avatar_svg(peer_id: &str, config: &AvatarConfig) -> String {
     let cap = 128 + grid * grid * 80;
     let mut svg = String::with_capacity(cap);
 
+    // Square corners: the UI is angular throughout. The clip still bounds the
+    // crisp-edge overshoot of the outermost cells to the grid.
     svg.push_str(&format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{grid}" height="{grid}" viewBox="0 0 {grid} {grid}" shape-rendering="{sr}"><defs><clipPath id="ac"><rect width="{grid}" height="{grid}" rx="{corner_r:.2}" ry="{corner_r:.2}"/></clipPath></defs><g clip-path="url(#ac)"><rect width="{grid}" height="{grid}" fill="{bg_fill}"/>"#,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{grid}" height="{grid}" viewBox="0 0 {grid} {grid}" shape-rendering="{sr}"><defs><clipPath id="ac"><rect width="{grid}" height="{grid}"/></clipPath></defs><g clip-path="url(#ac)"><rect width="{grid}" height="{grid}" fill="{bg_fill}"/>"#,
     ));
 
     for row in 0..grid {

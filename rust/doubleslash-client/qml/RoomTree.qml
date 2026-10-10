@@ -460,8 +460,7 @@ QtObject {
                 row_kind: "group", group: group, key: key,
                 room_id: room.room_id, room_name: room.name || room.room_id,
                 count: members.length, expanded: expanded,
-                guide_cols: codes(pass, isLast),
-                show_join: group === "voice" && !isSession && connected
+                guide_cols: codes(pass, isLast)
             })
             if (!expanded)
                 return
@@ -543,6 +542,9 @@ QtObject {
                 item.stack_ids = stack
                 item.subtree_voice = own.length
                 item.room_chat = isCollapsed && text ? text.length : 0
+                // The call icon on the row: joining is explicit, not only a
+                // double-click. Not while we are already in this voice room.
+                item.show_call = connected && !isVoice
                 out.push(item)
             }
             var childPass = depth > 0 ? pass.concat([!isLast]) : []

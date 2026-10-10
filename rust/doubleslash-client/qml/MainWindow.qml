@@ -32,6 +32,9 @@ ApplicationWindow {
     // The skin's accent, so Material controls (switches, sliders, focus
     // lines) follow a custom colour rather than a fixed blue.
     Material.accent: Theme.accent
+    // Square corners on Material's buttons, combo boxes, menus, popups and
+    // dialogs: the UI is angular throughout. Inherited by every child.
+    Material.roundedScale: Material.NotRounded
 
     function applyThemePreference(value) {
         var useDark = true
@@ -1018,7 +1021,7 @@ ApplicationWindow {
 
         // Discord-style update affordance: present but unobtrusive until a
         // release is ready. The installer owns shutdown, install, and relaunch.
-        ToolButton {
+        IconButton {
             id: updateIndicator
             visible: tag !== ""
             Layout.preferredWidth: 30
@@ -1036,7 +1039,6 @@ ApplicationWindow {
             icon.color: Theme.textInv
 
             background: Rectangle {
-                radius: Theme.radiusPill
                 color: updateIndicator.errorMessage !== ""
                     ? Theme.danger
                     : Theme.online
@@ -1059,7 +1061,7 @@ ApplicationWindow {
                     height: 18
                     fillMode: Image.PreserveAspectFit
                 }
-                BusyIndicator {
+                SquareBusyIndicator {
                     anchors.centerIn: parent
                     width: 20
                     height: 20
@@ -2212,7 +2214,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.margins: Theme.spacingXs
                 spacing: Theme.spacingXs
-                ToolButton {
+                IconButton {
                     icon.source: root.sidebarTab === 1 ? "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg" : "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
                     icon.color: Theme.text
                     icon.width: 18; icon.height: 18
@@ -2224,7 +2226,7 @@ ApplicationWindow {
                     onClicked: root.sidebarTab === 1 ? createRoomDialog.openNew() : newInviteBtn.clicked()
                     enabled: root.sidebarTab === 0 || nodeListModel.count > 0
                 }
-                ToolButton {
+                IconButton {
                     id: hiddenToggle
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/eye.svg"
                     icon.color: Theme.text
@@ -2251,7 +2253,7 @@ ApplicationWindow {
                         font.pixelSize: Math.max(1, Math.round(10 * Theme.fontScale))
                     }
                 }
-                ToolButton {
+                IconButton {
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/sort.svg"
                     icon.color: Theme.text
                     icon.width: 18; icon.height: 18
@@ -2265,40 +2267,54 @@ ApplicationWindow {
                         id: roomSortMenu
                         title: qsTr("Sort rooms")
 
+                        /// The SVG check beside the mode in use, or no icon.
                         function mark(mode) {
-                            return RoomTree.sortMode(root.roomListOrder) === mode ? "\u2713  " : ""
+                            return RoomTree.sortMode(root.roomListOrder) === mode
+                                ? "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg" : ""
                         }
 
                         MenuItem {
-                            text: roomSortMenu.mark("name_asc") + qsTr("Name (A\u2013Z)")
+                            text: qsTr("Name (A\u2013Z)")
+                            icon.source: roomSortMenu.mark("name_asc")
                             onTriggered: root.setRoomSort("name_asc")
                         }
                         MenuItem {
-                            text: roomSortMenu.mark("name_desc") + qsTr("Name (Z\u2013A)")
+                            text: qsTr("Name (Z\u2013A)")
+                            icon.source: roomSortMenu.mark("name_desc")
                             onTriggered: root.setRoomSort("name_desc")
                         }
                         MenuItem {
-                            text: roomSortMenu.mark("peers_asc") + qsTr("Fewest people")
+                            text: qsTr("Fewest people")
+                            icon.source: roomSortMenu.mark("peers_asc")
                             onTriggered: root.setRoomSort("peers_asc")
                         }
                         MenuItem {
-                            text: roomSortMenu.mark("peers_desc") + qsTr("Most people")
+                            text: qsTr("Most people")
+                            icon.source: roomSortMenu.mark("peers_desc")
                             onTriggered: root.setRoomSort("peers_desc")
                         }
                         MenuItem {
-                            text: roomSortMenu.mark("manual") + qsTr("Manual order")
+                            text: qsTr("Manual order")
+                            icon.source: roomSortMenu.mark("manual")
                             onTriggered: root.setRoomSort("manual")
                         }
                     }
                     Menu {
                         id: peerSortMenu
-                        MenuItem { text: qsTr("Name (A\u2013Z)"); onTriggered: { peerList.sortMode = "name_asc"; peerModel.setSortMode("name_asc") } }
-                        MenuItem { text: qsTr("Name (Z\u2013A)"); onTriggered: { peerList.sortMode = "name_desc"; peerModel.setSortMode("name_desc") } }
-                        MenuItem { text: qsTr("Online first"); onTriggered: { peerList.sortMode = "online"; peerModel.setSortMode("online") } }
+
+                        /// The SVG check beside the mode in use, as in the room sort.
+                        function mark(mode) {
+                            return peerList.sortMode === mode
+                                ? "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg" : ""
+                        }
+
+                        MenuItem { text: qsTr("Name (A\u2013Z)"); icon.source: peerSortMenu.mark("name_asc"); onTriggered: { peerList.sortMode = "name_asc"; peerModel.setSortMode("name_asc") } }
+                        MenuItem { text: qsTr("Name (Z\u2013A)"); icon.source: peerSortMenu.mark("name_desc"); onTriggered: { peerList.sortMode = "name_desc"; peerModel.setSortMode("name_desc") } }
+                        MenuItem { text: qsTr("Online first"); icon.source: peerSortMenu.mark("online"); onTriggered: { peerList.sortMode = "online"; peerModel.setSortMode("online") } }
                     }
                 }
                 Item { Layout.fillWidth: true }
-                ToolButton {
+                IconButton {
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
                     icon.color: Theme.text
                     icon.width: 18; icon.height: 18
@@ -2378,6 +2394,7 @@ ApplicationWindow {
 
                         MenuItem {
                             text: qsTr("Join Voice Room")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
                             onTriggered: {
                                 roomPanel.switchToRoom(
                                     roomContextMenu.targetRoomName,
@@ -2394,6 +2411,7 @@ ApplicationWindow {
                         }
                         MenuItem {
                             text: qsTr("Copy Room Invite")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
                             onTriggered: {
                                 var url = backend.generateRoomInvite(
                                     roomContextMenu.targetSupernodeId,
@@ -2416,6 +2434,7 @@ ApplicationWindow {
                         Menu {
                             id: inviteContactMenu
                             title: qsTr("Invite Contact to Room")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
                             enabled: contactInviteInstantiator.count > 0
                             Instantiator {
                                 id: contactInviteInstantiator
@@ -2446,6 +2465,7 @@ ApplicationWindow {
                         MenuSeparator {}
                         MenuItem {
                             text: qsTr("Create Public Sub-room…")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
                             onTriggered: createRoomDialog.openForParent(
                                 roomContextMenu.targetSupernodeId,
                                 "public",
@@ -2454,6 +2474,7 @@ ApplicationWindow {
                         }
                         MenuItem {
                             text: qsTr("Create Private Sub-room…")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg"
                             onTriggered: createRoomDialog.openForParent(
                                 roomContextMenu.targetSupernodeId,
                                 "private",
@@ -2465,11 +2486,13 @@ ApplicationWindow {
                             text: roomContextMenu.targetPinned
                                 ? qsTr("Stop keeping at top")
                                 : qsTr("Keep at top")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/pin.svg"
                             onTriggered: root.commitRoomOrder(
                                 RoomTree.togglePin(root.roomListOrder, roomContextMenu.targetKey))
                         }
                         MenuItem {
                             text: qsTr("Move up")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/arrow-up.svg"
                             visible: roomContextMenu.targetManual || roomContextMenu.targetPinned
                             height: visible ? implicitHeight : 0
                             enabled: RoomTree.canMove(
@@ -2487,6 +2510,7 @@ ApplicationWindow {
                         }
                         MenuItem {
                             text: qsTr("Move down")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/arrow-down.svg"
                             visible: roomContextMenu.targetManual || roomContextMenu.targetPinned
                             height: visible ? implicitHeight : 0
                             enabled: RoomTree.canMove(
@@ -2506,6 +2530,9 @@ ApplicationWindow {
                             text: roomContextMenu.targetAlerts
                                 ? qsTr("Mute message alerts")
                                 : qsTr("Enable message alerts")
+                            icon.source: roomContextMenu.targetAlerts
+                                ? "qrc:/qt/qml/DoubleSlash/Client/icons/bell-off.svg"
+                                : "qrc:/qt/qml/DoubleSlash/Client/icons/bell.svg"
                             onTriggered: root.setRoomMessageAlerts(
                                 roomContextMenu.targetRoomId,
                                 !roomContextMenu.targetAlerts)
@@ -2517,6 +2544,9 @@ ApplicationWindow {
                             text: roomContextMenu.targetHidden
                                 ? qsTr("Show in list")
                                 : qsTr("Hide Room")
+                            icon.source: roomContextMenu.targetHidden
+                                ? "qrc:/qt/qml/DoubleSlash/Client/icons/eye.svg"
+                                : "qrc:/qt/qml/DoubleSlash/Client/icons/eye-off.svg"
                             visible: roomContextMenu.targetCanRemove
                             onTriggered: {
                                 if (roomContextMenu.targetHidden)
@@ -2723,9 +2753,17 @@ ApplicationWindow {
                                                     // Expand/collapse: an SVG caret rotated in
                                                     // place, so it never depends on the UI font.
                                                     Item {
-                                                        Layout.preferredWidth: 16
-                                                        Layout.preferredHeight: 16
+                                                        Layout.preferredWidth: 18
+                                                        Layout.preferredHeight: 18
                                                         Layout.alignment: Qt.AlignVCenter
+
+                                                        // A square behind the caret on hover,
+                                                        // so it reads as its own control.
+                                                        Rectangle {
+                                                            anchors.fill: parent
+                                                            visible: row.has_children && caretArea.containsMouse
+                                                            color: Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, 0.12)
+                                                        }
 
                                                         Image {
                                                             anchors.centerIn: parent
@@ -2738,15 +2776,19 @@ ApplicationWindow {
                                                             visible: row.has_children
                                                             source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
                                                             rotation: row.collapsed ? 0 : 90
+                                                            // Open reads at full strength, folded recedes.
+                                                            opacity: row.collapsed ? 0.6 : 1.0
                                                             Behavior on rotation {
                                                                 NumberAnimation { duration: Theme.animNormal }
                                                             }
                                                         }
 
                                                         MouseArea {
+                                                            id: caretArea
                                                             anchors.fill: parent
                                                             anchors.margins: -4
                                                             enabled: row.has_children
+                                                            hoverEnabled: true
                                                             cursorShape: Qt.PointingHandCursor
                                                             onClicked: root.toggleRoomCollapse(
                                                                 roomGroup.node_id, row.room_id)
@@ -2780,7 +2822,6 @@ ApplicationWindow {
                                                         visible: root.roomUnreadCount(row.room_id) > 0
                                                         width: Math.max(20, roomUnreadText.implicitWidth + 8)
                                                         height: Math.max(20, roomUnreadText.implicitHeight + 4)
-                                                        radius: Theme.radiusPill
                                                         color: Theme.danger
                                                         Layout.alignment: Qt.AlignVCenter
 
@@ -2856,6 +2897,26 @@ ApplicationWindow {
                                                         active: true
                                                         tip: qsTr("In text only")
                                                     }
+
+                                                    // Join voice, explicitly. A double-click on
+                                                    // the row still does the same.
+                                                    IconButton {
+                                                        visible: row.show_call === true
+                                                        implicitWidth: 24
+                                                        implicitHeight: 24
+                                                        padding: 0
+                                                        Layout.alignment: Qt.AlignVCenter
+                                                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
+                                                        icon.width: 14
+                                                        icon.height: 14
+                                                        icon.color: hovered ? Theme.online : Theme.muted
+                                                        Accessible.name: qsTr("Join voice")
+                                                        ToolTip.text: qsTr("Join voice — or double-click the room")
+                                                        ToolTip.visible: hovered
+                                                        ToolTip.delay: 400
+                                                        onClicked: root.joinVoiceFromTree(
+                                                            roomGroup.node_id, row.room_id, roomDelegate.roomName)
+                                                    }
                                                 }
                                             }
                                         }
@@ -2909,11 +2970,16 @@ ApplicationWindow {
                                                                     sourceSize.width: 16; sourceSize.height: 16
                                                                     source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
                                                                     rotation: row.expanded ? 90 : 0
-                                                                    opacity: 0.8
+                                                                    opacity: row.expanded ? 1.0 : 0.6
+                                                                    Behavior on rotation {
+                                                                        NumberAnimation { duration: Theme.animFast }
+                                                                    }
                                                                 }
                                                             }
                                                             Image {
                                                                 id: leafIcon
+                                                                // A folded list recedes; an open one reads in full.
+                                                                opacity: row.expanded ? 1.0 : 0.6
                                                                 source: groupRow.isVoice
                                                                     ? "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
                                                                     : "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
@@ -2929,7 +2995,8 @@ ApplicationWindow {
                                                             }
                                                             Text {
                                                                 text: row.count
-                                                                color: Theme.muted
+                                                                color: row.expanded ? Theme.text : Theme.muted
+                                                                font.bold: row.expanded
                                                                 font.pixelSize: Theme.fontSizeCaption
                                                             }
                                                             Item { Layout.fillWidth: true }
@@ -2939,34 +3006,6 @@ ApplicationWindow {
                                                         TapHandler {
                                                             onTapped: root.setTreeFlag("leaf", row.key, !row.expanded)
                                                         }
-                                                    }
-
-                                                    Rectangle {
-                                                        visible: row.show_join
-                                                        implicitWidth: joinText.implicitWidth + Theme.spacingMd
-                                                        implicitHeight: Math.max(20, joinText.implicitHeight + 6)
-                                                        color: joinHover.hovered
-                                                            ? Theme.semanticTint(Theme.online, 0.3)
-                                                            : Theme.semanticTint(Theme.online, 0.16)
-                                                        border.color: Theme.online
-                                                        border.width: 1
-
-                                                        Text {
-                                                            id: joinText
-                                                            anchors.centerIn: parent
-                                                            text: qsTr("Join")
-                                                            color: Theme.online
-                                                            font.pixelSize: Theme.fontSizeCaption
-                                                            font.bold: true
-                                                        }
-                                                        HoverHandler { id: joinHover; cursorShape: Qt.PointingHandCursor }
-                                                        TapHandler {
-                                                            onTapped: root.joinVoiceFromTree(
-                                                                roomGroup.node_id, row.room_id, row.room_name)
-                                                        }
-                                                        ToolTip.text: qsTr("Join this room's voice")
-                                                        ToolTip.visible: joinHover.hovered
-                                                        ToolTip.delay: 400
                                                     }
                                                 }
                                             }
@@ -2995,7 +3034,6 @@ ApplicationWindow {
                                                 onToggleRequested: root.toggleOpenMember(row.key)
                                                 onMessageRequested: root.messagePeer(row.list_peer_id, row.name)
                                                 onInviteRequested: root.sendTrustInvite(row.room_id, row.id)
-                                                onCopyIdRequested: backend.copyToClipboard(row.id)
                                             }
                                         }
 
@@ -3055,7 +3093,6 @@ ApplicationWindow {
                                                             sessionMember.listPeerId, sessionMember.displayName)
                                                         onInviteRequested: root.sendTrustInvite(
                                                             sessionColumn.row.room_id, sessionMember.peerId)
-                                                        onCopyIdRequested: backend.copyToClipboard(sessionMember.peerId)
                                                     }
                                                 }
                                             }

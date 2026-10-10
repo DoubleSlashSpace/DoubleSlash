@@ -82,7 +82,7 @@ Item {
                     elide: Text.ElideMiddle
                 }
 
-                ToolButton {
+                IconButton {
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
                     icon.width: 14
                     icon.height: 14
@@ -95,7 +95,7 @@ Item {
                     onClicked: Qt.openUrlExternally("file:///" + root.filePath.replace(/\\/g, "/"))
                 }
 
-                ToolButton {
+                IconButton {
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                     icon.width: 12
                     icon.height: 12

@@ -566,7 +566,7 @@ Item {
                                     Layout.fillWidth: true
                                 }
                             }
-                            ToolButton {
+                            IconButton {
                                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg"
                                 icon.width: 14
                                 icon.height: 14
@@ -583,7 +583,7 @@ Item {
                                     root.transferAcceptRequested(root.transferId)
                                 }
                             }
-                            ToolButton {
+                            IconButton {
                                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
                                 icon.width: 14
                                 icon.height: 14
@@ -600,7 +600,7 @@ Item {
                                     root.transferRetryRequested(root.transferId)
                                 }
                             }
-                            ToolButton {
+                            IconButton {
                                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg"
                                 icon.width: 14
                                 icon.height: 14
@@ -615,7 +615,7 @@ Item {
                                 ToolTip.visible: hovered
                                 onClicked: root.transferRejectRequested(root.transferId)
                             }
-                            ToolButton {
+                            IconButton {
                                 id: openFileBtn
                                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/folder.svg"
                                 icon.width: 14
@@ -920,7 +920,7 @@ Item {
                     }
                 }
 
-                ToolButton {
+                IconButton {
                     visible: root.inlineUrl() !== ""
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/play.svg"
                     icon.width: 14
@@ -941,7 +941,7 @@ Item {
                     }
                 }
 
-                ToolButton {
+                IconButton {
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
                     icon.width: 14
                     icon.height: 14
@@ -989,7 +989,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
             }
 
-            ToolButton {
+            IconButton {
                 visible: root.copyableText() !== ""
                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
                 icon.width: 14
@@ -1003,7 +1003,7 @@ Item {
                 onClicked: root.copyEntireMessage()
             }
 
-            ToolButton {
+            IconButton {
                 visible: root.mine && (root.status === "failed" || root.status === "sending")
                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
                 icon.width: 14
@@ -1017,7 +1017,7 @@ Item {
                 onClicked: root.retryRequested(root.msgId)
             }
 
-            ToolButton {
+            IconButton {
                 visible: root.mine && root.msgId !== ""
                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                 icon.width: 14

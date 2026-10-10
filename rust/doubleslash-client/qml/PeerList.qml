@@ -118,7 +118,6 @@ Rectangle {
                     visible: root.selfUnread > 0
                     width: Math.max(20, selfBadge.implicitWidth + 8)
                     height: Math.max(20, selfBadge.implicitHeight + 4)
-                    radius: Theme.radiusPill
                     color: Theme.danger
                     Layout.alignment: Qt.AlignVCenter
 
@@ -293,7 +292,6 @@ Rectangle {
                         visible: delegateItem.unreadCount > 0
                         width: Math.max(20, badgeText.implicitWidth + 8)
                         height: Math.max(20, badgeText.implicitHeight + 4)
-                        radius: Theme.radiusPill
                         color: Theme.danger
                         Layout.alignment: Qt.AlignVCenter
 

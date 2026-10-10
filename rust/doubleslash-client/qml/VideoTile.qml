@@ -303,7 +303,7 @@ Item {
                             color: Theme.muted
                             font.pixelSize: Theme.fontTiny
                         }
-                        Slider {
+                        SquareSlider {
                             Layout.fillWidth: true
                             from: 0; to: 200; stepSize: 5
                             value: root.contentVolume

@@ -79,6 +79,19 @@ Item {
             dock.callState = "idle"
         }
 
+        // Beside the message box: with only status and controls showing, the
+        // dock is that box's height plus its bottom margin, so their top
+        // edges and rows line up across the window.
+        function test_dock_lines_up_with_the_message_box() {
+            dock.videoOn = false
+            dock.inviteNotice = ""
+            compare(dock.implicitHeight, Theme.barHeight + Theme.barMargin)
+            // A notice stacks above and grows the dock upward.
+            dock.unwatchedStreamers = ["Sam"]
+            // The layout settles on its next polish, not synchronously.
+            tryVerify(function () { return dock.implicitHeight > Theme.barHeight + Theme.barMargin })
+        }
+
         function test_toggle_reports_the_picked_list() {
             toggle.currentIndex = 0
             // The second segment is the right half.

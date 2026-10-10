@@ -62,7 +62,6 @@ Item {
     Rectangle {
         id: statusRing
         anchors.fill: parent
-        radius: width / 2
         color: "transparent"
         border.color: root.ringColor
         border.width: root.showRing && !root.speaking ? root._ringWidth : 0
@@ -78,7 +77,6 @@ Item {
         anchors.centerIn: parent
         width: root.size - (root._ringWidth > 0 ? root._ringWidth * 2 : 0)
         height: width
-        radius: width / 2
         color: "transparent"
         clip: true
 

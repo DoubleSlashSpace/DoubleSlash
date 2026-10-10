@@ -47,7 +47,7 @@ Item {
             }
         }
 
-        Switch {
+        SquareSwitch {
             checked: root.checked
             enabled: root.enabled
             Layout.alignment: Qt.AlignVCenter

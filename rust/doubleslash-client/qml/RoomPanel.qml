@@ -479,7 +479,6 @@ Item {
                     Layout.alignment: Qt.AlignVCenter
                     implicitHeight: 28
                     implicitWidth: joinVoiceRow.implicitWidth + Theme.spacingSm * 2
-                    radius: Theme.radiusPill
                     color: joinVoiceHover.hovered ? Theme.bg3 : "transparent"
                     border.color: Theme.bg3
                     border.width: 1
@@ -520,7 +519,6 @@ Item {
                     Layout.alignment: Qt.AlignVCenter
                     implicitHeight: 28
                     implicitWidth: membersToggleRow.implicitWidth + Theme.spacingSm * 2
-                    radius: Theme.radiusPill
                     color: membersToggleHover.hovered ? Theme.bg3 : "transparent"
                     visible: root.participantCount > 0
 
@@ -700,7 +698,7 @@ Item {
         }
 
         RichChatComposer {
-            Layout.margins: 6
+            Layout.margins: Theme.barMargin
             targetName: root.roomName
             enabledForTarget: root.roomName !== ""
             fileTransferEnabled: root.roomId !== ""

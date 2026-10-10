@@ -37,6 +37,12 @@
         <file alias="icons/chain.svg">qml/icons/chain.svg</file>
         <file alias="icons/send.svg">qml/icons/send.svg</file>
         <file alias="icons/check.svg">qml/icons/check.svg</file>
+        <file alias="icons/speaker-off.svg">qml/icons/speaker-off.svg</file>
+        <file alias="icons/speaker.svg">qml/icons/speaker.svg</file>
+        <file alias="icons/eye-off.svg">qml/icons/eye-off.svg</file>
+        <file alias="icons/pin.svg">qml/icons/pin.svg</file>
+        <file alias="icons/bell-off.svg">qml/icons/bell-off.svg</file>
+        <file alias="icons/bell.svg">qml/icons/bell.svg</file>
         <file alias="icons/close.svg">qml/icons/close.svg</file>
         <file alias="icons/x-circle.svg">qml/icons/x-circle.svg</file>
         <file alias="icons/stop.svg">qml/icons/stop.svg</file>
@@ -47,6 +53,7 @@
         <file alias="icons/warning.svg">qml/icons/warning.svg</file>
         <file alias="icons/download.svg">qml/icons/download.svg</file>
         <file alias="icons/arrow-down.svg">qml/icons/arrow-down.svg</file>
+        <file alias="icons/arrow-up.svg">qml/icons/arrow-up.svg</file>
         <file alias="icons/folder.svg">qml/icons/folder.svg</file>
         <file alias="icons/handshake.svg">qml/icons/handshake.svg</file>
         <file alias="icons/eye.svg">qml/icons/eye.svg</file>

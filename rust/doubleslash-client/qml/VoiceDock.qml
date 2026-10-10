@@ -17,7 +17,10 @@ import DoubleSlash.Client 1.0
 Rectangle {
     id: root
     color: Theme.bg2
-    implicitHeight: dockColumn.implicitHeight + Theme.spacingSm * 2
+    // Padding above, margin and padding below: with only its two rows showing
+    // the dock is the message box plus its bottom margin, so their top edges
+    // line up.
+    implicitHeight: dockColumn.implicitHeight + Theme.barPadding * 2 + Theme.barMargin
 
     // ── Public API ────────────────────────────────────────────────────────
 
@@ -183,6 +186,44 @@ Rectangle {
         return qsTr("A camera carries no audio of its own — your microphone already carries you.")
     }
 
+    /// A call control: square, the size of the message box's attach and send.
+    component DockButton: Rectangle {
+        id: dockButton
+        property string iconSource: ""
+        property string tip: ""
+        property color fill: Theme.bg3
+        property bool showTip: true
+        readonly property alias hovered: dockButtonHover.hovered
+        signal clicked()
+
+        Layout.preferredWidth: Theme.barActionSize
+        Layout.preferredHeight: Theme.barActionSize
+        Layout.alignment: Qt.AlignVCenter
+        color: dockButton.fill
+        border.width: dockButtonHover.hovered ? 1 : 0
+        border.color: Theme.text
+
+        Behavior on color { ColorAnimation { duration: Theme.animFast } }
+
+        Image {
+            anchors.centerIn: parent
+            source: dockButton.iconSource
+            sourceSize.width: 20
+            sourceSize.height: 20
+            width: 20
+            height: 20
+            fillMode: Image.PreserveAspectFit
+        }
+
+        HoverHandler { id: dockButtonHover; cursorShape: Qt.PointingHandCursor }
+        TapHandler { onTapped: dockButton.clicked() }
+
+        Accessible.role: Accessible.Button
+        Accessible.name: dockButton.tip
+        ToolTip.text: dockButton.tip
+        ToolTip.visible: dockButtonHover.hovered && dockButton.showTip
+    }
+
     // Top divider
     Rectangle {
         anchors { top: parent.top; left: parent.left; right: parent.right }
@@ -190,88 +231,23 @@ Rectangle {
         color: Theme.divider
     }
 
+    // Anchored to the bottom, with the message box's margin and padding, so
+    // the two rows below line up with its rows. Notices stack above them.
     ColumnLayout {
         id: dockColumn
         anchors {
             left: parent.left
             right: parent.right
-            top: parent.top
-            leftMargin: Theme.spacingMd
-            rightMargin: Theme.spacingMd
-            topMargin: Theme.spacingSm
+            bottom: parent.bottom
+            leftMargin: Theme.barMargin + Theme.barPadding
+            rightMargin: Theme.barMargin + Theme.barPadding
+            bottomMargin: Theme.barMargin + Theme.barPadding
         }
-        spacing: Theme.spacingXs
+        spacing: Theme.barRowGap
 
-        // ── Status ────────────────────────────────────────────────────────
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Theme.spacingXs
-
-            // Signal bars in the connection's colour.
-            Row {
-                Layout.alignment: Qt.AlignVCenter
-                spacing: 2
-                Repeater {
-                    model: [5, 8, 11]
-                    delegate: Rectangle {
-                        required property var modelData
-                        width: 3
-                        height: modelData
-                        anchors.bottom: parent ? parent.bottom : undefined
-                        color: root.statusColor
-                    }
-                }
-            }
-
-            Text {
-                text: root.connecting ? qsTr("Connecting…")
-                    : (root.inRoom ? qsTr("Voice connected") : qsTr("In call"))
-                color: root.statusColor
-                font.pixelSize: Theme.fontSizeCaption + 1
-                font.bold: true
-            }
-
-            Rectangle {
-                visible: !root.connecting
-                implicitWidth: modeText.implicitWidth + Theme.spacingSm
-                implicitHeight: modeText.implicitHeight + 2
-                color: Theme.semanticTint(Theme.connectionModeColor(root.connectionMode), 0.18)
-                Text {
-                    id: modeText
-                    anchors.centerIn: parent
-                    text: Theme.connectionModeLabel(root.connectionMode)
-                    color: Theme.connectionModeColor(root.connectionMode)
-                    font.pixelSize: Theme.fontSizeCaption
-                    font.bold: true
-                }
-            }
-
-            Item { Layout.fillWidth: true }
-
-            Text {
-                visible: !root.connecting
-                text: root.durationText
-                color: Theme.muted
-                font.pixelSize: Theme.fontSizeCaption
-                font.family: "monospace"
-            }
-        }
-
-        // Where the session is. Clicking it goes there.
-        Text {
-            id: contextLink
-            Layout.fillWidth: true
-            text: root.contextName
-            color: Theme.text
-            font.pixelSize: Theme.fontSizeCaption + 1
-            font.underline: contextHover.hovered
-            elide: Text.ElideRight
-            HoverHandler { id: contextHover; cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: root.openSessionRequested() }
-            ToolTip.text: root.inRoom ? qsTr("Open this room") : qsTr("Open this chat")
-            ToolTip.visible: contextHover.hovered
-            ToolTip.delay: 500
-        }
+        // ── Notices ───────────────────────────────────────────────────────
+        // Only while there is something to say, and above the status and
+        // controls, so they never move those out of line.
 
         // Someone here is sharing video and it is not on screen: say so, in
         // the one place that is always visible, with the way to see it.
@@ -282,9 +258,9 @@ Rectangle {
 
             Image {
                 source: "qrc:/qt/qml/DoubleSlash/Client/icons/video.svg"
-                sourceSize.width: 12; sourceSize.height: 12
-                Layout.preferredWidth: 12
-                Layout.preferredHeight: 12
+                sourceSize.width: 14; sourceSize.height: 14
+                Layout.preferredWidth: 14
+                Layout.preferredHeight: 14
                 Layout.alignment: Qt.AlignVCenter
             }
             Text {
@@ -310,9 +286,8 @@ Rectangle {
             spacing: Theme.spacingXs
 
             Rectangle {
-                Layout.preferredWidth: 7
-                Layout.preferredHeight: 7
-                radius: 4
+                Layout.preferredWidth: 8
+                Layout.preferredHeight: 8
                 color: Theme.danger
                 Layout.alignment: Qt.AlignVCenter
             }
@@ -332,80 +307,118 @@ Rectangle {
             Layout.fillWidth: true
             text: root.inviteNotice
             color: Theme.warn
-            font.pixelSize: Theme.fontSizeMicro + 1
+            font.pixelSize: Theme.fontSizeCaption
             wrapMode: Text.WordWrap
         }
 
-        // ── Controls ──────────────────────────────────────────────────────
+        // ── Status ── beside the message box's formatting row ────────────
         RowLayout {
             Layout.fillWidth: true
-            Layout.topMargin: 2
+            Layout.preferredHeight: Theme.barTopRowHeight
             spacing: Theme.spacingSm
 
-            // Mute toggle
-            Rectangle {
-                Layout.preferredWidth: 36
-                Layout.preferredHeight: 36
-                radius: Theme.radiusPill
-                color: root.muted ? Theme.danger : Theme.bg3
-
-                Behavior on color { ColorAnimation { duration: Theme.animFast } }
-
-                Image {
-                    anchors.centerIn: parent
-                    source: root.muted ? "qrc:/qt/qml/DoubleSlash/Client/icons/mic-off.svg" : "qrc:/qt/qml/DoubleSlash/Client/icons/mic.svg"
-                    sourceSize.width: 18
-                    sourceSize.height: 18
-                    width: 18
-                    height: 18
-                    fillMode: Image.PreserveAspectFit
-                }
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        root.muted = !root.muted
-                        root.muteToggled(root.muted)
+            // Signal bars in the connection's colour.
+            Row {
+                Layout.alignment: Qt.AlignVCenter
+                spacing: 2
+                Repeater {
+                    model: [6, 9, 12]
+                    delegate: Rectangle {
+                        required property var modelData
+                        width: 3
+                        height: modelData
+                        anchors.bottom: parent ? parent.bottom : undefined
+                        color: root.statusColor
                     }
                 }
+            }
 
-                ToolTip.text: root.muted ? qsTr("Unmute microphone") : qsTr("Mute microphone")
-                ToolTip.visible: muteHover.hovered
-                HoverHandler { id: muteHover }
+            Text {
+                Layout.alignment: Qt.AlignVCenter
+                text: root.connecting ? qsTr("Connecting…")
+                    : (root.inRoom ? qsTr("Voice connected") : qsTr("In call"))
+                color: root.statusColor
+                font.pixelSize: Theme.fontSizeBody
+                font.bold: true
+            }
+
+            Rectangle {
+                visible: !root.connecting
+                Layout.alignment: Qt.AlignVCenter
+                implicitWidth: modeText.implicitWidth + Theme.spacingSm
+                implicitHeight: modeText.implicitHeight + 4
+                color: Theme.semanticTint(Theme.connectionModeColor(root.connectionMode), 0.18)
+                Text {
+                    id: modeText
+                    anchors.centerIn: parent
+                    text: Theme.connectionModeLabel(root.connectionMode)
+                    color: Theme.connectionModeColor(root.connectionMode)
+                    font.pixelSize: Theme.fontSizeCaption
+                    font.bold: true
+                }
+            }
+
+            Item { Layout.fillWidth: true }
+
+            Text {
+                visible: !root.connecting
+                Layout.alignment: Qt.AlignVCenter
+                text: root.durationText
+                color: Theme.muted
+                font.pixelSize: Theme.fontSizeCaption
+                font.family: "monospace"
+            }
+        }
+
+        // ── Controls ── beside the message box's input row ───────────────
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.preferredHeight: Theme.barActionSize
+            spacing: Theme.spacingXs
+
+            DockButton {
+                iconSource: root.muted ? "qrc:/qt/qml/DoubleSlash/Client/icons/mic-off.svg"
+                                       : "qrc:/qt/qml/DoubleSlash/Client/icons/mic.svg"
+                fill: root.muted ? Theme.danger : Theme.bg3
+                tip: root.muted ? qsTr("Unmute microphone") : qsTr("Mute microphone")
+                onClicked: {
+                    root.muted = !root.muted
+                    root.muteToggled(root.muted)
+                }
             }
 
             // One control for sharing: the audio is an option of sharing,
             // chosen when it starts.
-            Rectangle {
+            DockButton {
                 id: shareButton
-                Layout.preferredWidth: 36
-                Layout.preferredHeight: 36
-                radius: Theme.radiusPill
-                color: root.videoOn ? Theme.accent : Theme.bg3
+                iconSource: root.videoOn
+                    ? "qrc:/qt/qml/DoubleSlash/Client/icons/video.svg"
+                    : "qrc:/qt/qml/DoubleSlash/Client/icons/video-off.svg"
+                fill: root.videoOn ? Theme.accent : Theme.bg3
                 // Greyed out only when this build cannot encode at all; the
                 // menu re-enumerates, so a missing camera must not disable it.
                 opacity: root.videoEncoderMissing ? 0.4 : 1.0
-
-                Behavior on color { ColorAnimation { duration: Theme.animFast } }
-
-                Image {
-                    anchors.centerIn: parent
-                    source: root.videoOn
-                        ? "qrc:/qt/qml/DoubleSlash/Client/icons/video.svg"
-                        : "qrc:/qt/qml/DoubleSlash/Client/icons/video-off.svg"
-                    sourceSize.width: 18
-                    sourceSize.height: 18
-                    width: 18
-                    height: 18
-                    fillMode: Image.PreserveAspectFit
+                tip: root.videoEncoderMissing
+                    ? root.videoUnavailableReason
+                    : (!root.videoOn
+                        ? qsTr("Share video")
+                        : (root.shareAudioOn
+                            ? qsTr("Stop sharing (video and audio)")
+                            : qsTr("Stop sharing (video only)")))
+                showTip: !sharePopup.opened
+                // Stopping needs no menu; starting asks about audio.
+                onClicked: {
+                    if (root.videoOn)
+                        root.stopShareRequested()
+                    else if (!root.videoEncoderMissing)
+                        sharePopup.open()
                 }
 
                 // Audio-included badge: the only sign that the audio half of a
                 // share actually started.
                 Rectangle {
                     visible: root.videoOn && root.shareAudioOn
-                    width: 12; height: 12; radius: 6
+                    width: 13; height: 13
                     anchors { right: parent.right; bottom: parent.bottom }
                     color: Theme.bg2
                     border.color: Theme.accent
@@ -414,61 +427,37 @@ Rectangle {
                     Image {
                         anchors.centerIn: parent
                         source: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
-                        sourceSize.width: 8; sourceSize.height: 8
-                        width: 8; height: 8
+                        sourceSize.width: 9; sourceSize.height: 9
+                        width: 9; height: 9
                         fillMode: Image.PreserveAspectFit
                     }
                 }
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    // Stopping needs no menu; starting asks about audio.
-                    onClicked: {
-                        if (root.videoOn)
-                            root.stopShareRequested()
-                        else if (!root.videoEncoderMissing)
-                            sharePopup.open()
-                    }
-                }
-
-                ToolTip.text: root.videoEncoderMissing
-                    ? root.videoUnavailableReason
-                    : (!root.videoOn
-                        ? qsTr("Share video")
-                        : (root.shareAudioOn
-                            ? qsTr("Stop sharing (video and audio)")
-                            : qsTr("Stop sharing (video only)")))
-                ToolTip.visible: shareHover.hovered && !sharePopup.opened
-                HoverHandler { id: shareHover }
             }
 
-            Item { Layout.fillWidth: true }
+            // Where the session is. Clicking it goes there.
+            Text {
+                id: contextLink
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignVCenter
+                Layout.leftMargin: Theme.spacingXs
+                text: root.contextName
+                color: Theme.text
+                font.pixelSize: Theme.fontSizeBody
+                font.underline: contextHover.hovered
+                elide: Text.ElideRight
+                HoverHandler { id: contextHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: root.openSessionRequested() }
+                ToolTip.text: root.inRoom ? qsTr("Open this room") : qsTr("Open this chat")
+                ToolTip.visible: contextHover.hovered
+                ToolTip.delay: 500
+            }
 
             // Leave / End
-            Rectangle {
-                Layout.preferredWidth: 36
-                Layout.preferredHeight: 36
-                radius: Theme.radiusPill
-                color: Theme.danger
-
-                Image {
-                    anchors.centerIn: parent
-                    source: "qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg"
-                    width: 18; height: 18
-                    smooth: true
-                    antialiasing: true
-                }
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.endCallRequested()
-                }
-
-                ToolTip.text: root.inRoom ? qsTr("Leave voice") : qsTr("End call")
-                ToolTip.visible: endHover.hovered
-                HoverHandler { id: endHover }
+            DockButton {
+                iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg"
+                fill: Theme.danger
+                tip: root.inRoom ? qsTr("Leave voice") : qsTr("End call")
+                onClicked: root.endCallRequested()
             }
         }
     }
@@ -688,17 +677,28 @@ Rectangle {
 
                     Behavior on color { ColorAnimation { duration: Theme.animFast } }
 
-                    Text {
+                    Row {
                         anchors.verticalCenter: parent.verticalCenter
                         anchors.left: parent.left
                         anchors.leftMargin: Theme.spacingSm
-                        // The dot carries the same meaning as
+                        spacing: Theme.spacingXs
+
+                        // The check carries the same meaning as
                         // the fill, for anyone the blue does
                         // not reach.
-                        text: (audioOption.selected ? "• " : "   ")
-                            + audioOption.modelData.label
-                        color: audioOption.selected ? Theme.textInv : Theme.text
-                        font.pixelSize: Theme.fontSizeCaption
+                        Image {
+                            anchors.verticalCenter: parent.verticalCenter
+                            source: "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg"
+                            sourceSize.width: 12; sourceSize.height: 12
+                            width: 12; height: 12
+                            opacity: audioOption.selected ? 1.0 : 0.0
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: audioOption.modelData.label
+                            color: audioOption.selected ? Theme.textInv : Theme.text
+                            font.pixelSize: Theme.fontSizeCaption
+                        }
                     }
                     HoverHandler { id: optHover }
                     MouseArea {

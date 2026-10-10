@@ -8,10 +8,12 @@ New-Item -ItemType Directory -Path $moduleRoot -Force | Out-Null
 # A minimal module lets qmltestrunner load them without the static Rust plugin.
 Copy-Item -LiteralPath (Join-Path $repoRoot 'rust/doubleslash-client/qml/BackupWizard.qml') -Destination $moduleRoot
 Copy-Item -LiteralPath (Join-Path $repoRoot 'rust/doubleslash-client/qml/Theme.qml') -Destination $moduleRoot
+Copy-Item -LiteralPath (Join-Path $repoRoot 'rust/doubleslash-client/qml/SquareBusyIndicator.qml') -Destination $moduleRoot
 Set-Content -LiteralPath (Join-Path $moduleRoot 'qmldir') -Encoding ascii -Value @'
 module DoubleSlash.Client
 singleton Theme 1.0 Theme.qml
 BackupWizard 1.0 BackupWizard.qml
+SquareBusyIndicator 1.0 SquareBusyIndicator.qml
 '@
 $env:QT_QPA_PLATFORM = 'offscreen'
 $env:QT_QUICK_CONTROLS_STYLE = 'Material'

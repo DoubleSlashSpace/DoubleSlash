@@ -12,3 +12,7 @@ CountPill 1.0 CountPill.qml
 VoiceDock 1.0 VoiceDock.qml
 SidebarToggle 1.0 SidebarToggle.qml
 Avatar 1.0 Avatar.qml
+SquareSlider 1.0 SquareSlider.qml
+SquareSwitch 1.0 SquareSwitch.qml
+IconButton 1.0 IconButton.qml
+SquareBusyIndicator 1.0 SquareBusyIndicator.qml

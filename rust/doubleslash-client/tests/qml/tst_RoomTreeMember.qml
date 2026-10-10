@@ -50,9 +50,12 @@ Item {
             inviteSpy.clear()
         }
 
+        // Actions are SVG icons named by their tooltip, which is also their
+        // accessible name; a text button is found by its label.
         function findButton(text) {
             return findChildMatching(member, function (item) {
-                return item.text === text && item.visible && item.clicked !== undefined
+                return (item.text === text || item.tip === text)
+                    && item.visible && item.clicked !== undefined
             })
         }
 
@@ -113,6 +116,15 @@ Item {
             verify(invite !== null)
             invite.clicked()
             compare(inviteSpy.count, 1)
+        }
+
+        // Nothing accepts a pasted peer ID, so the tree offers no copy.
+        function test_no_copy_peer_id_action() {
+            member.expanded = true
+            member.inSession = true
+            member.trusted = true
+            member.listPeerId = "list-a"
+            verify(findButton("Copy peer ID") === null)
         }
 
         function test_watching_needs_the_session_and_a_camera() {

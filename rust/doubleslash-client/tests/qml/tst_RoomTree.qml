@@ -158,10 +158,11 @@ TestCase {
         var k = kinds(rows)
         verify(k.indexOf("session:raid") !== -1)
         verify(k.indexOf("member:sam") === -1)
-        var voiceLeaf = rows[k.indexOf("group:raid:voice")]
-        verify(!voiceLeaf.show_join)
-        // A room we opened by hand still offers Join.
-        verify(rows[k.indexOf("group:lobby:voice")].show_join)
+        // The call icon sits on the room row, not the voice room we are in.
+        verify(!rows[k.indexOf("room:raid")].show_call)
+        // A room we opened by hand still offers the call.
+        verify(rows[k.indexOf("room:lobby")].show_call)
+        verify(!rows[k.indexOf("group:lobby:voice")].hasOwnProperty("show_join"))
     }
 
     function test_rooms_start_collapsed_with_voice_and_text_counts() {
@@ -207,7 +208,8 @@ TestCase {
         verify(rows[k.indexOf("room:lobby")].collapsed)
         verify(!rows[k.indexOf("room:raid")].collapsed)
         verify(rows[k.indexOf("room:strat")].collapsed)
-        verify(!rows[k.indexOf("group:raid:voice")].show_join)
+        verify(!rows[k.indexOf("room:raid")].show_call)
+        verify(rows[k.indexOf("room:lobby")].show_call)
         verify(rows[k.indexOf("group:raid:text")].expanded)
         verify(k.indexOf("member:ade") === -1)
     }

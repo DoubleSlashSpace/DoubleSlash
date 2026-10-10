@@ -171,7 +171,7 @@ Item {
             anchors.centerIn: parent
             spacing: Theme.spacingMd
 
-            BusyIndicator {
+            SquareBusyIndicator {
                 Layout.alignment: Qt.AlignHCenter
                 running: parent.parent.visible
             }

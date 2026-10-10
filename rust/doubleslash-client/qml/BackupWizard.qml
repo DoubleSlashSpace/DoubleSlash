@@ -140,7 +140,7 @@ Dialog {
                     ? "Backup saved and verified.\n" + root.summary.messages + " messages, " + root.summary.attachments + " attachments.\nMissing attachments: " + root.summary.missing_attachments + ".\nKeep this file and its password to restore on another device."
                     : "Profile selected. Close and reopen DoubleSlash to load it. Quit any other device using this identity before connecting."
             }
-            BusyIndicator { running: root.busy; visible: running }
+            SquareBusyIndicator { running: root.busy; visible: running }
             Label { visible: root.busy; text: "Processing and verifying… Large backups can take a few minutes."; Layout.fillWidth: true; wrapMode: Text.WordWrap }
             Label { text: root.errorText; visible: text !== ""; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.danger }
             Button {

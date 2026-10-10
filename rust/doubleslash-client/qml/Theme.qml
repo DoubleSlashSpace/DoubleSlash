@@ -175,10 +175,13 @@ QtObject {
     readonly property int fontSizeTitle:   Math.max(1, Math.round(15 * fontScale))
 
     // ── Geometry ──────────────────────────────────────────────────────────────
+    // Angular throughout: no rounded corners, circles or pills. Icons are SVG
+    // drawn with square ends and mitred corners. Material's round controls
+    // have square stand-ins (IconButton, SquareSwitch, SquareSlider,
+    // SquareBusyIndicator); the Peers | Rooms toggle is a hexagon.
     readonly property int radiusSm: 0
     readonly property int radiusMd: 0
     readonly property int radiusLg: 0
-    readonly property int radiusPill: 999
 
     readonly property int spacingXs: 4
     readonly property int spacingSm: 8
@@ -195,6 +198,23 @@ QtObject {
     readonly property int sidebarWidth: 280
     readonly property int titleBarHeight: Math.max(44, touchTarget)
     readonly property int bannerHeight: Math.max(32, fontSizeCaption + spacingSm * 2)
+
+    // ── Bottom bars ───────────────────────────────────────────────────────────
+    // The message box and the voice dock sit side by side at the foot of the
+    // window. Both are built from these rows, so their tops, rows and buttons
+    // line up across it: the call status beside the formatting row, the call
+    // buttons beside the input row.
+    /// Around the message box, between it and the panel's edges.
+    readonly property int barMargin: spacingSm
+    /// Inside either bar, around its rows.
+    readonly property int barPadding: spacingSm
+    readonly property int barRowGap: spacingXs
+    /// Formatting buttons; call status.
+    readonly property int barTopRowHeight: controlHeight
+    /// Attach and send; mute, share and leave.
+    readonly property int barActionSize: controlHeight + spacingXs
+    /// Either bar's two rows with their padding, before the text box grows.
+    readonly property int barHeight: barPadding * 2 + barTopRowHeight + barRowGap + barActionSize
 
     // ── Typography extras ─────────────────────────────────────────────────────
     readonly property int fontSizeDialog: Math.max(1, Math.round(18 * fontScale))

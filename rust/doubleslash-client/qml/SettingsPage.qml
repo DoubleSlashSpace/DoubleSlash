@@ -462,7 +462,7 @@ Item {
                         rowSpacing: Theme.spacingMd
 
                         Label { text: "Microphone"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
-                        Slider {
+                        SquareSlider {
                             Layout.fillWidth: true
                             from: 0
                             to: 200
@@ -477,7 +477,7 @@ Item {
                         Label { text: (root.settings ? root.settings.input_volume : 100) + "%"; color: Theme.muted; Layout.preferredWidth: 44 }
 
                         Label { text: "Speaker"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
-                        Slider {
+                        SquareSlider {
                             Layout.fillWidth: true
                             from: 0
                             to: 200
@@ -1683,7 +1683,7 @@ Item {
                         }
 
                         Label { text: "Saturation"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
-                        Slider {
+                        SquareSlider {
                             Layout.fillWidth: true
                             from: 0.1; to: 1.0; stepSize: 0.01
                             value: root.avatarValue("sat", 0.55)
@@ -1692,7 +1692,7 @@ Item {
                         }
 
                         Label { text: "Lightness"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
-                        Slider {
+                        SquareSlider {
                             Layout.fillWidth: true
                             from: 0.1; to: 0.9; stepSize: 0.01
                             value: root.avatarValue("lig", 0.55)
@@ -1701,7 +1701,7 @@ Item {
                         }
 
                         Label { text: "Hue spread"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
-                        Slider {
+                        SquareSlider {
                             Layout.fillWidth: true
                             from: 0.0; to: 0.5; stepSize: 0.01
                             value: root.avatarValue("spread", 0.15)
@@ -1710,7 +1710,7 @@ Item {
                         }
 
                         Label { text: "Background tint"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
-                        Switch {
+                        SquareSwitch {
                             checked: root.avatarValue("bg_tint", true)
                             onToggled: root.setAvatarValue("bg_tint", checked)
                         }
@@ -1721,7 +1721,7 @@ Item {
                             Layout.alignment: Qt.AlignRight
                             visible: root.avatarValue("bg_tint", true)
                         }
-                        Slider {
+                        SquareSlider {
                             Layout.fillWidth: true
                             visible: root.avatarValue("bg_tint", true)
                             enabled: root.avatarValue("bg_tint", true)
@@ -1740,7 +1740,7 @@ Item {
                         }
 
                         Label { text: "Dual hue"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
-                        Switch {
+                        SquareSwitch {
                             checked: root.avatarValue("dual_hue", false)
                             onToggled: root.setAvatarValue("dual_hue", checked)
                         }
@@ -1764,7 +1764,7 @@ Item {
                         }
 
                         Label { text: "Islands"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
-                        Switch {
+                        SquareSwitch {
                             checked: root.avatarValue("islands", true)
                             onToggled: root.setAvatarValue("islands", checked)
                         }
@@ -1790,7 +1790,7 @@ Item {
                             Layout.alignment: Qt.AlignRight
                             visible: root.avatarValue("islands", true)
                         }
-                        Slider {
+                        SquareSlider {
                             Layout.fillWidth: true
                             visible: root.avatarValue("islands", true)
                             enabled: root.avatarValue("islands", true)
@@ -1806,7 +1806,7 @@ Item {
                             Layout.alignment: Qt.AlignRight
                             visible: root.avatarValue("islands", true)
                         }
-                        Switch {
+                        SquareSwitch {
                             visible: root.avatarValue("islands", true)
                             enabled: root.avatarValue("islands", true)
                             checked: root.avatarValue("island_varsat", true)
@@ -1814,13 +1814,13 @@ Item {
                         }
 
                         Label { text: "Crisp edges"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
-                        Switch {
+                        SquareSwitch {
                             checked: root.avatarValue("svg_crisp", true)
                             onToggled: root.setAvatarValue("svg_crisp", checked)
                         }
 
                         Label { text: "Rounded cells"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
-                        Switch {
+                        SquareSwitch {
                             checked: root.avatarValue("svg_round_cells", false)
                             onToggled: root.setAvatarValue("svg_round_cells", checked)
                         }
@@ -1867,7 +1867,7 @@ Item {
                             color: Theme.muted
                             font.pixelSize: Theme.fontSizeBody
                         }
-                        Slider {
+                        SquareSlider {
                             id: fontScaleSlider
                             Layout.fillWidth: true
                             from: -50
@@ -1953,7 +1953,6 @@ Item {
 
                                     Rectangle {
                                         width: 26; height: 26
-                                        radius: 13
                                         color: Theme[swatchCell.token]
                                         border.color: Theme.divider
                                         border.width: 1
@@ -2428,7 +2427,7 @@ Item {
                                     }
                                 }
                             }
-                            ToolButton {
+                            IconButton {
                                 Layout.alignment: Qt.AlignVCenter
                                 implicitWidth: Theme.controlHeight
                                 implicitHeight: Theme.controlHeight
