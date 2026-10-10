@@ -1196,12 +1196,9 @@ private fun PeersList(
             )
             HorizontalDivider()
         }
-        item {
-            SquareTextButton(
-                onClick = onAcceptInvite,
-                modifier = Modifier.fillMaxWidth().padding(16.dp),
-            ) { Text("Accept an invite") }
-        }
+        // No "Accept an invite" footer: the Paste invite field above the list
+        // already accepts one. The empty list keeps its button, since it is
+        // the whole screen there.
     }
 }
 
