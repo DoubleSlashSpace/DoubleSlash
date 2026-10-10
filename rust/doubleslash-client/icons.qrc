@@ -9,6 +9,7 @@
         <file alias="icons/expand.svg">qml/icons/expand.svg</file>
         <file alias="icons/collapse.svg">qml/icons/collapse.svg</file>
         <file alias="icons/phone.svg">qml/icons/phone.svg</file>
+        <file alias="icons/phone-hangup.svg">qml/icons/phone-hangup.svg</file>
         <file alias="icons/search.svg">qml/icons/search.svg</file>
         <file alias="icons/attach.svg">qml/icons/attach.svg</file>
         <file alias="icons/speech.svg">qml/icons/speech.svg</file>

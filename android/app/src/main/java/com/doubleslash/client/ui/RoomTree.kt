@@ -123,8 +123,10 @@ internal sealed interface TreeRow {
         val stack: List<String>,
         val subtreeVoice: Int,
         val roomChat: Int,
-        /** The call icon that joins this room's voice: not while we are in it. */
+        /** The call icon on the row: it joins this room's voice, or hangs up when [inVoice]. */
         val showCall: Boolean = false,
+        /** We are in this room's voice, so its call icon ends the call. */
+        val inVoice: Boolean = false,
     ) : TreeRow
 
     data class Leaf(
@@ -565,7 +567,8 @@ internal fun buildRoomTree(
                 stack = ownVoice.take(3),
                 subtreeVoice = ownVoice.size,
                 roomChat = if (collapsed) text.size else 0,
-                showCall = !isVoiceRoom,
+                showCall = true,
+                inVoice = isVoiceRoom,
             )
         }
         val childPass = if (depth > 0) pass + !last else emptyList()
@@ -656,6 +659,8 @@ internal class RoomTreeActions(
     val onCopyInvite: (Room) -> Unit = {},
     /** Pick a contact and copy a link bound to them. */
     val onInviteContact: (Room) -> Unit = {},
+    /** Leave the voice room we are in: the hang-up on its row, as the voice dock's Leave. */
+    val onLeaveVoice: () -> Unit = {},
     /** Turn message alerts on or off for this room. */
     val onSetMessageAlerts: (Room, Boolean) -> Unit = { _, _ -> },
 )
@@ -777,46 +782,49 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                 )
                 Spacer(Modifier.width(6.dp))
             }
-            Text(
-                room.label,
-                color = if (voiceHere) ds.online else ds.text,
-                fontWeight = if (reading || voiceHere || unread > 0) FontWeight.Bold else FontWeight.Normal,
-                fontSize = 15.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
-            if (unread > 0) {
-                Spacer(Modifier.width(6.dp))
+            // The name and its markers take the free width, so what follows
+            // sits flush right whatever the name's length.
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                 Text(
-                    if (unread > 99) "99+" else unread.toString(),
-                    color = Color.White,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier
-                        .background(ds.danger, RectangleShape)
-                        .padding(horizontal = 6.dp, vertical = 1.dp)
-                        .semantics { contentDescription = "$unread unread" },
+                    room.label,
+                    color = if (voiceHere) ds.online else ds.text,
+                    fontWeight = if (reading || voiceHere || unread > 0) FontWeight.Bold else FontWeight.Normal,
+                    fontSize = 15.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
                 )
+                if (unread > 0) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        if (unread > 99) "99+" else unread.toString(),
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .background(ds.danger, RectangleShape)
+                            .padding(horizontal = 6.dp, vertical = 1.dp)
+                            .semantics { contentDescription = "$unread unread" },
+                    )
+                }
+                if (state.prefs.roomListOrder.isPinned(room)) {
+                    Spacer(Modifier.width(6.dp))
+                    Text("top", color = ds.accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+                if (voiceHere) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        painterResource(R.drawable.ds_headphone),
+                        contentDescription = "You are in voice here",
+                        tint = ds.online,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+                if (room.hidden) {
+                    Spacer(Modifier.width(6.dp))
+                    Text("hidden", color = ds.muted, fontSize = 12.sp)
+                }
             }
-            if (state.prefs.roomListOrder.isPinned(room)) {
-                Spacer(Modifier.width(6.dp))
-                Text("top", color = ds.accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            }
-            if (voiceHere) {
-                Spacer(Modifier.width(6.dp))
-                Icon(
-                    painterResource(R.drawable.ds_headphone),
-                    contentDescription = "You are in voice here",
-                    tint = ds.online,
-                    modifier = Modifier.size(16.dp),
-                )
-            }
-            if (room.hidden) {
-                Spacer(Modifier.width(6.dp))
-                Text("hidden", color = ds.muted, fontSize = 12.sp)
-            }
-            Spacer(Modifier.weight(1f))
             if (row.collapsed && row.stack.isNotEmpty()) {
                 // Overlapped, so a folded room shows who is inside in little room.
                 Box(Modifier.width(18.dp + 12.dp * (row.stack.size - 1)).height(18.dp)) {
@@ -841,15 +849,18 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
             // rather than a button under its Voice list.
             if (row.showCall && state.connectedSupernodes.isNotEmpty()) {
                 Spacer(Modifier.width(4.dp))
-                // Solid green on a green square, so joining stands out.
+                // Solid green on a green square, so joining stands out. In the
+                // voice room we are in it turns into hang-up: the handset
+                // inverted, in red, leaving as the voice dock's Leave does.
+                val callColor = if (row.inVoice) ds.danger else ds.online
                 TreeIcon(
-                    R.drawable.ds_phone,
-                    "Join voice",
-                    tint = ds.online,
-                    tile = ds.online.copy(alpha = 0.18f),
-                    border = ds.online,
+                    if (row.inVoice) R.drawable.ds_phone_hangup else R.drawable.ds_phone,
+                    if (row.inVoice) "Leave voice" else "Join voice",
+                    tint = callColor,
+                    tile = callColor.copy(alpha = 0.18f),
+                    border = callColor,
                 ) {
-                    actions.onJoinVoice(room)
+                    if (row.inVoice) actions.onLeaveVoice() else actions.onJoinVoice(room)
                 }
             }
         }

@@ -106,12 +106,13 @@ class RoomTreeTest {
     }
 
     @Test
-    fun `the voice room's row offers no call and its members are in session`() {
+    fun `the voice room's row hangs up and its members are in session`() {
         val rows = tree(open("lobby"), voiceRoom = VoiceRoom("n", "raid", "Raid"))
         // The call icon is on the room row, as on the desktop, not on a leaf.
+        // In the voice room we are in it ends the call; elsewhere it joins.
         val nodes = rows.filterIsInstance<TreeRow.RoomNode>().associateBy { it.room.roomId }
-        assertTrue(!nodes.getValue("raid").showCall)
-        assertTrue(nodes.getValue("lobby").showCall)
+        assertTrue(nodes.getValue("raid").showCall && nodes.getValue("raid").inVoice)
+        assertTrue(nodes.getValue("lobby").showCall && !nodes.getValue("lobby").inVoice)
         val sam = rows.filterIsInstance<TreeRow.Member>().first { it.id == "sam" }
         assertTrue(sam.inSession && sam.canInvite)
         val mara = rows.filterIsInstance<TreeRow.Member>().first { it.id == "mara" }

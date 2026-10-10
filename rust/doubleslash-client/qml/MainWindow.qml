@@ -2908,25 +2908,40 @@ ApplicationWindow {
 
                                                     // Join voice, explicitly. A double-click on
                                                     // the row still does the same.
-                                                    // Solid green on a green square, so joining stands out.
+                                                    // Join voice: solid green on a green square, so
+                                                    // joining stands out. In the voice room we are in
+                                                    // it turns into hang-up: the handset inverted, in
+                                                    // red, leaving as the voice dock's Leave does.
                                                     IconButton {
+                                                        readonly property bool endsCall: row.voice_here === true
+                                                        readonly property color callColor:
+                                                            endsCall ? Theme.danger : Theme.online
                                                         visible: row.show_call === true
                                                         implicitWidth: 26
                                                         implicitHeight: 26
                                                         padding: 0
                                                         Layout.alignment: Qt.AlignVCenter
-                                                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
+                                                        icon.source: endsCall
+                                                            ? "qrc:/qt/qml/DoubleSlash/Client/icons/phone-hangup.svg"
+                                                            : "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
                                                         icon.width: 16
                                                         icon.height: 16
-                                                        icon.color: Theme.online
-                                                        tileColor: Theme.semanticTint(Theme.online, 0.18)
-                                                        tileBorder: Theme.online
-                                                        Accessible.name: qsTr("Join voice")
-                                                        ToolTip.text: qsTr("Join voice — or double-click the room")
+                                                        icon.color: callColor
+                                                        tileColor: Theme.semanticTint(callColor, 0.18)
+                                                        tileBorder: callColor
+                                                        Accessible.name: endsCall ? qsTr("Leave voice") : qsTr("Join voice")
+                                                        ToolTip.text: endsCall
+                                                            ? qsTr("Leave voice")
+                                                            : qsTr("Join voice — or double-click the room")
                                                         ToolTip.visible: hovered
                                                         ToolTip.delay: 400
-                                                        onClicked: root.joinVoiceFromTree(
-                                                            roomGroup.node_id, row.room_id, roomDelegate.roomName)
+                                                        onClicked: {
+                                                            if (endsCall)
+                                                                voiceDock.endCallRequested()
+                                                            else
+                                                                root.joinVoiceFromTree(
+                                                                    roomGroup.node_id, row.room_id, roomDelegate.roomName)
+                                                        }
                                                     }
                                                 }
                                             }

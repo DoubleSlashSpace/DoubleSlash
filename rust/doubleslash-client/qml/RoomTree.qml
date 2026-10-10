@@ -543,8 +543,9 @@ QtObject {
                 item.subtree_voice = own.length
                 item.room_chat = isCollapsed && text ? text.length : 0
                 // The call icon on the row: joining is explicit, not only a
-                // double-click. Not while we are already in this voice room.
-                item.show_call = connected && !isVoice
+                // double-click. In the voice room we are in it ends the call.
+                item.show_call = connected
+                item.voice_here = isVoice
                 out.push(item)
             }
             var childPass = depth > 0 ? pass.concat([!isLast]) : []

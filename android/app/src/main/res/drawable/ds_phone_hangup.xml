@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Traced from the desktop client's rust/doubleslash-client/qml/icons/phone-hangup.svg:
+  the solid handset of ds_phone turned 135 degrees, lying on its side to end a call.
+  Filled white; tint it (Compose Icon) to colour it from the active skin.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="20"
+    android:viewportHeight="20">
+    <group
+        android:pivotX="10"
+        android:pivotY="10"
+        android:rotation="135">
+        <path
+            android:pathData="M2.5,2.5 L8.5,2.5 L10,7.5 L8,9.5 L10.5,12 L12.5,10 L17.5,11.5 L17.5,17.5 L12.5,17.5 L2.5,7.5 Z"
+            android:fillColor="#FFFFFFFF" />
+    </group>
+</vector>

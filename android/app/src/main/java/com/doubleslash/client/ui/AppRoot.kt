@@ -240,6 +240,7 @@ fun AppRoot(viewModel: AppViewModel) {
             onCopyInvite = viewModel::copyRoomInvite,
             onInviteContact = { inviteContactFor = it },
             onSetMessageAlerts = viewModel::setRoomMessageAlerts,
+            onLeaveVoice = viewModel::leaveRoomVoice,
         )
     }
 
@@ -2129,6 +2130,7 @@ private fun RoomChatScreen(
             onCopyInvite = treeActions.onCopyInvite,
             onInviteContact = treeActions.onInviteContact,
             onSetMessageAlerts = treeActions.onSetMessageAlerts,
+            onLeaveVoice = treeActions.onLeaveVoice,
             members = MemberActions(
                 onToggleWatch = { id ->
                     membersOpen = false
