@@ -103,10 +103,10 @@ Rectangle {
                         text: !root.selfOnline
                             ? qsTr("Offline")
                             : root.ownDevicesOnline === 0
-                                ? qsTr("Online · this device only")
+                                ? qsTr("Online \u00b7 this device only")
                                 : root.ownDevicesOnline === 1
-                                    ? qsTr("Online · 1 other device")
-                                    : qsTr("Online · %1 other devices").arg(root.ownDevicesOnline)
+                                    ? qsTr("Online \u00b7 1 other device")
+                                    : qsTr("Online \u00b7 %1 other devices").arg(root.ownDevicesOnline)
                         color: Theme.muted
                         font.pixelSize: Theme.fontSizeCaption
                         elide: Text.ElideRight
