@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,9 +35,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.text.KeyboardActions
@@ -844,9 +844,16 @@ private fun ListActionIcon(
                     tint = if (selected) MaterialTheme.colorScheme.primary else LocalContentColor.current,
                 )
             }
+            // A square badge on the tile's corner, clear of the icon.
             if (count > 0) Text(
-                count.toString(), modifier = Modifier.align(Alignment.TopEnd),
+                if (count > 99) "99+" else count.toString(),
+                color = LocalDsColors.current.textInv,
                 style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = 6.dp, y = (-6).dp)
+                    .background(LocalDsColors.current.accent, RectangleShape)
+                    .padding(horizontal = 3.dp),
             )
         }
     }
@@ -908,7 +915,7 @@ private fun HomeScreen(
                 ) {
                     val me = state.avatars[state.identity.peerId]
                     if (me != null) {
-                        Box(Modifier.size(30.dp).clip(CircleShape)) { Avatar(me, Modifier.size(30.dp)) }
+                        Box(Modifier.size(30.dp).clip(RectangleShape)) { Avatar(me, Modifier.size(30.dp)) }
                     } else {
                         Icon(painterResource(R.drawable.ds_person), contentDescription = null, modifier = Modifier.size(22.dp))
                     }
@@ -936,7 +943,7 @@ private fun HomeScreen(
                     }
                 }),
                 modifier = Modifier.weight(1f).height(32.dp)
-                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant, RectangleShape)
                     .semantics { contentDescription = "Invite link or peer ID" },
                 decorationBox = { field ->
                     Box(Modifier.padding(horizontal = 8.dp), contentAlignment = Alignment.CenterStart) {
@@ -1226,7 +1233,7 @@ private fun OwnPeerRow(state: AppState, onClick: () -> Unit) {
                     Box(
                         Modifier
                             .size(10.dp)
-                            .clip(CircleShape)
+                            .clip(RectangleShape)
                             .background(
                                 if (online) Color(0xFF16A34A) else MaterialTheme.colorScheme.outlineVariant,
                             ),
@@ -1239,7 +1246,7 @@ private fun OwnPeerRow(state: AppState, onClick: () -> Unit) {
                         Box(
                             Modifier
                                 .size(36.dp)
-                                .clip(RoundedCornerShape(percent = 18))
+                                .clip(RectangleShape)
                                 .background(MaterialTheme.colorScheme.surfaceVariant),
                         )
                     }
@@ -1262,7 +1269,7 @@ private fun ConnectionBanner(mode: ConnectionMode) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+        Box(Modifier.size(8.dp).clip(RectangleShape).background(color))
         Spacer(Modifier.width(8.dp))
         Text(label, style = MaterialTheme.typography.labelMedium, color = color)
     }
@@ -1312,7 +1319,7 @@ private fun PeerRow(
                 Box(
                     Modifier
                         .size(10.dp)
-                        .clip(CircleShape)
+                        .clip(RectangleShape)
                         .background(
                             if (online) {
                                 Color(0xFF16A34A)
@@ -1330,7 +1337,7 @@ private fun PeerRow(
                     Box(
                         Modifier
                             .size(36.dp)
-                            .clip(RoundedCornerShape(percent = 18))
+                            .clip(RectangleShape)
                             .background(MaterialTheme.colorScheme.surfaceVariant),
                     )
                 }

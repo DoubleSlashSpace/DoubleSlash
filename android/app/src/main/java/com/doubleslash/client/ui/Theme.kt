@@ -1,7 +1,9 @@
 package com.doubleslash.client.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -9,6 +11,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.unit.dp
 
 /**
  * The app theme: the DoubleSlash palette (see [DsColors]) with the user's skin
@@ -28,7 +31,7 @@ fun DoubleSlashTheme(
     val palette = remember(darkTheme, skinJson) { paletteFor(darkTheme, skinJson) }
     val scheme = remember(palette, darkTheme) { schemeFor(palette, darkTheme) }
     CompositionLocalProvider(LocalDsColors provides palette) {
-        MaterialTheme(colorScheme = scheme, content = content)
+        MaterialTheme(colorScheme = scheme, shapes = SquareShapes, content = content)
     }
 }
 
@@ -91,5 +94,20 @@ private fun schemeFor(p: DsColors, dark: Boolean) = if (dark) {
         onError = Color.White,
         outline = p.divider,
         outlineVariant = p.border,
+    )
+}
+
+/**
+ * Square corners at every size: text fields, dialogs, menus, cards and
+ * tooltips take their shape from these. The UI is angular throughout, as on
+ * the desktop, whose Material controls are set to `NotRounded`.
+ */
+private val SquareShapes = RoundedCornerShape(0.dp).let { square ->
+    Shapes(
+        extraSmall = square,
+        small = square,
+        medium = square,
+        large = square,
+        extraLarge = square,
     )
 }

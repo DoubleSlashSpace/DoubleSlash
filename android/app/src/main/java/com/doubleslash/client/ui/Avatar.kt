@@ -1,12 +1,12 @@
 package com.doubleslash.client.ui
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Color
 
 /**
@@ -63,7 +63,7 @@ fun parseAvatarSvg(svg: String): AvatarArt? {
  */
 @Composable
 fun Avatar(art: AvatarArt, modifier: Modifier = Modifier) {
-    Canvas(modifier.clip(RoundedCornerShape(percent = 18))) {
+    Canvas(modifier.clip(RectangleShape)) {
         val unit = size.minDimension / art.grid
         drawRect(color = art.background, size = size)
         art.cells.forEach { cell ->
