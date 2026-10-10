@@ -499,6 +499,22 @@ fn build_qt_ui() {
         .qt_module("WebEngineQuick")
         .qt_module("WebChannel");
 
+    // qmlcachegen compiles bindings to C++ and writes their string literals as
+    // raw UTF-8, whatever escape the QML used. MSVC reads a source file without
+    // a BOM in the ANSI code page unless told otherwise, so "·" in a compiled
+    // binding rendered as "Â·" and "…" as "â€¦". Qt's own CMake passes /utf-8
+    // for the same reason.
+    //
+    // SAFETY: only adds a compiler flag; the closure keeps no reference to the
+    // builder and changes nothing cxx-qt configured.
+    let builder = unsafe {
+        builder.cc_builder(|cc| {
+            if cc.get_compiler().is_like_msvc() {
+                cc.flag("/utf-8");
+            }
+        })
+    };
+
     builder
         .files([
             "src/ui/bridge.rs",
