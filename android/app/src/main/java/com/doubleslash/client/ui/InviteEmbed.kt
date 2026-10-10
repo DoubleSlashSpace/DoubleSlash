@@ -10,7 +10,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -147,9 +146,9 @@ fun InviteEmbed(
             if (!mine) {
                 Row {
                     if (joinableRoomId != null) {
-                        TextButton(onClick = { onJoinRoom(joinableRoomId) }) { Text("Join Room") }
+                        SquareTextButton(onClick = { onJoinRoom(joinableRoomId) }) { Text("Join Room") }
                     } else {
-                        TextButton(
+                        SquareTextButton(
                             onClick = {
                                 accepted = true
                                 onAccept(url)
@@ -159,7 +158,7 @@ fun InviteEmbed(
                             Text(if (accepted) "Accepting\u2026" else "Accept")
                         }
                     }
-                    TextButton(onClick = { ignored = true }) { Text("Ignore") }
+                    SquareTextButton(onClick = { ignored = true }) { Text("Ignore") }
                 }
             }
         }

@@ -29,7 +29,7 @@ import java.io.File
 @Composable
 fun BackupButton(unlocked: Boolean, enabled: Boolean = true) {
     var show by remember { mutableStateOf(false) }
-    TextButton(enabled = enabled, onClick = { show = true }) { Text(if (unlocked) "Devices & Backups" else "Restore backup or load another identity") }
+    SquareTextButton(enabled = enabled, onClick = { show = true }) { Text(if (unlocked) "Devices & Backups" else "Restore backup or load another identity") }
     if (show) BackupDialog(unlocked = unlocked, onDismiss = { show = false })
 }
 
@@ -78,13 +78,13 @@ fun BackupDialog(unlocked: Boolean, onDismiss: () -> Unit) {
                 Text("Restore your identity and local data with one encrypted file and its backup password. DoubleSlash cannot recover a lost backup password.")
                 if (page == "choose") {
                     if (unlocked) {
-                        Button(onClick = { exportPicker.launch("DoubleSlash-${java.time.LocalDate.now()}.dbackup") }) { Text("Create encrypted backup") }
+                        SquareButton(onClick = { exportPicker.launch("DoubleSlash-${java.time.LocalDate.now()}.dbackup") }) { Text("Create encrypted backup") }
                         Text("To restore or load another identity, disconnect and lock first, then open this wizard from the unlock screen.")
                     } else {
-                        Button(onClick = { importPicker.launch(arrayOf("application/octet-stream", "*/*")) }) { Text("Restore from backup") }
+                        SquareButton(onClick = { importPicker.launch(arrayOf("application/octet-stream", "*/*")) }) { Text("Restore from backup") }
                         profiles.forEach { value ->
                             val profile = value.jsonObject
-                            TextButton(enabled = !busy, onClick = {
+                            SquareTextButton(enabled = !busy, onClick = {
                                 busy = true; error = ""
                                 scope.launch {
                                     val reply = core.backupCommand(buildJsonObject { put("cmd", "profile.select"); put("profile", profile.stringOrEmpty("profile")) })
@@ -115,7 +115,7 @@ fun BackupDialog(unlocked: Boolean, onDismiss: () -> Unit) {
                             label = { Text("Confirm (at least 12 characters)") }, visualTransformation = PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true)
                     }
-                    Button(enabled = !busy && password.isNotEmpty() && (page == "import" || (password.length >= 12 && password == confirmation)), onClick = {
+                    SquareButton(enabled = !busy && password.isNotEmpty() && (page == "import" || (password.length >= 12 && password == confirmation)), onClick = {
                         busy = true; error = ""
                         val operation = page
                         val secret = password
@@ -155,7 +155,7 @@ fun BackupDialog(unlocked: Boolean, onDismiss: () -> Unit) {
                 if (page == "restored") Text("Profile selected. Close this wizard and unlock with its passphrase. Quit any other device using this identity before connecting.")
                 if (busy) { CircularProgressIndicator(); Text("Processing and verifying… Large backups can take a few minutes.") }
                 if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
-                TextButton(enabled = !busy, onClick = {
+                SquareTextButton(enabled = !busy, onClick = {
                     busy = true
                     scope.launch { core.backupCommand(buildJsonObject { put("cmd", "backup.cancel") }); onDismiss() }
                 }) { Text("Close") }

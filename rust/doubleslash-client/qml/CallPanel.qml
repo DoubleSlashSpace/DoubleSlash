@@ -44,11 +44,10 @@ Rectangle {
         }
 
         // Mute toggle
-        Button {
+        IconButton {
             icon.source: root.muted ? "qrc:/qt/qml/DoubleSlash/Client/icons/mic-off.svg" : "qrc:/qt/qml/DoubleSlash/Client/icons/mic.svg"
             icon.width: 18
             icon.height: 18
-            flat: true
             implicitWidth: 32
             implicitHeight: 32
             Material.foreground: root.muted ? Theme.danger : Theme.online

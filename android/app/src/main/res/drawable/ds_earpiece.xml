@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Drawn in the desktop icon set's style (20x20, square strokes).
+  Traced from the desktop client's rust/doubleslash-client/qml/icons/speaker.svg
+  so both clients draw the same angular shape (square ends, mitred corners).
   Stroked white; tint it (Compose Icon) to colour it from the active skin.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
@@ -9,13 +10,13 @@
     android:viewportWidth="20"
     android:viewportHeight="20">
     <path
-        android:pathData="M3,8 L6,8 L10,4 L10,16 L6,12 L3,12 Z"
+        android:pathData="M2.5,7.5 L6,7.5 L10.5,3.5 L10.5,16.5 L6,12.5 L2.5,12.5 Z"
         android:strokeColor="#FFFFFFFF"
         android:strokeWidth="1.4"
         android:strokeLineJoin="miter"
         android:fillColor="#00000000" />
     <path
-        android:pathData="M13,7 Q15,10 13,13"
+        android:pathData="M13,7 L14.5,10 L13,13"
         android:strokeColor="#FFFFFFFF"
         android:strokeWidth="1.4"
         android:strokeLineJoin="miter"

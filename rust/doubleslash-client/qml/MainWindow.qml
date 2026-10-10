@@ -2908,16 +2908,19 @@ ApplicationWindow {
 
                                                     // Join voice, explicitly. A double-click on
                                                     // the row still does the same.
+                                                    // Solid green on a green square, so joining stands out.
                                                     IconButton {
                                                         visible: row.show_call === true
-                                                        implicitWidth: 24
-                                                        implicitHeight: 24
+                                                        implicitWidth: 26
+                                                        implicitHeight: 26
                                                         padding: 0
                                                         Layout.alignment: Qt.AlignVCenter
                                                         icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
-                                                        icon.width: 14
-                                                        icon.height: 14
-                                                        icon.color: hovered ? Theme.online : Theme.muted
+                                                        icon.width: 16
+                                                        icon.height: 16
+                                                        icon.color: Theme.online
+                                                        tileColor: Theme.semanticTint(Theme.online, 0.18)
+                                                        tileBorder: Theme.online
                                                         Accessible.name: qsTr("Join voice")
                                                         ToolTip.text: qsTr("Join voice — or double-click the room")
                                                         ToolTip.visible: hovered

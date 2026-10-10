@@ -191,12 +191,19 @@ Item {
                     }
                 }
 
-                Button {
+                // Start a call: solid green on a green square, the same
+                // call control the Rooms tree uses.
+                IconButton {
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
                     icon.width: 18
                     icon.height: 18
+                    icon.color: Theme.online
+                    tileColor: Theme.semanticTint(Theme.online, 0.18)
+                    tileBorder: Theme.online
                     visible: root.selectedPeerId !== "" && !root.callActiveWithPeer && !root.selfChat
-                    flat: true
+                    Accessible.name: qsTr("Start call")
+                    ToolTip.text: qsTr("Start call")
+                    ToolTip.visible: hovered
                     onClicked: root.startCall(root.selectedPeerId)
                 }
             }

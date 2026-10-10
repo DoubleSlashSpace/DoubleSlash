@@ -8,9 +8,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,19 +18,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -47,7 +43,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -69,6 +68,7 @@ import com.doubleslash.client.roomSenderName
 import com.doubleslash.client.trustedPeer
 import com.doubleslash.client.videoKey
 import com.doubleslash.client.watching
+import kotlin.math.sqrt
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
@@ -123,6 +123,8 @@ internal sealed interface TreeRow {
         val stack: List<String>,
         val subtreeVoice: Int,
         val roomChat: Int,
+        /** The call icon that joins this room's voice: not while we are in it. */
+        val showCall: Boolean = false,
     ) : TreeRow
 
     data class Leaf(
@@ -132,7 +134,6 @@ internal sealed interface TreeRow {
         val voice: Boolean,
         val count: Int,
         val expanded: Boolean,
-        val showJoin: Boolean,
     ) : TreeRow
 
     data class Member(
@@ -507,7 +508,6 @@ internal fun buildRoomTree(
             voice = voice,
             count = members.size,
             expanded = expanded,
-            showJoin = voice && !isSession,
         )
         if (!expanded) return
         val gPass = if (pass == null) emptyList() else pass + !last
@@ -565,6 +565,7 @@ internal fun buildRoomTree(
                 stack = ownVoice.take(3),
                 subtreeVoice = ownVoice.size,
                 roomChat = if (collapsed) text.size else 0,
+                showCall = !isVoiceRoom,
             )
         }
         val childPass = if (depth > 0) pass + !last else emptyList()
@@ -793,7 +794,7 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier
-                        .background(ds.danger, RoundedCornerShape(9.dp))
+                        .background(ds.danger, RectangleShape)
                         .padding(horizontal = 6.dp, vertical = 1.dp)
                         .semantics { contentDescription = "$unread unread" },
                 )
@@ -821,7 +822,7 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                 Box(Modifier.width(18.dp + 12.dp * (row.stack.size - 1)).height(18.dp)) {
                     row.stack.forEachIndexed { i, id ->
                         state.avatars[id]?.let {
-                            Box(Modifier.offset(x = 12.dp * i).size(18.dp).clip(CircleShape)) {
+                            Box(Modifier.offset(x = 12.dp * i).size(18.dp).clip(RectangleShape)) {
                                 Avatar(it, Modifier.size(18.dp))
                             }
                         }
@@ -836,6 +837,21 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                 Spacer(Modifier.width(6.dp))
                 CountBadge(R.drawable.ds_speech, row.roomChat, ds.accent, "in text only")
             }
+            // Join voice, explicitly, as on the desktop: a call icon on the row
+            // rather than a button under its Voice list.
+            if (row.showCall && state.connectedSupernodes.isNotEmpty()) {
+                Spacer(Modifier.width(4.dp))
+                // Solid green on a green square, so joining stands out.
+                TreeIcon(
+                    R.drawable.ds_phone,
+                    "Join voice",
+                    tint = ds.online,
+                    tile = ds.online.copy(alpha = 0.18f),
+                    border = ds.online,
+                ) {
+                    actions.onJoinVoice(room)
+                }
+            }
         }
         val order = state.prefs.roomListOrder
         val pinned = order.isPinned(room)
@@ -843,81 +859,65 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
         val visibleRooms = state.rooms.filter { state.showHiddenRooms || !it.hidden }
         val canInviteContact = state.peers.inviteContacts().isNotEmpty()
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-            DropdownMenuItem(
-                text = { Text("Join Voice Room") },
-                onClick = {
-                    menuOpen = false
-                    actions.onJoinVoice(room)
-                },
-            )
-            DropdownMenuItem(
-                text = { Text("Copy Room Invite") },
-                onClick = {
-                    menuOpen = false
-                    actions.onCopyInvite(room)
-                },
-            )
-            DropdownMenuItem(
-                text = { Text("Invite Contact to Room") },
-                enabled = canInviteContact,
-                onClick = {
-                    menuOpen = false
-                    actions.onInviteContact(room)
-                },
-            )
+            TreeMenuItem(R.drawable.ds_phone, "Join Voice Room") {
+                menuOpen = false
+                actions.onJoinVoice(room)
+            }
+            TreeMenuItem(R.drawable.ds_clipboard, "Copy Room Invite") {
+                menuOpen = false
+                actions.onCopyInvite(room)
+            }
+            TreeMenuItem(R.drawable.ic_invite, "Invite Contact to Room", enabled = canInviteContact) {
+                menuOpen = false
+                actions.onInviteContact(room)
+            }
             HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text("Create room inside ${room.label}...") },
-                onClick = {
-                    menuOpen = false
-                    actions.onCreateSubRoom(room)
-                },
-            )
+            TreeMenuItem(R.drawable.ds_plus, "Create room inside ${room.label}...") {
+                menuOpen = false
+                actions.onCreateSubRoom(room)
+            }
             HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text(if (pinned) "Stop keeping at top" else "Keep at top") },
-                onClick = {
-                    menuOpen = false
-                    actions.onTogglePin(room)
-                },
-            )
+            TreeMenuItem(R.drawable.ds_pin, if (pinned) "Stop keeping at top" else "Keep at top") {
+                menuOpen = false
+                actions.onTogglePin(room)
+            }
             if (showMove) {
-                DropdownMenuItem(
-                    text = { Text("Move up") },
+                TreeMenuItem(
+                    R.drawable.ds_arrow_up,
+                    "Move up",
                     enabled = canMoveRoom(
                         order, visibleRooms, room, -1, state.roomVoiceRosters, state.roomTextRosters,
                     ),
-                    onClick = {
-                        menuOpen = false
-                        actions.onMoveRoom(room, -1)
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("Move down") },
+                ) {
+                    menuOpen = false
+                    actions.onMoveRoom(room, -1)
+                }
+                TreeMenuItem(
+                    R.drawable.ds_arrow_down,
+                    "Move down",
                     enabled = canMoveRoom(
                         order, visibleRooms, room, 1, state.roomVoiceRosters, state.roomTextRosters,
                     ),
-                    onClick = {
-                        menuOpen = false
-                        actions.onMoveRoom(room, 1)
-                    },
-                )
+                ) {
+                    menuOpen = false
+                    actions.onMoveRoom(room, 1)
+                }
             }
-            DropdownMenuItem(
-                text = { Text(if (alertsOn) "Mute message alerts" else "Enable message alerts") },
-                onClick = {
-                    menuOpen = false
-                    actions.onSetMessageAlerts(room, !alertsOn)
-                },
-            )
+            TreeMenuItem(
+                if (alertsOn) R.drawable.ds_bell_off else R.drawable.ds_bell,
+                if (alertsOn) "Mute message alerts" else "Enable message alerts",
+            ) {
+                menuOpen = false
+                actions.onSetMessageAlerts(room, !alertsOn)
+            }
             HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text(if (room.hidden) "Show in list" else "Hide from list") },
-                onClick = {
-                    actions.onSetHidden(room, !room.hidden)
-                    menuOpen = false
-                },
-            )
+            TreeMenuItem(
+                if (room.hidden) R.drawable.ds_eye else R.drawable.ds_eye_off,
+                if (room.hidden) "Show in list" else "Hide from list",
+            ) {
+                actions.onSetHidden(room, !room.hidden)
+                menuOpen = false
+            }
         }
     }
 }
@@ -925,14 +925,74 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
 /** A room's name, or a short id when it never had one. */
 private val Room.label: String get() = roomName.ifBlank { roomId.take(12) }
 
+/**
+ * An SVG icon action in the tree, named by its tooltip (long-press) and
+ * content description. [checked] fills it, for a state that is on.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TreeIcon(
+    icon: Int,
+    label: String,
+    tint: Color? = null,
+    checked: Boolean = false,
+    enabled: Boolean = true,
+    /** The tile behind it, when the control has a colour of its own. */
+    tile: Color? = null,
+    border: Color? = null,
+    onClick: () -> Unit,
+) {
+    val ds = LocalDsColors.current
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        tooltip = { PlainTooltip { Text(label) } },
+        state = rememberTooltipState(),
+    ) {
+        SquareIconButton(
+            onClick = onClick,
+            enabled = enabled,
+            // A state that is on reads as a stronger tile.
+            tile = tile ?: if (checked) ds.text.copy(alpha = 0.22f) else null,
+            border = border,
+            modifier = Modifier.size(40.dp),
+        ) {
+            Icon(
+                painterResource(icon),
+                contentDescription = label,
+                tint = if (!enabled) ds.muted else tint ?: ds.text,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+/** A long-press menu entry with its SVG icon, as on the desktop's room menu. */
+@Composable
+private fun TreeMenuItem(icon: Int, label: String, enabled: Boolean = true, onClick: () -> Unit) {
+    val ds = LocalDsColors.current
+    DropdownMenuItem(
+        text = { Text(label) },
+        leadingIcon = {
+            Icon(
+                painterResource(icon),
+                contentDescription = null,
+                tint = if (enabled) ds.text else ds.muted,
+                modifier = Modifier.size(20.dp),
+            )
+        },
+        enabled = enabled,
+        onClick = onClick,
+    )
+}
+
 @Composable
 private fun CountBadge(icon: Int, count: Int, tint: Color, what: String) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         modifier = Modifier
-            .background(tint.copy(alpha = 0.16f), RoundedCornerShape(11.dp))
-            .border(1.dp, tint, RoundedCornerShape(11.dp))
+            .background(tint.copy(alpha = 0.16f), RectangleShape)
+            .border(1.dp, tint, RectangleShape)
             .padding(horizontal = 7.dp, vertical = 2.dp)
             .semantics { contentDescription = "$count $what" },
     ) {
@@ -965,36 +1025,30 @@ private fun LeafRow(row: TreeRow.Leaf, fold: TreeFold, actions: RoomTreeActions)
                         (if (row.voice) "voice" else "text-only") + " members"
                 },
         ) {
-            Box(Modifier.width(STEP), contentAlignment = Alignment.Center) {
-                Chevron(row.expanded, 10.dp, ds.muted)
+            // An open list reads in full; a folded one recedes.
+            val strength = if (row.expanded) 1f else 0.6f
+            Box(Modifier.width(STEP).alpha(strength), contentAlignment = Alignment.Center) {
+                Chevron(row.expanded, 10.dp, if (row.expanded) ds.text else ds.muted)
             }
             Spacer(Modifier.width(6.dp))
             Icon(
                 painterResource(if (row.voice) R.drawable.ds_headphone else R.drawable.ds_speech),
                 contentDescription = null,
                 tint = if (row.voice) ds.online else ds.linkPeer,
-                modifier = Modifier.size(14.dp),
+                modifier = Modifier.size(14.dp).alpha(strength),
             )
             Spacer(Modifier.width(6.dp))
-            Text("${row.count}", color = ds.muted, fontSize = 12.sp)
-        }
-        if (row.showJoin) {
-            OutlinedButton(
-                onClick = { actions.onJoinVoice(row.room) },
-                contentPadding = PaddingValues(horizontal = 14.dp),
-                colors = ButtonDefaults.outlinedButtonColors(
-                    containerColor = ds.online.copy(alpha = 0.16f),
-                    contentColor = ds.online,
-                ),
-                border = androidx.compose.foundation.BorderStroke(1.dp, ds.online),
-                shape = RoundedCornerShape(0.dp),
-                modifier = Modifier.height(32.dp),
-            ) { Text("Join", fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+            Text(
+                "${row.count}",
+                color = if (row.expanded) ds.text else ds.muted,
+                fontWeight = if (row.expanded) FontWeight.Bold else FontWeight.Normal,
+                fontSize = 12.sp,
+            )
         }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, actions: RoomTreeActions) {
     val ds = LocalDsColors.current
@@ -1010,11 +1064,27 @@ private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, acti
     val locallyMuted = row.inSession && audio?.muted == true
     val inviteState = state.trustInvites[key].orEmpty()
     val open = fold.openMember == row.key && !isSelf
+    // Trusted peers can be messaged; anyone else can be offered trust, from a
+    // room we are in. Only one of the two ever shows.
+    val canOfferTrust = trusted == null && row.canInvite
+    val hasIcons = canWatch || trusted != null || canOfferTrust
+    val edgeX = indent(row.guides) - 2.dp
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(if (open) ds.bg2 else Color.Transparent)
+            // Open: tinted, with an accent edge down the row and its panel, so
+            // it is plain which person the panel belongs to. As on the desktop.
+            .background(if (open) ds.accent.copy(alpha = 0.10f) else Color.Transparent)
+            .drawBehind {
+                if (open) {
+                    drawRect(
+                        ds.accent,
+                        topLeft = Offset(edgeX.toPx(), 0f),
+                        size = Size(2.dp.toPx(), size.height),
+                    )
+                }
+            }
             .treeGuides(row.guides, MEMBER_ROW / 2, ds.divider),
     ) {
         Row(
@@ -1037,12 +1107,12 @@ private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, acti
                     speaking -> ds.online
                     else -> Color.Transparent
                 }
-                Box(Modifier.size(32.dp).border(2.5.dp, ring, CircleShape))
+                Box(Modifier.size(32.dp).border(2.5.dp, ring, RectangleShape))
                 val art = state.avatars[row.id]
                 if (art != null) {
-                    Box(Modifier.size(26.dp).clip(CircleShape)) { Avatar(art, Modifier.size(26.dp)) }
+                    Box(Modifier.size(26.dp).clip(RectangleShape)) { Avatar(art, Modifier.size(26.dp)) }
                 } else {
-                    Box(Modifier.size(26.dp).background(ds.bg3, CircleShape))
+                    Box(Modifier.size(26.dp).background(ds.bg3, RectangleShape))
                 }
                 if (isSelf && row.inSession && state.muted) {
                     Box(
@@ -1051,7 +1121,7 @@ private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, acti
                             .align(Alignment.BottomEnd)
                             .offset(x = 2.dp, y = 2.dp)
                             .size(14.dp)
-                            .background(ds.danger, CircleShape),
+                            .background(ds.danger, RectangleShape),
                     ) {
                         Icon(
                             painterResource(R.drawable.ds_mic_off),
@@ -1066,7 +1136,7 @@ private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, acti
             Text(
                 name,
                 color = if (trusted == null && !isSelf) ds.muted else ds.text,
-                fontWeight = if (speaking) FontWeight.Bold else FontWeight.Normal,
+                fontWeight = if (speaking || open) FontWeight.Bold else FontWeight.Normal,
                 // Not someone we trust: the name is only what the room says.
                 fontStyle = if (trusted == null && !isSelf) FontStyle.Italic else FontStyle.Normal,
                 fontSize = 14.sp,
@@ -1092,8 +1162,8 @@ private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, acti
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .size(28.dp)
-                            .background(if (watching) ds.accent else Color.Transparent, CircleShape)
-                            .border(1.dp, ds.accent, CircleShape),
+                            .background(if (watching) ds.accent else Color.Transparent, RectangleShape)
+                            .border(1.dp, ds.accent, RectangleShape),
                     ) {
                         Icon(
                             painterResource(R.drawable.ds_video),
@@ -1104,24 +1174,41 @@ private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, acti
                     }
                 }
             }
+            // Expand state: right while shut, down while open. Our own row
+            // does not open, so it has none.
+            if (!isSelf) {
+                Box(Modifier.size(24.dp).alpha(if (open) 1f else 0.4f), contentAlignment = Alignment.Center) {
+                    Chevron(open, 10.dp, ds.text)
+                }
+            }
         }
 
         if (open) {
+            // A framed panel: the volume first, then one icon per action,
+            // named by its tooltip and content description.
             Column(
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.padding(start = indent(row.guides) + 44.dp, end = 12.dp, bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+                modifier = Modifier
+                    .padding(start = indent(row.guides) + 44.dp, end = 12.dp, bottom = 10.dp)
+                    .fillMaxWidth()
+                    .background(ds.bg1, RectangleShape)
+                    .border(1.dp, ds.divider, RectangleShape)
+                    .padding(4.dp),
             ) {
                 if (row.inSession) {
                     var volume by remember(key) { mutableFloatStateOf((audio?.volume ?: 100).toFloat()) }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            painterResource(R.drawable.ds_speaker),
-                            contentDescription = null,
-                            tint = ds.muted,
-                            modifier = Modifier.size(16.dp),
-                        )
+                        // Mute for me, beside the volume it zeroes.
+                        TreeIcon(
+                            if (locallyMuted) R.drawable.ds_speaker_off else R.drawable.ds_speaker,
+                            if (locallyMuted) "Unmute for me" else "Mute for me",
+                            tint = if (locallyMuted) ds.danger else ds.text,
+                            checked = locallyMuted,
+                        ) {
+                            actions.onPeerAudio(row.id, !locallyMuted, audio?.volume?.takeIf { it > 0 } ?: 100)
+                        }
                         Slider(
-                            value = volume,
+                            value = if (locallyMuted) 0f else volume,
                             onValueChange = { volume = it },
                             // Moving it off zero unmutes, so the slider and the
                             // mute never disagree about whether you hear them.
@@ -1131,56 +1218,60 @@ private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, acti
                             },
                             valueRange = 0f..200f,
                             steps = 39,
-                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                            // Square, like the desktop's: the UI is angular.
+                            thumb = {
+                                Box(Modifier.size(18.dp).background(ds.accent, RectangleShape))
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 4.dp)
                                 .semantics { contentDescription = "Volume for $name" },
                         )
-                        Text("${volume.toInt()}%", color = ds.muted, fontSize = 12.sp, modifier = Modifier.width(40.dp))
+                        Text(
+                            "${if (locallyMuted) 0 else volume.toInt()}%",
+                            color = ds.muted,
+                            fontSize = 12.sp,
+                            modifier = Modifier.width(40.dp),
+                        )
                     }
                 }
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (canWatch) {
-                        ActionButton(if (watching) "Stop watching" else "Watch video", primary = !watching) {
-                            actions.members.onToggleWatch(row.id)
+                if (hasIcons) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        if (canWatch) {
+                            TreeIcon(
+                                if (watching) R.drawable.ds_video_off else R.drawable.ds_video,
+                                if (watching) "Stop watching" else "Watch video",
+                                tint = if (watching) ds.text else ds.accent,
+                                checked = watching,
+                            ) { actions.members.onToggleWatch(row.id) }
+                        }
+                        if (trusted != null) {
+                            TreeIcon(R.drawable.ds_speech, "Message") { actions.members.onMessage(trusted) }
+                        } else if (canOfferTrust) {
+                            TreeIcon(
+                                if (inviteState == "sent") R.drawable.ds_check else R.drawable.ic_invite,
+                                when (inviteState) {
+                                    "sent" -> "Invite sent"
+                                    "pending" -> "Sending invite..."
+                                    else -> "Invite to trusted peers"
+                                },
+                                tint = if (inviteState.isEmpty()) ds.accent else ds.muted,
+                                enabled = inviteState.isEmpty(),
+                            ) { actions.members.onInvite(row.room.roomId, row.id) }
                         }
                     }
-                    if (row.inSession) {
-                        ActionButton(if (locallyMuted) "Unmute for me" else "Mute for me") {
-                            actions.onPeerAudio(row.id, !locallyMuted, audio?.volume?.takeIf { it > 0 } ?: 100)
-                        }
-                    }
-                    if (trusted != null) {
-                        ActionButton("Message") { actions.members.onMessage(trusted) }
-                    } else if (row.canInvite) {
-                        ActionButton(
-                            when (inviteState) {
-                                "sent" -> "Invite sent"
-                                "pending" -> "Sending invite..."
-                                else -> "Invite to trusted peers"
-                            },
-                            primary = inviteState.isEmpty(),
-                            enabled = inviteState.isEmpty(),
-                        ) { actions.members.onInvite(row.room.roomId, row.id) }
-                    }
+                } else if (!row.inSession) {
+                    // Nothing applies: say so rather than open an empty panel.
+                    Text(
+                        "Open this room to offer them trust.",
+                        color = ds.muted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(6.dp),
+                    )
                 }
             }
         }
     }
-}
-
-@Composable
-private fun ActionButton(label: String, primary: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
-    val ds = LocalDsColors.current
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        shape = RoundedCornerShape(0.dp),
-        contentPadding = PaddingValues(horizontal = 12.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (primary) ds.accent else ds.bg3,
-            contentColor = if (primary) ds.textInv else ds.text,
-        ),
-        modifier = Modifier.height(36.dp),
-    ) { Text(label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold) }
 }
 
 @Composable
@@ -1194,7 +1285,7 @@ private fun MoreRow(row: TreeRow.More, fold: TreeFold, actions: RoomTreeActions)
             .treeGuides(row.guides, LEAF_ROW / 2, ds.divider)
             .padding(start = indent(row.guides)),
     ) {
-        TextButton(onClick = {
+        SquareTextButton(onClick = {
             val open = row.overflowKey in fold.overflow
             actions.onFold(
                 fold.copy(overflow = if (open) fold.overflow - row.overflowKey else fold.overflow + row.overflowKey),
@@ -1219,6 +1310,24 @@ internal class MemberActions(
 )
 
 /**
+ * An elongated hexagon, or half of one when an end is flat: the Peers | Rooms
+ * toggle, drawn as on the desktop. The UI is angular throughout. A pointed end
+ * has a 120° corner, as in a regular hexagon: it reaches in half the height
+ * times tan 30°.
+ */
+internal fun hexagonShape(pointLeft: Boolean, pointRight: Boolean): Shape = GenericShape { size, _ ->
+    val h = size.height
+    val d = h / (2f * sqrt(3f))
+    moveTo(if (pointLeft) d else 0f, 0f)
+    lineTo(if (pointRight) size.width - d else size.width, 0f)
+    if (pointRight) lineTo(size.width, h / 2f)
+    lineTo(if (pointRight) size.width - d else size.width, h)
+    lineTo(if (pointLeft) d else 0f, h)
+    if (pointLeft) lineTo(0f, h / 2f)
+    close()
+}
+
+/**
  * Peers | Rooms, beside the logo in the top bar.
  *
  * The desktop's title-bar toggle on the phone: the one switch between the two
@@ -1227,22 +1336,30 @@ internal class MemberActions(
 @Composable
 internal fun ListToggle(rooms: Boolean, onSelect: (rooms: Boolean) -> Unit) {
     val ds = LocalDsColors.current
+    val segmentHeight = 36.dp
+    // How far a pointed end reaches in, so the label clears it.
+    val depth = segmentHeight / (2f * sqrt(3f))
     Row(
         modifier = Modifier
-            .border(1.dp, ds.divider, RoundedCornerShape(50))
-            .background(ds.bg2, RoundedCornerShape(50))
+            .border(1.dp, ds.divider, hexagonShape(pointLeft = true, pointRight = true))
+            .background(ds.bg2, hexagonShape(pointLeft = true, pointRight = true))
             .padding(2.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         listOf(false to "Peers", true to "Rooms").forEach { (isRooms, label) ->
             val selected = rooms == isRooms
+            // Pointed on its outer end, flat where the two segments meet.
+            val shape = hexagonShape(pointLeft = !isRooms, pointRight = isRooms)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .height(36.dp)
-                    .background(if (selected) ds.accent else Color.Transparent, RoundedCornerShape(50))
+                    .height(segmentHeight)
+                    .background(if (selected) ds.accent else Color.Transparent, shape)
                     .clickable { onSelect(isRooms) }
-                    .padding(horizontal = 12.dp)
+                    .padding(
+                        start = 12.dp + if (isRooms) 0.dp else depth,
+                        end = 12.dp + if (isRooms) depth else 0.dp,
+                    )
                     .semantics { contentDescription = if (selected) "$label, selected" else label },
             ) {
                 Icon(

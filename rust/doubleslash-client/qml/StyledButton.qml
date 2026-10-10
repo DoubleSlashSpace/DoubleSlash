@@ -12,11 +12,12 @@ Button {
     property bool compact: true
     readonly property bool hasIcon: String(icon.source).length > 0
     readonly property bool filled: primary || danger || success
+    // A plain button is a tint of the text colour, the same tile as
+    // IconButton: every control contrasts with what is behind it.
     readonly property color baseColor: danger ? Theme.danger
         : success ? Theme.online
         : primary ? Theme.accent
-        : flat ? "transparent"
-        : Theme.bg3
+        : Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, 0.10)
 
     implicitWidth: Math.max(
         Theme.touchTarget,
@@ -90,9 +91,10 @@ Button {
 
     background: Rectangle {
         radius: Theme.radiusMd
-        color: !control.enabled ? Theme.bg2
+        color: !control.enabled ? Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, 0.05)
             : control.pressed ? (control.flat ? Theme.selectedFill() : Qt.darker(control.baseColor, 1.18))
-            : control.hovered ? (control.flat ? Theme.bg3 : Qt.lighter(control.baseColor, 1.08))
+            : control.hovered ? (control.flat ? Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, 0.16)
+                                              : Qt.lighter(control.baseColor, 1.08))
             : control.baseColor
         border.width: control.visualFocus ? 2 : (control.flat ? 0 : 1)
         border.color: control.visualFocus ? Theme.text : (control.filled ? control.baseColor : Theme.divider)

@@ -10,7 +10,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,7 +57,7 @@ fun LicenseViewer(onDismiss: () -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {
             Column {
-                TextButton(onClick = { if (selected == null) onDismiss() else selected = null }) {
+                SquareTextButton(onClick = { if (selected == null) onDismiss() else selected = null }) {
                     Text(if (selected == null) "Close licenses" else "All licenses")
                 }
                 val path = selected
@@ -69,7 +68,7 @@ fun LicenseViewer(onDismiss: () -> Unit) {
                         notices!!.isEmpty() -> Text("No license notices were packaged in this build.")
                         else -> LazyColumn(Modifier.weight(1f)) {
                             items(notices!!) { notice ->
-                                TextButton(onClick = { selected = notice }) {
+                                SquareTextButton(onClick = { selected = notice }) {
                                     Text(notice.removePrefix("licenses/"))
                                 }
                             }

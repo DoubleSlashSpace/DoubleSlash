@@ -25,7 +25,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -151,8 +150,8 @@ internal fun AppearanceSection(
 
     Spacer(Modifier.height(8.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        TextButton(onClick = { onSetSkin("") }, enabled = skinJson.isNotEmpty()) { Text("Reset colours") }
-        TextButton(onClick = {
+        SquareTextButton(onClick = { onSetSkin("") }, enabled = skinJson.isNotEmpty()) { Text("Reset colours") }
+        SquareTextButton(onClick = {
             val out = skin ?: Skin("DoubleSlash", if (dark) "dark" else "light", emptyMap())
             clipboard.setText(AnnotatedString(skinToJson(out)))
             notice = "Skin copied. Paste it into another DoubleSlash to use it there."
@@ -165,7 +164,7 @@ internal fun AppearanceSection(
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
         trailingIcon = {
-            TextButton(
+            SquareTextButton(
                 enabled = paste.isNotBlank(),
                 onClick = {
                     val pasted = parseSkin(paste.trim())
@@ -259,8 +258,8 @@ private fun SkinColourDialog(
             }
         },
         confirmButton = {
-            TextButton(enabled = parsed != null, onClick = { parsed?.let(onPick) }) { Text("Use colour") }
+            SquareTextButton(enabled = parsed != null, onClick = { parsed?.let(onPick) }) { Text("Use colour") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { SquareTextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

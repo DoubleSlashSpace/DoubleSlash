@@ -41,21 +41,9 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.AddCircle
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilledTonalButton
@@ -67,7 +55,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -82,7 +69,6 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
@@ -105,6 +91,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.graphics.Color
@@ -543,8 +530,8 @@ private fun CallOverlay(
             onDismissRequest = { /* a ringing call needs an explicit answer */ },
             title = { Text("Incoming call") },
             text = { Text(call.peerLabel) },
-            confirmButton = { TextButton(onClick = { requestMicToAnswer() }) { Text("Answer") } },
-            dismissButton = { TextButton(onClick = onReject) { Text("Decline") } },
+            confirmButton = { SquareTextButton(onClick = { requestMicToAnswer() }) { Text("Answer") } },
+            dismissButton = { SquareTextButton(onClick = onReject) { Text("Decline") } },
         )
         return
     }
@@ -605,12 +592,12 @@ private fun CallOverlay(
                             )
                         }
                     }
-                    TextButton(onClick = onToggleMute) {
+                    SquareTextButton(onClick = onToggleMute) {
                         Text(if (call.muted) "Unmute" else "Mute")
                     }
                     // A headset takes the audio regardless of this preference, so
                     // the control is disabled rather than silently ignored.
-                    TextButton(onClick = onToggleSpeaker, enabled = !headsetAttached) {
+                    SquareTextButton(onClick = onToggleSpeaker, enabled = !headsetAttached) {
                         Text(
                             when {
                                 headsetAttached -> "Headset"
@@ -619,7 +606,7 @@ private fun CallOverlay(
                             }
                         )
                     }
-                    TextButton(
+                    SquareTextButton(
                         onClick = {
                             if (videoActive) {
                                 onToggleVideo(false)
@@ -631,7 +618,7 @@ private fun CallOverlay(
                     ) {
                         Text(if (videoActive) "Stop video" else "Video")
                     }
-                    TextButton(onClick = onEnd) { Text("End") }
+                    SquareTextButton(onClick = onEnd) { Text("End") }
                 }
             }
         }
@@ -740,13 +727,13 @@ private fun UnlockScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(
+            SquareTextButton(
                 onClick = { pickKeyfile.launch(arrayOf("*/*")) },
                 enabled = !busy,
             ) { Text(if (keyfile == null) "Use a keyfile" else "Change keyfile") }
 
             if (keyfile != null) {
-                TextButton(onClick = { keyfile = null }, enabled = !busy) { Text("Clear") }
+                SquareTextButton(onClick = { keyfile = null }, enabled = !busy) { Text("Clear") }
             }
         }
         if (keyfile != null) {
@@ -797,7 +784,7 @@ private fun UnlockScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        Button(
+        SquareButton(
             onClick = { onUnlock(passphrase, stayUnlocked, keyfile) },
             enabled = !busy,
             modifier = Modifier.fillMaxWidth(),
@@ -816,7 +803,7 @@ private fun UnlockScreen(
         Spacer(Modifier.height(16.dp))
         BackupButton(unlocked = false, enabled = !busy)
         val context = LocalContext.current
-        TextButton(onClick = { Legal.openUrl(context, Legal.PRIVACY_URL) }) {
+        SquareTextButton(onClick = { Legal.openUrl(context, Legal.PRIVACY_URL) }) {
             Text("Privacy policy")
         }
 
@@ -850,7 +837,7 @@ private fun ListActionIcon(
         state = rememberTooltipState(),
     ) {
         Box {
-            IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(32.dp)) {
+            SquareIconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(32.dp)) {
                 Icon(
                     painterResource(drawable), contentDescription = label,
                     modifier = Modifier.size(18.dp),
@@ -915,7 +902,7 @@ private fun HomeScreen(
             actions = {
                 // Your avatar opens Settings on Identity, as the desktop's
                 // title-bar avatar does. The logo's old app menu lives there.
-                IconButton(
+                SquareIconButton(
                     onClick = viewModel::openSettings,
                     modifier = Modifier.semantics { contentDescription = "Your identity" },
                 ) {
@@ -923,7 +910,7 @@ private fun HomeScreen(
                     if (me != null) {
                         Box(Modifier.size(30.dp).clip(CircleShape)) { Avatar(me, Modifier.size(30.dp)) }
                     } else {
-                        Icon(Icons.Filled.Person, contentDescription = null)
+                        Icon(painterResource(R.drawable.ds_person), contentDescription = null, modifier = Modifier.size(22.dp))
                     }
                 }
             },
@@ -1202,7 +1189,7 @@ private fun PeersList(
             HorizontalDivider()
         }
         item {
-            TextButton(
+            SquareTextButton(
                 onClick = onAcceptInvite,
                 modifier = Modifier.fillMaxWidth().padding(16.dp),
             ) { Text("Accept an invite") }
@@ -1479,7 +1466,7 @@ private fun CreateRoomDialog(
                 if (fixedParent == null && candidates.isNotEmpty()) {
                     Spacer(Modifier.height(12.dp))
                     Box {
-                        TextButton(onClick = { parentMenuOpen = true }) {
+                        SquareTextButton(onClick = { parentMenuOpen = true }) {
                             Text("Inside: ${parent?.roomName ?: "nothing"}")
                         }
                         DropdownMenu(
@@ -1509,7 +1496,7 @@ private fun CreateRoomDialog(
                 if (fixedParent == null && supernodes.size > 1) {
                     Spacer(Modifier.height(12.dp))
                     Box {
-                        TextButton(onClick = { hostMenuOpen = true }) {
+                        SquareTextButton(onClick = { hostMenuOpen = true }) {
                             Text("Host: ${host?.label ?: "choose"}")
                         }
                         DropdownMenu(
@@ -1531,7 +1518,7 @@ private fun CreateRoomDialog(
             }
         },
         confirmButton = {
-            TextButton(
+            SquareTextButton(
                 onClick = {
                     if (fixedParent != null && fixedHostId != null) {
                         onCreate(fixedHostId, name, isPrivate, fixedParent.roomId)
@@ -1542,7 +1529,7 @@ private fun CreateRoomDialog(
                 enabled = name.isNotBlank() && (fixedParent != null || host != null),
             ) { Text("Create") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { SquareTextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
@@ -1566,11 +1553,11 @@ private fun RemovePeerDialog(peer: Peer, onDismiss: () -> Unit, onConfirm: () ->
             )
         },
         confirmButton = {
-            TextButton(onClick = onConfirm) {
+            SquareTextButton(onClick = onConfirm) {
                 Text("Remove", color = MaterialTheme.colorScheme.error)
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { SquareTextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
@@ -1589,9 +1576,9 @@ private fun EmptyPeers(onCreateInvite: () -> Unit, onAcceptInvite: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(24.dp))
-        Button(onClick = onCreateInvite) { Text("Create an invite") }
+        SquareButton(onClick = onCreateInvite) { Text("Create an invite") }
         Spacer(Modifier.height(8.dp))
-        TextButton(onClick = onAcceptInvite) { Text("Accept an invite") }
+        SquareTextButton(onClick = onAcceptInvite) { Text("Accept an invite") }
     }
 }
 
@@ -1658,13 +1645,13 @@ private fun ChatScreen(
             windowInsets = WindowInsets(0, 0, 0, 0),
             title = { Text(peer.label) },
             navigationIcon = {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                SquareIconButton(onClick = onBack) {
+                    Icon(painterResource(R.drawable.ds_arrow_back), contentDescription = "Back", modifier = Modifier.size(22.dp))
                 }
             },
             actions = {
-                if (!selfChat) IconButton(onClick = { requestMic() }) {
-                    Icon(Icons.Filled.Phone, contentDescription = "Call")
+                if (!selfChat) SquareIconButton(onClick = { requestMic() }) {
+                    Icon(painterResource(R.drawable.ds_phone), contentDescription = "Call", tint = LocalDsColors.current.online, modifier = Modifier.size(20.dp))
                 }
             },
         )
@@ -1707,8 +1694,8 @@ private fun ChatScreen(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (!selfChat) IconButton(onClick = { pickFile.launch(arrayOf("*/*")) }) {
-                Icon(Icons.Filled.AddCircle, contentDescription = "Attach a file")
+            if (!selfChat) SquareIconButton(onClick = { pickFile.launch(arrayOf("*/*")) }) {
+                Icon(painterResource(R.drawable.ds_attach), contentDescription = "Attach a file", modifier = Modifier.size(22.dp))
             }
             OutlinedTextField(
                 value = draft,
@@ -1718,7 +1705,7 @@ private fun ChatScreen(
                 maxLines = 4,
             )
             Spacer(Modifier.width(8.dp))
-            IconButton(
+            SquareIconButton(
                 onClick = {
                     onSend(draft)
                     draft = ""
@@ -1726,7 +1713,7 @@ private fun ChatScreen(
                 },
                 enabled = draft.isNotBlank(),
             ) {
-                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                Icon(painterResource(R.drawable.ds_send), contentDescription = "Send", modifier = Modifier.size(22.dp))
             }
         }
     }
@@ -1958,23 +1945,23 @@ private fun RoomChatScreen(
                 }
             },
             navigationIcon = {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Leave room")
+                SquareIconButton(onClick = onBack) {
+                    Icon(painterResource(R.drawable.ds_arrow_back), contentDescription = "Leave room", modifier = Modifier.size(22.dp))
                 }
             },
             actions = {
                 // Voice is joined here and left from the dock at the foot of
                 // the screen, where the call lives on every screen.
                 if (joined && state.voiceRoom == null) {
-                    TextButton(onClick = requestMic) { Text("Join voice") }
+                    SquareTextButton(onClick = requestMic) { Text("Join voice") }
                 }
                 // Who is here, in voice or reading, and what you can do about
                 // each of them: the same rows as the Rooms tree.
-                IconButton(enabled = joined, onClick = { membersOpen = true }) {
+                SquareIconButton(enabled = joined, onClick = { membersOpen = true }) {
                     Icon(painterResource(R.drawable.ds_peers), contentDescription = "Members")
                 }
-                IconButton(onClick = onShare) {
-                    Icon(Icons.Filled.Share, contentDescription = "Share this room")
+                SquareIconButton(onClick = onShare) {
+                    Icon(painterResource(R.drawable.ds_share), contentDescription = "Share this room", modifier = Modifier.size(22.dp))
                 }
             },
         )
@@ -2089,11 +2076,11 @@ private fun RoomChatScreen(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(
+            SquareIconButton(
                 onClick = { pickFile.launch(arrayOf("*/*")) },
                 enabled = joined,
             ) {
-                Icon(Icons.Filled.AddCircle, contentDescription = "Share a file")
+                Icon(painterResource(R.drawable.ds_attach), contentDescription = "Share a file", modifier = Modifier.size(22.dp))
             }
             OutlinedTextField(
                 value = draft,
@@ -2104,7 +2091,7 @@ private fun RoomChatScreen(
                 maxLines = 4,
             )
             Spacer(Modifier.width(8.dp))
-            IconButton(
+            SquareIconButton(
                 onClick = {
                     onSend(draft)
                     draft = ""
@@ -2112,7 +2099,7 @@ private fun RoomChatScreen(
                 },
                 enabled = joined && draft.isNotBlank(),
             ) {
-                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                Icon(painterResource(R.drawable.ds_send), contentDescription = "Send", modifier = Modifier.size(22.dp))
             }
         }
     }
@@ -2307,8 +2294,8 @@ private fun TrustOfferDialog(
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { onAnswer(true) }) { Text("Accept") } },
-        dismissButton = { TextButton(onClick = { onAnswer(false) }) { Text("Not now") } },
+        confirmButton = { SquareTextButton(onClick = { onAnswer(true) }) { Text("Accept") } },
+        dismissButton = { SquareTextButton(onClick = { onAnswer(false) }) { Text("Not now") } },
     )
 }
 
@@ -2362,11 +2349,11 @@ private fun LockIdentityDialog(
             )
         },
         confirmButton = {
-            TextButton(onClick = onConfirm) {
+            SquareTextButton(onClick = onConfirm) {
                 Text("Lock", color = MaterialTheme.colorScheme.error)
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { SquareTextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
@@ -2406,8 +2393,8 @@ private fun PortalScreen(
             windowInsets = WindowInsets(0, 0, 0, 0),
             title = { Text(label) },
             navigationIcon = {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Leave portal")
+                SquareIconButton(onClick = onBack) {
+                    Icon(painterResource(R.drawable.ds_arrow_back), contentDescription = "Leave portal", modifier = Modifier.size(22.dp))
                 }
             },
         )
@@ -2608,8 +2595,8 @@ private fun SettingsScreen(
             windowInsets = WindowInsets(0, 0, 0, 0),
             title = { Text("Settings") },
             navigationIcon = {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                SquareIconButton(onClick = onBack) {
+                    Icon(painterResource(R.drawable.ds_arrow_back), contentDescription = "Back", modifier = Modifier.size(22.dp))
                 }
             },
         )
@@ -2659,7 +2646,7 @@ private fun SettingsScreen(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                TextButton(
+                SquareTextButton(
                     enabled = state.identity.publicId.isNotBlank(),
                     onClick = {
                         clipboard.setText(androidx.compose.ui.text.AnnotatedString(state.identity.publicId))
@@ -2681,7 +2668,7 @@ private fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(8.dp))
-            Button(
+            SquareButton(
                 onClick = { onSetHandle(handle) },
                 enabled = handle.trim() != state.identity.handle,
             ) { Text("Save name") }
@@ -2696,7 +2683,7 @@ private fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
-                TextButton(onClick = { showAvatarEditor = true }) { Text("Edit") }
+                SquareTextButton(onClick = { showAvatarEditor = true }) { Text("Edit") }
             }
 
             BackupButton(unlocked = true)
@@ -2715,7 +2702,7 @@ private fun SettingsScreen(
                 checked = state.stayUnlocked,
                 onCheckedChange = onSetStayUnlocked,
             )
-            TextButton(onClick = { confirmLock = true }) {
+            SquareTextButton(onClick = { confirmLock = true }) {
                 Text("Lock identity", color = MaterialTheme.colorScheme.error)
             }
 
@@ -2898,8 +2885,8 @@ private fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    TextButton(onClick = { onOpenPortal(node) }) { Text("Portal") }
-                    TextButton(onClick = { confirmRemoveNode = node }) {
+                    SquareTextButton(onClick = { onOpenPortal(node) }) { Text("Portal") }
+                    SquareTextButton(onClick = { confirmRemoveNode = node }) {
                         Text("Remove", color = MaterialTheme.colorScheme.error)
                     }
                 }
@@ -2921,8 +2908,8 @@ private fun SettingsScreen(
             )
             Spacer(Modifier.height(8.dp))
             Row {
-                TextButton(onClick = { onTrimHistory(30) }) { Text("Trim over 30 days") }
-                TextButton(onClick = { confirmPurge = true }) {
+                SquareTextButton(onClick = { onTrimHistory(30) }) { Text("Trim over 30 days") }
+                SquareTextButton(onClick = { confirmPurge = true }) {
                     Text("Delete all", color = MaterialTheme.colorScheme.error)
                 }
             }
@@ -2934,13 +2921,13 @@ private fun SettingsScreen(
             // ── About ─────────────────────────────────────────────────────
             SectionTitle("About")
             val legalContext = LocalContext.current
-            TextButton(onClick = { Legal.openUrl(legalContext, Legal.PRIVACY_URL) }) {
+            SquareTextButton(onClick = { Legal.openUrl(legalContext, Legal.PRIVACY_URL) }) {
                 Text("Privacy policy")
             }
-            TextButton(onClick = { Legal.openUrl(legalContext, Legal.TERMS_URL) }) {
+            SquareTextButton(onClick = { Legal.openUrl(legalContext, Legal.TERMS_URL) }) {
                 Text("Terms of use")
             }
-            TextButton(onClick = { showLicenses = true }) {
+            SquareTextButton(onClick = { showLicenses = true }) {
                 Text("Third-party licenses")
             }
             Spacer(Modifier.height(8.dp))
@@ -2982,13 +2969,13 @@ private fun SettingsScreen(
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
+                SquareTextButton(onClick = {
                     confirmRemoveNode = null
                     onRemoveSupernode(node.peerId)
                 }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
-                TextButton(onClick = { confirmRemoveNode = null }) { Text("Cancel") }
+                SquareTextButton(onClick = { confirmRemoveNode = null }) { Text("Cancel") }
             },
         )
     }
@@ -3015,13 +3002,13 @@ private fun SettingsScreen(
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
+                SquareTextButton(onClick = {
                     confirmPurge = false
                     onPurgeHistory()
                 }) { Text("Delete all", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
-                TextButton(onClick = { confirmPurge = false }) { Text("Cancel") }
+                SquareTextButton(onClick = { confirmPurge = false }) { Text("Cancel") }
             },
         )
     }
@@ -3107,8 +3094,8 @@ private fun AvatarEditorDialog(
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { onSave(configJson) }) { Text("Save") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        confirmButton = { SquareTextButton(onClick = { onSave(configJson) }) { Text("Save") } },
+        dismissButton = { SquareTextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
@@ -3194,8 +3181,8 @@ private fun FileOfferDialog(
                 )
             }
         },
-        confirmButton = { TextButton(onClick = onAccept) { Text("Accept") } },
-        dismissButton = { TextButton(onClick = onReject) { Text("Decline") } },
+        confirmButton = { SquareTextButton(onClick = onAccept) { Text("Accept") } },
+        dismissButton = { SquareTextButton(onClick = onReject) { Text("Decline") } },
     )
 }
 
@@ -3220,9 +3207,9 @@ private fun SaveFilePrompt(
         title = { Text("File received") },
         text = { Text("${saved.name} finished downloading. Save a copy?") },
         confirmButton = {
-            TextButton(onClick = { createDocument.launch(saved.name) }) { Text("Save") }
+            SquareTextButton(onClick = { createDocument.launch(saved.name) }) { Text("Save") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Not now") } },
+        dismissButton = { SquareTextButton(onClick = onDismiss) { Text("Not now") } },
     )
 }
 
@@ -3254,7 +3241,7 @@ private fun InviteContactDialog(
                 )
                 Spacer(Modifier.height(8.dp))
                 contacts.forEach { peer ->
-                    TextButton(
+                    SquareTextButton(
                         onClick = { onPick(peer) },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
@@ -3264,7 +3251,7 @@ private fun InviteContactDialog(
             }
         },
         confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { SquareTextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
@@ -3286,12 +3273,12 @@ private fun InviteDialog(url: String, onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            TextButton(onClick = {
+            SquareTextButton(onClick = {
                 clipboard.setText(androidx.compose.ui.text.AnnotatedString(url))
                 onDismiss()
             }) { Text("Copy") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        dismissButton = { SquareTextButton(onClick = onDismiss) { Text("Close") } },
     )
 }
 
@@ -3312,9 +3299,9 @@ private fun AcceptInviteDialog(onDismiss: () -> Unit, onAccept: (String) -> Unit
             )
         },
         confirmButton = {
-            TextButton(onClick = { onAccept(url) }, enabled = url.isNotBlank()) { Text("Accept") }
+            SquareTextButton(onClick = { onAccept(url) }, enabled = url.isNotBlank()) { Text("Accept") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { SquareTextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
@@ -3510,7 +3497,7 @@ private fun BoxScope.JumpToCurrentButton(visible: Boolean, onClick: () -> Unit) 
         modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
     ) {
         FilledTonalButton(onClick = onClick) {
-            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null)
+            Icon(painterResource(R.drawable.ds_chevron), contentDescription = null, modifier = Modifier.size(18.dp).rotate(90f))
             Spacer(Modifier.width(6.dp))
             Text("Jump to current")
         }

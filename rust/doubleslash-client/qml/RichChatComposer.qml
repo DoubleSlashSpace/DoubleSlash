@@ -211,14 +211,13 @@ Rectangle {
                 onClicked: root.submit()
             }
 
-            Button {
+            IconButton {
                 Layout.alignment: Qt.AlignBottom
                 text: root.aiStreaming ? "..." : "AI"
                 visible: root.aiEnabled
                 enabled: !root.aiStreaming
                     && composer.text.trim() !== ""
                     && root.enabledForTarget
-                flat: true
                 Material.foreground: Theme.accent
                 ToolTip.text: "Ask local AI"
                 ToolTip.visible: hovered

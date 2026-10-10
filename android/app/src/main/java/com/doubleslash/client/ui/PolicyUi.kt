@@ -14,11 +14,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -58,13 +56,13 @@ fun rememberExplainedPermission(
             title = { Text(title) },
             text = { Text(body) },
             confirmButton = {
-                TextButton(onClick = {
+                SquareTextButton(onClick = {
                     show = false
                     launcher.launch(permission)
                 }) { Text("Continue") }
             },
             dismissButton = {
-                TextButton(onClick = { show = false }) { Text("Not now") }
+                SquareTextButton(onClick = { show = false }) { Text("Not now") }
             },
         )
     }
@@ -135,13 +133,13 @@ fun NotificationPermissionPrompt(settings: AppSettings) {
             )
         },
         confirmButton = {
-            TextButton(onClick = {
+            SquareTextButton(onClick = {
                 show = false
                 launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }) { Text("Continue") }
         },
         dismissButton = {
-            TextButton(onClick = {
+            SquareTextButton(onClick = {
                 show = false
                 settings.notificationRationaleShown = true
             }) { Text("Not now") }
@@ -189,17 +187,17 @@ fun TermsScreen(
             style = MaterialTheme.typography.bodyMedium,
         )
         Spacer(Modifier.height(24.dp))
-        TextButton(onClick = { Legal.openUrl(context, Legal.TERMS_URL) }) {
+        SquareTextButton(onClick = { Legal.openUrl(context, Legal.TERMS_URL) }) {
             Text("Read the full terms")
         }
-        TextButton(onClick = { Legal.openUrl(context, Legal.PRIVACY_URL) }) {
+        SquareTextButton(onClick = { Legal.openUrl(context, Legal.PRIVACY_URL) }) {
             Text("Privacy policy")
         }
         Spacer(Modifier.height(16.dp))
-        Button(onClick = onAccept, modifier = Modifier.fillMaxWidth()) {
+        SquareButton(onClick = onAccept, modifier = Modifier.fillMaxWidth()) {
             Text("I agree")
         }
-        TextButton(onClick = onDecline, modifier = Modifier.fillMaxWidth()) {
+        SquareTextButton(onClick = onDecline, modifier = Modifier.fillMaxWidth()) {
             Text("Decline and lock")
         }
     }
@@ -244,7 +242,7 @@ fun ReportDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = {
+            SquareTextButton(onClick = {
                 Legal.shareReport(
                     context,
                     Legal.reportSubject(targetLabel),
@@ -256,15 +254,15 @@ fun ReportDialog(
         dismissButton = {
             Column {
                 if (onBlock != null) {
-                    TextButton(onClick = {
+                    SquareTextButton(onClick = {
                         onBlock()
                         onDismiss()
                     }) { Text("Block") }
                 }
-                TextButton(onClick = {
+                SquareTextButton(onClick = {
                     Legal.openUrl(context, Legal.CYBERTIP_URL)
                 }) { Text("NCMEC CyberTip") }
-                TextButton(onClick = onDismiss) { Text("Cancel") }
+                SquareTextButton(onClick = onDismiss) { Text("Cancel") }
             }
         },
     )

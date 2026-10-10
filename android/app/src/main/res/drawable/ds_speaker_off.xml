@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Traced from the desktop client's rust/doubleslash-client/qml/icons/video-off.svg
+  Traced from the desktop client's rust/doubleslash-client/qml/icons/speaker-off.svg
   so both clients draw the same angular shape (square ends, mitred corners).
   Stroked white; tint it (Compose Icon) to colour it from the active skin.
 -->
@@ -10,21 +10,21 @@
     android:viewportWidth="20"
     android:viewportHeight="20">
     <path
-        android:pathData="M2,5.5 L13,5.5 L13,14.5 L2,14.5 Z"
+        android:pathData="M2.5,7.5 L6,7.5 L10.5,3.5 L10.5,16.5 L6,12.5 L2.5,12.5 Z"
         android:strokeColor="#FFFFFFFF"
         android:strokeWidth="1.4"
         android:strokeLineJoin="miter"
         android:fillColor="#00000000" />
     <path
-        android:pathData="M13,9 L18,6.5 L18,13.5 L13,11 Z"
+        android:pathData="M13,7 L18,13"
         android:strokeColor="#FFFFFFFF"
         android:strokeWidth="1.4"
         android:strokeLineJoin="miter"
         android:fillColor="#00000000" />
     <path
-        android:pathData="M3,17 L17,3"
+        android:pathData="M18,7 L13,13"
         android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="1.6"
+        android:strokeWidth="1.4"
         android:strokeLineJoin="miter"
         android:fillColor="#00000000" />
 </vector>
