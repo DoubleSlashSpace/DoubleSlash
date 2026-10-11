@@ -586,6 +586,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.update {
             it.copy(supernodeInfo = reply.decodeList<SupernodeInfo>(core, "supernodes"))
         }
+        applyConnected(reply.stringList("connected"))
+    }
+
+    /**
+     * Read from the core which supernodes are up.
+     *
+     * A screen that attaches to a session already running (the app reopened
+     * after Back, say) missed the connect events, so it showed "Offline" and no
+     * call icons over a working connection.
+     */
+    private fun syncConnection() = viewModelScope.launch {
+        val reply = core.command("supernode.list")
+        if (reply.ok) applyConnected(reply.stringList("connected"))
+    }
+
+    private fun applyConnected(ids: List<String>) {
+        val connected = ids.map { it.trimEnd('=') }.toSet()
+        _state.update {
+            it.copy(
+                connectedSupernodes = connected,
+                connectionMode = if (connected.isEmpty()) {
+                    it.connectionMode
+                } else {
+                    maxOf(it.connectionMode, ConnectionMode.RELAY)
+                },
+            )
+        }
     }
 
     /**
@@ -777,6 +804,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         refreshIdentity()
         refreshPeers()
         refreshRooms()
+        // The session may have been connected before this screen attached.
+        syncConnection()
 
         // Invites wait until terms are accepted so a first-run tap cannot
         // land in a room before the policy gate.

@@ -3,7 +3,7 @@
 //! A session owns the tokio runtime the client core runs on, the three
 //! on-disk stores, and the OS thread that pumps core events into Kotlin.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -94,6 +94,11 @@ pub struct Session {
     /// row per member instead of one per room, and misses hide state recorded
     /// against a sibling.
     pub cluster_members: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    /// Supernodes with a live session, pad-normalized, kept from the
+    /// connect and disconnect events. A screen that attaches to a session
+    /// already running missed those events, so `supernode.list` reports this
+    /// rather than leaving it to show "Offline" over a working connection.
+    pub connected_supernodes: Arc<RwLock<HashSet<String>>>,
     /// The video codecs each peer advertised, from its capability announce.
     ///
     /// A direct call negotiates its codec from this; a peer missing here has
@@ -181,6 +186,7 @@ impl Session {
         runtime.spawn(sfu_fut);
 
         let cluster_members = Arc::new(RwLock::new(HashMap::new()));
+        let connected_supernodes = Arc::new(RwLock::new(HashSet::new()));
         let peer_video_codecs = PeerVideoCodecs::default();
         // The call controller has its own event channel, separate from the
         // connection manager's. Dropping it costs the real call state (the UI
@@ -204,6 +210,7 @@ impl Session {
             cmd_tx.clone(),
             call_tx.clone(),
             Arc::clone(&cluster_members),
+            Arc::clone(&connected_supernodes),
             Arc::clone(&peer_video_codecs),
             my_public_id.clone(),
         )?;
@@ -225,6 +232,7 @@ impl Session {
             video_in,
             sink: sink_for_session,
             cluster_members,
+            connected_supernodes,
             peer_video_codecs,
             pump: Some(pump),
             call_pump: Some(call_pump),
@@ -373,6 +381,7 @@ fn spawn_event_pump(
     cmd_tx: mpsc::Sender<ConnectionCommand>,
     call_tx: mpsc::Sender<CallCommand>,
     cluster_members: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    connected_supernodes: Arc<RwLock<HashSet<String>>>,
     peer_video_codecs: PeerVideoCodecs,
     my_public_id: String,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
@@ -422,6 +431,22 @@ fn spawn_event_pump(
                     cluster_members
                         .write()
                         .insert(supernode_id.clone(), members.clone());
+                }
+
+                // Remember which supernodes are up, for a screen that attaches
+                // after these events went by (see `connected_supernodes`).
+                match &ev {
+                    ConnectionEvent::SupernodeConnected(id) => {
+                        connected_supernodes
+                            .write()
+                            .insert(id.trim_end_matches('=').to_owned());
+                    }
+                    ConnectionEvent::SupernodeDisconnected(id) => {
+                        connected_supernodes
+                            .write()
+                            .remove(id.trim_end_matches('='));
+                    }
+                    _ => {}
                 }
 
                 // Trade rooms with our other devices through each host we

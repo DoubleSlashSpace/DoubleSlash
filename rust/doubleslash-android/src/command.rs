@@ -319,7 +319,18 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                 })
                 .collect();
 
-            json!({ "ok": true, "supernodes": nodes })
+            // Which of them, or of their cluster siblings, have a live session
+            // now: a screen opened onto a running session missed the connect
+            // events and would otherwise read "Offline".
+            let mut connected: Vec<String> = session
+                .connected_supernodes
+                .read()
+                .iter()
+                .cloned()
+                .collect();
+            connected.sort();
+
+            json!({ "ok": true, "supernodes": nodes, "connected": connected })
         }
         "supernode.remove" => {
             let Some(node_id) = arg_str(&parsed, "node_id") else {
