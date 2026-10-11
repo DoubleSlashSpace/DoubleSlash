@@ -30,7 +30,7 @@ Rectangle {
     signal selfSelected()
     signal peerSelected(string peerId, string handle)
     signal startCallRequested(string peerId)
-    signal removePeerRequested(string peerId)
+    signal removePeerRequested(string peerId, string handle)
     signal copyPeerIdRequested(string peerId)
     signal blockPeerRequested(string peerId)
     signal unblockPeerRequested(string peerId)
@@ -338,11 +338,13 @@ Rectangle {
 
         MenuItem {
             text: "Start Call"
+            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
             onTriggered: root.startCallRequested(peerContextMenu.targetPeerId)
         }
 
         MenuItem {
             text: "Copy Peer ID"
+            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
             onTriggered: root.copyPeerIdRequested(peerContextMenu.targetPeerId)
         }
 
@@ -350,11 +352,16 @@ Rectangle {
 
         MenuItem {
             text: "Remove Peer"
-            onTriggered: root.removePeerRequested(peerContextMenu.targetPeerId)
+            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+            onTriggered: root.removePeerRequested(
+                peerContextMenu.targetPeerId, peerContextMenu.targetHandle)
         }
 
         MenuItem {
             text: peerContextMenu.targetBlocked ? "Unblock Peer" : "Block Peer"
+            icon.source: peerContextMenu.targetBlocked
+                ? "qrc:/qt/qml/DoubleSlash/Client/icons/person.svg"
+                : "qrc:/qt/qml/DoubleSlash/Client/icons/block.svg"
             onTriggered: {
                 if (peerContextMenu.targetBlocked)
                     root.unblockPeerRequested(peerContextMenu.targetPeerId)
@@ -367,6 +374,7 @@ Rectangle {
 
         MenuItem {
             text: "Clear Chat History"
+            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/speech-off.svg"
             onTriggered: root.clearHistoryRequested(peerContextMenu.targetPeerId)
         }
     }

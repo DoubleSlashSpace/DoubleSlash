@@ -13,8 +13,10 @@
         <file alias="icons/search.svg">qml/icons/search.svg</file>
         <file alias="icons/attach.svg">qml/icons/attach.svg</file>
         <file alias="icons/speech.svg">qml/icons/speech.svg</file>
+        <file alias="icons/speech-off.svg">qml/icons/speech-off.svg</file>
         <file alias="icons/headphone.svg">qml/icons/headphone.svg</file>
         <file alias="icons/person.svg">qml/icons/person.svg</file>
+        <file alias="icons/block.svg">qml/icons/block.svg</file>
         <file alias="icons/invite.svg">qml/icons/invite.svg</file>
         <file alias="icons/invite-submit.svg">qml/icons/invite-submit.svg</file>
         <file alias="icons/logo.svg">qml/icons/logo.svg</file>
