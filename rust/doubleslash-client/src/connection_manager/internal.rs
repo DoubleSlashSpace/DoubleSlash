@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Notify};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
+use crate::file_transfer::PreparedOffer;
 use crate::protocol::SignalingMessage;
 use crate::quic_relay_client::QuicRelayClient;
 use doubleslash_features::device::{DeviceId, MAX_LIVE_DEVICE_ROUTES};
@@ -177,6 +178,34 @@ pub(super) enum InternalEvent {
     /// used until something that observes us from outside disagrees.
     UpnpGateway {
         external_ip: String,
+    },
+
+    /// A file the user is sending has been hashed off the loop.
+    OfferPrepared {
+        target: OfferTarget,
+        rel_path: String,
+        transfer_id: String,
+        purpose: String,
+        result: Result<PreparedOffer, String>,
+    },
+    /// A streamed download's `.part` file has been hashed off the loop.
+    FileHashed {
+        transfer_id: String,
+        /// The download belongs to the room file manager, not the 1:1 one.
+        room: bool,
+        result: Result<String, String>,
+    },
+}
+
+/// Where a file being prepared will be offered.
+#[derive(Debug)]
+pub(super) enum OfferTarget {
+    Peer {
+        peer_id: String,
+    },
+    Room {
+        supernode_id: String,
+        room_id: String,
     },
 }
 

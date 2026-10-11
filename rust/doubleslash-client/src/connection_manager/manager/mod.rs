@@ -9,6 +9,7 @@
 
 mod device_calls;
 mod device_session;
+mod file_work;
 mod inbound;
 mod invite;
 mod peer_session;
@@ -47,8 +48,8 @@ use super::events::{ConnectionCommand, ConnectionEvent};
 #[cfg(test)]
 use super::internal::PeerOutbound;
 use super::internal::{
-    InternalEvent, PeerConnection, PeerConnectionState, PeerTransportStats, PendingInvite,
-    SupernodePingTracker, SupernodeSession, INVITE_TTL,
+    InternalEvent, OfferTarget, PeerConnection, PeerConnectionState, PeerTransportStats,
+    PendingInvite, SupernodePingTracker, SupernodeSession, INVITE_TTL,
 };
 use super::ws::supernode_ws_task;
 
@@ -205,6 +206,9 @@ pub struct ConnectionManager {
     /// File-transfer state machine.
     file_mgr: FileTransferManager,
     room_file_mgr: FileTransferManager,
+    /// Transfer ids of files the user sent that are still being hashed off
+    /// the loop. Withdrawing one removes it, so it is never offered.
+    offers_in_preparation: HashSet<String>,
     /// In-process registry of capabilities this client advertises and the
     /// modules bound to them. Seeded from `register_client_modules`.
     feature_registry: Arc<FeatureRegistry>,
@@ -582,6 +586,7 @@ impl ConnectionManager {
             issued_invites: HashMap::new(),
             file_mgr: FileTransferManager::new(),
             room_file_mgr: FileTransferManager::new(),
+            offers_in_preparation: HashSet::new(),
             feature_registry,
             peer_capabilities: HashMap::new(),
             room_members: HashSet::new(),
@@ -679,6 +684,44 @@ impl ConnectionManager {
     #[cfg(test)]
     pub(super) fn test_room_file_mgr(&mut self) -> &mut FileTransferManager {
         &mut self.room_file_mgr
+    }
+
+    /// Test-only: what `ConnectionCommand::SendSfuFile` runs.
+    #[cfg(test)]
+    pub(super) fn test_send_room_file(
+        &mut self,
+        supernode_id: &str,
+        room_id: &str,
+        path: &str,
+        transfer_id: &str,
+    ) {
+        self.prepare_offer(
+            OfferTarget::Room {
+                supernode_id: supernode_id.to_owned(),
+                room_id: room_id.to_owned(),
+            },
+            "a.bin".to_owned(),
+            path.to_owned(),
+            transfer_id.to_owned(),
+            "room_file".to_owned(),
+        );
+    }
+
+    /// Test-only: the check `ConnectionCommand::RevokeFile` makes first.
+    #[cfg(test)]
+    pub(super) fn test_withdraw_offer_in_preparation(&mut self, transfer_id: &str) -> bool {
+        self.withdraw_offer_in_preparation(transfer_id)
+    }
+
+    /// Test-only: wait for the next internal event, such as a finished hash,
+    /// and handle it as the run loop would.
+    #[cfg(test)]
+    pub(super) async fn test_handle_next_internal_event(&mut self) {
+        let ev = tokio::time::timeout(Duration::from_secs(10), self.internal_rx.recv())
+            .await
+            .expect("an internal event within 10 s")
+            .expect("internal channel open");
+        self.handle_internal_event(ev).await;
     }
 
     /// Test-only: whether a peer currently counts as present via the relay.
@@ -1267,29 +1310,13 @@ impl ConnectionManager {
                             .await;
                         }
                         ConnectionCommand::SendSfuFile { supernode_id, room_id, rel_path, path, transfer_id, purpose } => {
-                            // Advertisement only: `auto_push = false`. Room files
-                            // used to broadcast every chunk immediately, so every
-                            // member downloaded every file whether they wanted it
-                            // or not. Chunks now flow only to peers who answer the
-                            // offer with an SfuFileRequest, re-read from this path.
-                            let src = std::path::PathBuf::from(&path);
-                            let size = std::fs::metadata(&src).map(|m| m.len() as usize).unwrap_or(0);
-                            match self.room_file_mgr.offer_file_from_path_with_id(&room_id, &rel_path, &src, &purpose, false, Some(&transfer_id)) {
-                                Ok((transfer_id, evs)) => {
-                                    self.emit_event(ConnectionEvent::FileOffered {
-                                        transfer_id,
-                                        peer_id: room_id.clone(),
-                                        rel_path,
-                                        size,
-                                        purpose,
-                                        is_self: true,
-                                        origin_id: self.identity.public_id(),
-                                        supernode_id: supernode_id.clone(),
-                                    });
-                                    self.dispatch_room_transfer_events(evs, &supernode_id, &room_id).await;
-                                }
-                                Err(e) => warn!("SendSfuFile error: {e}"),
-                            }
+                            self.prepare_offer(
+                                OfferTarget::Room { supernode_id, room_id },
+                                rel_path,
+                                path,
+                                transfer_id,
+                                purpose,
+                            );
                         }
                         ConnectionCommand::BlockPeer { peer_id } => {
                             {
@@ -1377,38 +1404,13 @@ impl ConnectionManager {
                             ));
                         }
                         ConnectionCommand::SendFile { peer_id, rel_path, path, transfer_id, purpose } => {
-                            let src = std::path::PathBuf::from(&path);
-                            let size = std::fs::metadata(&src).map(|m| m.len() as usize).unwrap_or(0);
-                            // Small files keep the in-RAM path so compression and
-                            // delta still apply; large ones stream from disk.
-                            let offered = if size > crate::file_transfer::INLINE_MAX {
-                                self.file_mgr.offer_file_from_path_with_id(&peer_id, &rel_path, &src, &purpose, false, Some(&transfer_id))
-                            } else {
-                                match std::fs::read(&src) {
-                                    Ok(data) => {
-                                        let old = self.file_mgr.get_old_data(&rel_path);
-                                        let old_ref: Option<&[u8]> = old.as_deref();
-                                        self.file_mgr.offer_file_with_id(&peer_id, &rel_path, data, &purpose, old_ref, false, Some(&transfer_id))
-                                    }
-                                    Err(e) => Err(format!("cannot read {}: {e}", src.display())),
-                                }
-                            };
-                            match offered {
-                                Ok((transfer_id, evs)) => {
-                                    self.emit_event(ConnectionEvent::FileOffered {
-                                        transfer_id,
-                                        peer_id: peer_id.clone(),
-                                        rel_path,
-                                        size,
-                                        purpose,
-                                        is_self: true,
-                                        origin_id: self.identity.public_id(),
-                                        supernode_id: String::new(),
-                                    });
-                                    self.dispatch_transfer_events(evs).await;
-                                }
-                                Err(e) => warn!("SendFile error: {e}"),
-                            }
+                            self.prepare_offer(
+                                OfferTarget::Peer { peer_id },
+                                rel_path,
+                                path,
+                                transfer_id,
+                                purpose,
+                            );
                         }
                         ConnectionCommand::AcceptFile { transfer_id } => {
                             self.accept_inbound_file(&transfer_id).await;
@@ -1421,6 +1423,11 @@ impl ConnectionManager {
                             // relay caches nothing, so dropping the offer really
                             // does revoke it: nobody can obtain the file after
                             // this. Peers who already downloaded keep their copy.
+                            // One still being hashed has not been offered, so
+                            // there is nobody to tell.
+                            if self.withdraw_offer_in_preparation(&transfer_id) {
+                                continue;
+                            }
                             let room = self.room_file_mgr.outbound_route(&transfer_id).map(|(r, _)| r);
                             let revoked = self.room_file_mgr.revoke_outbound(&transfer_id)
                                 | self.file_mgr.revoke_outbound(&transfer_id);
@@ -2275,6 +2282,23 @@ impl ConnectionManager {
                         self.quic_relays.remove(&supernode_id);
                     }
                 }
+            }
+            InternalEvent::OfferPrepared {
+                target,
+                rel_path,
+                transfer_id,
+                purpose,
+                result,
+            } => {
+                self.offer_prepared(target, rel_path, transfer_id, purpose, result)
+                    .await;
+            }
+            InternalEvent::FileHashed {
+                transfer_id,
+                room,
+                result,
+            } => {
+                self.received_file_hashed(transfer_id, room, result).await;
             }
             InternalEvent::UpnpGateway { external_ip } => {
                 // Never overwrites an address a supernode observed for us:

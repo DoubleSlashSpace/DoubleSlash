@@ -31,9 +31,8 @@ The client limit is 4 GiB. Verify a complete maximum-size file between packaged
 desktop and Android clients on direct and relayed paths, including a room pull,
 a slow transfer lasting over an hour, voice during transfer, and disconnect /
 retry and insufficient-disk failures. Boundary and streaming unit tests do not
-establish this live acceptance. Full-file hashing still runs synchronously in
-the connection manager at offer preparation and receive verification; move it
-off the manager loop before claiming uninterrupted voice during large sends.
+establish this live acceptance. Full-file hashing now runs off the manager loop
+on both sides; voice during a maximum-size send and receive is still unverified.
 
 ### Unified room member list and trust invites
 

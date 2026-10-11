@@ -2925,6 +2925,9 @@ impl ConnectionManager {
                 TransferEvent::StateChanged { .. } => {
                     // Granular state changes; no top-level event for now.
                 }
+                TransferEvent::HashFile { transfer_id, path } => {
+                    self.hash_received_file(transfer_id, path, false);
+                }
             }
         }
         for (tid, n) in unsent_chunks {
@@ -3156,6 +3159,9 @@ impl ConnectionManager {
                     });
                 }
                 TransferEvent::StateChanged { .. } => {}
+                TransferEvent::HashFile { transfer_id, path } => {
+                    self.hash_received_file(transfer_id, path, true);
+                }
             }
         }
         for (tid, n) in unsent_chunks {

@@ -2112,6 +2112,140 @@ async fn our_other_device_can_pull_a_file_we_posted() {
         .all(|m| m.payload.get("to").and_then(Value::as_str) == Some(me.as_str())));
 }
 
+fn offered_files(
+    events: &mut tokio::sync::mpsc::Receiver<ConnectionEvent>,
+) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    while let Ok(ev) = events.try_recv() {
+        if let ConnectionEvent::FileOffered {
+            transfer_id, size, ..
+        } = ev
+        {
+            out.push((transfer_id, size));
+        }
+    }
+    out
+}
+
+/// Sending a file hashes all of it, seconds for a large one, so the manager
+/// hashes off its loop and offers the file when the hash comes back.
+#[tokio::test]
+async fn a_room_file_is_offered_once_its_hash_finishes() {
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-A");
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("a.bin");
+    std::fs::write(&src, vec![1u8; 64]).unwrap();
+
+    t.cm.test_send_room_file("SN-A", "default", src.to_str().unwrap(), "tid-hashing");
+    assert!(
+        !t.cm.test_room_file_mgr().has_outbound("tid-hashing"),
+        "nothing is offered before the hash returns"
+    );
+    assert!(offered_files(&mut t.events).is_empty());
+
+    t.cm.test_handle_next_internal_event().await;
+    assert!(t.cm.test_room_file_mgr().has_outbound("tid-hashing"));
+    assert_eq!(
+        offered_files(&mut t.events),
+        vec![("tid-hashing".to_owned(), 64)]
+    );
+    assert!(harness::drain_ws(&mut sn)
+        .iter()
+        .any(|m| m.msg_type == MessageType::SfuFileOffer));
+}
+
+/// Deleting the message while its file is still being hashed must stop the
+/// offer from ever going out.
+#[tokio::test]
+async fn a_file_withdrawn_while_it_hashes_is_never_offered() {
+    let mut t = harness::test_cm();
+    let mut sn = t.cm.test_add_supernode_session("SN-A");
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("a.bin");
+    std::fs::write(&src, vec![1u8; 64]).unwrap();
+
+    t.cm.test_send_room_file("SN-A", "default", src.to_str().unwrap(), "tid-early");
+    assert!(t.cm.test_withdraw_offer_in_preparation("tid-early"));
+    t.cm.test_handle_next_internal_event().await;
+
+    assert!(!t.cm.test_room_file_mgr().has_outbound("tid-early"));
+    assert!(offered_files(&mut t.events).is_empty());
+    assert!(!harness::drain_ws(&mut sn)
+        .iter()
+        .any(|m| m.msg_type == MessageType::SfuFileOffer));
+}
+
+/// The last COMPLETE of a streamed download hands the file to a blocking
+/// thread to hash; the download finishes when that hash comes back.
+#[tokio::test]
+async fn a_streamed_room_download_completes_after_its_hash() {
+    use crate::file_transfer::{TransferPayload, CHUNK_SIZE, INLINE_MAX};
+    use crate::identity::Identity;
+    use sha2::Digest as _;
+    let mut t = harness::test_cm();
+    let _sn = t.cm.test_add_supernode_session("SN-A");
+    let me = t.identity.public_id();
+    let origin = Identity::generate();
+    let data = vec![7u8; INLINE_MAX + 1];
+    let sha = hex::encode(sha2::Sha256::digest(&data));
+
+    let mgr = t.cm.test_room_file_mgr();
+    mgr.on_offer_received_with_room(
+        &origin.public_id(),
+        "default",
+        "SN-A",
+        "tid-big",
+        "big.bin",
+        &sha,
+        data.len(),
+        data.len().div_ceil(CHUNK_SIZE),
+        "room_file",
+        false,
+        false,
+        "",
+    );
+    mgr.accept_transfer_locally("tid-big");
+    for (i, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
+        mgr.on_chunk_bytes_received("tid-big", i, chunk.to_vec());
+    }
+
+    t.cm.handle_inbound_from_supernode(
+        "SN-A".into(),
+        signed_room_file_msg(&origin, MessageType::SfuFileComplete, "tid-big", &me),
+    )
+    .await;
+    let mut early = Vec::new();
+    while let Ok(ev) = t.events.try_recv() {
+        early.push(ev);
+    }
+    assert!(
+        !early
+            .iter()
+            .any(|ev| matches!(ev, ConnectionEvent::FileComplete { .. })),
+        "the hash has not run yet"
+    );
+
+    t.cm.test_handle_next_internal_event().await;
+    let mut saved = None;
+    while let Ok(ev) = t.events.try_recv() {
+        if let ConnectionEvent::FileComplete {
+            transfer_id,
+            room_id,
+            payload: TransferPayload::SavedAt { path, len },
+            ..
+        } = ev
+        {
+            saved = Some((transfer_id, room_id, path, len));
+        }
+    }
+    let (tid, room, path, len) = saved.expect("FileComplete after the hash");
+    assert_eq!(tid, "tid-big");
+    assert_eq!(room, "default");
+    assert_eq!(len, data.len() as u64);
+    let _ = std::fs::remove_file(path);
+}
+
 mod harness {
     use super::super::events::ConnectionEvent;
     use super::super::ConnectionManager;

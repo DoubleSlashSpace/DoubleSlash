@@ -573,6 +573,10 @@ pub enum TransferEvent {
     Failed { transfer_id: String, reason: String },
     /// State changed (string tag from `TransferState::as_str`).
     StateChanged { transfer_id: String, state: String },
+    /// Every chunk of a streamed download is on disk. Hash `path` off the
+    /// connection manager's loop and pass the result to
+    /// [`FileTransferManager::on_file_hashed`].
+    HashFile { transfer_id: String, path: PathBuf },
     /// The manager needs to send a signaling message outbound.
     SendMessage {
         peer_id: String,
@@ -597,6 +601,142 @@ struct OfferMeta {
     compressed: bool,
     is_delta: bool,
     base_sha256: String,
+}
+
+/// An outbound offer whose file has been read and hashed, ready to record.
+///
+/// Building one reads the whole file, which takes seconds for a large one, so
+/// the connection manager builds it on a blocking thread and records it with
+/// [`FileTransferManager::insert_prepared`] back on its own loop. That loop
+/// also carries signaling and voice.
+pub struct PreparedOffer {
+    source: TransferSource,
+    meta: OfferMeta,
+}
+
+impl PreparedOffer {
+    /// Size of the original file in bytes.
+    pub fn size(&self) -> usize {
+        self.meta.original_size
+    }
+}
+
+impl std::fmt::Debug for PreparedOffer {
+    // Never print an inline payload.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedOffer")
+            .field("transfer_id", &self.meta.transfer_id)
+            .field("size", &self.meta.original_size)
+            .finish_non_exhaustive()
+    }
+}
+
+fn new_transfer_id(transfer_id: Option<&str>) -> String {
+    transfer_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| Uuid::new_v4().simple().to_string()[..16].to_owned())
+}
+
+/// Hash, delta-encode or compress an in-memory payload into an offer.
+///
+/// Does no I/O, but hashing and compressing up to [`INLINE_MAX`] is still too
+/// slow for the connection manager's loop; see [`PreparedOffer`].
+pub fn prepare_inline_offer(
+    rel_path: &str,
+    data: Vec<u8>,
+    purpose: &str,
+    old_data: Option<&[u8]>,
+    transfer_id: Option<&str>,
+) -> Result<PreparedOffer, String> {
+    if data.len() > INLINE_MAX {
+        // Callers with a file on disk should use `prepare_path_offer`; this
+        // entry point materializes the payload and cannot serve a 250 MB file
+        // without the RAM blow-up streaming exists to avoid.
+        return Err(format!(
+            "File too large for the in-memory path ({} bytes, max {INLINE_MAX}); \
+             use offer_file_from_path",
+            data.len()
+        ));
+    }
+
+    let original_sha = sha256_hex(&data);
+    let original_size = data.len();
+
+    // Delta attempt
+    let (payload, compressed, is_delta, base_sha256) = if let Some(old) = old_data {
+        if let Some(delta) = create_delta(old, &data) {
+            let base = sha256_hex(old);
+            info!(
+                "Delta computed for {}: {} → {} bytes",
+                rel_path,
+                data.len(),
+                delta.len()
+            );
+            (delta, false, true, base)
+        } else {
+            let (c, flag) = compress_data(&data);
+            (c, flag, false, String::new())
+        }
+    } else {
+        let (c, flag) = compress_data(&data);
+        (c, flag, false, String::new())
+    };
+
+    let payload_len = payload.len();
+    Ok(PreparedOffer {
+        source: TransferSource::Inline(payload),
+        meta: OfferMeta {
+            transfer_id: new_transfer_id(transfer_id),
+            original_sha,
+            original_size,
+            payload_len,
+            purpose: purpose.to_owned(),
+            compressed,
+            is_delta,
+            base_sha256,
+        },
+    })
+}
+
+/// Hash a file on disk into a streaming offer, without reading it into memory.
+///
+/// The payload is the file verbatim — no compression, no delta — so
+/// `payload_len == size` and chunk `i` sits at `i * CHUNK_SIZE`, which is what
+/// lets the receiver write chunks straight to their final offsets. The hash
+/// pass streams, but it reads the whole file; see [`PreparedOffer`].
+pub fn prepare_path_offer(
+    path: &Path,
+    purpose: &str,
+    transfer_id: Option<&str>,
+) -> Result<PreparedOffer, String> {
+    let len = std::fs::metadata(path)
+        .map_err(|e| format!("Cannot stat {}: {e}", path.display()))?
+        .len();
+    if len > MAX_TRANSFER_SIZE {
+        return Err(format!(
+            "File too large ({len} bytes, max {MAX_TRANSFER_SIZE})"
+        ));
+    }
+    let original_size = usize::try_from(len)
+        .map_err(|_| "File size is not supported on this platform".to_owned())?;
+    let original_sha = sha256_hex_file(path)?;
+
+    Ok(PreparedOffer {
+        source: TransferSource::FilePath {
+            path: path.to_path_buf(),
+            len: original_size,
+        },
+        meta: OfferMeta {
+            transfer_id: new_transfer_id(transfer_id),
+            original_sha,
+            original_size,
+            payload_len: original_size,
+            purpose: purpose.to_owned(),
+            compressed: false,
+            is_delta: false,
+            base_sha256: String::new(),
+        },
+    })
 }
 
 pub struct FileTransferManager {
@@ -702,7 +842,14 @@ impl FileTransferManager {
         self.inbound.retain(|_, x| {
             let keep = match x.finished_at {
                 Some(t) => now - t < TRANSFER_RETAIN_SECS,
-                None if x.state == TransferState::Transferring || x.resumable => {
+                // A download that took longer than OFFER_TTL_SECS is still
+                // live while its hash runs; judging it by age would delete
+                // the `.part` from under the hash.
+                None if matches!(
+                    x.state,
+                    TransferState::Transferring | TransferState::Verifying
+                ) || x.resumable =>
+                {
                     now - x.last_progress_at < TRANSFER_IDLE_SECS
                 }
                 None => now - x.created_at < OFFER_TTL_SECS,
@@ -1061,68 +1208,15 @@ impl FileTransferManager {
         auto_push: bool,
         transfer_id: Option<&str>,
     ) -> Result<(String, Vec<TransferEvent>), String> {
-        if data.len() > INLINE_MAX {
-            // Callers with a file on disk should use `offer_file_from_path`;
-            // this entry point materializes the payload and cannot serve a
-            // 250 MB file without the RAM blow-up streaming exists to avoid.
-            return Err(format!(
-                "File too large for the in-memory path ({} bytes, max {INLINE_MAX}); \
-                 use offer_file_from_path",
-                data.len()
-            ));
-        }
-
-        let transfer_id = transfer_id
-            .map(str::to_owned)
-            .unwrap_or_else(|| Uuid::new_v4().simple().to_string()[..16].to_owned());
-        let original_sha = sha256_hex(&data);
-        let original_size = data.len();
-
-        // Delta attempt
-        let (payload, compressed, is_delta, base_sha256) = if let Some(old) = old_data {
-            if let Some(delta) = create_delta(old, &data) {
-                let base = sha256_hex(old);
-                info!(
-                    "Delta computed for {}: {} → {} bytes",
-                    rel_path,
-                    data.len(),
-                    delta.len()
-                );
-                (delta, false, true, base)
-            } else {
-                let (c, flag) = compress_data(&data);
-                (c, flag, false, String::new())
-            }
-        } else {
-            let (c, flag) = compress_data(&data);
-            (c, flag, false, String::new())
-        };
-
-        let payload_len = payload.len();
-        Ok(self.insert_offer(
-            peer_id,
-            rel_path,
-            TransferSource::Inline(payload),
-            OfferMeta {
-                transfer_id,
-                original_sha,
-                original_size,
-                payload_len,
-                purpose: purpose.to_owned(),
-                compressed,
-                is_delta,
-                base_sha256,
-            },
-            auto_push,
-        ))
+        let offer = prepare_inline_offer(rel_path, data, purpose, old_data, transfer_id)?;
+        Ok(self.insert_prepared(peer_id, rel_path, offer, auto_push))
     }
 
     /// Create an outbound offer for a file on disk, without reading it in.
     ///
-    /// The payload is the file verbatim — no compression, no delta — so
-    /// `payload_len == size` and chunk `i` sits at `i * CHUNK_SIZE`, which is
-    /// what lets the receiver write chunks straight to their final offsets.
-    /// Only the SHA-256 pass reads the file here, and it streams.
+    /// [`prepare_path_offer`] and [`Self::insert_prepared`] in one call. The
+    /// hash runs on the calling thread, so the connection manager calls the two
+    /// halves separately and hashes off its loop.
     pub fn offer_file_from_path(
         &mut self,
         peer_id: &str,
@@ -1149,39 +1243,20 @@ impl FileTransferManager {
         auto_push: bool,
         transfer_id: Option<&str>,
     ) -> Result<(String, Vec<TransferEvent>), String> {
-        let len = std::fs::metadata(path)
-            .map_err(|e| format!("Cannot stat {}: {e}", path.display()))?
-            .len();
-        if len > MAX_TRANSFER_SIZE {
-            return Err(format!(
-                "File too large ({len} bytes, max {MAX_TRANSFER_SIZE})"
-            ));
-        }
-        let original_size = usize::try_from(len)
-            .map_err(|_| "File size is not supported on this platform".to_owned())?;
-        let original_sha = sha256_hex_file(path)?;
+        let offer = prepare_path_offer(path, purpose, transfer_id)?;
+        Ok(self.insert_prepared(peer_id, rel_path, offer, auto_push))
+    }
 
-        Ok(self.insert_offer(
-            peer_id,
-            rel_path,
-            TransferSource::FilePath {
-                path: path.to_path_buf(),
-                len: original_size,
-            },
-            OfferMeta {
-                transfer_id: transfer_id
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| Uuid::new_v4().simple().to_string()[..16].to_owned()),
-                original_sha,
-                original_size,
-                payload_len: original_size,
-                purpose: purpose.to_owned(),
-                compressed: false,
-                is_delta: false,
-                base_sha256: String::new(),
-            },
-            auto_push,
-        ))
+    /// Record an offer built by [`prepare_path_offer`] or
+    /// [`prepare_inline_offer`] and build its OFFER frame.
+    pub fn insert_prepared(
+        &mut self,
+        peer_id: &str,
+        rel_path: &str,
+        offer: PreparedOffer,
+        auto_push: bool,
+    ) -> (String, Vec<TransferEvent>) {
+        self.insert_offer(peer_id, rel_path, offer.source, offer.meta, auto_push)
     }
 
     /// Record an outbound transfer and build its OFFER frame.
@@ -1618,7 +1693,9 @@ impl FileTransferManager {
                 TransferState::Pending => {
                     return self.reject_transfer(transfer_id, "cancelled");
                 }
-                TransferState::Transferring => {
+                // Cancelling while the hash runs makes `on_file_hashed`
+                // drop its result.
+                TransferState::Transferring | TransferState::Verifying => {
                     xfer.state = TransferState::Cancelled;
                     let peer_id = xfer.peer_id.clone();
                     let mut p = serde_json::Map::new();
@@ -1937,13 +2014,15 @@ impl FileTransferManager {
 
     // ── Private helpers ───────────────────────────────────────────────────
 
-    /// Verify a fully-received streaming transfer on disk and publish it.
+    /// Close a fully-received streaming transfer and ask for its hash.
     ///
     /// The `.part` file already holds every chunk at its final offset, so this
-    /// truncates any tail slack, re-reads it once to hash, then renames it into
-    /// place. Peak memory is one [`CHUNK_SIZE`] buffer regardless of file size.
+    /// truncates any tail slack and hands the file to the caller to hash
+    /// ([`TransferEvent::HashFile`]); [`Self::on_file_hashed`] then publishes
+    /// it. Reading a 4 GiB file back takes seconds, which the connection
+    /// manager's loop cannot spend.
     fn finish_streaming(&mut self, transfer_id: &str) -> Vec<TransferEvent> {
-        let (part_path, expected_sha, expected_size, rel_path) = {
+        let (part_path, expected_size) = {
             let Some(xfer) = self.inbound.get_mut(transfer_id) else {
                 return vec![];
             };
@@ -1967,12 +2046,7 @@ impl FileTransferManager {
             // path that still has an open handle in this process; antivirus
             // scanners also race a just-finished write.
             drop(file);
-            (
-                path.clone(),
-                xfer.expected_sha256.clone(),
-                xfer.expected_size,
-                xfer.rel_path.clone(),
-            )
+            (path.clone(), xfer.expected_size)
         };
 
         match std::fs::metadata(&part_path).map(|m| m.len()) {
@@ -1987,7 +2061,57 @@ impl FileTransferManager {
             }
         }
 
-        let actual = match sha256_hex_file(&part_path) {
+        let Some(xfer) = self.inbound.get_mut(transfer_id) else {
+            return vec![];
+        };
+        // Verifying is neither stalled nor resumable, and late chunks or a
+        // second COMPLETE are ignored while the hash runs.
+        xfer.state = TransferState::Verifying;
+        xfer.last_progress_at = unix_now_f64();
+        vec![
+            TransferEvent::StateChanged {
+                transfer_id: transfer_id.to_owned(),
+                state: TransferState::Verifying.as_str().into(),
+            },
+            TransferEvent::HashFile {
+                transfer_id: transfer_id.to_owned(),
+                path: part_path,
+            },
+        ]
+    }
+
+    /// Finish a streamed download once its [`TransferEvent::HashFile`] has run.
+    ///
+    /// `actual` is the hex SHA-256 of the `.part` file, or why it could not be
+    /// read. Ignored unless the transfer is still verifying: a cancel or GC in
+    /// the meantime has already settled it.
+    pub fn on_file_hashed(
+        &mut self,
+        transfer_id: &str,
+        actual: Result<String, String>,
+    ) -> Vec<TransferEvent> {
+        let (part_path, expected_sha, expected_size, rel_path) = match self.inbound.get(transfer_id)
+        {
+            Some(InboundTransfer {
+                state: TransferState::Verifying,
+                sink: TransferSink::PartFile { path, .. },
+                expected_sha256,
+                expected_size,
+                rel_path,
+                ..
+            }) => (
+                path.clone(),
+                expected_sha256.clone(),
+                *expected_size,
+                rel_path.clone(),
+            ),
+            _ => {
+                debug!("Transfer {transfer_id} is no longer verifying; dropping its hash");
+                return vec![];
+            }
+        };
+
+        let actual = match actual {
             Ok(h) => h,
             Err(e) => return self.fail_inbound(transfer_id, &e),
         };
@@ -2335,8 +2459,8 @@ fn sha256_hex(data: &[u8]) -> String {
 }
 
 /// SHA-256 of a file, read in [`CHUNK_SIZE`] blocks so a 250 MB file costs one
-/// chunk buffer rather than 250 MB.
-fn sha256_hex_file(path: &Path) -> Result<String, String> {
+/// chunk buffer rather than 250 MB. Blocking: reads the whole file.
+pub(crate) fn sha256_hex_file(path: &Path) -> Result<String, String> {
     let mut f = File::open(path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; CHUNK_SIZE];
@@ -2681,6 +2805,151 @@ mod tests {
         Ok(())
     }
 
+    /// Do inline what the connection manager does with `HashFile` off its loop.
+    fn run_hashes(mgr: &mut FileTransferManager, evs: Vec<TransferEvent>) -> Vec<TransferEvent> {
+        let mut out = Vec::new();
+        for ev in evs {
+            match ev {
+                TransferEvent::HashFile { transfer_id, path } => {
+                    out.extend(mgr.on_file_hashed(&transfer_id, sha256_hex_file(&path)));
+                }
+                ev => out.push(ev),
+            }
+        }
+        out
+    }
+
+    const VERIFY_SIZE: usize = INLINE_MAX + CHUNK_SIZE;
+
+    /// A streamed download of `VERIFY_SIZE` bytes of `1`, every chunk stored.
+    fn fully_received_stream(tid: &str) -> FileTransferManager {
+        let sha = sha256_hex(&vec![1u8; VERIFY_SIZE]);
+        let total = VERIFY_SIZE.div_ceil(CHUNK_SIZE);
+        let mut receiver = FileTransferManager::new();
+        receiver.on_offer_received(
+            "peer",
+            tid,
+            "verify.bin",
+            &sha,
+            VERIFY_SIZE,
+            total,
+            "file",
+            false,
+            false,
+            "",
+        );
+        receiver.accept_transfer(tid);
+        for i in 0..total {
+            let len = CHUNK_SIZE.min(VERIFY_SIZE - i * CHUNK_SIZE);
+            receiver.on_chunk_bytes_received(tid, i, vec![1; len]);
+        }
+        receiver
+    }
+
+    fn part_path_of(mgr: &FileTransferManager, tid: &str) -> PathBuf {
+        match &mgr.inbound[tid].sink {
+            TransferSink::PartFile { path, .. } => path.clone(),
+            _ => panic!("expected disk streaming"),
+        }
+    }
+
+    fn hash_request(evs: &[TransferEvent]) -> Option<PathBuf> {
+        evs.iter().find_map(|ev| match ev {
+            TransferEvent::HashFile { path, .. } => Some(path.clone()),
+            _ => None,
+        })
+    }
+
+    /// Hashing a 4 GiB download takes seconds, so the last COMPLETE hands the
+    /// file back to be hashed off the manager loop instead of hashing it here.
+    #[test]
+    fn a_streamed_download_waits_for_its_hash() {
+        let tid = "verify-wait";
+        let mut receiver = fully_received_stream(tid);
+        let evs = receiver.on_complete_received(tid);
+        assert_eq!(hash_request(&evs), Some(part_path_of(&receiver, tid)));
+        assert!(!evs
+            .iter()
+            .any(|ev| matches!(ev, TransferEvent::Complete { .. })));
+        assert_eq!(receiver.inbound[tid].state, TransferState::Verifying);
+
+        // A repeated COMPLETE or a late chunk must not start a second hash.
+        assert!(receiver.on_complete_received(tid).is_empty());
+        assert!(receiver
+            .on_chunk_bytes_received(tid, 0, vec![1; CHUNK_SIZE])
+            .is_empty());
+        assert!(receiver.take_stalled_inbound().is_empty());
+
+        let done = run_hashes(&mut receiver, evs);
+        let saved = done
+            .iter()
+            .find_map(|ev| match ev {
+                TransferEvent::Complete {
+                    payload: TransferPayload::SavedAt { path, .. },
+                    ..
+                } => Some(PathBuf::from(path)),
+                _ => None,
+            })
+            .expect("the hash completes the download");
+        assert_eq!(receiver.inbound[tid].state, TransferState::Complete);
+        let _ = std::fs::remove_file(saved);
+    }
+
+    #[test]
+    fn a_cancel_during_the_hash_drops_its_result() {
+        let tid = "verify-cancel";
+        let mut receiver = fully_received_stream(tid);
+        let evs = receiver.on_complete_received(tid);
+        let part = hash_request(&evs).expect("hash requested");
+        let cancelled = receiver.cancel_transfer(tid);
+        assert!(cancelled
+            .iter()
+            .any(|ev| matches!(ev, TransferEvent::Failed { .. })));
+        assert!(!run_hashes(&mut receiver, evs).iter().any(|ev| matches!(
+            ev,
+            TransferEvent::Complete { .. } | TransferEvent::Failed { .. }
+        )));
+        assert_eq!(receiver.inbound[tid].state, TransferState::Cancelled);
+        assert!(part.exists(), "a dropped hash must not publish the file");
+        receiver.discard_inbound(tid);
+    }
+
+    #[test]
+    fn a_mismatched_hash_fails_the_download_and_removes_the_part() {
+        let tid = "verify-mismatch";
+        let mut receiver = fully_received_stream(tid);
+        let part = hash_request(&receiver.on_complete_received(tid)).expect("hash requested");
+        let evs = receiver.on_file_hashed(tid, Ok("00".repeat(32)));
+        assert!(evs
+            .iter()
+            .any(|ev| matches!(ev, TransferEvent::Failed { reason, .. } if reason.starts_with("hash mismatch"))));
+        assert!(!part.exists());
+    }
+
+    /// A download that took longer than the offer TTL is judged by progress
+    /// while it is hashed, not by age, or GC deletes the file under the hash.
+    #[test]
+    fn gc_keeps_a_download_whose_hash_is_running() {
+        let tid = "verify-gc";
+        let mut receiver = fully_received_stream(tid);
+        let evs = receiver.on_complete_received(tid);
+        let part = hash_request(&evs).expect("hash requested");
+        receiver.inbound.get_mut(tid).expect("inbound").created_at =
+            unix_now_f64() - OFFER_TTL_SECS - 1.0;
+        assert_eq!(receiver.gc(), 0);
+        assert!(part.exists());
+        let done = run_hashes(&mut receiver, evs);
+        for ev in done {
+            if let TransferEvent::Complete {
+                payload: TransferPayload::SavedAt { path, .. },
+                ..
+            } = ev
+            {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+
     fn reject_reason(evs: &[TransferEvent]) -> Option<String> {
         evs.iter().find_map(|ev| match ev {
             TransferEvent::SendMessage {
@@ -2999,7 +3268,13 @@ mod tests {
             receiver.on_chunk_received(&transfer_id, *idx, data);
         }
 
-        let complete = receiver.on_complete_received(&transfer_id);
+        let evs = receiver.on_complete_received(&transfer_id);
+        assert!(
+            !evs.iter()
+                .any(|ev| matches!(ev, TransferEvent::Complete { .. })),
+            "a streamed download is hashed by the caller, not here"
+        );
+        let complete = run_hashes(&mut receiver, evs);
         let saved = complete
             .iter()
             .find_map(|ev| match ev {
