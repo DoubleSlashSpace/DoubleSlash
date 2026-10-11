@@ -70,11 +70,21 @@ fn select_profile(root: &Path, name: &str) -> Result<()> {
     if !path.join("identity.dat").is_file() {
         return Err(invalid("Profile has no identity"));
     }
+    // Claim the identity before publishing the selector. A profile that is
+    // already open stays on its previous selector in this process.
+    let previous = selected_profile(root).ok();
+    if let Err(error) = crate::platform::claim_profile(&path) {
+        return Err(invalid(&error.to_string()));
+    }
     let mut temp = tempfile::NamedTempFile::new_in(root)?;
     temp.write_all(name.as_bytes())?;
     temp.as_file().sync_all()?;
-    temp.persist(root.join("active-profile"))
-        .map_err(|e| ClientError::Io(e.error))?;
+    if let Err(error) = temp.persist(root.join("active-profile")) {
+        if let Some(previous) = previous {
+            let _ = crate::platform::claim_profile(&previous);
+        }
+        return Err(ClientError::Io(error.error));
+    }
     Ok(())
 }
 

@@ -72,6 +72,8 @@ Three SQLite stores, all opened with the identity and all client-owned:
 `peer_store.rs`, `chat_store.rs`, `room_store.rs`. They resolve their paths
 through `Identity::default_key_dir()`, which reads `DOUBLESLASH_HOME` — Android
 must set that before opening anything, since it has no meaningful `HOME`.
+The desktop keeps one process for that directory. A second launch of the same
+profile exits; another profile directory can run beside it.
 
 ### Transport
 

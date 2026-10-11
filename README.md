@@ -258,7 +258,7 @@ These are selected **desktop** defaults from [SettingsModel](rust/doubleslash-cl
 
 ## Data and Files
 
-Desktop profile resolution uses `DOUBLESLASH_KEY_DIR` / `DOUBLESLASH_HOME`, otherwise `~/.doubleslash`. Restored profiles are stored below the collection root in `profiles/<uuid>/`, selected by `active-profile`. Android uses app-private storage.
+Desktop profile resolution uses `DOUBLESLASH_KEY_DIR` / `DOUBLESLASH_HOME`, otherwise `~/.doubleslash`. Restored profiles are stored below the collection root in `profiles/<uuid>/`, selected by `active-profile`. The desktop runs one process for that selected profile. Starting it again shows that the identity is already running and exits; a `d://` or `doubleslash://` link does not open a second window. A different profile directory can run at the same time. Android uses app-private storage.
 
 | Profile file | Purpose |
 |---|---|

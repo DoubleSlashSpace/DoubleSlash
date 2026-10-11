@@ -117,11 +117,9 @@ fn run_qt_ui() {
         fn doubleslash_set_app_icon();
     }
 
-    // Single-instance guard.  If a `doubleslash://` URL was passed on argv and
-    // another DoubleSlash is already running (e.g. Chromium inside our embedded
-    // BrowserPanel handed a URL to the OS via its external-protocol
-    // fallback), exit silently before any window is created.  The running
-    // instance keeps everything in-process.
+    // One process per identity. A second launch of this profile exits before
+    // any window is created. A d:// or doubleslash:// open stays quiet; any
+    // other second launch is told this identity is already running.
     if platform::should_exit_as_duplicate_instance() {
         std::process::exit(0);
     }
@@ -226,6 +224,13 @@ async fn headless_main() {
     if std::env::var("DOUBLESLASH_OLLAMA_ONLY").ok().as_deref() == Some("1") {
         ollama_only_auto_reply_test().await;
         return;
+    }
+
+    // The same profile must not run twice. The GUI path checks before the
+    // window exists; headless launches (tests, scripts) stop here.
+    if platform::claim_profile(&key_dir).is_err() {
+        eprintln!("{}", platform::IDENTITY_ALREADY_RUNNING);
+        std::process::exit(1);
     }
 
     // ------------------------------------------------------------------

@@ -54,77 +54,274 @@ pub const URI_SCHEME_ALT: &str = doubleslash_features::URI_SCHEME_ALT;
 // Single-instance guard
 // ---------------------------------------------------------------------------
 
-/// Return `true` when this process should exit immediately because another
-/// `DoubleSlash.exe` instance is already running AND this invocation was started
-/// only to dispatch a `d://` / `doubleslash://` URL from the OS shell.
+/// Shown when a second process tries to open a profile that is already running.
+pub const IDENTITY_ALREADY_RUNNING: &str = "DoubleSlash is already running for this identity.";
+
+/// Another process already holds this profile.
+#[derive(Debug)]
+pub struct ProfileAlreadyRunning;
+
+impl std::fmt::Display for ProfileAlreadyRunning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(IDENTITY_ALREADY_RUNNING)
+    }
+}
+
+/// One live process per profile directory.
 ///
-/// Background: at startup we register `d://` and `doubleslash://` with
-/// the Windows shell so invite links open the app.  Chromium's "external
-/// protocol handler" inside our embedded `WebEngineView` can also hand those
-/// URLs to the shell if a fetch fails for any reason — which would normally
-/// spawn a second `DoubleSlash.exe` at the unlock prompt and look like a
-/// stray popup.
+/// The lock is the profile `Identity::default_key_dir()` resolves: the
+/// selected `active-profile`, or the profile root when none is selected.
+/// Two directories (two identities, or `.clientA` and `.clientB`) can run
+/// together. A second process for the same directory is refused.
 ///
-/// To prevent that, we acquire a per-user named mutex.  If another instance
-/// already holds it and our argv contains a `d://` / `doubleslash://` URL, we
-/// exit silently — the running instance keeps handling everything in-process
-/// via its own QtWebEngine scheme handler.
+/// Switching profiles in this process moves the lock. The previous profile
+/// stays claimed until the new one is held, so a failed switch does not
+/// leave this process with no claim.
+struct HeldProfile {
+    key: String,
+    // Kept so the OS lock lives as long as this claim. Nothing reads it.
+    _guard: ProfileGuard,
+}
+
+static HELD_PROFILE: std::sync::Mutex<Option<HeldProfile>> = std::sync::Mutex::new(None);
+
+/// Claim `profile_dir` for this process. `Ok` means this process is the only
+/// one for that directory and now holds it until exit or a later claim.
+pub fn claim_profile(profile_dir: &std::path::Path) -> Result<(), ProfileAlreadyRunning> {
+    let key = identity_instance_key(profile_dir);
+    let mut held = HELD_PROFILE.lock().unwrap_or_else(|err| err.into_inner());
+    if held.as_ref().is_some_and(|current| current.key == key) {
+        return Ok(());
+    }
+    let guard = match acquire_profile_guard(profile_dir, &key) {
+        Ok(guard) => guard,
+        Err(AcquireError::Busy) => return Err(ProfileAlreadyRunning),
+        Err(AcquireError::Unavailable(message)) => {
+            warn!("[single-instance] could not claim this profile, continuing: {message}");
+            return Ok(());
+        }
+    };
+    *held = Some(HeldProfile { key, _guard: guard });
+    Ok(())
+}
+
+/// Return `true` when this process should exit because this profile is already
+/// open.
 ///
-/// Returns `false` on non-Windows platforms.
+/// A `d://` or `doubleslash://` launch stays quiet: the shell (and Chromium's
+/// external-protocol fallback inside the embedded portal) would otherwise open
+/// a second window at the unlock prompt. Any other second launch is told.
 pub fn should_exit_as_duplicate_instance() -> bool {
-    #[cfg(target_os = "windows")]
+    if claim_profile(&crate::identity::Identity::default_key_dir()).is_ok() {
+        return false;
+    }
+    if argv_has_app_url() {
+        info!(
+            "[single-instance] this identity is already running; \
+             exiting quietly instead of opening another window for a link"
+        );
+    } else {
+        warn!("[single-instance] {IDENTITY_ALREADY_RUNNING}");
+        tell_user_identity_is_running();
+    }
+    true
+}
+
+fn argv_has_app_url() -> bool {
+    std::env::args().any(|arg| {
+        doubleslash_features::looks_like_app_url(&arg)
+            || doubleslash_features::strip_scheme(&arg).is_some()
+    })
+}
+
+fn tell_user_identity_is_running() {
+    #[cfg(windows)]
     {
-        use std::sync::OnceLock;
-        // Hold the mutex handle for the lifetime of the process so the OS
-        // tracks ownership correctly.  Stored in a static so it is not
-        // dropped at the end of this function.
-        static MUTEX_HANDLE: OnceLock<usize> = OnceLock::new();
-
         use windows::core::PCWSTR;
-        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-        use windows::Win32::System::Threading::CreateMutexW;
-
-        // Build a wide-char mutex name.  "Local\\" prefix scopes it to the
-        // current logon session, matching our per-user identity model.
-        let name: Vec<u16> = "Local\\DoubleSlash-SingleInstance\0"
-            .encode_utf16()
-            .collect();
-
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            MessageBoxW, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+        };
+        let text = wide(IDENTITY_ALREADY_RUNNING);
+        let title = wide("DoubleSlash");
         unsafe {
-            match CreateMutexW(None, false, PCWSTR(name.as_ptr())) {
-                Ok(handle) => {
-                    let already = GetLastError() == ERROR_ALREADY_EXISTS;
-                    // Leak the handle into the OnceLock so it stays alive.
-                    let _ = MUTEX_HANDLE.set(handle.0 as usize);
-                    if already {
-                        // Another instance is alive.  Only suppress this
-                        // process if it was launched to dispatch a URL —
-                        // otherwise the user intentionally double-launched
-                        // and should still get a normal window.
-                        let argv_has_uri = std::env::args().any(|a| {
-                            doubleslash_features::looks_like_app_url(&a)
-                                || doubleslash_features::strip_scheme(&a).is_some()
-                        });
-                        if argv_has_uri {
-                            info!(
-                                "[single-instance] another DoubleSlash is running; \
-                                 exiting silently to avoid duplicate URL-handler popup"
-                            );
-                            return true;
-                        }
-                    }
-                    false
-                }
-                Err(e) => {
-                    warn!("[single-instance] CreateMutexW failed: {e}");
-                    false
-                }
-            }
+            let _ = MessageBoxW(
+                HWND::default(),
+                PCWSTR(text.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST,
+            );
         }
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(windows))]
     {
-        false
+        eprintln!("{IDENTITY_ALREADY_RUNNING}");
+    }
+}
+
+/// Stable id for a profile directory. Windows paths are compared
+/// case-insensitively so `C:\Profiles\A` and `c:\profiles\a` are one identity.
+pub fn identity_instance_key(profile_dir: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(
+        normalize_profile_path(profile_dir).as_bytes(),
+    ))
+}
+
+fn normalize_profile_path(profile_dir: &std::path::Path) -> String {
+    let absolute = std::path::absolute(profile_dir).unwrap_or_else(|_| profile_dir.to_path_buf());
+    let resolved = absolute.canonicalize().unwrap_or(absolute);
+    let text = resolved.to_string_lossy();
+    #[cfg(windows)]
+    {
+        let mut text = text.replace('/', "\\");
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            text = rest.to_owned();
+        }
+        text.trim_end_matches('\\').to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        text.into_owned()
+    }
+}
+
+enum AcquireError {
+    Busy,
+    Unavailable(String),
+}
+
+#[cfg(windows)]
+struct ProfileGuard {
+    handle: isize,
+}
+
+#[cfg(windows)]
+impl Drop for ProfileGuard {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
+        unsafe {
+            let _ = CloseHandle(HANDLE(self.handle as *mut std::ffi::c_void));
+        }
+    }
+}
+
+#[cfg(windows)]
+fn acquire_profile_guard(
+    _profile_dir: &std::path::Path,
+    key: &str,
+) -> Result<ProfileGuard, AcquireError> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    // Local\ keeps the name in this logon session. The hash is the profile
+    // directory, so a second identity gets its own mutex.
+    let name = wide(&format!("Local\\DoubleSlash-Identity-{key}"));
+    unsafe {
+        match CreateMutexW(None, false, PCWSTR(name.as_ptr())) {
+            Ok(handle) => {
+                if GetLastError() == ERROR_ALREADY_EXISTS {
+                    let _ = windows::Win32::Foundation::CloseHandle(handle);
+                    Err(AcquireError::Busy)
+                } else {
+                    Ok(ProfileGuard {
+                        handle: handle.0 as isize,
+                    })
+                }
+            }
+            Err(error) => Err(AcquireError::Unavailable(error.to_string())),
+        }
+    }
+}
+
+#[cfg(unix)]
+struct ProfileGuard {
+    // Held open so the exclusive lock survives until this claim is replaced.
+    _file: std::fs::File,
+}
+
+#[cfg(unix)]
+fn acquire_profile_guard(
+    profile_dir: &std::path::Path,
+    _key: &str,
+) -> Result<ProfileGuard, AcquireError> {
+    use std::io::ErrorKind;
+    use std::os::unix::io::AsRawFd;
+
+    if let Err(error) = std::fs::create_dir_all(profile_dir) {
+        return Err(AcquireError::Unavailable(error.to_string()));
+    }
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(profile_dir.join("instance.lock"))
+    {
+        Ok(file) => file,
+        Err(error) => return Err(AcquireError::Unavailable(error.to_string())),
+    };
+    // LOCK_EX | LOCK_NB. The kernel drops the lock when this file is closed.
+    let rc = unsafe { flock(file.as_raw_fd(), 2 | 4) };
+    if rc == 0 {
+        return Ok(ProfileGuard { _file: file });
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == ErrorKind::WouldBlock {
+        Err(AcquireError::Busy)
+    } else {
+        Err(AcquireError::Unavailable(error.to_string()))
+    }
+}
+
+#[cfg(unix)]
+extern "C" {
+    fn flock(fd: i32, operation: i32) -> i32;
+}
+
+#[cfg(not(any(windows, unix)))]
+struct ProfileGuard;
+
+#[cfg(not(any(windows, unix)))]
+fn acquire_profile_guard(
+    _profile_dir: &std::path::Path,
+    _key: &str,
+) -> Result<ProfileGuard, AcquireError> {
+    Ok(ProfileGuard)
+}
+
+#[cfg(windows)]
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(test)]
+mod instance_tests {
+    use super::identity_instance_key;
+    use std::path::Path;
+
+    #[test]
+    fn identity_instance_key_follows_the_profile_directory() {
+        let root = std::env::temp_dir();
+        let first = root.join("doubleslash-instance-a");
+        let second = root.join("doubleslash-instance-b");
+        assert_eq!(
+            identity_instance_key(&first),
+            identity_instance_key(Path::new(&first))
+        );
+        assert_ne!(
+            identity_instance_key(&first),
+            identity_instance_key(&second)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn identity_instance_key_ignores_windows_case_and_slash_style() {
+        let lower = Path::new(r"C:\Users\Example\AppData\Local\DoubleSlash");
+        let upper = Path::new("c:/users/example/appdata/local/doubleslash");
+        assert_eq!(identity_instance_key(lower), identity_instance_key(upper));
     }
 }
 
