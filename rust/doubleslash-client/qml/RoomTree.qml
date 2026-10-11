@@ -140,6 +140,21 @@ QtObject {
         return String(name)
     }
 
+    /// Voice and text-only counts for a sidebar room, the numbers its row shows.
+    ///
+    /// A list the bridge has not sent yet is unknown (`voiceKnown` / `textKnown`
+    /// false), which is different from a room that really has nobody there.
+    function rosterCounts(room) {
+        var voice = root.memberList(room && room.voice_members)
+        var text = root.memberList(room && room.text_members)
+        return {
+            voice: voice ? voice.length : 0,
+            text: text ? text.length : 0,
+            voiceKnown: voice !== null,
+            textKnown: text !== null
+        }
+    }
+
     /// Voice members plus text-only members. A list the bridge has not sent
     /// yet counts as nobody, the same as an empty roster.
     function peerCount(room) {
@@ -399,12 +414,12 @@ QtObject {
     // `voiceRoom` (the live voice session, "" when none), and `limit`, the
     // members a leaf lists before folding the rest under "+N more".
     //
-    // Sub-rooms are always listed. A room's own voice and text lists start
-    // collapsed, so each row shows its own counts. `collapsed[key] === false`
-    // opens those lists and `=== true` shuts them, which also overrides the
-    // live voice room and the open chat. With no entry, the voice room and
-    // the chat being read open their lists and every other room stays shut.
-    // An open room shows both lists' people; voice includes anyone also on video.
+    // Sub-rooms are always listed. Voice and text lists both start shut, so
+    // the row shows its own counts. `leaves[node:room:voice] === true` shows
+    // the voice list; the row's voice count toggles that flag. The text-only
+    // list stays shut until `leaves[node:room:text] === true`, which the
+    // row's text count sets. Selecting the room or being in its voice does
+    // not open either list. Voice includes anyone also on video.
     //
     // A room is top-level when its `parent_id` is "" or points outside the list.
     // Anything unreachable (a parent cycle) is appended flat rather than hidden.
@@ -453,14 +468,24 @@ QtObject {
             var isSession = group === "voice" && room.room_id === voiceHere
             var reading = room.room_id === selected
             var stored = ctx.leaves[key]
-            // The room is already open, so both lists show their people. A
-            // stored flag is only a hand fold of that one list.
+            // A list is emitted only when its flag is already true, so it
+            // arrives expanded. A stored false is a hand fold of this leaf.
             var expanded = stored !== undefined ? stored : true
+            // An open list is drawn as one box, the colour of the count box
+            // that opened it: green for voice, blue for text. Every row in it
+            // carries the box; the leaf row starts it and the last row ends
+            // it. `box_depth` is the leaf's column, where the box's edge sits.
+            var guides = codes(pass, isLast)
+            var box = expanded ? group : ""
+            var boxDepth = guides.length
             out.push({
                 row_kind: "group", group: group, key: key,
                 room_id: room.room_id, room_name: room.name || room.room_id,
                 count: members.length, expanded: expanded,
-                guide_cols: codes(pass, isLast)
+                guide_cols: guides,
+                box: box, box_depth: boxDepth, box_start: expanded,
+                // A list with nobody in it ends with its leaf row.
+                box_end: expanded && members.length === 0
             })
             if (!expanded)
                 return
@@ -472,7 +497,8 @@ QtObject {
                 // The live session: roomModel carries its levels and controls.
                 out.push({
                     row_kind: "session", room_id: room.room_id,
-                    pass_cols: passCodes(gPass), can_invite: true
+                    pass_cols: passCodes(gPass), can_invite: true,
+                    box: box, box_depth: boxDepth, box_end: true
                 })
                 return
             }
@@ -498,11 +524,14 @@ QtObject {
                     // Camera state reaches everyone on the room's roster.
                     on_roster: reading || room.room_id === voiceHere,
                     can_invite: canInvite,
-                    guide_cols: codes(gPass, m === shown.length - 1 && more === "")
+                    guide_cols: codes(gPass, m === shown.length - 1 && more === ""),
+                    box: box, box_depth: boxDepth,
+                    box_end: m === shown.length - 1 && more === ""
                 })
             }
             if (more !== "")
-                out.push({ row_kind: "more", key: oKey, label: more, guide_cols: codes(gPass, true) })
+                out.push({ row_kind: "more", key: oKey, label: more, guide_cols: codes(gPass, true),
+                           box: box, box_depth: boxDepth, box_end: true })
         }
 
         function emitRoom(room, depth, pass, isLast, visible) {
@@ -513,45 +542,50 @@ QtObject {
             // guesses, so they are not drawn and the room shows "—" instead.
             var voice = connected ? root.memberList(room.voice_members) : null
             var text = connected ? root.memberList(room.text_members) : null
-            var groups = []
-            if (voice && voice.length > 0) groups.push({ group: "voice", members: voice })
-            if (text && text.length > 0) groups.push({ group: "text", members: text })
-            // The chevron folds this room's member lists. Sub-rooms stay
-            // listed either way, so a room of only sub-rooms has nothing to fold.
-            var hasMembers = groups.length > 0
+            var voiceMembers = voice && voice.length > 0 ? voice : null
+            var textMembers = text && text.length > 0 ? text : null
+            // The chevron and the voice count toggle the voice list. Sub-rooms
+            // stay listed either way, so a room of only sub-rooms has nothing
+            // to fold. Text-only people are not part of that fold.
+            var hasVoice = voiceMembers !== null
             var foldKey = nodeId + ":" + room.room_id
-            var foldFlag = ctx.collapsed[foldKey]
+            var voiceKey = foldKey + ":voice"
+            var textKey = foldKey + ":text"
             var isVoice = voiceHere !== "" && room.room_id === voiceHere
-            var isReading = selected !== "" && room.room_id === selected
-            // true shuts the lists, false opens them, and no entry opens the
-            // live voice room and the chat being read.
-            var listsOpen = foldFlag === false
-                || (foldFlag !== true && (isVoice || isReading))
-            var isCollapsed = hasMembers && !listsOpen
+            // Nothing but these flags opens a list.
+            var voiceOpen = hasVoice && ctx.leaves[voiceKey] === true
+            var textOpen = textMembers !== null && ctx.leaves[textKey] === true
+            var isCollapsed = hasVoice && !voiceOpen
             if (visible) {
                 var item = copy(room)
                 item.row_kind = "room"
                 item.tree_depth = depth
-                item.has_children = hasMembers
+                item.has_children = hasVoice
                 item.collapsed = isCollapsed
                 item.guide_cols = depth > 0 ? codes(pass, isLast) : []
-                var own = isCollapsed && voice ? voice : []
+                var own = isCollapsed && voiceMembers ? voiceMembers : []
                 var stack = []
                 for (var s = 0; s < own.length && stack.length < 3; s++)
                     stack.push(own[s].id)
                 item.stack_ids = stack
                 item.subtree_voice = own.length
-                item.room_chat = isCollapsed && text ? text.length : 0
-                // The call icon on the row: joining is explicit, not only a
-                // double-click. In the voice room we are in it ends the call.
+                // Stays put while the list is open, so the count can toggle it shut.
+                item.voice_count = voiceMembers ? voiceMembers.length : 0
+                item.room_chat = textOpen ? 0 : (textMembers ? textMembers.length : 0)
+                // The row may offer a call: the node is connected. The join
+                // handset is drawn only while the pointer is on that row; in
+                // the voice room we are in, the same control ends the call
+                // and stays visible.
                 item.show_call = connected
                 item.voice_here = isVoice
                 out.push(item)
             }
             var childPass = depth > 0 ? pass.concat([!isLast]) : []
             var items = []
-            if (listsOpen)
-                for (var g = 0; g < groups.length; g++) items.push(groups[g])
+            if (voiceOpen)
+                items.push({ group: "voice", members: voiceMembers })
+            if (textOpen)
+                items.push({ group: "text", members: textMembers })
             for (var c = 0; c < kids.length; c++) items.push({ room: kids[c] })
             for (var n = 0; n < items.length; n++) {
                 var last = n === items.length - 1

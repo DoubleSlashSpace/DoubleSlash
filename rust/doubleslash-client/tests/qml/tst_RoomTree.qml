@@ -2,8 +2,9 @@ import QtQuick
 import QtTest
 import DoubleSlash.Client 1.0
 
-// The Rooms tree's rows: leaves under each room, fold state, the live voice
-// session, and the connector columns that draw the tree lines.
+// The Rooms tree's rows: voice and text lists, the live voice session, and
+// the connector columns that draw the tree lines. A list appears only when
+// its leaf flag is true. Selecting a room or being in its voice does neither.
 TestCase {
     name: "RoomTree"
 
@@ -24,12 +25,12 @@ TestCase {
         return c
     }
 
-    // `collapsed[key] === false` is an explicit open. Rooms otherwise start shut.
-    function opened() {
-        var collapsed = {}
+    // `leaves[n:<id>:voice|text] === true` is the only way that list opens.
+    function shown() {
+        var leaves = {}
         for (var i = 0; i < arguments.length; i++)
-            collapsed["n:" + arguments[i]] = false
-        return collapsed
+            leaves["n:" + arguments[i]] = true
+        return leaves
     }
 
     function kinds(rows) {
@@ -59,7 +60,8 @@ TestCase {
 
     function test_leaves_come_before_sub_rooms() {
         var rows = RoomTree.rows(sample(), "n", true,
-                                 ctx({ collapsed: opened("lobby", "gaming", "raid", "strat") }))
+                                 ctx({ leaves: shown("lobby:voice", "raid:voice",
+                                                     "strat:voice", "lobby:text") }))
         compare(kinds(rows), [
             "room:gaming",
             "room:raid", "group:raid:voice", "member:sam",
@@ -69,60 +71,136 @@ TestCase {
         ])
     }
 
-    function test_text_leaf_opens_for_the_room_being_read() {
+    function test_text_members_stay_shut_until_their_flag_opens_them() {
+        // Selecting the room opens neither list. Both counts stay on the row.
         var rows = RoomTree.rows(sample(), "n", true,
-                                 ctx({ collapsed: opened("lobby"),
-                                       selectedNode: "n", selectedRoom: "lobby" }))
-        verify(kinds(rows).indexOf("member:jonah") !== -1)
-        // Opening the chat expands that room on its own.
+                                 ctx({ selectedNode: "n", selectedRoom: "lobby" }))
+        var k = kinds(rows)
+        verify(k.indexOf("member:mara") === -1)
+        verify(k.indexOf("member:jonah") === -1)
+        compare(rows[k.indexOf("room:lobby")].room_chat, 1)
+        compare(rows[k.indexOf("room:lobby")].voice_count, 2)
+        verify(rows[k.indexOf("room:lobby")].collapsed)
+        // The voice flag lists voice people and keeps the count, so it can close.
         rows = RoomTree.rows(sample(), "n", true,
-                             ctx({ selectedNode: "n", selectedRoom: "lobby" }))
-        verify(kinds(rows).indexOf("member:jonah") !== -1)
-        // An open room lists its text people even when the chat on screen
-        // belongs to another node.
-        rows = RoomTree.rows(sample(), "other", true,
-                             ctx({ collapsed: { "other:lobby": false },
-                                   selectedNode: "n", selectedRoom: "lobby" }))
-        verify(kinds(rows).indexOf("member:jonah") !== -1)
-        // That other node's chat does not open this node's room.
+                             ctx({ leaves: shown("lobby:voice") }))
+        k = kinds(rows)
+        verify(k.indexOf("member:mara") !== -1)
+        verify(k.indexOf("member:jonah") === -1)
+        var lobby = rows[k.indexOf("room:lobby")]
+        compare(lobby.room_chat, 1)
+        compare(lobby.voice_count, 2)
+        compare(lobby.subtree_voice, 0)
+        verify(!lobby.collapsed)
+        // The text count's flag lists them, even while the voice list stays shut.
+        rows = RoomTree.rows(sample(), "n", true,
+                             ctx({ leaves: shown("lobby:text") }))
+        k = kinds(rows)
+        verify(k.indexOf("member:jonah") !== -1)
+        verify(k.indexOf("member:mara") === -1)
+        compare(rows[k.indexOf("room:lobby")].room_chat, 0)
+        compare(rows[k.indexOf("room:lobby")].voice_count, 2)
+        verify(rows[k.indexOf("room:lobby")].collapsed)
+        // Another node's chat does not open this room.
         rows = RoomTree.rows(sample(), "other", true,
                              ctx({ selectedNode: "n", selectedRoom: "lobby" }))
         verify(kinds(rows).indexOf("member:jonah") === -1)
     }
 
-    function test_reading_a_room_expands_it_until_another_is_open() {
+    function test_selecting_a_room_does_not_open_its_lists() {
         var rows = RoomTree.rows(sample(), "n", true,
                                  ctx({ selectedNode: "n", selectedRoom: "lobby" }))
         var k = kinds(rows)
-        verify(k.indexOf("member:jonah") !== -1)
-        verify(k.indexOf("member:mara") !== -1)
+        verify(k.indexOf("member:jonah") === -1)
+        verify(k.indexOf("member:mara") === -1)
         verify(k.indexOf("room:raid") !== -1)
         verify(k.indexOf("member:sam") === -1)
-        // A shut flag still wins over the open chat.
+        verify(rows[k.indexOf("room:lobby")].collapsed)
+        // A stored false is the same as no flag: the list stays shut.
         rows = RoomTree.rows(sample(), "n", true,
                              ctx({ selectedNode: "n", selectedRoom: "lobby",
-                                   collapsed: { "n:lobby": true } }))
+                                   leaves: { "n:lobby:voice": false } }))
+        verify(kinds(rows).indexOf("member:mara") === -1)
         verify(kinds(rows).indexOf("member:jonah") === -1)
-        // Leaving the chat folds it again and opens the next one.
+        // Opening another room's chat does not open its voice list either.
         rows = RoomTree.rows(sample(), "n", true,
                              ctx({ selectedNode: "n", selectedRoom: "raid" }))
         k = kinds(rows)
         verify(k.indexOf("member:jonah") === -1)
-        verify(k.indexOf("member:sam") !== -1)
+        verify(k.indexOf("member:sam") === -1)
         verify(k.indexOf("room:strat") !== -1)
+        verify(rows[k.indexOf("room:raid")].collapsed)
+        compare(rows[k.indexOf("room:raid")].voice_count, 1)
     }
 
-    function test_leaves_fold_by_hand() {
+    function test_voice_flag_toggles_and_text_flag_stays_independent() {
         var rows = RoomTree.rows(sample(), "n", true,
-                                 ctx({ collapsed: opened("lobby"),
-                                       leaves: { "n:lobby:voice": false, "n:lobby:text": true } }))
+                                 ctx({ leaves: shown("lobby:voice", "lobby:text") }))
         var k = kinds(rows)
+        verify(k.indexOf("member:mara") !== -1)
+        verify(k.indexOf("member:jonah") !== -1)
+        compare(rows[k.indexOf("room:lobby")].voice_count, 2)
+        verify(!rows[k.indexOf("room:lobby")].collapsed)
+        // Closing the voice list leaves the text list where it was.
+        rows = RoomTree.rows(sample(), "n", true,
+                             ctx({ leaves: { "n:lobby:voice": false, "n:lobby:text": true } }))
+        k = kinds(rows)
         verify(k.indexOf("member:mara") === -1)
         verify(k.indexOf("member:jonah") !== -1)
+        verify(rows[k.indexOf("room:lobby")].collapsed)
+        compare(rows[k.indexOf("room:lobby")].voice_count, 2)
     }
 
-    function test_collapsed_room_keeps_its_sub_rooms_and_counts_its_own() {
-        var rows = RoomTree.rows(sample(), "n", true, ctx({ collapsed: { "n:raid": true } }))
+    // An open list is one box in the colour of the count box that opened it:
+    // the leaf row starts it, every row under it carries it at the leaf's
+    // column, and the last row ends it.
+    function test_open_list_is_one_box_in_its_count_colour() {
+        var rows = RoomTree.rows(sample(), "n", true,
+                                 ctx({ leaves: shown("lobby:voice", "lobby:text") }))
+        var k = kinds(rows)
+        var voice = rows[k.indexOf("group:lobby:voice")]
+        compare(voice.box, "voice")
+        verify(voice.box_start)
+        verify(!voice.box_end)
+        var mara = rows[k.indexOf("member:mara")]
+        compare(mara.box, "voice")
+        compare(mara.box_depth, voice.box_depth)
+        verify(!mara.box_start)
+        verify(!mara.box_end)
+        verify(rows[k.indexOf("member:theo")].box_end)
+        // Text gets its own box, which starts again at its leaf.
+        var text = rows[k.indexOf("group:lobby:text")]
+        compare(text.box, "text")
+        verify(text.box_start)
+        compare(rows[k.indexOf("member:jonah")].box, "text")
+        verify(rows[k.indexOf("member:jonah")].box_end)
+        // Rooms are never inside a box.
+        verify(!rows[k.indexOf("room:lobby")].box)
+
+        // The live session stands for the voice members, so it ends that box.
+        rows = RoomTree.rows(sample(), "n", true,
+                             ctx({ voiceNode: "n", voiceRoom: "raid", leaves: shown("raid:voice") }))
+        k = kinds(rows)
+        compare(rows[k.indexOf("session:raid")].box, "voice")
+        verify(rows[k.indexOf("session:raid")].box_end)
+
+        // A folded list draws no box; "+N more" ends one that overflows.
+        var many = []
+        for (var i = 0; i < 12; i++) many.push(member("p" + i))
+        rows = RoomTree.rows([{ room_id: "big", name: "Big", parent_id: "", voice_members: many }],
+                             "n", true, ctx({ limit: 5, leaves: shown("big:voice") }))
+        var last = rows[rows.length - 1]
+        compare(last.row_kind, "more")
+        compare(last.box, "voice")
+        verify(last.box_end)
+        rows.forEach(function (r) {
+            if (r.row_kind === "member")
+                verify(!r.box_end, r.id)
+        })
+    }
+
+    function test_shut_voice_list_keeps_sub_rooms_and_its_own_count() {
+        var rows = RoomTree.rows(sample(), "n", true, ctx())
         var k = kinds(rows)
         verify(k.indexOf("room:raid") !== -1)
         verify(k.indexOf("room:strat") !== -1)
@@ -131,9 +209,11 @@ TestCase {
         var raid = rows[k.indexOf("room:raid")]
         verify(raid.collapsed)
         compare(raid.subtree_voice, 1)
+        compare(raid.voice_count, 1)
         compare(raid.stack_ids, ["sam"])
         // Ade counts on Strategy, not on Raid.
         compare(rows[k.indexOf("room:strat")].subtree_voice, 1)
+        compare(rows[k.indexOf("room:strat")].voice_count, 1)
     }
 
     function test_roster_fields_keep_a_known_list_and_omit_an_unknown_one() {
@@ -152,18 +232,29 @@ TestCase {
     }
 
     function test_session_row_stands_in_for_the_voice_room_members() {
+        // Being in the room does not open its list. The row still offers a call.
         var rows = RoomTree.rows(sample(), "n", true,
-                                 ctx({ voiceNode: "n", voiceRoom: "raid",
-                                       collapsed: opened("lobby") }))
+                                 ctx({ voiceNode: "n", voiceRoom: "raid" }))
         var k = kinds(rows)
+        verify(k.indexOf("session:raid") === -1)
+        verify(rows[k.indexOf("room:raid")].collapsed)
+        verify(rows[k.indexOf("room:raid")].show_call)
+        verify(rows[k.indexOf("room:raid")].voice_here)
+        compare(rows[k.indexOf("room:raid")].voice_count, 1)
+        rows = RoomTree.rows(sample(), "n", true,
+                             ctx({ voiceNode: "n", voiceRoom: "raid",
+                                   leaves: shown("raid:voice", "lobby:voice") }))
+        k = kinds(rows)
         verify(k.indexOf("session:raid") !== -1)
         verify(k.indexOf("member:sam") === -1)
+        verify(k.indexOf("member:mara") !== -1)
         // The call icon sits on the room row. In the voice room we are in it
         // ends the call; anywhere else it joins.
         verify(rows[k.indexOf("room:raid")].show_call)
         verify(rows[k.indexOf("room:raid")].voice_here)
+        verify(!rows[k.indexOf("room:raid")].collapsed)
+        compare(rows[k.indexOf("room:raid")].voice_count, 1)
         verify(!rows[k.indexOf("room:lobby")].voice_here)
-        // A room we opened by hand still offers the call.
         verify(rows[k.indexOf("room:lobby")].show_call)
         verify(!rows[k.indexOf("group:lobby:voice")].hasOwnProperty("show_join"))
     }
@@ -180,57 +271,87 @@ TestCase {
         var lobby = room("lobby")
         verify(lobby.collapsed)
         compare(lobby.subtree_voice, 2)
+        compare(lobby.voice_count, 2)
         compare(lobby.room_chat, 1)
         compare(lobby.stack_ids, ["mara", "theo"])
         // Gaming has nobody of its own: it is the row its sub-rooms hang from.
         var gaming = room("gaming")
         verify(!gaming.has_children)
         compare(gaming.subtree_voice, 0)
+        compare(gaming.voice_count, 0)
         var raid = room("raid")
         verify(raid.collapsed)
         compare(raid.subtree_voice, 1)
+        compare(raid.voice_count, 1)
         compare(raid.room_chat, 0)
         var strat = room("strat")
         verify(strat.collapsed)
         compare(strat.subtree_voice, 1)
+        compare(strat.voice_count, 1)
     }
 
-    function test_voice_room_shows_voice_and_text_people_together() {
+    function test_voice_room_stays_shut_until_its_voice_flag_opens_it() {
         var rooms = sample()
         rooms[2].text_members = [member("nia")]
         var rows = RoomTree.rows(rooms, "n", true,
                                  ctx({ voiceNode: "n", voiceRoom: "raid" }))
         compare(kinds(rows), [
-            "room:gaming",
-            "room:raid", "group:raid:voice", "session:raid",
-            "group:raid:text", "member:nia",
-            "room:strat",
-            "room:lobby"
+            "room:gaming", "room:raid", "room:strat", "room:lobby"
         ])
         var k = kinds(rows)
         verify(rows[k.indexOf("room:lobby")].collapsed)
-        verify(!rows[k.indexOf("room:raid")].collapsed)
+        verify(rows[k.indexOf("room:raid")].collapsed)
         verify(rows[k.indexOf("room:strat")].collapsed)
         verify(rows[k.indexOf("room:raid")].voice_here)
         verify(rows[k.indexOf("room:lobby")].show_call)
-        verify(rows[k.indexOf("group:raid:text")].expanded)
+        compare(rows[k.indexOf("room:raid")].room_chat, 1)
+        compare(rows[k.indexOf("room:raid")].voice_count, 1)
+        verify(k.indexOf("member:nia") === -1)
         verify(k.indexOf("member:ade") === -1)
+        verify(k.indexOf("session:raid") === -1)
+        // The text count adds those people and leaves the voice list shut.
+        rows = RoomTree.rows(rooms, "n", true,
+                             ctx({ voiceNode: "n", voiceRoom: "raid",
+                                   leaves: shown("raid:text") }))
+        k = kinds(rows)
+        verify(k.indexOf("member:nia") !== -1)
+        verify(k.indexOf("session:raid") === -1)
+        compare(rows[k.indexOf("room:raid")].room_chat, 0)
+        verify(rows[k.indexOf("room:raid")].collapsed)
+        compare(rows[k.indexOf("room:raid")].voice_count, 1)
+        // The voice flag is what shows the live session, and the count stays.
+        rows = RoomTree.rows(rooms, "n", true,
+                             ctx({ voiceNode: "n", voiceRoom: "raid",
+                                   leaves: shown("raid:voice") }))
+        compare(kinds(rows), [
+            "room:gaming",
+            "room:raid", "group:raid:voice", "session:raid",
+            "room:strat",
+            "room:lobby"
+        ])
+        k = kinds(rows)
+        verify(!rows[k.indexOf("room:raid")].collapsed)
+        compare(rows[k.indexOf("room:raid")].voice_count, 1)
+        compare(rows[k.indexOf("room:raid")].subtree_voice, 0)
+        compare(rows[k.indexOf("room:raid")].room_chat, 1)
     }
 
-    function test_explicit_collapse_keeps_the_voice_room_shut() {
+    function test_old_collapse_flag_does_not_open_the_voice_room() {
         var rows = RoomTree.rows(sample(), "n", true,
                                  ctx({ voiceNode: "n", voiceRoom: "raid",
-                                       collapsed: { "n:raid": true } }))
+                                       collapsed: { "n:raid": false } }))
         var k = kinds(rows)
         verify(k.indexOf("room:raid") !== -1)
         verify(k.indexOf("room:strat") !== -1)
         verify(k.indexOf("session:raid") === -1)
         verify(rows[k.indexOf("room:raid")].collapsed)
+        verify(rows[k.indexOf("room:raid")].voice_here)
+        compare(rows[k.indexOf("room:raid")].voice_count, 1)
     }
 
     function test_invites_only_from_rooms_we_are_in() {
         var rows = RoomTree.rows(sample(), "n", true,
-                                 ctx({ collapsed: opened("lobby", "gaming", "raid", "strat"),
+                                 ctx({ leaves: shown("lobby:voice", "strat:voice"),
                                        selectedNode: "n", selectedRoom: "lobby" }))
         var k = kinds(rows)
         verify(rows[k.indexOf("member:mara")].can_invite)
@@ -249,13 +370,15 @@ TestCase {
         for (var i = 0; i < 12; i++) many.push(member("p" + i))
         var rooms = [{ room_id: "big", name: "Big", parent_id: "", voice_members: many }]
         var rows = RoomTree.rows(rooms, "n", true,
-                                 ctx({ limit: 5, collapsed: { "n:big": false } }))
+                                 ctx({ limit: 5, leaves: shown("big:voice") }))
         var members = rows.filter(function (r) { return r.row_kind === "member" })
         compare(members.length, 4)
         compare(rows[rows.length - 1].row_kind, "more")
         compare(rows[rows.length - 1].label, "+8 more")
+        // The count stays at the full roster while the leaf is folded to a few.
+        compare(rows[0].voice_count, 12)
         rows = RoomTree.rows(rooms, "n", true,
-                             ctx({ limit: 5, collapsed: { "n:big": false },
+                             ctx({ limit: 5, leaves: shown("big:voice"),
                                    overflow: { "n:big:voice": true } }))
         compare(rows.filter(function (r) { return r.row_kind === "member" }).length, 12)
         compare(rows[rows.length - 1].label, "Show fewer")
@@ -271,8 +394,7 @@ TestCase {
             { room_id: "strat", name: "Strategy", parent_id: "raid" },
             { room_id: "zzz", name: "Zzz", parent_id: "" }
         ]
-        var rows = RoomTree.rows(rooms, "n", true,
-                                 ctx({ collapsed: { "n:gaming": false, "n:raid": false } }))
+        var rows = RoomTree.rows(rooms, "n", true, ctx())
         var k = kinds(rows)
         compare(rows[k.indexOf("room:raid")].guide_cols, [2])
         compare(rows[k.indexOf("room:strat")].guide_cols, [0, 2])
@@ -280,7 +402,7 @@ TestCase {
 
     function test_member_guides_run_under_their_room() {
         var rows = RoomTree.rows(sample(), "n", true,
-                                 ctx({ collapsed: opened("gaming", "raid") }))
+                                 ctx({ leaves: shown("raid:voice") }))
         var k = kinds(rows)
         // Raid is Gaming's last child, so nothing runs on in Raid's column
         // (0). Under Raid: the Voice leaf, then Strategy — the leaf is ├, and
@@ -294,12 +416,9 @@ TestCase {
             { room_id: "a", name: "A", parent_id: "b" },
             { room_id: "b", name: "B", parent_id: "a" }
         ]
-        // Each is the other's child. Folded or open, neither is dropped.
-        var rows = RoomTree.rows(rooms, "n", true,
-                                 ctx({ collapsed: { "n:a": false, "n:b": false } }))
+        // Each is the other's child. Neither is dropped.
+        var rows = RoomTree.rows(rooms, "n", true, ctx())
         compare(rows.filter(function (r) { return r.row_kind === "room" }).length, 2)
-        var folded = RoomTree.rows(rooms, "n", true, ctx())
-        compare(folded.filter(function (r) { return r.row_kind === "room" }).length, 2)
     }
 
     function roomIds(rows) {
@@ -360,5 +479,29 @@ TestCase {
         compare(both.pinned[0], "n:lobby")
         var swapped = RoomTree.moveRoom(sample(), "n", "gaming", -1, both)
         compare(swapped.pinned[0], "n:gaming")
+    }
+
+    function test_roster_counts_follow_the_member_lists() {
+        var counts = RoomTree.rosterCounts({
+            voice_members: [member("a"), member("b")],
+            text_members: [member("c")]
+        })
+        compare(counts.voice, 2)
+        compare(counts.text, 1)
+        compare(counts.voiceKnown, true)
+        compare(counts.textKnown, true)
+
+        var empty = RoomTree.rosterCounts({ voice_members: [], text_members: [] })
+        compare(empty.voice, 0)
+        compare(empty.text, 0)
+        compare(empty.voiceKnown, true)
+        compare(empty.textKnown, true)
+
+        var unknown = RoomTree.rosterCounts({})
+        compare(unknown.voice, 0)
+        compare(unknown.text, 0)
+        compare(unknown.voiceKnown, false)
+        compare(unknown.textKnown, false)
+        compare(RoomTree.rosterCounts(null).voiceKnown, false)
     }
 }

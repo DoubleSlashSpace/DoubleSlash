@@ -128,10 +128,11 @@ in as the inviter may be the one that minted the invite. Invites are held in
 memory only, so links minted before a restart stop working.
 
 * **Core** — `connection_manager/manager/invite.rs`.
-* **Desktop** — `generateInvite`, `copyInvite`, `pasteInvite`.
-* **Android** — `invite.generate`, `invite.accept`, plus a `d://` intent
+* **Desktop** — `generateInvite`, `copyInvite`, `pasteInvite`. The invite popup
+  can show that same link as a QR symbol (`qrRows`). It does not mint another invite.
+* **Android** — `invite.generate`, `invite.accept`, `qr.rows`, plus a `d://` intent
   filter so a tapped link opens the app. Links that arrive before unlock are
-  held and replayed.
+  held and replayed. The invite dialog can show the same link as a QR symbol.
 
 **Trust invites.** You can offer a room member you do not yet trust a personal
 invite without leaving the room. The core
@@ -254,11 +255,21 @@ peer-to-peer, sealed under the room sender key.
 * **Desktop** — `joinRoomWithVoice`, the Rooms tree (`RoomTree.qml`,
   `RoomTreeMember.qml`) and `VoiceDock`. Each room lists a Voice leaf and a
   Text-only leaf from the `voice_members` / `text_members` the bridge adds to
-  its sidebar entry. The live session's leaf is drawn from `roomModel`, so it
+  its sidebar entry. The voice count toggles the voice list. The text-only
+  leaf stays shut until that row's text count is clicked. The open room's
+  header uses the same green call icon and the same two counts; each count
+  reveals that list in the tree. On the rooms list the green join handset is
+  drawn only while the pointer is over that room; the hang-up on the live
+  voice room stays visible. The live session's
+  leaf is drawn from `roomModel`, so it
   carries levels and per-member mute and volume.
 * **Android** — `room.voice.join`, `room.voice.leave`, the same tree
-  (`ui/RoomTree.kt`), and `VoiceDock` at the foot of every screen. The room
-  screen's Members sheet shows that room's two leaves with the same rows.
+  (`ui/RoomTree.kt`), and `VoiceDock` at the foot of every screen. The voice
+  count toggles the voice list and the text count opens the text list, as on
+  the desktop. The room screen joins voice with the same green call icon and
+  shows the same two counts; each count opens the Members sheet on that list.
+  The sheet shows that room's two leaves
+  with the same rows.
   Speaking rings come from `remote_speaking` / `local_speaking`; per-member
   mute and volume go through `audio.peer_pref`.
 

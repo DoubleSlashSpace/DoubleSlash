@@ -2,6 +2,7 @@ package com.doubleslash.client.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -9,6 +10,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -72,7 +74,13 @@ fun BackupDialog(unlocked: Boolean, onDismiss: () -> Unit) {
     }
 
     Dialog(onDismissRequest = { if (!busy) onDismiss() }, properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)) {
-        Surface(shape = MaterialTheme.shapes.large) {
+        val ds = LocalDsColors.current
+        Surface(
+            shape = RectangleShape,
+            color = ds.bg1,
+            contentColor = ds.text,
+            modifier = Modifier.border(1.dp, ds.border, RectangleShape),
+        ) {
             Column(Modifier.padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Devices & Backups", style = MaterialTheme.typography.titleLarge)
                 Text("Restore your identity and local data with one encrypted file and its backup password. DoubleSlash cannot recover a lost backup password.")

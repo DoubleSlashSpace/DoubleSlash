@@ -62,7 +62,7 @@ class MemberListTest {
         textRosters = mapOf("nodeA:room" to text),
         reading = room,
         voiceRoom = voiceRoom,
-        fold = TreeFold(expanded = setOf(room.key)),
+        fold = TreeFold(leaves = mapOf("${room.key}:voice" to true, "${room.key}:text" to true)),
     ).filterIsInstance<TreeRow.Member>()
 
     @Test
@@ -101,7 +101,7 @@ class MemberListTest {
             textRosters = emptyMap(),
             reading = null,
             voiceRoom = null,
-            fold = TreeFold(expanded = setOf(room.key)),
+            fold = TreeFold(leaves = mapOf("${room.key}:voice" to true, "${room.key}:text" to true)),
         ).filterIsInstance<TreeRow.Member>().single()
         assertFalse(elsewhere.canInvite)
     }

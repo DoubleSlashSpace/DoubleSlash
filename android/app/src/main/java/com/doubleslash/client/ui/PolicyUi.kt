@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -51,7 +50,7 @@ fun rememberExplainedPermission(
     ) { granted -> if (granted) onGranted() }
 
     if (show) {
-        AlertDialog(
+        DsDialog(
             onDismissRequest = { show = false },
             title = { Text(title) },
             text = { Text(body) },
@@ -117,7 +116,7 @@ fun NotificationPermissionPrompt(settings: AppSettings) {
 
     if (!show) return
 
-    AlertDialog(
+    DsDialog(
         onDismissRequest = {
             show = false
             settings.notificationRationaleShown = true
@@ -214,7 +213,7 @@ fun ReportDialog(
     val context = LocalContext.current
     var note by remember { mutableStateOf("") }
 
-    AlertDialog(
+    DsDialog(
         onDismissRequest = onDismiss,
         title = { Text("Report $kind") },
         text = {

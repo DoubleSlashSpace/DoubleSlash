@@ -54,7 +54,36 @@ class RoomTreeTest {
     private fun tree(fold: TreeFold = TreeFold(), reading: Room? = null, voiceRoom: VoiceRoom? = null) =
         buildRoomTree(rooms, voice, text, reading, voiceRoom, fold)
 
-    private fun open(vararg ids: String) = TreeFold(expanded = ids.map { "n/$it" }.toSet())
+    /** `leaves[n/<id>:voice|text] = true` is the only way that list opens. */
+    private fun shown(vararg leaves: String) = TreeFold(leaves = leaves.associate { "n/$it" to true })
+
+    @Test
+    fun `an open list is one box in its count colour`() {
+        // As on the desktop: the leaf row starts the box, every row under it
+        // carries it at the leaf's column, and the last row ends it.
+        val rows = tree(shown("lobby:voice", "lobby:text"))
+        val voiceLeaf = rows.filterIsInstance<TreeRow.Leaf>().first { it.room.roomId == "lobby" && it.voice }
+        val voiceBox = voiceLeaf.box!!
+        assertTrue(voiceBox.voice && voiceBox.start && !voiceBox.end)
+        val voiceMembers = rows.filterIsInstance<TreeRow.Member>().filter { it.room.roomId == "lobby" && it.voice }
+        assertEquals(listOf("mara", "theo"), voiceMembers.map { it.id })
+        assertTrue(voiceMembers.all { it.box?.voice == true && it.box?.depth == voiceBox.depth })
+        assertEquals(listOf(false, true), voiceMembers.map { it.box!!.end })
+        // Text gets its own box, starting again at its leaf.
+        val textLeaf = rows.filterIsInstance<TreeRow.Leaf>().first { it.room.roomId == "lobby" && !it.voice }
+        assertTrue(textLeaf.box!!.start && !textLeaf.box!!.voice)
+        val jonah = rows.filterIsInstance<TreeRow.Member>().first { it.id == "jonah" }
+        assertTrue(jonah.box!!.end && !jonah.box!!.voice)
+        // A shut voice list is absent, so it draws no box. Text stays.
+        val shut = tree(shown("lobby:text"))
+        assertTrue(shut.none { it is TreeRow.Leaf && it.voice && it.room.roomId == "lobby" })
+        val lobby = shut.filterIsInstance<TreeRow.RoomNode>().first { it.room.roomId == "lobby" }
+        assertEquals(2, lobby.voiceCount)
+        assertTrue(lobby.collapsed)
+        // The members sheet drops a column, and the box moves with it.
+        val sheet = buildRoomLeaves(room("lobby"), voice, text, null, TreeFold())
+        assertEquals(0, sheet.filterIsInstance<TreeRow.Leaf>().first().box!!.depth)
+    }
 
     @Test
     fun `an open room lists voice and text people before its sub-rooms`() {
@@ -66,21 +95,28 @@ class RoomTreeTest {
                 "room:lobby", "leaf:lobby:voice", "member:mara", "member:theo",
                 "leaf:lobby:text", "member:jonah",
             ),
-            kinds(tree(open("gaming", "raid", "strat", "lobby"))),
+            kinds(tree(shown("raid:voice", "strat:voice", "lobby:voice", "lobby:text"))),
         )
     }
 
     @Test
-    fun `the room being read opens its text leaf`() {
-        val rows = kinds(tree(open("lobby"), reading = rooms[0]))
+    fun `the text flag opens text members and leaves the voice list shut`() {
+        val closed = kinds(tree(reading = rooms[0]))
+        assertTrue("member:jonah" !in closed)
+        assertTrue("member:mara" !in closed)
+        val rows = kinds(tree(shown("lobby:text"), reading = rooms[0]))
         assertTrue("member:jonah" in rows)
         // Mara is in voice, so she is not listed again under text only.
-        assertEquals(1, rows.count { it == "member:mara" })
+        assertEquals(0, rows.count { it == "member:mara" })
+        val lobby = tree(shown("lobby:text")).filterIsInstance<TreeRow.RoomNode>().first { it.room.roomId == "lobby" }
+        assertEquals(0, lobby.roomChat)
+        assertEquals(2, lobby.voiceCount)
+        assertTrue(lobby.collapsed)
     }
 
     @Test
-    fun `folding a room keeps its sub-rooms and counts only its own people`() {
-        val rows = tree(TreeFold(collapsed = setOf(rooms[2].key)))
+    fun `a shut voice list keeps its sub-rooms and counts only its own people`() {
+        val rows = tree()
         val names = kinds(rows)
         assertTrue("room:raid" in names)
         assertTrue("room:strat" in names)
@@ -97,7 +133,7 @@ class RoomTreeTest {
     @Test
     fun `guides follow the parent, not the grandparent`() {
         // Raid is Gaming's last child: nothing runs on in Raid's column below it.
-        val rows = tree(open("gaming", "raid"))
+        val rows = tree(shown("raid:voice"))
         val byKind = kinds(rows).zip(rows).toMap()
         assertEquals(listOf(2), byKind.getValue("room:raid").guides)
         assertEquals(listOf(0, 3), byKind.getValue("leaf:raid:voice").guides)
@@ -107,7 +143,7 @@ class RoomTreeTest {
 
     @Test
     fun `the voice room's row hangs up and its members are in session`() {
-        val rows = tree(open("lobby"), voiceRoom = VoiceRoom("n", "raid", "Raid"))
+        val rows = tree(shown("lobby:voice", "raid:voice"), voiceRoom = VoiceRoom("n", "raid", "Raid"))
         // The call icon is on the room row, as on the desktop, not on a leaf.
         // In the voice room we are in it ends the call; elsewhere it joins.
         val nodes = rows.filterIsInstance<TreeRow.RoomNode>().associateBy { it.room.roomId }
@@ -123,7 +159,7 @@ class RoomTreeTest {
     fun `a busy leaf folds the rest under more`() {
         val many = (0 until 12).map { "p$it" }
         val big = listOf(room("big"))
-        val opened = TreeFold(expanded = setOf("n/big"))
+        val opened = shown("big:voice")
         val rows = buildRoomTree(big, mapOf("n:big" to many), emptyMap(), null, null, opened, limit = 5)
         assertEquals(4, rows.count { it is TreeRow.Member })
         assertEquals("+8 more", (rows.last() as TreeRow.More).label)
@@ -165,65 +201,70 @@ class RoomTreeTest {
     }
 
     @Test
-    fun `the voice room shows its voice and text people together`() {
+    fun `the voice room stays shut until its voice flag opens it`() {
+        val withNia = text + ("n:raid" to listOf("nia"))
         val rows = buildRoomTree(
-            rooms,
-            voice,
-            text + ("n:raid" to listOf("nia")),
-            null,
-            VoiceRoom("n", "raid", "Raid"),
-            TreeFold(),
+            rooms, voice, withNia, null, VoiceRoom("n", "raid", "Raid"), TreeFold(),
+        )
+        assertEquals(listOf("room:gaming", "room:raid", "room:strat", "room:lobby"), kinds(rows))
+        val raid = rows.filterIsInstance<TreeRow.RoomNode>().first { it.room.roomId == "raid" }
+        assertTrue(raid.collapsed && raid.inVoice)
+        assertEquals(1, raid.voiceCount)
+        assertEquals(1, raid.roomChat)
+        val textOnly = buildRoomTree(
+            rooms, voice, withNia, null, VoiceRoom("n", "raid", "Raid"), shown("raid:text"),
+        )
+        assertTrue("member:nia" in kinds(textOnly))
+        assertTrue("leaf:raid:voice" !in kinds(textOnly))
+        val voiceOpen = buildRoomTree(
+            rooms, voice, withNia, null, VoiceRoom("n", "raid", "Raid"), shown("raid:voice"),
         )
         assertEquals(
             listOf(
                 "room:gaming",
                 "room:raid", "leaf:raid:voice", "member:sam",
-                "leaf:raid:text", "member:nia",
                 "room:strat",
                 "room:lobby",
             ),
-            kinds(rows),
+            kinds(voiceOpen),
         )
-        val textLeaf = rows.filterIsInstance<TreeRow.Leaf>().first { !it.voice && it.room.roomId == "raid" }
-        assertTrue(textLeaf.expanded)
-        val strat = rows.filterIsInstance<TreeRow.RoomNode>().first { it.room.roomId == "strat" }
-        assertTrue(strat.collapsed)
-        val lobby = rows.filterIsInstance<TreeRow.RoomNode>().first { it.room.roomId == "lobby" }
-        assertTrue(lobby.collapsed)
+        val openRaid = voiceOpen.filterIsInstance<TreeRow.RoomNode>().first { it.room.roomId == "raid" }
+        assertFalse(openRaid.collapsed)
+        assertEquals(1, openRaid.voiceCount)
+        assertEquals(1, openRaid.roomChat)
     }
 
     @Test
-    fun `reading a room expands it until another is open`() {
+    fun `selecting a room does not open its lists`() {
         val lobby = kinds(tree(reading = rooms[0]))
-        assertTrue("member:jonah" in lobby)
-        assertTrue("member:mara" in lobby)
+        assertTrue("member:jonah" !in lobby)
+        assertTrue("member:mara" !in lobby)
         assertTrue("room:raid" in lobby)
         assertTrue("member:sam" !in lobby)
-        val shut = kinds(tree(TreeFold(collapsed = setOf(rooms[0].key)), reading = rooms[0]))
-        assertTrue("member:jonah" !in shut)
         val raid = kinds(tree(reading = rooms[2]))
-        assertTrue("member:sam" in raid)
-        assertTrue("member:jonah" !in raid)
+        assertTrue("member:sam" !in raid)
         assertTrue("room:strat" in raid)
+        val node = tree(reading = rooms[2]).filterIsInstance<TreeRow.RoomNode>().first { it.room.roomId == "raid" }
+        assertTrue(node.collapsed)
+        assertEquals(1, node.voiceCount)
     }
 
     @Test
-    fun `an explicit collapse keeps the voice room shut`() {
-        val rows = tree(TreeFold(collapsed = setOf(rooms[2].key)), voiceRoom = VoiceRoom("n", "raid", "Raid"))
+    fun `being in a voice room does not open its list`() {
+        val rows = tree(voiceRoom = VoiceRoom("n", "raid", "Raid"))
         val names = kinds(rows)
         assertTrue("room:raid" in names)
         assertTrue("room:strat" in names)
         assertTrue("leaf:raid:voice" !in names)
+        val raid = rows.filterIsInstance<TreeRow.RoomNode>().first { it.room.roomId == "raid" }
+        assertTrue(raid.collapsed && raid.inVoice && raid.showCall)
     }
 
     @Test
     fun `a parent cycle still lists every room`() {
         val cycle = listOf(room("a", "b"), room("b", "a"))
         // Each is the other's child. Folded or open, neither is dropped.
-        val rows = buildRoomTree(
-            cycle, emptyMap(), emptyMap(), null, null,
-            TreeFold(expanded = setOf("n/a", "n/b")),
-        )
+        val rows = buildRoomTree(cycle, emptyMap(), emptyMap(), null, null, TreeFold())
         assertEquals(2, rows.count { it is TreeRow.RoomNode })
         val folded = buildRoomTree(cycle, emptyMap(), emptyMap(), null, null, TreeFold())
         assertEquals(2, folded.count { it is TreeRow.RoomNode })

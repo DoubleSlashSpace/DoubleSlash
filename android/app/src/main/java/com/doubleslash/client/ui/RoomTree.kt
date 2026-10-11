@@ -89,19 +89,14 @@ import kotlinx.serialization.json.put
 /**
  * What the tree has folded or opened, kept by the screen.
  *
- * Sub-rooms stay listed. A room's own voice and text lists start collapsed.
- * [expanded] opens those lists. [collapsed] shuts them, and that wins over the
- * live voice room and the open chat. An open room shows its voice people,
- * including anyone also on video, and its text-only people together. Folding
- * the voice room again stays shut until the next join. The open chat expands
- * its room only while that chat is selected.
+ * Sub-rooms stay listed. A room's voice and text lists both start shut.
+ * [leaves] opens them, keyed `"<room key>:voice"` or `":text"`. The voice
+ * count toggles the voice list. The text count opens the text list. Selecting
+ * the room or being in its voice does neither. Voice includes anyone also on
+ * video.
  */
 internal data class TreeFold(
-    /** Rooms the user folded shut, by [Room.key]. Wins over voice auto-open. */
-    val collapsed: Set<String> = emptySet(),
-    /** Rooms the user opened, by [Room.key]. */
-    val expanded: Set<String> = emptySet(),
-    /** Leaves opened or closed by hand, `"<room key>:voice|text"`. */
+    /** Leaves opened or closed by hand, `"<room key>:voice|text"`. Absent means shut. */
     val leaves: Map<String, Boolean> = emptyMap(),
     /** Leaves listing every member rather than the first few. */
     val overflow: Set<String> = emptySet(),
@@ -122,6 +117,8 @@ internal sealed interface TreeRow {
         /** Who is inside a folded room, for its stacked avatars. */
         val stack: List<String>,
         val subtreeVoice: Int,
+        /** Voice members, including while that list is open, so the count can close it. */
+        val voiceCount: Int = 0,
         val roomChat: Int,
         /** The call icon on the row: it joins this room's voice, or hangs up when [inVoice]. */
         val showCall: Boolean = false,
@@ -136,6 +133,8 @@ internal sealed interface TreeRow {
         val voice: Boolean,
         val count: Int,
         val expanded: Boolean,
+        /** Set while open: the leaf row starts its list's box. */
+        val box: ListBox? = null,
     ) : TreeRow
 
     data class Member(
@@ -150,6 +149,8 @@ internal sealed interface TreeRow {
         val onRoster: Boolean,
         /** A trust invite can be sent from this room: we are in it. */
         val canInvite: Boolean,
+        /** The open list's box this row is part of. */
+        val box: ListBox? = null,
     ) : TreeRow
 
     data class More(
@@ -157,8 +158,47 @@ internal sealed interface TreeRow {
         override val guides: List<Int>,
         val label: String,
         val overflowKey: String,
+        val box: ListBox? = null,
     ) : TreeRow
 }
+
+/**
+ * An open voice or text list, drawn as one box in the colours of the count
+ * box that stands for it, as on the desktop: green for voice, blue for text.
+ * Every row of the list carries it. [depth] is the leaf's column, where the
+ * box's edge sits; the leaf row [start]s it and the last row [end]s it.
+ */
+internal data class ListBox(val voice: Boolean, val depth: Int, val start: Boolean, val end: Boolean) {
+    /** One column further out, for the members sheet, whose rows drop one. */
+    fun outdented(): ListBox = copy(depth = (depth - 1).coerceAtLeast(0))
+}
+
+/**
+ * Draw [box]'s part of an open list behind a row: the fill and both sides on
+ * every row, the top on its leaf row and the bottom on its last row.
+ */
+private fun Modifier.listBox(box: ListBox?, ds: DsColors): Modifier =
+    if (box == null) {
+        this
+    } else {
+        drawBehind {
+            val tint = if (box.voice) ds.online else ds.accent
+            val x = (EDGE + STEP * box.depth - 4.dp).toPx()
+            // Ends where the rows' content does, in line with the call tiles.
+            val w = size.width - BOX_END_INSET.toPx() - x
+            // A gap above and below the box, so two open lists in a row, or a
+            // list and the room under it, read as separate boxes.
+            val top = if (box.start) BOX_GAP.toPx() else 0f
+            val bottom = if (box.end) size.height - BOX_GAP.toPx() else size.height
+            val h = bottom - top
+            val line = 1.dp.toPx()
+            drawRect(tint.copy(alpha = 0.16f), topLeft = Offset(x, top), size = Size(w, h))
+            drawRect(tint, topLeft = Offset(x, top), size = Size(line, h))
+            drawRect(tint, topLeft = Offset(x + w - line, top), size = Size(line, h))
+            if (box.start) drawRect(tint, topLeft = Offset(x, top), size = Size(w, line))
+            if (box.end) drawRect(tint, topLeft = Offset(x, bottom - line), size = Size(w, line))
+        }
+    }
 
 /** What sits under a room, in order: its leaves, then its sub-rooms. */
 private sealed interface TreeItem {
@@ -499,17 +539,20 @@ internal fun buildRoomTree(
         val isReading = reading != null && r.roomId == reading.roomId && r.supernodeId == reading.supernodeId
         val inThisVoice = voiceRoom != null && r.roomId == voiceRoom.roomId && r.supernodeId == voiceRoom.supernodeId
         val isSession = voice && inThisVoice
-        // The room is already open, so both lists show their people. A stored
-        // flag is only a hand fold of that one list.
-        val expanded = fold.leaves[leafKey] ?: true
+        // A list is emitted only when its flag is already true, so it arrives open.
+        val expanded = true
+        // `pass == null`: the leaf is itself top level (the members sheet).
+        val leafGuides = if (pass == null) emptyList() else codes(pass, last)
+        val depth = leafGuides.size
         out += TreeRow.Leaf(
             key = leafKey,
-            // `pass == null`: the leaf is itself top level (the members sheet).
-            guides = if (pass == null) emptyList() else codes(pass, last),
+            guides = leafGuides,
             room = r,
             voice = voice,
             count = members.size,
             expanded = expanded,
+            // A list with nobody in it ends with its leaf row.
+            box = if (expanded) ListBox(voice, depth, start = true, end = members.isEmpty()) else null,
         )
         if (!expanded) return
         val gPass = if (pass == null) emptyList() else pass + !last
@@ -532,10 +575,14 @@ internal fun buildRoomTree(
                 // The receiver only honours an invite from someone in the room
                 // it names, so only rooms we are in can send one.
                 canInvite = isReading || inThisVoice,
+                box = ListBox(voice, depth, start = false, end = i == shown.lastIndex && more.isEmpty()),
             )
         }
         if (more.isNotEmpty()) {
-            out += TreeRow.More("$leafKey:more", codes(gPass, true), more, leafKey)
+            out += TreeRow.More(
+                "$leafKey:more", codes(gPass, true), more, leafKey,
+                box = ListBox(voice, depth, start = false, end = true),
+            )
         }
     }
 
@@ -544,29 +591,27 @@ internal fun buildRoomTree(
         val kids = children[r.roomId].orEmpty()
         val voice = voiceOf(r)
         val text = textOf(r, voice)
-        // The chevron folds this room's member lists. Sub-rooms stay listed
-        // either way, so a room of only sub-rooms has nothing to fold.
-        val hasMembers = voice.isNotEmpty() || text.isNotEmpty()
-        val forcedShut = r.key in fold.collapsed
-        val forcedOpen = r.key in fold.expanded
+        // The chevron toggles this room's voice list. Sub-rooms stay listed
+        // either way, so a room with nobody in voice has nothing to fold.
+        val voiceKey = r.key + ":voice"
+        val textKey = r.key + ":text"
         val isVoiceRoom = voiceRoom != null && r.roomId == voiceRoom.roomId &&
             r.supernodeId == voiceRoom.supernodeId
-        val isReading = reading != null && r.roomId == reading.roomId && r.supernodeId == reading.supernodeId
-        // A shut flag wins. Otherwise an explicit open, the live voice room,
-        // or the open chat shows this room's lists.
-        val listsOpen = !forcedShut && (forcedOpen || isVoiceRoom || isReading)
-        val collapsed = hasMembers && !listsOpen
+        val voiceOpen = voice.isNotEmpty() && fold.leaves[voiceKey] == true
+        val textOpen = text.isNotEmpty() && fold.leaves[textKey] == true
+        val collapsed = voice.isNotEmpty() && !voiceOpen
         if (visible) {
             val ownVoice = if (collapsed) voice else emptyList()
             out += TreeRow.RoomNode(
                 key = r.key,
                 guides = if (depth > 0) codes(pass, last) else emptyList(),
                 room = r,
-                hasChildren = hasMembers,
+                hasChildren = voice.isNotEmpty(),
                 collapsed = collapsed,
                 stack = ownVoice.take(3),
                 subtreeVoice = ownVoice.size,
-                roomChat = if (collapsed) text.size else 0,
+                voiceCount = voice.size,
+                roomChat = if (textOpen) 0 else text.size,
                 showCall = true,
                 inVoice = isVoiceRoom,
             )
@@ -574,8 +619,8 @@ internal fun buildRoomTree(
         val childPass = if (depth > 0) pass + !last else emptyList()
         // Leaves first, then sub-rooms: who is here reads before where to go.
         val items = buildList<TreeItem> {
-            if (listsOpen && voice.isNotEmpty()) add(TreeItem.LeafItem(true, voice))
-            if (listsOpen && text.isNotEmpty()) add(TreeItem.LeafItem(false, text))
+            if (voiceOpen) add(TreeItem.LeafItem(true, voice))
+            if (textOpen) add(TreeItem.LeafItem(false, text))
             kids.forEach { add(TreeItem.SubRoom(it)) }
         }
         items.forEachIndexed { i, item ->
@@ -611,22 +656,27 @@ internal fun buildRoomLeaves(
 ): List<TreeRow> {
     // The same builder with this room as the only one, then its own row
     // dropped: the sheet is titled with the room already.
+    // The sheet is this room's people. A list the sidebar has not touched yet
+    // is shown here; one the user has shut stays shut.
+    val voiceLeaf = room.key + ":voice"
+    val textLeaf = room.key + ":text"
+    val leaves = fold.leaves.toMutableMap()
+    if (voiceLeaf !in leaves) leaves[voiceLeaf] = true
+    if (textLeaf !in leaves) leaves[textLeaf] = true
     val rows = buildRoomTree(
         rooms = listOf(room.copy(parentId = "")),
         voiceRosters = voiceRosters,
         textRosters = textRosters,
         reading = room,
         voiceRoom = voiceRoom,
-        // The sheet is this room's people, so the room itself stays open even
-        // when the sidebar has it folded.
-        fold = fold.copy(collapsed = fold.collapsed - room.key, expanded = fold.expanded + room.key),
+        fold = fold.copy(leaves = leaves),
     )
     return rows.drop(1).map { row ->
         // One column less: the leaves sit at the sheet's edge.
         when (row) {
-            is TreeRow.Leaf -> row.copy(guides = row.guides.drop(1))
-            is TreeRow.Member -> row.copy(guides = row.guides.drop(1))
-            is TreeRow.More -> row.copy(guides = row.guides.drop(1))
+            is TreeRow.Leaf -> row.copy(guides = row.guides.drop(1), box = row.box?.outdented())
+            is TreeRow.Member -> row.copy(guides = row.guides.drop(1), box = row.box?.outdented())
+            is TreeRow.More -> row.copy(guides = row.guides.drop(1), box = row.box?.outdented())
             is TreeRow.RoomNode -> row
         }
     }
@@ -639,6 +689,10 @@ private val EDGE = 8.dp
 private val ROOM_ROW = 48.dp
 private val LEAF_ROW = 40.dp
 private val MEMBER_ROW = 44.dp
+/** The open-list box stops this far from the right, where row content ends. */
+private val BOX_END_INSET = 12.dp
+/** Space above and below an open-list box. */
+private val BOX_GAP = 3.dp
 
 /** What the tree's rows can do, supplied once by the screen. */
 internal class RoomTreeActions(
@@ -735,6 +789,7 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
     val unread = state.roomUnread[room.roomId] ?: 0
     val alertsOn = room.roomId in state.prefs.roomMessageAlerts
     var menuOpen by remember(room.key) { mutableStateOf(false) }
+    var confirmRemove by remember(room.key) { mutableStateOf(false) }
     Box {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -755,20 +810,12 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                     .slot(STEP, 40.dp)
                     .height(ROOM_ROW)
                     .clickable(enabled = row.hasChildren) {
-                        val next = if (row.collapsed) {
-                            fold.copy(
-                                collapsed = fold.collapsed - room.key,
-                                expanded = fold.expanded + room.key,
-                            )
-                        } else {
-                            fold.copy(
-                                expanded = fold.expanded - room.key,
-                                collapsed = fold.collapsed + room.key,
-                            )
-                        }
-                        actions.onFold(next)
+                        val key = room.key + ":voice"
+                        actions.onFold(fold.copy(leaves = fold.leaves + (key to (fold.leaves[key] != true))))
                     }
-                    .semantics { contentDescription = if (row.collapsed) "Expand ${room.label}" else "Collapse ${room.label}" },
+                    .semantics {
+                        contentDescription = if (row.collapsed) "Show voice members" else "Hide voice members"
+                    },
             ) {
                 if (row.hasChildren) Chevron(!row.collapsed, 12.dp, ds.muted)
             }
@@ -838,12 +885,23 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                 }
                 Spacer(Modifier.width(6.dp))
             }
-            if (row.collapsed && row.subtreeVoice > 0) {
-                CountBadge(R.drawable.ds_headphone, row.subtreeVoice, ds.online, "in voice")
+            if (row.voiceCount > 0) {
+                CountBadge(
+                    R.drawable.ds_headphone,
+                    row.voiceCount,
+                    ds.online,
+                    if (row.collapsed) "Show voice members" else "Hide voice members",
+                    checked = !row.collapsed,
+                ) {
+                    val key = room.key + ":voice"
+                    actions.onFold(fold.copy(leaves = fold.leaves + (key to (fold.leaves[key] != true))))
+                }
             }
-            if (row.collapsed && row.roomChat > 0) {
+            if (row.roomChat > 0) {
                 Spacer(Modifier.width(6.dp))
-                CountBadge(R.drawable.ds_speech, row.roomChat, ds.accent, "in text only")
+                CountBadge(R.drawable.ds_speech, row.roomChat, ds.accent, "Show text members") {
+                    actions.onFold(fold.copy(leaves = fold.leaves + (room.key + ":text" to true)))
+                }
             }
             // Join voice, explicitly, as on the desktop: a call icon on the row
             // rather than a button under its Voice list.
@@ -921,14 +979,48 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                 menuOpen = false
                 actions.onSetMessageAlerts(room, !alertsOn)
             }
-            HorizontalDivider()
-            TreeMenuItem(
-                if (room.hidden) R.drawable.ds_eye else R.drawable.ds_eye_off,
-                if (room.hidden) "Show in list" else "Hide from list",
-            ) {
-                actions.onSetHidden(room, !room.hidden)
-                menuOpen = false
+            // The built-in default room has no Remove item. A hidden one can
+            // still be put back, because Show hidden only reveals the row.
+            val canRemove = room.roomId != "default"
+            if (room.hidden || canRemove) {
+                HorizontalDivider()
+                if (room.hidden) {
+                    TreeMenuItem(R.drawable.ds_eye, "Show in list") {
+                        actions.onSetHidden(room, false)
+                        menuOpen = false
+                    }
+                } else {
+                    TreeMenuItem(
+                        R.drawable.ds_trash,
+                        "Remove room",
+                        color = ds.danger,
+                    ) {
+                        menuOpen = false
+                        confirmRemove = true
+                    }
+                }
             }
+        }
+        if (confirmRemove) {
+            DsDialog(
+                onDismissRequest = { confirmRemove = false },
+                title = { Text("Are you sure?") },
+                text = {
+                    Text(
+                        "This hides ${room.label} from your list on this device. " +
+                            "The room stays on the supernode. Show hidden brings it back.",
+                    )
+                },
+                confirmButton = {
+                    SquareTextButton(onClick = {
+                        confirmRemove = false
+                        actions.onSetHidden(room, true)
+                    }) { Text("Remove", color = ds.danger) }
+                },
+                dismissButton = {
+                    SquareTextButton(onClick = { confirmRemove = false }) { Text("Cancel") }
+                },
+            )
         }
     }
 }
@@ -979,15 +1071,26 @@ private fun TreeIcon(
 
 /** A long-press menu entry with its SVG icon, as on the desktop's room menu. */
 @Composable
-private fun TreeMenuItem(icon: Int, label: String, enabled: Boolean = true, onClick: () -> Unit) {
+private fun TreeMenuItem(
+    icon: Int,
+    label: String,
+    enabled: Boolean = true,
+    color: Color? = null,
+    onClick: () -> Unit,
+) {
     val ds = LocalDsColors.current
+    val tint = when {
+        !enabled -> ds.muted
+        color != null -> color
+        else -> ds.text
+    }
     DropdownMenuItem(
-        text = { Text(label) },
+        text = { Text(label, color = tint) },
         leadingIcon = {
             Icon(
                 painterResource(icon),
                 contentDescription = null,
-                tint = if (enabled) ds.text else ds.muted,
+                tint = tint,
                 modifier = Modifier.size(20.dp),
             )
         },
@@ -997,13 +1100,22 @@ private fun TreeMenuItem(icon: Int, label: String, enabled: Boolean = true, onCl
 }
 
 @Composable
-private fun CountBadge(icon: Int, count: Int, tint: Color, what: String) {
+internal fun CountBadge(
+    icon: Int,
+    count: Int,
+    tint: Color,
+    what: String,
+    checked: Boolean = false,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
-        modifier = Modifier
-            .background(tint.copy(alpha = 0.16f), RectangleShape)
+        modifier = modifier
+            .background(tint.copy(alpha = if (checked) 0.36f else 0.16f), RectangleShape)
             .border(1.dp, tint, RectangleShape)
+            .clickable(onClick = onClick)
             .padding(horizontal = 7.dp, vertical = 2.dp)
             .semantics { contentDescription = "$count $what" },
     ) {
@@ -1020,6 +1132,7 @@ private fun LeafRow(row: TreeRow.Leaf, fold: TreeFold, actions: RoomTreeActions)
         modifier = Modifier
             .fillMaxWidth()
             .height(LEAF_ROW)
+            .listBox(row.box, ds)
             .treeGuides(row.guides, LEAF_ROW / 2, ds.divider)
             .padding(start = indent(row.guides), end = 12.dp),
     ) {
@@ -1066,7 +1179,13 @@ private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, acti
     val key = row.id.videoKey()
     val isSelf = key == state.identity.publicId.videoKey()
     val trusted = state.trustedPeer(row.id)
-    val name = state.peers.roomSenderName(row.id, "").let { if (isSelf) "$it (you)" else it }
+    // We are not in our own peer list, so a lookup there gave our own row a
+    // shortened key instead of our name.
+    val name = if (isSelf) {
+        state.identity.handle.ifEmpty { state.peers.roomSenderName(row.id, "") } + " (you)"
+    } else {
+        state.peers.roomSenderName(row.id, "")
+    }
     val speaking = row.inSession && key in state.speakingPeers && !(isSelf && state.muted)
     val cameraOn = row.voice && row.onRoster && state.cameraOn(row.id)
     val watching = state.watching(row.id)
@@ -1086,6 +1205,7 @@ private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, acti
             .fillMaxWidth()
             // Open: tinted, with an accent edge down the row and its panel, so
             // it is plain which person the panel belongs to. As on the desktop.
+            .listBox(row.box, ds)
             .background(if (open) ds.accent.copy(alpha = 0.10f) else Color.Transparent)
             .drawBehind {
                 if (open) {
@@ -1293,6 +1413,7 @@ private fun MoreRow(row: TreeRow.More, fold: TreeFold, actions: RoomTreeActions)
         modifier = Modifier
             .fillMaxWidth()
             .height(LEAF_ROW)
+            .listBox(row.box, ds)
             .treeGuides(row.guides, LEAF_ROW / 2, ds.divider)
             .padding(start = indent(row.guides)),
     ) {

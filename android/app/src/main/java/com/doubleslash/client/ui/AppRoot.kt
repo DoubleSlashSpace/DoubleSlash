@@ -43,7 +43,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilledTonalButton
@@ -185,22 +184,6 @@ fun AppRoot(viewModel: AppViewModel) {
     // The Rooms tree's fold state, above the screens so it survives leaving
     // the list and is shared with a room's members sheet.
     var treeFold by remember { mutableStateOf(TreeFold()) }
-    // Joining a voice room opens its voice list once. A fold after that stays
-    // shut until the user leaves that room and joins again.
-    var releasedVoiceKey by remember { mutableStateOf("") }
-    val voice = state.voiceRoom
-    val voiceKey = if (voice == null) "" else "${voice.supernodeId}/${voice.roomId}"
-    LaunchedEffect(voiceKey) {
-        if (voiceKey.isEmpty()) {
-            releasedVoiceKey = ""
-            return@LaunchedEffect
-        }
-        if (voiceKey == releasedVoiceKey) return@LaunchedEffect
-        releasedVoiceKey = voiceKey
-        if (voiceKey in treeFold.collapsed) {
-            treeFold = treeFold.copy(collapsed = treeFold.collapsed - voiceKey)
-        }
-    }
     // Joining voice from the tree asks for the microphone first, as the room
     // screen's own Join does.
     var pendingVoiceJoin by remember { mutableStateOf<Room?>(null) }
@@ -220,13 +203,7 @@ fun AppRoot(viewModel: AppViewModel) {
     val treeActionsFor: ((Room) -> Unit) -> RoomTreeActions = { onCreateSubRoom ->
         RoomTreeActions(
             onFold = { treeFold = it },
-            onOpenRoom = { room ->
-                // Selecting the chat opens this room only while it stays open.
-                if (room.key in treeFold.collapsed) {
-                    treeFold = treeFold.copy(collapsed = treeFold.collapsed - room.key)
-                }
-                viewModel.openRoom(room)
-            },
+            onOpenRoom = { room -> viewModel.openRoom(room) },
             onJoinVoice = { room ->
                 pendingVoiceJoin = room
                 requestMicForJoin()
@@ -408,7 +385,7 @@ fun AppRoot(viewModel: AppViewModel) {
     }
 
     state.inviteUrl?.let { url ->
-        InviteDialog(url = url, onDismiss = viewModel::dismissInvite)
+        InviteDialog(url = url, qrRows = state.inviteQr, onDismiss = viewModel::dismissInvite)
     }
 
     inviteContactFor?.let { room ->
@@ -527,7 +504,7 @@ private fun CallOverlay(
         onGranted = onAccept,
     )
     if (call.phase == CallPhase.INCOMING) {
-        AlertDialog(
+        DsDialog(
             onDismissRequest = { /* a ringing call needs an explicit answer */ },
             title = { Text("Incoming call") },
             text = { Text(call.peerLabel) },
@@ -1342,7 +1319,7 @@ private fun PeerRow(
             }
         },
         // Long-press for the peer actions, the same gesture rooms already use
-        // for hide/unhide - one idiom for "more, on this row".
+        // for remove or restore — one idiom for "more, on this row".
         modifier = Modifier.combinedClickable(
             onClick = onClick,
             onLongClick = { menuOpen = true },
@@ -1424,7 +1401,7 @@ private fun CreateRoomDialog(
             ?.peerId ?: p.supernodeId
     }
 
-    AlertDialog(
+    DsDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
@@ -1547,9 +1524,9 @@ private fun CreateRoomDialog(
  */
 @Composable
 private fun RemovePeerDialog(peer: Peer, onDismiss: () -> Unit, onConfirm: () -> Unit) {
-    AlertDialog(
+    DsDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Remove ${peer.label}?") },
+        title = { Text("Are you sure?") },
         text = {
             Text(
                 "This forgets the peer on this device and ends any call with them. " +
@@ -1919,6 +1896,19 @@ private fun RoomChatScreen(
 
     Column(Modifier.fillMaxSize().imePadding()) {
         val voiceHere = state.voiceRoom?.roomId == room.roomId
+        // The same two counts the room row shows. Voice is the roster union;
+        // text is everyone else in the room.
+        val voiceIds = state.roomVoiceRosters.roomMembersUnion(room.roomId)
+        val voiceKeys = voiceIds.map { it.videoKey() }.toSet()
+        val voiceCount = voiceIds.size
+        val textCount = state.roomTextRosters.roomMembersUnion(room.roomId)
+            .count { it.videoKey() !in voiceKeys }
+        val revealMembers = { kind: String ->
+            treeActions.onFold(
+                treeFold.copy(leaves = treeFold.leaves + ("${room.key}:$kind" to true)),
+            )
+            membersOpen = true
+        }
         val parentName = state.rooms
             .firstOrNull { room.parentId.isNotBlank() && it.roomId == room.parentId }
             ?.roomName?.ifBlank { null }
@@ -1955,15 +1945,49 @@ private fun RoomChatScreen(
                 }
             },
             actions = {
-                // Voice is joined here and left from the dock at the foot of
-                // the screen, where the call lives on every screen.
+                val ds = LocalDsColors.current
+                // The same green call icon as the room row. Leave stays on
+                // the dock and on that row once this room's voice is live.
                 if (joined && state.voiceRoom == null) {
-                    SquareTextButton(onClick = requestMic) { Text("Join voice") }
+                    SquareIconButton(
+                        onClick = requestMic,
+                        tile = ds.online.copy(alpha = 0.18f),
+                        border = ds.online,
+                    ) {
+                        Icon(
+                            painterResource(R.drawable.ds_phone),
+                            contentDescription = "Join voice",
+                            tint = ds.online,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
                 }
-                // Who is here, in voice or reading, and what you can do about
-                // each of them: the same rows as the Rooms tree.
-                SquareIconButton(enabled = joined, onClick = { membersOpen = true }) {
-                    Icon(painterResource(R.drawable.ds_peers), contentDescription = "Members")
+                // The same two counts as the room row. Each one opens this
+                // room's members sheet on that list.
+                if (joined && voiceCount > 0) {
+                    CountBadge(
+                        R.drawable.ds_headphone,
+                        voiceCount,
+                        ds.online,
+                        "Show voice members",
+                    ) { revealMembers("voice") }
+                }
+                if (joined && textCount > 0) {
+                    CountBadge(
+                        R.drawable.ds_speech,
+                        textCount,
+                        ds.accent,
+                        "Show text members",
+                    ) { revealMembers("text") }
+                }
+                if (joined && voiceCount == 0 && textCount == 0) {
+                    SquareIconButton(onClick = { membersOpen = true }) {
+                        Icon(
+                            painterResource(R.drawable.ds_peers),
+                            contentDescription = "Members",
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
                 }
                 SquareIconButton(onClick = onShare) {
                     Icon(painterResource(R.drawable.ds_share), contentDescription = "Share this room", modifier = Modifier.size(22.dp))
@@ -2141,13 +2165,33 @@ private fun RoomChatScreen(
             ),
             onPeerAudio = treeActions.onPeerAudio,
         )
-        ModalBottomSheet(onDismissRequest = { membersOpen = false }) {
+        val ds = LocalDsColors.current
+        ModalBottomSheet(
+            onDismissRequest = { membersOpen = false },
+            containerColor = ds.bg1,
+            contentColor = ds.text,
+            scrimColor = Color.Black.copy(alpha = 0.62f),
+            shape = RectangleShape,
+            tonalElevation = 0.dp,
+            dragHandle = {
+                Box(
+                    Modifier
+                        .padding(top = 10.dp, bottom = 6.dp)
+                        .size(width = 36.dp, height = 4.dp)
+                        .background(ds.muted, RectangleShape),
+                )
+            },
+        ) {
             LazyColumn(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
                 item {
                     Text(
                         "${room.roomName.ifBlank { "Room" }} · ${chatMembers.size}",
                         style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        color = ds.text,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(ds.bg0)
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
                     )
                 }
                 roomTreeItems(sheetRows, state, treeFold, sheetActions)
@@ -2268,7 +2312,7 @@ private fun TrustOfferDialog(
         kotlinx.coroutines.delay(left.coerceAtLeast(0))
         onAnswer(false)
     }
-    AlertDialog(
+    DsDialog(
         onDismissRequest = { onAnswer(false) },
         icon = { avatar?.let { Avatar(it, Modifier.size(48.dp)) } },
         title = { Text("Become trusted peers?") },
@@ -2340,7 +2384,7 @@ private fun LockIdentityDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
-    AlertDialog(
+    DsDialog(
         onDismissRequest = onDismiss,
         title = { Text("Lock identity?") },
         text = {
@@ -2964,7 +3008,7 @@ private fun SettingsScreen(
     }
 
     confirmRemoveNode?.let { node ->
-        AlertDialog(
+        DsDialog(
             onDismissRequest = { confirmRemoveNode = null },
             title = { Text("Remove ${node.displayName}?") },
             text = {
@@ -2998,7 +3042,7 @@ private fun SettingsScreen(
     }
 
     if (confirmPurge) {
-        AlertDialog(
+        DsDialog(
             onDismissRequest = { confirmPurge = false },
             title = { Text("Delete all messages?") },
             text = {
@@ -3052,7 +3096,7 @@ private fun AvatarEditorDialog(
 
     LaunchedEffect(configJson) { preview = onPreview(configJson) }
 
-    AlertDialog(
+    DsDialog(
         onDismissRequest = onDismiss,
         title = { Text("Your avatar") },
         text = {
@@ -3173,7 +3217,7 @@ private fun FileOfferDialog(
     onAccept: () -> Unit,
     onReject: () -> Unit,
 ) {
-    AlertDialog(
+    DsDialog(
         onDismissRequest = onReject,
         title = { Text(if (offer.isRoom) "File shared in a room" else "Incoming file") },
         text = {
@@ -3208,7 +3252,7 @@ private fun SaveFilePrompt(
         ActivityResultContracts.CreateDocument("*/*"),
     ) { uri -> if (uri != null) onSave(uri) else onDismiss() }
 
-    AlertDialog(
+    DsDialog(
         onDismissRequest = onDismiss,
         title = { Text("File received") },
         text = { Text("${saved.name} finished downloading. Save a copy?") },
@@ -3236,11 +3280,11 @@ private fun InviteContactDialog(
     onPick: (Peer) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
+    DsDialog(
         onDismissRequest = onDismiss,
         title = { Text("Invite Contact to Room") },
         text = {
-            Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+            Column {
                 Text(
                     "A link for $roomName, bound to the contact you pick. It is copied when you choose them.",
                     style = MaterialTheme.typography.bodySmall,
@@ -3262,10 +3306,11 @@ private fun InviteContactDialog(
 }
 
 @Composable
-private fun InviteDialog(url: String, onDismiss: () -> Unit) {
+private fun InviteDialog(url: String, qrRows: List<String>?, onDismiss: () -> Unit) {
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var showQr by remember { mutableStateOf(false) }
 
-    AlertDialog(
+    DsDialog(
         onDismissRequest = onDismiss,
         title = { Text("Invite created") },
         text = {
@@ -3276,6 +3321,24 @@ private fun InviteDialog(url: String, onDismiss: () -> Unit) {
                 )
                 Spacer(Modifier.height(12.dp))
                 Text(url, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(12.dp))
+                SquareTextButton(onClick = { showQr = !showQr }) {
+                    Text(if (showQr) "Hide QR code" else "Show QR code")
+                }
+                if (showQr) {
+                    Spacer(Modifier.height(12.dp))
+                    when {
+                        qrRows == null -> Text(
+                            "Preparing the QR code…",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        qrRows.isEmpty() -> Text(
+                            "This link is too long to show as a QR code.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        else -> QrImage(qrRows, Modifier.fillMaxWidth())
+                    }
+                }
             }
         },
         confirmButton = {
@@ -3292,7 +3355,7 @@ private fun InviteDialog(url: String, onDismiss: () -> Unit) {
 private fun AcceptInviteDialog(onDismiss: () -> Unit, onAccept: (String) -> Unit) {
     var url by remember { mutableStateOf("") }
 
-    AlertDialog(
+    DsDialog(
         onDismissRequest = onDismiss,
         title = { Text("Accept an invite") },
         text = {

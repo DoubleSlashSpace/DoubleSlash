@@ -220,77 +220,10 @@ ApplicationWindow {
         return isNaN(n) ? 0 : Math.max(0, n)
     }
 
-    // Room fold, keyed `node_id:room_id`. Reassigned (not mutated) on toggle so
-    // the `roomsTree` bindings re-evaluate. `true` shuts a room's member lists
-    // (and wins over the live voice room and the open chat), `false` opens
-    // them, and no entry leaves them collapsed unless this is the voice room
-    // or the chat on screen. Sub-rooms stay listed either way.
-    property var collapsedRooms: ({})
-    // The voice room whose explicit collapse has already been released, so a
-    // later fold stays shut until the user leaves that room and joins again.
-    property string releasedVoiceKey: ""
-
-    readonly property string voiceTreeKey: (backend.voice_in_room && root.voiceRoomId !== "")
-        ? root.voiceSupernodeId + ":" + root.voiceRoomId
-        : ""
-    onVoiceTreeKeyChanged: root.forgetCollapseOnVoiceRoom()
-
-    function copyCollapseFlags() {
-        var next = {}
-        for (var k in root.collapsedRooms)
-            if (root.collapsedRooms.hasOwnProperty(k)) next[k] = root.collapsedRooms[k]
-        return next
-    }
-
-    function roomIsOpen(nodeId, roomId) {
-        var flag = root.collapsedRooms[nodeId + ":" + roomId]
-        if (flag === true)
-            return false
-        if (flag === false)
-            return true
-        if (root.voiceTreeKey !== "" && nodeId === root.voiceSupernodeId
-                && roomId === root.voiceRoomId)
-            return true
-        return nodeId === roomPanel.supernodeId && roomId === roomPanel.roomId
-    }
-
-    function toggleRoomCollapse(nodeId, roomId) {
-        var next = root.copyCollapseFlags()
-        next[nodeId + ":" + roomId] = root.roomIsOpen(nodeId, roomId) ? true : false
-        root.collapsedRooms = next
-    }
-
-    /// Drop an explicit collapse of the voice room once per join.
-    function forgetCollapseOnVoiceRoom() {
-        var voiceKey = root.voiceTreeKey
-        if (voiceKey === "") {
-            root.releasedVoiceKey = ""
-            return
-        }
-        if (voiceKey === root.releasedVoiceKey)
-            return
-        root.releasedVoiceKey = voiceKey
-        var next = root.copyCollapseFlags()
-        if (next[voiceKey] === true) {
-            delete next[voiceKey]
-            root.collapsedRooms = next
-        }
-    }
-
-    /// Clear a shut flag so selecting this chat can open it, without leaving
-    /// it open after the chat changes.
-    function releaseRoomCollapse(nodeId, roomId) {
-        var key = nodeId + ":" + roomId
-        if (root.collapsedRooms[key] !== true)
-            return
-        var next = root.copyCollapseFlags()
-        delete next[key]
-        root.collapsedRooms = next
-    }
-
-    // Voice / Text-only leaves opened or closed by hand, keyed
-    // `node_id:room_id:voice|text`. Absent means open: an expanded room shows
-    // both lists.
+    // Leaves opened or closed by hand, keyed `node_id:room_id:voice|text`.
+    // Both stay shut until their row count says otherwise. The voice count
+    // toggles its list. The text count opens its list. Selecting the room
+    // or joining its voice does neither.
     property var memberLeafState: ({})
     // Leaves showing every member rather than the first few.
     property var memberOverflowOpen: ({})
@@ -313,17 +246,22 @@ ApplicationWindow {
         root.openMemberKey = root.openMemberKey === key ? "" : key
     }
 
-    /// Bring a room's members into view: Rooms tab, that room's lists unfolded.
-    /// The room panel's member count asks for this. Sub-rooms are already listed.
+    /// The room row's voice count, and its chevron, both call this.
+    function toggleVoiceList(nodeId, roomId) {
+        if (!nodeId || !roomId)
+            return
+        var key = nodeId + ":" + roomId + ":voice"
+        root.setTreeFlag("leaf", key, root.memberLeafState[key] !== true)
+    }
+
+    /// Bring a room's voice list into view: Rooms tab, that list opened.
+    /// The room panel's member count asks for this. Text members stay behind
+    /// their own count. Sub-rooms are already listed.
     function revealRoomMembers(nodeId, roomId) {
         if (nodeId === "" || roomId === "")
             return
         root.sidebarTab = 1
-        var next = root.copyCollapseFlags()
-        next[nodeId + ":" + roomId] = false
-        root.collapsedRooms = next
         root.setTreeFlag("leaf", nodeId + ":" + roomId + ":voice", true)
-        root.setTreeFlag("leaf", nodeId + ":" + roomId + ":text", true)
     }
 
     // Rooms list order, the same JSON the phone stores. Name A–Z until changed.
@@ -469,7 +407,6 @@ ApplicationWindow {
     // Everything the tree's shape depends on besides the rooms themselves, as
     // one value so a change to any of it rebuilds the rows.
     readonly property var treeContext: ({
-        collapsed: root.collapsedRooms,
         leaves: root.memberLeafState,
         overflow: root.memberOverflowOpen,
         selectedNode: roomPanel.supernodeId,
@@ -484,8 +421,6 @@ ApplicationWindow {
     function openRoomFromTree(nodeId, roomId, name) {
         if (!nodeId || !roomId)
             return
-        // The open chat expands this room only while it stays selected.
-        root.releaseRoomCollapse(nodeId, roomId)
         roomPanel.switchToRoom(name || roomId, roomId, nodeId)
         backend.subscribeRoomChat(nodeId, roomId)
         navIndex = 1
@@ -495,7 +430,6 @@ ApplicationWindow {
     function joinVoiceFromTree(nodeId, roomId, name) {
         if (!nodeId || !roomId)
             return
-        root.releaseRoomCollapse(nodeId, roomId)
         roomPanel.switchToRoom(name || roomId, roomId, nodeId)
         backend.joinRoomWithVoice(nodeId, roomId)
         root.voiceRoomName = name || roomId
@@ -866,8 +800,6 @@ ApplicationWindow {
         }
         dedupeNodeList()
         root.recountRooms()
-        if (canon === root.voiceSupernodeId)
-            root.forgetCollapseOnVoiceRoom()
     }
 
     // Local sidebar tombstones. Hidden rooms stay in the model; the tree
@@ -894,6 +826,33 @@ ApplicationWindow {
         }
         root.hiddenRoomCount = hidden
         root.visibleRoomCount = visible
+        root.roomListStamp++
+    }
+
+    // Bumps when the sidebar room list is rewritten, so the open room's
+    // header counts re-read `rooms_json`. The JSON itself is not a binding.
+    property int roomListStamp: 0
+
+    /// The sidebar record for one room, or null when this node has not
+    /// listed it. Header counts read `voice_members` / `text_members` here,
+    /// the same lists the room row draws.
+    function sidebarRoom(supernodeId, roomId) {
+        if (!supernodeId || !roomId)
+            return null
+        var canon = root.canonicalNodeId(supernodeId)
+        for (var i = 0; i < nodeListModel.count; i++) {
+            var node = nodeListModel.get(i)
+            var nid = node.node_id || ""
+            if (nid !== supernodeId && nid !== canon && root.canonicalNodeId(nid) !== canon)
+                continue
+            var rooms = []
+            try { rooms = JSON.parse(node.rooms_json || "[]") } catch (e) { continue }
+            for (var r = 0; r < rooms.length; r++) {
+                if (rooms[r] && rooms[r].room_id === roomId)
+                    return rooms[r]
+            }
+        }
+        return null
     }
 
     function setRoomHiddenFlag(supernodeId, roomId, hidden) {
@@ -2090,6 +2049,115 @@ ApplicationWindow {
         }
     }
 
+    // Remove Peer and Remove Room share this. Closing it, including Escape,
+    // does nothing; only Remove runs the stored action.
+    Dialog {
+        id: confirmRemoveDialog
+        title: qsTr("Are you sure?")
+        modal: true
+        anchors.centerIn: parent
+        closePolicy: Dialog.CloseOnEscape
+        width: 420
+        padding: Theme.spacingXl
+        z: 100
+        implicitHeight: headerBar.height + bodyText.implicitHeight + footerBar.implicitHeight
+                        + topPadding + bottomPadding
+
+        property string body: ""
+        property string kind: ""
+        property string peerId: ""
+        property string supernodeId: ""
+        property string roomId: ""
+
+        function askPeer(id, message) {
+            kind = "peer"
+            peerId = id
+            supernodeId = ""
+            roomId = ""
+            body = message
+            open()
+        }
+
+        function askRoom(sid, rid, message) {
+            kind = "room"
+            peerId = ""
+            supernodeId = sid
+            roomId = rid
+            body = message
+            open()
+        }
+
+        function applyRemoval() {
+            if (kind === "peer" && peerId !== "")
+                backend.removePeer(peerId)
+            else if (kind === "room" && supernodeId !== "" && roomId !== "")
+                backend.removeRoom(supernodeId, roomId)
+            kind = ""
+            close()
+        }
+
+        background: Rectangle {
+            color: Theme.bg1
+            radius: 0
+            border.color: Theme.bg3
+            border.width: 1
+        }
+
+        header: Rectangle {
+            id: headerBar
+            color: Theme.bg0
+            height: 48
+            Text {
+                anchors.centerIn: parent
+                text: confirmRemoveDialog.title
+                color: Theme.text
+                font.pixelSize: Theme.fontSizeBody
+                font.bold: true
+            }
+        }
+
+        contentItem: Item {
+            implicitWidth: confirmRemoveDialog.availableWidth
+            implicitHeight: bodyText.implicitHeight
+
+            Text {
+                id: bodyText
+                width: parent.width
+                text: confirmRemoveDialog.body
+                wrapMode: Text.WordWrap
+                color: Theme.text
+                font.pixelSize: Theme.fontSizeBody
+            }
+        }
+
+        footer: Rectangle {
+            id: footerBar
+            color: Theme.bg0
+            implicitHeight: Theme.controlHeight + Theme.spacingMd * 2
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: Theme.spacingXl
+                anchors.rightMargin: Theme.spacingXl
+                anchors.topMargin: Theme.spacingMd
+                anchors.bottomMargin: Theme.spacingMd
+                spacing: Theme.spacingMd
+
+                Item { Layout.fillWidth: true }
+
+                StyledButton {
+                    text: qsTr("Cancel")
+                    onClicked: confirmRemoveDialog.close()
+                }
+
+                StyledButton {
+                    text: qsTr("Remove")
+                    danger: true
+                    onClicked: confirmRemoveDialog.applyRemoval()
+                }
+            }
+        }
+    }
+
     // ── Join Room dialog ──────────────────────────────────────────────────
     JoinRoomDialog {
         id: joinRoomDialog
@@ -2122,13 +2190,17 @@ ApplicationWindow {
     // ── Invite URL popup — shown after "New Invite" ───────────────────────
     Popup {
         id: invitePopup
+        property bool showQr: false
+        // The symbol is the link already shown. Empty means it does not fit.
+        readonly property string qrRows: showQr ? backend.qrRows(backend.invite_url) : ""
         x: parent.width / 2 - width / 2
         y: customTitleBar.height + 8
         width: 460
-        height: 100
+        height: popupColumn.implicitHeight + 24
         modal: false
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         z: 200
+        onClosed: showQr = false
 
         background: Rectangle {
             color: Theme.bg2
@@ -2138,7 +2210,10 @@ ApplicationWindow {
         }
 
         ColumnLayout {
-            anchors.fill: parent
+            id: popupColumn
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
             anchors.margins: 12
             spacing: 8
 
@@ -2176,6 +2251,29 @@ ApplicationWindow {
                         invitePopup.visible = false
                     }
                 }
+            }
+
+            StyledButton {
+                text: invitePopup.showQr ? qsTr("Hide QR code") : qsTr("Show QR code")
+                onClicked: invitePopup.showQr = !invitePopup.showQr
+            }
+
+            // The symbol is the link already in the field. It is not a new invite.
+            QrCode {
+                visible: invitePopup.showQr && invitePopup.qrRows !== ""
+                Layout.alignment: Qt.AlignHCenter
+                Layout.preferredWidth: 220
+                Layout.preferredHeight: 220
+                rows: invitePopup.qrRows
+            }
+
+            Label {
+                visible: invitePopup.showQr && invitePopup.qrRows === ""
+                text: qsTr("This link is too long to show as a QR code.")
+                color: Theme.muted
+                font.pixelSize: Theme.fontSizeCaption
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
             }
         }
     }
@@ -2374,7 +2472,12 @@ ApplicationWindow {
                     onStartCallRequested: function(peerId) {
                         root.beginDirectCall(peerId)
                     }
-                    onRemovePeerRequested: (peerId) => backend.removePeer(peerId)
+                    onRemovePeerRequested: function(peerId, handle) {
+                        var name = (handle && handle !== "") ? handle : peerId
+                        confirmRemoveDialog.askPeer(
+                            peerId,
+                            qsTr("This forgets %1 on this device and ends any call with them. Your chat history stays. You will need a new invite to reach them again.").arg(name))
+                    }
                     onCopyPeerIdRequested: (peerId) => backend.copyPeerId(peerId)
                     onBlockPeerRequested: (peerId) => backend.blockPeer(peerId)
                     onUnblockPeerRequested: (peerId) => backend.unblockPeer(peerId)
@@ -2546,25 +2649,32 @@ ApplicationWindow {
                                 !roomContextMenu.targetAlerts)
                         }
                         MenuSeparator {
-                            visible: roomContextMenu.targetCanRemove
+                            visible: roomContextMenu.targetHidden
+                                || roomContextMenu.targetCanRemove
                         }
                         MenuItem {
                             text: roomContextMenu.targetHidden
                                 ? qsTr("Show in list")
-                                : qsTr("Hide Room")
+                                : qsTr("Remove Room")
                             icon.source: roomContextMenu.targetHidden
                                 ? "qrc:/qt/qml/DoubleSlash/Client/icons/eye.svg"
-                                : "qrc:/qt/qml/DoubleSlash/Client/icons/eye-off.svg"
-                            visible: roomContextMenu.targetCanRemove
+                                : "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+                            visible: roomContextMenu.targetHidden
+                                || roomContextMenu.targetCanRemove
                             onTriggered: {
-                                if (roomContextMenu.targetHidden)
+                                if (roomContextMenu.targetHidden) {
                                     root.unhideRoom(
                                         roomContextMenu.targetSupernodeId,
                                         roomContextMenu.targetRoomId)
-                                else
-                                    backend.removeRoom(
-                                        roomContextMenu.targetSupernodeId,
-                                        roomContextMenu.targetRoomId)
+                                    return
+                                }
+                                var name = roomContextMenu.targetRoomName
+                                if (!name || name === "")
+                                    name = roomContextMenu.targetRoomId
+                                confirmRemoveDialog.askRoom(
+                                    roomContextMenu.targetSupernodeId,
+                                    roomContextMenu.targetRoomId,
+                                    qsTr("This hides %1 from your list on this device. The room stays on the supernode. If you are in its voice, that call ends. Show hidden brings it back.").arg(name))
                             }
                         }
                     }
@@ -2674,6 +2784,55 @@ ApplicationWindow {
                                             : row.row_kind === "session" ? sessionRowComp
                                             : moreRowComp
 
+                                        // An open voice or text list is one box, in the
+                                        // colours of the count box that opened it: green
+                                        // for voice, blue for text. Each row draws its
+                                        // part (RoomTree's box fields): the fill and side
+                                        // borders, the top on the leaf row and the bottom
+                                        // on the last row.
+                                        Item {
+                                            readonly property string kind: treeRow.row.box || ""
+                                            readonly property color tint:
+                                                kind === "voice" ? Theme.online : Theme.accent
+                                            visible: kind !== ""
+                                            z: -1
+                                            // The leaf's column, just left of its chevron;
+                                            // its connector elbow stays outside the box.
+                                            x: Theme.spacingSm + (treeRow.row.box_depth || 0) * Theme.spacingLg - 4
+                                            // Ends where the rows' content does.
+                                            width: parent.width - x - Theme.spacingSm
+                                            // A gap above and below the box, so two open
+                                            // lists in a row, or a list and the room under
+                                            // it, read as separate boxes.
+                                            y: treeRow.row.box_start === true ? 3 : 0
+                                            height: parent.height - y - (treeRow.row.box_end === true ? 3 : 0)
+
+                                            Rectangle {
+                                                anchors.fill: parent
+                                                color: Theme.semanticTint(parent.tint, 0.16)
+                                            }
+                                            Rectangle {
+                                                width: 1; height: parent.height
+                                                color: parent.tint
+                                            }
+                                            Rectangle {
+                                                x: parent.width - 1
+                                                width: 1; height: parent.height
+                                                color: parent.tint
+                                            }
+                                            Rectangle {
+                                                visible: treeRow.row.box_start === true
+                                                width: parent.width; height: 1
+                                                color: parent.tint
+                                            }
+                                            Rectangle {
+                                                visible: treeRow.row.box_end === true
+                                                y: parent.height - 1
+                                                width: parent.width; height: 1
+                                                color: parent.tint
+                                            }
+                                        }
+
                                         // ── Room ────────────────────────────────
                                         Component {
                                             id: roomRowComp
@@ -2698,6 +2857,11 @@ ApplicationWindow {
                                                 readonly property bool isPrivate:
                                                     String(row.kind || "").toLowerCase() === "private"
 
+                                                // The join handset is drawn only while the pointer
+                                                // is on this row. The hang-up does not wait for that.
+                                                HoverHandler { id: roomHover }
+                                                hoverEnabled: true
+
                                                 // 34 at the designed size; taller once the name no longer fits.
                                                 implicitHeight: Math.max(34, Theme.fontSizeBody + 8)
                                                 padding: 0
@@ -2705,7 +2869,7 @@ ApplicationWindow {
                                                 background: Rectangle {
                                                     color: roomDelegate.roomSelected
                                                         ? Theme.selectedFill()
-                                                        : (roomDelegate.hovered ? Theme.bg3 : "transparent")
+                                                        : (roomHover.hovered ? Theme.bg3 : "transparent")
                                                     Behavior on color {
                                                         ColorAnimation { duration: Theme.animNormal }
                                                     }
@@ -2798,7 +2962,7 @@ ApplicationWindow {
                                                             enabled: row.has_children
                                                             hoverEnabled: true
                                                             cursorShape: Qt.PointingHandCursor
-                                                            onClicked: root.toggleRoomCollapse(
+                                                            onClicked: root.toggleVoiceList(
                                                                 roomGroup.node_id, row.room_id)
                                                         }
                                                     }
@@ -2884,39 +3048,65 @@ ApplicationWindow {
                                                     }
 
                                                     CountPill {
-                                                        // A node that is gone has no live roster:
-                                                        // "—" rather than a stale number.
-                                                        visible: !roomGroup.connected
-                                                            || (row.collapsed && row.subtree_voice > 0)
+                                                        // Stays on the row while the list is open, so the
+                                                        // same control toggles it shut. A node that is gone
+                                                        // has no live roster: "—" rather than a stale number.
+                                                        readonly property bool voiceShown:
+                                                            roomGroup.connected && !row.collapsed
+                                                        visible: !roomGroup.connected || row.voice_count > 0
                                                         iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
-                                                        text: roomGroup.connected ? String(row.subtree_voice) : "—"
+                                                        text: roomGroup.connected ? String(row.voice_count) : "—"
                                                         tint: roomGroup.connected ? Theme.online : Theme.muted
                                                         active: roomGroup.connected
-                                                        tip: roomGroup.connected
-                                                            ? qsTr("In voice")
-                                                            : qsTr("Supernode offline — counts may be stale")
+                                                        checked: voiceShown
+                                                        tip: !roomGroup.connected
+                                                            ? qsTr("Supernode offline — counts may be stale")
+                                                            : (voiceShown
+                                                                ? qsTr("Hide voice members")
+                                                                : qsTr("Show voice members"))
+                                                        MouseArea {
+                                                            anchors.fill: parent
+                                                            enabled: roomGroup.connected && row.voice_count > 0
+                                                            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                                            onClicked: root.toggleVoiceList(
+                                                                roomGroup.node_id, row.room_id)
+                                                        }
                                                     }
 
                                                     CountPill {
-                                                        visible: roomGroup.connected && row.collapsed && row.room_chat > 0
+                                                        // Stays on the row until it is clicked, including
+                                                        // while the voice list is already open. That click
+                                                        // is the only way the text members appear.
+                                                        visible: roomGroup.connected && row.room_chat > 0
                                                         iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
                                                         text: String(row.room_chat)
                                                         tint: Theme.accent
                                                         active: true
-                                                        tip: qsTr("In text only")
+                                                        tip: qsTr("Show text members")
+                                                        // This sits on the pill so the click opens the
+                                                        // text list and does not also select the room.
+                                                        MouseArea {
+                                                            anchors.fill: parent
+                                                            cursorShape: Qt.PointingHandCursor
+                                                            onClicked: root.setTreeFlag(
+                                                                "leaf",
+                                                                roomGroup.node_id + ":" + row.room_id + ":text",
+                                                                true)
+                                                        }
                                                     }
 
                                                     // Join voice, explicitly. A double-click on
                                                     // the row still does the same.
-                                                    // Join voice: solid green on a green square, so
-                                                    // joining stands out. In the voice room we are in
-                                                    // it turns into hang-up: the handset inverted, in
-                                                    // red, leaving as the voice dock's Leave does.
+                                                    // The green handset is only here while the
+                                                    // pointer is on this room. In the voice room we
+                                                    // are in it is hang-up instead: the handset
+                                                    // inverted, in red, and that one stays visible,
+                                                    // leaving as the voice dock's Leave does.
                                                     IconButton {
                                                         readonly property bool endsCall: row.voice_here === true
                                                         readonly property color callColor:
                                                             endsCall ? Theme.danger : Theme.online
-                                                        visible: row.show_call === true
+                                                        visible: endsCall || (row.show_call === true && roomHover.hovered)
                                                         implicitWidth: 26
                                                         implicitHeight: 26
                                                         padding: 0
@@ -2959,7 +3149,7 @@ ApplicationWindow {
 
                                                 Rectangle {
                                                     anchors.fill: parent
-                                                    color: groupHover.hovered ? Theme.bg2 : "transparent"
+                                                    color: groupHover.hovered ? Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, 0.08) : "transparent"
                                                 }
 
                                                 TreeGuides {
@@ -3430,8 +3620,21 @@ ApplicationWindow {
                 }
                 visible: navIndex === 1
                 // Text members only — never the active voice roster (voice rail
-                // owns roomModel). Peers who share this room's chat space.
+                // owns roomModel). The header counts come from the sidebar
+                // rosters, the same lists the room row draws.
                 roomModel: textRoomModel
+                voiceCount: {
+                    root.roomListStamp
+                    var counts = RoomTree.rosterCounts(
+                        root.sidebarRoom(roomPanel.supernodeId, roomPanel.roomId))
+                    return counts.voiceKnown ? counts.voice : 0
+                }
+                textCount: {
+                    root.roomListStamp
+                    var counts = RoomTree.rosterCounts(
+                        root.sidebarRoom(roomPanel.supernodeId, roomPanel.roomId))
+                    return counts.textKnown ? counts.text : 0
+                }
                 fileTransferModel: fileTransferModel
                 settingsModel: settingsModel
                 youtubePreviewEnabled: settingsModel ? settingsModel.youtube_preview_enabled : true
@@ -3458,6 +3661,15 @@ ApplicationWindow {
                 }
                 onOpenAttachment: (path) => root.showFilePreview(path)
                 onMembersRequested: root.revealRoomMembers(roomPanel.supernodeId, roomPanel.roomId)
+                onTextMembersRequested: {
+                    if (roomPanel.supernodeId === "" || roomPanel.roomId === "")
+                        return
+                    root.sidebarTab = 1
+                    root.setTreeFlag(
+                        "leaf",
+                        roomPanel.supernodeId + ":" + roomPanel.roomId + ":text",
+                        true)
+                }
             }
 
             // Full-size local media / document preview (images, video, PDF, …).

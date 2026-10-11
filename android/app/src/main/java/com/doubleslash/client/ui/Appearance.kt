@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -217,7 +216,7 @@ private fun SkinColourDialog(
     val ds = LocalDsColors.current
     var hex by remember { mutableStateOf(current.toSkinHex()) }
     val parsed = parseSkinColor(hex.trim().let { if (it.startsWith("#")) it else "#$it" }.uppercase())
-    AlertDialog(
+    DsDialog(
         onDismissRequest = onDismiss,
         title = { Text(TOKEN_LABELS[token] ?: token) },
         text = {

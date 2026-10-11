@@ -15,7 +15,12 @@ Item {
     property string roomName: "Room"
     property string roomId: ""
     property string supernodeId: ""
-    property int participantCount: 0
+    // The same two counts the room row shows. MainWindow fills them from the
+    // sidebar rosters. Zero hides that badge, as on the row.
+    property int voiceCount: 0
+    property int textCount: 0
+    // Still attached so text-member updates have a model. The header counts
+    // come from the sidebar rosters, not from this model's length.
     property var roomModel: null
     property var fileTransferModel: null
     property var settingsModel: null
@@ -23,8 +28,9 @@ Item {
     property bool youtubeInlineAck: false
 
     // The room's members live in the Rooms tree, under its Voice and
-    // Text-only leaves. The header's count asks MainWindow to show them there.
+    // Text-only leaves. Each header count asks MainWindow to show that list.
     signal membersRequested()
+    signal textMembersRequested()
 
     // True when voice is already live for *this* room, so the header's Join
     // Voice control hides instead of re-joining what you are already in.
@@ -42,19 +48,6 @@ Item {
         for (var i = 0; i < root.roomNodes.length; i++)
             if (root.roomNodes[i].connected) n++
         return n
-    }
-
-    onRoomModelChanged: {
-        participantCount = roomModel ? roomModel.participantCount() : 0
-    }
-
-    Connections {
-        target: root.roomModel
-        ignoreUnknownSignals: true
-        function onRowsInserted() { root.participantCount = root.roomModel ? root.roomModel.participantCount() : 0 }
-        function onRowsRemoved()  { root.participantCount = root.roomModel ? root.roomModel.participantCount() : 0 }
-        function onModelReset()   { root.participantCount = root.roomModel ? root.roomModel.participantCount() : 0 }
-        function onRowsMoved()    { root.participantCount = root.roomModel ? root.roomModel.participantCount() : 0 }
     }
 
     function appendRoomChat(msgJson) {
@@ -469,87 +462,54 @@ Item {
                     onToggleExpanded: root._statsPanelOpen = !root._statsPanelOpen
                 }
 
-                // Join Voice — the in-panel equivalent of double-clicking the
-                // room in the sidebar. Without it, browsing a room's chat gave
-                // you no way to start talking except going back to the sidebar.
-                // Hidden once voice is live here (you are already in), and
+                // The same green call icon as the room row. Hidden once voice
+                // is live here (Leave lives on the dock and on that row), and
                 // while no room is actually open.
-                Rectangle {
-                    id: joinVoiceButton
-                    Layout.alignment: Qt.AlignVCenter
-                    implicitHeight: 28
-                    implicitWidth: joinVoiceRow.implicitWidth + Theme.spacingSm * 2
-                    color: joinVoiceHover.hovered ? Theme.bg3 : "transparent"
-                    border.color: Theme.bg3
-                    border.width: 1
+                IconButton {
+                    readonly property color callColor: Theme.online
                     visible: !root.voiceActiveHere && root.roomId !== "" && root.supernodeId !== ""
-
-                    RowLayout {
-                        id: joinVoiceRow
-                        anchors.centerIn: parent
-                        spacing: Theme.spacingXs
-
-                        Image {
-                            source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
-                            sourceSize.width: 14
-                            sourceSize.height: 14
-                            width: 14
-                            height: 14
-                            fillMode: Image.PreserveAspectFit
-                            opacity: 0.85
-                        }
-
-                        Text {
-                            text: qsTr("Join Voice")
-                            color: Theme.text
-                            font.pixelSize: Theme.fontSizeCaption
-                        }
-                    }
-
-                    HoverHandler { id: joinVoiceHover }
-                    TapHandler { onTapped: root.joinVoiceRequested() }
-
-                    ToolTip.text: qsTr("Join this room's voice channel")
-                    ToolTip.visible: joinVoiceHover.hovered
+                    implicitWidth: 26
+                    implicitHeight: 26
+                    padding: 0
+                    Layout.alignment: Qt.AlignVCenter
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
+                    icon.width: 16
+                    icon.height: 16
+                    icon.color: callColor
+                    tileColor: Theme.semanticTint(callColor, 0.18)
+                    tileBorder: callColor
+                    Accessible.name: qsTr("Join voice")
+                    ToolTip.text: qsTr("Join voice")
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 400
+                    onClicked: root.joinVoiceRequested()
                 }
 
-                // Member count — the room's population. Clicking it reveals the
-                // members in the Rooms tree, where their actions are.
-                Rectangle {
-                    Layout.alignment: Qt.AlignVCenter
-                    implicitHeight: 28
-                    implicitWidth: membersToggleRow.implicitWidth + Theme.spacingSm * 2
-                    color: membersToggleHover.hovered ? Theme.bg3 : "transparent"
-                    visible: root.participantCount > 0
-
-                    RowLayout {
-                        id: membersToggleRow
-                        anchors.centerIn: parent
-                        spacing: Theme.spacingXs
-
-                        Image {
-                            source: "qrc:/qt/qml/DoubleSlash/Client/icons/peers.svg"
-                            sourceSize.width: 15
-                            sourceSize.height: 15
-                            width: 15
-                            height: 15
-                            fillMode: Image.PreserveAspectFit
-                            opacity: 0.85
-                        }
-
-                        Text {
-                            text: root.participantCount
-                            color: Theme.text
-                            font.pixelSize: Theme.fontSizeCaption
-                            font.bold: true
-                        }
+                // The same two counts as the room row. Each one reveals that
+                // list in the Rooms tree, where the member actions are.
+                CountPill {
+                    visible: root.voiceCount > 0
+                    iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
+                    text: String(root.voiceCount)
+                    tint: Theme.online
+                    tip: qsTr("Show voice members")
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.membersRequested()
                     }
-
-                    HoverHandler { id: membersToggleHover }
-                    TapHandler { onTapped: root.membersRequested() }
-
-                    ToolTip.text: qsTr("Show members")
-                    ToolTip.visible: membersToggleHover.hovered
+                }
+                CountPill {
+                    visible: root.textCount > 0
+                    iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
+                    text: String(root.textCount)
+                    tint: Theme.accent
+                    tip: qsTr("Show text members")
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.textMembersRequested()
+                    }
                 }
             }
         }

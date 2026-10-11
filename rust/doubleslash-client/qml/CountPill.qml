@@ -1,5 +1,6 @@
 // CountPill.qml — A small icon-and-number badge for a Rooms-tree row: voice
-// or chat occupancy when a room is folded, or "—" when its node is offline.
+// or chat occupancy, or "—" when its node is offline. `checked` is the voice
+// count while that list is open.
 
 import QtQuick
 import QtQuick.Controls
@@ -14,12 +15,16 @@ Rectangle {
     property color tint: Theme.online
     /// Live and non-zero: tinted. Otherwise neutral, reading as "no number".
     property bool active: true
+    /// The list this count controls is open.
+    property bool checked: false
     property string tip: ""
 
     Layout.alignment: Qt.AlignVCenter
     implicitWidth: content.implicitWidth + 10
     implicitHeight: Math.max(20, content.implicitHeight + 6)
-    color: root.active ? Theme.semanticTint(root.tint, 0.16) : Theme.bg2
+    color: !root.active ? Theme.bg2
+        : root.checked ? Theme.semanticTint(root.tint, 0.36)
+        : Theme.semanticTint(root.tint, 0.16)
     border.color: root.active ? root.tint : Theme.divider
     border.width: 1
 
