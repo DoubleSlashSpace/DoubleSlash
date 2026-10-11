@@ -48,6 +48,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "chat.trim",
     "invite.generate",
     "invite.accept",
+    "qr.rows",
     "room.list",
     "room.create",
     "room.hide",
@@ -544,6 +545,17 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
 
         // ── Invites ───────────────────────────────────────────────────────
         "invite.generate" => generate_invite(session),
+        // The same link the dialog already shows, drawn as a QR symbol.
+        // Empty or too long to fit is a refusal, not a truncated code.
+        "qr.rows" => {
+            let Some(text) = arg_str(&parsed, "text") else {
+                return err("qr.rows requires \"text\"");
+            };
+            match doubleslash_features::qr_rows(text) {
+                Some(rows) => json!({ "ok": true, "rows": rows }),
+                None => err("that link is too long to show as a QR code"),
+            }
+        }
         "invite.accept" => {
             let Some(invite_url) = arg_str(&parsed, "invite_url") else {
                 return err("invite.accept requires \"invite_url\"");

@@ -21,6 +21,7 @@ Dialog {
     property string generatedInvite: ""
     property bool copiedInvite: false
     property bool inviteSent: false
+    property bool showInviteQr: false
 
     title: "Welcome to DoubleSlash"
     modal: true
@@ -270,12 +271,39 @@ Dialog {
                             if (root.generatedInvite === "") {
                                 root.generatedInvite = root.appBackend.generateInvite()
                                 root.copiedInvite = false
+                                root.showInviteQr = false
                             } else {
                                 root.appBackend.copyToClipboard(root.generatedInvite)
                                 root.copiedInvite = true
                             }
                         }
                     }
+                }
+
+                StyledButton {
+                    visible: root.generatedInvite !== ""
+                    text: root.showInviteQr ? "Hide QR code" : "Show QR code"
+                    onClicked: root.showInviteQr = !root.showInviteQr
+                }
+
+                QrCode {
+                    id: inviteQr
+                    readonly property string symbol: root.showInviteQr && root.appBackend
+                        ? root.appBackend.qrRows(root.generatedInvite) : ""
+                    visible: root.showInviteQr && root.generatedInvite !== "" && symbol !== ""
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.preferredWidth: 180
+                    Layout.preferredHeight: 180
+                    rows: symbol
+                }
+
+                Text {
+                    visible: root.showInviteQr && root.generatedInvite !== "" && inviteQr.symbol === ""
+                    text: "This link is too long to show as a QR code."
+                    color: Theme.muted
+                    font.pixelSize: Theme.fontSizeCaption
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
                 }
 
                 Item { Layout.fillHeight: true }

@@ -26,6 +26,7 @@ pub mod device;
 pub mod examples;
 pub mod loader;
 pub mod module;
+pub mod qr;
 pub mod quota;
 pub mod registry;
 pub mod replay;
@@ -58,6 +59,7 @@ pub use loader::{
 pub use module::{
     FeatureModule, InvocationContext, ModuleError, ModuleResult, PeerId, SharedModule,
 };
+pub use qr::qr_rows;
 pub use quota::{QuotaParams, QuotaRegistry, DEFAULT_BYTES_PER_SEC, DEFAULT_DATAGRAMS_PER_SEC};
 pub use registry::FeatureRegistry;
 pub use replay::{ReplayGuard, DEFAULT_REPLAY_WINDOW_SECS};

@@ -115,6 +115,11 @@ data class AppState(
     /** Other devices signed in as us that are online now. */
     val ownDevicesOnline: Int = 0,
     val inviteUrl: String? = null,
+    /**
+     * QR rows for [inviteUrl]. Null while they are still being built.
+     * Empty means the link does not fit in one symbol.
+     */
+    val inviteQr: List<String>? = null,
     val tab: HomeTab = HomeTab.PEERS,
     /** Live messages for the room currently open. Not persisted anywhere. */
     val roomMessages: List<RoomMessage> = emptyList(),
@@ -1163,7 +1168,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             copyPlain("Room invite", url)
-            _state.update { it.copy(inviteUrl = url) }
+            showInvite(url)
         }
     }
 
@@ -1369,19 +1374,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun generateInvite(copyToClipboard: Boolean = false) = viewModelScope.launch {
         _state.update { it.copy(busy = true) }
         val reply = core.command("invite.generate")
-        if (reply.ok && copyToClipboard) {
-            reply.string("invite_url")?.takeIf { it.isNotBlank() }?.let { copyPlain("Invite", it) }
+        val url = reply.string("invite_url").orEmpty()
+        if (!reply.ok || url.isBlank()) {
+            _state.update {
+                it.copy(busy = false, error = reply.errorText ?: "Couldn't build an invite.")
+            }
+            return@launch
         }
-        _state.update {
-            if (reply.ok) {
-                it.copy(busy = false, inviteUrl = reply.string("invite_url"))
-            } else {
-                it.copy(busy = false, error = reply.errorText)
+        if (copyToClipboard) copyPlain("Invite", url)
+        showInvite(url)
+    }
+
+    /**
+     * Leave [url] on screen and ask for its QR rows.
+     *
+     * The symbol is that same link. A second invite is not minted for it.
+     */
+    private fun showInvite(url: String) {
+        _state.update { it.copy(busy = false, inviteUrl = url, inviteQr = null) }
+        viewModelScope.launch {
+            val reply = core.command("qr.rows") { put("text", url) }
+            val rows = if (reply.ok) reply.stringList("rows") else emptyList()
+            _state.update { cur ->
+                if (cur.inviteUrl == url) cur.copy(inviteQr = rows) else cur
             }
         }
     }
 
-    fun dismissInvite() = _state.update { it.copy(inviteUrl = null) }
+    fun dismissInvite() = _state.update { it.copy(inviteUrl = null, inviteQr = null) }
 
     /**
      * Answer, decline, or surface a ringing call from the incoming-call

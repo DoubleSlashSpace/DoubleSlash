@@ -21,6 +21,9 @@ device-routing = []
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
+# Invite links are shown as QR symbols. The matrix API needs none of the
+# image, svg, or pic renderers.
+qrcode = { version = "0.14", default-features = false }
 parking_lot = "0.12"
 toml = "0.8"
 

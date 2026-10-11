@@ -400,6 +400,7 @@ fn build_qt_ui() {
         QmlFile::from("qml/RoomTreeMember.qml"),
         QmlFile::from("qml/TreeGuides.qml"),
         QmlFile::from("qml/CountPill.qml"),
+        QmlFile::from("qml/QrCode.qml"),
         QmlFile::from("qml/SidebarToggle.qml"),
         QmlFile::from("qml/TrustInviteDialog.qml"),
         QmlFile::from("qml/StatsPanel.qml"),

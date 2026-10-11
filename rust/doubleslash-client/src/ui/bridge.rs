@@ -271,6 +271,13 @@ pub mod ffi {
         #[rust_name = "copy_invite"]
         fn copyInvite(self: Pin<&mut AppBridge>);
 
+        /// Rows of a QR symbol for `text`: one string of `1` (dark) and `0`
+        /// (light) per row, including the quiet zone. Empty when `text` is
+        /// empty or too long to fit in one symbol. This does not mint an invite.
+        #[qinvokable]
+        #[rust_name = "qr_rows"]
+        fn qrRows(self: Pin<&mut AppBridge>, text: &QString) -> QString;
+
         /// Accept an invite URL (https://doubleslash.space/i#… or the
         /// `d://`/`doubleslash://` scheme forms) or peer ID pasted by the user.
         #[qinvokable]
@@ -2940,6 +2947,14 @@ impl ffi::AppBridge {
         mint_invite_or_explain(&mut self)
             .map(|url| QString::from(url.as_str()))
             .unwrap_or_default()
+    }
+
+    fn qr_rows(self: Pin<&mut Self>, text: &QString) -> QString {
+        let _ = self;
+        match doubleslash_features::qr_rows(&text.to_string()) {
+            Some(rows) => QString::from(rows.join("\n").as_str()),
+            None => QString::default(),
+        }
     }
 
     fn generate_room_invite(
