@@ -29,6 +29,14 @@ Window {
     property bool streaming: false
     /// Whether their video has stopped arriving — see `VideoTile.stalled`.
     property bool stalled: false
+    /// MainWindow's settings object. This file has no `settingsModel` id of
+    /// its own, and a missing one must not throw before the window is shown.
+    property var settings: null
+    /// Open straight into full screen. Applied after the frame chrome exists.
+    property bool startFullscreen: false
+    // Set while we move the window ourselves, so that move is not saved as
+    // the user's windowed rectangle.
+    property bool _suspendGeometry: false
 
     signal closed()
     /// Shared-audio level/mute changed for this popout's peer.
@@ -41,7 +49,9 @@ Window {
     minimumWidth: 240
     minimumHeight: 180
     color: Theme.bg0
-    visible: true
+    // Shown from onCompleted, after geometry and frame chrome, so a full-screen
+    // open does not flash a windowed frame first.
+    visible: false
 
     // Native decorations everywhere except Windows, where the custom chrome
     // below reproduces them. Copying MainWindow's frameless flags without that
@@ -55,6 +65,9 @@ Window {
         appWindow: popWin
         anchors { top: parent.top; left: parent.left; right: parent.right }
         z: 200
+        // Full screen is the picture alone. The corner button and Escape leave it.
+        height: popWin.visibility === Window.FullScreen ? 0 : implicitHeight
+        visible: height > 0
 
         Text {
             text: popWin.displayName || popWin.peerId
@@ -80,12 +93,15 @@ Window {
         onLoaded: {
             item.peerId = Qt.binding(() => popWin.peerId)
             item.displayName = ""      // the title bar already names the peer
-            item.showChrome = false    // no popout/collapse buttons in a popout
+            item.showChrome = false    // no pop-out or close button in a pop-out
             // ...but the shared-audio control is still wanted: a popped-out
             // video is exactly where someone turns a loud stream down.
             item.showAudioControl = true
+            item.showFullscreenButton = true
+            item.fullscreen = Qt.binding(() => popWin.visibility === Window.FullScreen)
             item.streaming = Qt.binding(() => popWin.streaming)
             item.stalled = Qt.binding(() => popWin.stalled)
+            item.fullscreenRequested.connect(function() { popWin.toggleFullscreen() })
             item.contentAudioChanged.connect(function(muted, volume) {
                 popWin.contentAudioChanged(popWin.peerId, muted, volume)
             })
@@ -97,9 +113,43 @@ Window {
     }
 
     Component.onCompleted: {
-        popWin.restoreGeometry()
+        try {
+            popWin.restoreGeometry()
+        } catch (e) {
+            console.warn("[video] popout geometry:", e)
+        }
+        // Frame chrome before the window is shown. Without it a frameless
+        // Windows window can come up with nothing to paint.
         if (Qt.platform.os === "windows")
             WindowChrome.enable(popWin)
+        if (popWin.startFullscreen)
+            popWin.enterFullscreen()
+        else {
+            popWin.show()
+            popWin.raise()
+            popWin.requestActivate()
+        }
+    }
+
+    Shortcut {
+        sequences: [StandardKey.Cancel]
+        enabled: popWin.visibility === Window.FullScreen
+        onActivated: popWin.showNormal()
+    }
+
+    function enterFullscreen() {
+        popWin._suspendGeometry = true
+        popWin.showFullScreen()
+        popWin.raise()
+        popWin.requestActivate()
+        popWin._suspendGeometry = false
+    }
+
+    function toggleFullscreen() {
+        if (popWin.visibility === Window.FullScreen)
+            popWin.showNormal()
+        else
+            popWin.enterFullscreen()
     }
 
     Component.onDestruction: {
@@ -126,27 +176,31 @@ Window {
     }
 
     function persistGeometry() {
-        if (!settingsModel || !popWin.peerId)
+        if (!popWin.settings || !popWin.peerId || popWin._suspendGeometry)
+            return
+        // A maximized or full-screen rect is the monitor, not the window the
+        // user sized. Saving it would reopen the pop-out covering the screen.
+        if (popWin.visibility !== Window.Windowed)
             return
         var all = {}
         try {
-            all = JSON.parse(settingsModel.video_popout_geometry_json || "{}")
+            all = JSON.parse(popWin.settings.video_popout_geometry_json || "{}")
         } catch (e) {
             all = {}
         }
         all[popWin.peerId] = {
             x: popWin.x, y: popWin.y, w: popWin.width, h: popWin.height
         }
-        settingsModel.video_popout_geometry_json = JSON.stringify(all)
-        settingsModel.save()
+        popWin.settings.video_popout_geometry_json = JSON.stringify(all)
+        popWin.settings.save()
     }
 
     function restoreGeometry() {
-        if (!settingsModel || !popWin.peerId)
+        if (!popWin.settings || !popWin.peerId)
             return
         var all
         try {
-            all = JSON.parse(settingsModel.video_popout_geometry_json || "{}")
+            all = JSON.parse(popWin.settings.video_popout_geometry_json || "{}")
         } catch (e) {
             return
         }

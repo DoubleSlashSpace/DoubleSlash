@@ -17,7 +17,7 @@ Peers connect directly over QUIC or through chosen supernodes. Supernodes provid
 
 ### Video & Screen Sharing
 
-The desktop client includes video tiles, a pop-out view, local preview, quality controls, adaptive bitrate, and picture-in-picture compositing into one outgoing stream. Shared audio has its own volume/mute path and is synchronized with video.
+The desktop client includes video tiles, a pop-out view, full screen, local preview, quality controls, adaptive bitrate, and picture-in-picture compositing into one outgoing stream. Shared audio has its own volume/mute path and is synchronized with video.
 
 | Platform | Implemented capture | Video codecs | Current limits |
 |---|---|---|---|

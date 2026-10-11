@@ -1219,38 +1219,74 @@ ApplicationWindow {
         }
     }
 
+    /// Held so a component that is still loading is not collected before it
+    /// finishes. qrc loads synchronously; this covers the other case.
+    property var _pendingPopoutComponent: null
+
     /// Move a peer from the shared region into its own window.
-    function popoutVideo(peerId) {
+    /// `fullscreen` opens that window covering the screen.
+    function popoutVideo(peerId, fullscreen) {
         if (!peerId)
             return
         // Already popped out — raise the existing window instead of opening a
         // second one showing the same stream.
-        if (root.videoPopouts[peerId]) {
-            root.videoPopouts[peerId].raise()
-            root.videoPopouts[peerId].requestActivate()
+        var existing = root.videoPopouts[peerId]
+        if (existing) {
+            if (fullscreen && existing.enterFullscreen)
+                existing.enterFullscreen()
+            else {
+                if (existing.visibility === Window.Hidden
+                        || existing.visibility === Window.Minimized)
+                    existing.showNormal()
+                existing.raise()
+                existing.requestActivate()
+            }
             return
         }
         var comp = Qt.createComponent(
-            "qrc:/qt/qml/DoubleSlash/Client/qml/VideoPopoutWindow.qml")
+            "qrc:/qt/qml/DoubleSlash/Client/qml/VideoPopoutWindow.qml",
+            Component.PreferSynchronous, root)
         if (comp.status === Component.Error) {
             console.warn("[video] popout unavailable:", comp.errorString())
             return
         }
+        if (comp.status !== Component.Ready) {
+            root._pendingPopoutComponent = comp
+            comp.statusChanged.connect(function() {
+                if (comp.status === Component.Ready)
+                    root._openVideoPopout(comp, peerId, fullscreen === true)
+                else if (comp.status === Component.Error)
+                    console.warn("[video] popout unavailable:", comp.errorString())
+            })
+            return
+        }
+        root._openVideoPopout(comp, peerId, fullscreen === true)
+    }
+
+    function _openVideoPopout(comp, peerId, fullscreen) {
+        if (root.videoPopouts[peerId]) {
+            root.popoutVideo(peerId, fullscreen)
+            return
+        }
+        // No QObject parent. A parented Window stays in the main window's
+        // child list after it closes and keeps its video sink registered.
+        // `rememberVideoPopout` stores a new object, which is what keeps this
+        // one alive while it is open.
         var win = comp.createObject(null, {
             peerId: peerId,
-            displayName: root.videoPeerName(peerId)
+            displayName: root.videoPeerName(peerId),
+            settings: settingsModel,
+            startFullscreen: fullscreen
         })
         if (!win) {
-            console.warn("[video] popout window could not be created")
+            console.warn("[video] popout window could not be created:", comp.errorString())
             return
         }
         // Bound after creation, not passed in: createObject's property map sets
         // static values, and this one has to keep tracking the peer's camera.
         win.streaming = Qt.binding(() => root.videoActivePeers[peerId] === true)
         win.stalled = Qt.binding(() => root.videoStalledPeers[peerId] === true)
-        var map = root.videoPopouts
-        map[peerId] = win
-        root.videoPopouts = map
+        root.rememberVideoPopout(peerId, win)
         win.closed.connect(function() { root.forgetVideoPopout(peerId) })
         win.contentAudioChanged.connect(function(pid, muted, volume) {
             backend.setContentAudioPref(pid, muted, volume)
@@ -1260,20 +1296,46 @@ ApplicationWindow {
         root.collapseVideo(peerId)
     }
 
+    /// Full screen is a pop-out that covers the screen. The same window is
+    /// reused when the peer is already popped out.
+    function fullscreenVideo(peerId) {
+        root.popoutVideo(peerId, true)
+    }
+
+    /// A fresh object, not a mutated one. `watchedVideoPeers` only re-reads
+    /// this map when the property changes, and assigning the same object does
+    /// not count, so a pop-out of someone who was not already on screen never
+    /// asked the supernode for their video.
+    function rememberVideoPopout(peerId, win) {
+        var next = {}
+        for (var k in root.videoPopouts)
+            if (root.videoPopouts[k])
+                next[k] = root.videoPopouts[k]
+        next[peerId] = win
+        root.videoPopouts = next
+    }
+
     function forgetVideoPopout(peerId) {
-        var map = root.videoPopouts
-        if (map[peerId]) {
-            delete map[peerId]
-            root.videoPopouts = map
+        if (!root.videoPopouts[peerId])
+            return
+        var next = {}
+        for (var k in root.videoPopouts) {
+            if (k !== peerId && root.videoPopouts[k])
+                next[k] = root.videoPopouts[k]
         }
+        root.videoPopouts = next
     }
 
     /// Close every popout. Called before quitting so no detached window
     /// outlives the main one and keeps the process alive.
     function closeAllVideoPopouts() {
-        for (var pid in root.videoPopouts) {
-            if (root.videoPopouts[pid])
-                root.videoPopouts[pid].close()
+        var ids = []
+        for (var pid in root.videoPopouts)
+            ids.push(pid)
+        for (var i = 0; i < ids.length; i++) {
+            var win = root.videoPopouts[ids[i]]
+            if (win)
+                win.close()
         }
         root.videoPopouts = ({})
     }
@@ -3306,6 +3368,7 @@ ApplicationWindow {
                                                         onToggleRequested: root.toggleOpenMember(sessionMember.memberKey)
                                                         onWatchToggled: root.toggleWatching(sessionMember.peerId)
                                                         onPopoutRequested: root.popoutVideo(sessionMember.peerId)
+                                                        onFullscreenRequested: root.fullscreenVideo(sessionMember.peerId)
                                                         onLocalAudioChanged: function(muted, volume) {
                                                             backend.setPeerAudioPref(sessionMember.peerId, muted, volume)
                                                             roomModel.setLocalAudio(sessionMember.peerId, muted, volume)
@@ -3572,6 +3635,7 @@ ApplicationWindow {
                     item.heightRatio = Qt.binding(() => root.videoRegionRatio)
                     item.collapseRequested.connect(root.collapseVideo)
                     item.popoutRequested.connect(root.popoutVideo)
+                    item.fullscreenRequested.connect(root.fullscreenVideo)
                     // `backend` is only in scope here, so the tile's request
                     // arrives as a signal and is applied at this level.
                     item.contentAudioChanged.connect(function(peerId, muted, volume) {

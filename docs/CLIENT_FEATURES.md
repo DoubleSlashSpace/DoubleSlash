@@ -285,7 +285,7 @@ peer-to-peer, sealed under the room sender key.
   and fall back to VP8 on a device that cannot encode it in real time.
 * **Desktop** — `setVideoEnabled`, `setVideoPreviewEnabled`, `listVideoDevices`,
   `listVideoCodecs`, `setVideoAdaptiveBitrate`, `setVideoSubscriptions`, plus
-  screen share and a pop-out video window.
+  screen share, a pop-out video window, and full screen for that window.
 * **Android** — `video.start`, `video.stop`, with CameraX capture feeding
   `nativeSubmitCameraFrame`. Receiving is opt-in per peer from the Rooms tree or
   call card: `video.watch` sets which senders are forwarded and decoded,

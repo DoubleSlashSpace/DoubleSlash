@@ -29,6 +29,8 @@ Item {
     SignalSpy { id: toggleSpy; target: member; signalName: "toggleRequested" }
     SignalSpy { id: audioSpy; target: member; signalName: "localAudioChanged" }
     SignalSpy { id: inviteSpy; target: member; signalName: "inviteRequested" }
+    SignalSpy { id: popoutSpy; target: member; signalName: "popoutRequested" }
+    SignalSpy { id: fullscreenSpy; target: member; signalName: "fullscreenRequested" }
 
     TestCase {
         name: "RoomTreeMember"
@@ -48,6 +50,8 @@ Item {
             toggleSpy.clear()
             audioSpy.clear()
             inviteSpy.clear()
+            popoutSpy.clear()
+            fullscreenSpy.clear()
         }
 
         // Actions are SVG icons named by their tooltip, which is also their
@@ -135,6 +139,22 @@ Item {
             verify(findButton("Watch video") !== null)
             member.watching = true
             verify(findButton("Stop watching") !== null)
+        }
+
+        function test_popout_and_fullscreen_need_a_live_camera() {
+            member.expanded = true
+            member.inSession = true
+            verify(findButton("Pop out video") === null)
+            verify(findButton("Full screen") === null)
+            member.videoActive = true
+            var popout = findButton("Pop out video")
+            var full = findButton("Full screen")
+            verify(popout !== null)
+            verify(full !== null)
+            popout.clicked()
+            full.clicked()
+            compare(popoutSpy.count, 1)
+            compare(fullscreenSpy.count, 1)
         }
     }
 }

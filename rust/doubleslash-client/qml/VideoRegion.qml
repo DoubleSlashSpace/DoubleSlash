@@ -39,6 +39,7 @@ Item {
     /// backend object is only in scope in MainWindow.
     signal contentAudioChanged(string peerId, bool muted, int volume)
     signal popoutRequested(string peerId)
+    signal fullscreenRequested(string peerId)
     signal ratioChanged(real ratio)
 
     /// Near-square grid: 1 -> 1x1, 2 -> 2x1, 3-4 -> 2x2, 5-6 -> 3x2, 7-9 -> 3x3.
@@ -106,6 +107,7 @@ Item {
 
                     onCloseRequested: root.collapseRequested(modelData)
                     onPopoutRequested: root.popoutRequested(modelData)
+                    onFullscreenRequested: root.fullscreenRequested(modelData)
                     onContentAudioChanged: (muted, volume) =>
                         root.contentAudioChanged(modelData, muted, volume)
                 }

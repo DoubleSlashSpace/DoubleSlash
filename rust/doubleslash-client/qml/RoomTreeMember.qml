@@ -52,6 +52,7 @@ Item {
     signal toggleRequested()
     signal watchToggled()
     signal popoutRequested()
+    signal fullscreenRequested()
     signal localAudioChanged(bool muted, int volume)
     signal messageRequested()
     signal inviteRequested()
@@ -392,6 +393,13 @@ Item {
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/popout.svg"
                     tip: qsTr("Pop out video")
                     onClicked: root.popoutRequested()
+                }
+                ActionIcon {
+                    id: fullscreenIcon
+                    visible: root.canPopout
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/expand.svg"
+                    tip: qsTr("Full screen")
+                    onClicked: root.fullscreenRequested()
                 }
                 // Trusted peers can be messaged; anyone else can be offered
                 // trust, from a room we are in. Only one of the two ever shows.

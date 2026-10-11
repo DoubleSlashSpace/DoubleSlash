@@ -32,8 +32,17 @@ Item {
     /// picture is otherwise indistinguishable from a very still one, and the
     /// tile would sit there looking live indefinitely.
     property bool stalled: false
-    /// Show the name label and hover controls.
+    /// Show the name label and the close control.
     property bool showChrome: true
+    /// Pop-out button. Defaults to the chrome, and stays on while that is on:
+    /// hiding it until hover drops the button the moment its own hover handler
+    /// takes the tile's hover, so the click never lands.
+    property bool showPopoutButton: showChrome
+    /// Full-screen button. A pop-out window turns chrome off and sets this on,
+    /// so the window can fill the screen without offering another pop-out.
+    property bool showFullscreenButton: showChrome
+    /// The picture is already filling the screen. The button then exits.
+    property bool fullscreen: false
     /// Show the shared-audio control.
     ///
     /// Defaults to `showChrome` but is separable: a popout wants the audio
@@ -50,6 +59,7 @@ Item {
 
     signal closeRequested()
     signal popoutRequested()
+    signal fullscreenRequested()
     /// Requested change to this peer's shared-audio level and mute.
     ///
     /// A signal rather than a direct backend call: `AppBridge` is instantiated
@@ -208,14 +218,20 @@ Item {
             }
         }
 
-        // Tile controls.
-        //
-        // Anchored to the right edge so the row grows leftward: the close
-        // button therefore keeps the same screen position whether or not the
-        // hover-only popout button is present, instead of sliding out from
-        // under the cursor as you reach for it.
+        // Double-click the picture for full screen. The corner buttons sit
+        // above this and take their own clicks.
+        TapHandler {
+            acceptedButtons: Qt.LeftButton
+            onDoubleTapped: if (root.showFullscreenButton) root.fullscreenRequested()
+        }
+
+        // Tile controls. Anchored to the right edge so the row grows leftward
+        // and the close button keeps its place. Pop-out and full screen stay
+        // visible whenever the tile offers them: a hover-only button vanishes
+        // under the cursor.
         Row {
             visible: root.showChrome || root.showAudioControl
+                || root.showPopoutButton || root.showFullscreenButton
             anchors {
                 right: parent.right
                 top: parent.top
@@ -224,24 +240,49 @@ Item {
             spacing: Theme.spacingXs
 
             Rectangle {
-                // Secondary action, so it stays on hover.
-                visible: tileHover.hovered
+                id: fullscreenButton
+                visible: root.showFullscreenButton
                 width: 26; height: 26; radius: Theme.radiusSm
-                color: popoutHover.hovered ? Qt.rgba(0, 0, 0, 0.85) : Qt.rgba(0, 0, 0, 0.6)
+                color: fullscreenMouse.containsMouse ? Qt.rgba(0, 0, 0, 0.85) : Qt.rgba(0, 0, 0, 0.6)
+                Image {
+                    anchors.centerIn: parent
+                    source: root.fullscreen
+                        ? "qrc:/qt/qml/DoubleSlash/Client/icons/wm-restore.svg"
+                        : "qrc:/qt/qml/DoubleSlash/Client/icons/expand.svg"
+                    sourceSize.width: 14; sourceSize.height: 14
+                    width: 14; height: 14
+                }
+                MouseArea {
+                    id: fullscreenMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.fullscreenRequested()
+                }
+                ToolTip.text: root.fullscreen ? qsTr("Exit full screen") : qsTr("Full screen")
+                ToolTip.visible: fullscreenMouse.containsMouse
+            }
+
+            Rectangle {
+                id: popoutButton
+                visible: root.showPopoutButton
+                width: 26; height: 26; radius: Theme.radiusSm
+                color: popoutMouse.containsMouse ? Qt.rgba(0, 0, 0, 0.85) : Qt.rgba(0, 0, 0, 0.6)
                 Image {
                     anchors.centerIn: parent
                     source: "qrc:/qt/qml/DoubleSlash/Client/icons/popout.svg"
                     sourceSize.width: 14; sourceSize.height: 14
                     width: 14; height: 14
                 }
-                HoverHandler { id: popoutHover }
                 MouseArea {
+                    id: popoutMouse
                     anchors.fill: parent
+                    hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: root.popoutRequested()
                 }
                 ToolTip.text: qsTr("Pop out to its own window")
-                ToolTip.visible: popoutHover.hovered
+                ToolTip.visible: popoutMouse.containsMouse
             }
 
             // Volume for the audio shared *with* this video, not the peer's
@@ -325,6 +366,7 @@ Item {
             // the peer's camera goes off.
             Rectangle {
                 id: closeButton
+                visible: root.showChrome
                 width: 26; height: 26; radius: Theme.radiusSm
                 color: closeHover.hovered ? Theme.danger : Qt.rgba(0, 0, 0, 0.6)
                 Behavior on color { ColorAnimation { duration: Theme.animMicro } }
@@ -346,6 +388,5 @@ Item {
             }
         }
 
-        HoverHandler { id: tileHover }
     }
 }
