@@ -259,8 +259,8 @@ peer-to-peer, sealed under the room sender key.
   leaf stays shut until that row's text count is clicked. The open room's
   header uses the same green call icon and the same two counts; each count
   reveals that list in the tree. On the rooms list the green join handset is
-  drawn only while the pointer is over that room; the hang-up on the live
-  voice room stays visible. The live session's
+  drawn while the pointer is over that room or while that room is the open
+  one; the hang-up on the live voice room stays visible. The live session's
   leaf is drawn from `roomModel`, so it
   carries levels and per-member mute and volume.
 * **Android** — `room.voice.join`, `room.voice.leave`, the same tree
@@ -268,6 +268,8 @@ peer-to-peer, sealed under the room sender key.
   count toggles the voice list and the text count opens the text list, as on
   the desktop. The room screen joins voice with the same green call icon and
   shows the same two counts; each count opens the Members sheet on that list.
+  The rooms list draws the green join handset only for the open room and keeps
+  the hang-up on the live voice room. Long-press still offers Join Voice Room.
   The sheet shows that room's two leaves
   with the same rows.
   Speaking rings come from `remote_speaking` / `local_speaking`; per-member

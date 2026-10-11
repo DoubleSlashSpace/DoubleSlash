@@ -2857,8 +2857,9 @@ ApplicationWindow {
                                                 readonly property bool isPrivate:
                                                     String(row.kind || "").toLowerCase() === "private"
 
-                                                // The join handset is drawn only while the pointer
-                                                // is on this row. The hang-up does not wait for that.
+                                                // The join handset is drawn while the pointer is on
+                                                // this row, or while this room is the open one. The
+                                                // hang-up does not wait for either.
                                                 HoverHandler { id: roomHover }
                                                 hoverEnabled: true
 
@@ -3097,16 +3098,20 @@ ApplicationWindow {
 
                                                     // Join voice, explicitly. A double-click on
                                                     // the row still does the same.
-                                                    // The green handset is only here while the
-                                                    // pointer is on this room. In the voice room we
-                                                    // are in it is hang-up instead: the handset
-                                                    // inverted, in red, and that one stays visible,
-                                                    // leaving as the voice dock's Leave does.
+                                                    // The green handset shows while the pointer is
+                                                    // on this room, or while this room is the open
+                                                    // one. In the voice room we are in it is hang-up
+                                                    // instead: the handset inverted, in red, and that
+                                                    // one stays visible, leaving as the voice dock's
+                                                    // Leave does.
                                                     IconButton {
                                                         readonly property bool endsCall: row.voice_here === true
                                                         readonly property color callColor:
                                                             endsCall ? Theme.danger : Theme.online
-                                                        visible: endsCall || (row.show_call === true && roomHover.hovered)
+                                                        visible: endsCall || (row.show_call === true
+                                                            && (roomHover.hovered
+                                                                || roomDelegate.hovered
+                                                                || roomDelegate.roomSelected))
                                                         implicitWidth: 26
                                                         implicitHeight: 26
                                                         padding: 0

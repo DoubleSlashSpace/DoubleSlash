@@ -903,9 +903,10 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                     actions.onFold(fold.copy(leaves = fold.leaves + (room.key + ":text" to true)))
                 }
             }
-            // Join voice, explicitly, as on the desktop: a call icon on the row
-            // rather than a button under its Voice list.
-            if (row.showCall && state.connectedSupernodes.isNotEmpty()) {
+            // Join voice, as on the desktop. The green handset is on the open
+            // room; this list has no hover. The hang-up on the live voice room
+            // stays. Other rows join from the long-press menu.
+            if (row.showCall && state.connectedSupernodes.isNotEmpty() && (row.inVoice || reading)) {
                 Spacer(Modifier.width(4.dp))
                 // Solid green on a green square, so joining stands out. In the
                 // voice room we are in it turns into hang-up: the handset
