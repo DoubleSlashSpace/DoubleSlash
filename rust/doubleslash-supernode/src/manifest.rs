@@ -18,7 +18,7 @@
 //! [[feature]]
 //! id = "core.audio.opus"
 //! enabled = true
-//! params = { codec = "opus", quota_bytes_per_sec = 32768 }
+//! params = { codec = "opus", quota_bytes_per_sec = 131072 }
 //!
 //! [[feature]]
 //! id = "x.acme.matchmaker"

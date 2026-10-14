@@ -209,32 +209,44 @@ pub fn core_file_v1() -> CapabilityDescriptor {
         .with_auth(AuthTier::TrustedPeer)
 }
 
+/// Byte quota for one voice sender, direct or room.
+///
+/// Room voice is charged on the signed JSON wire frame, not raw Opus: each
+/// 20 ms frame is E2E-sealed, base64'd, and wrapped in an Ed25519-signed
+/// `SfuAudio` envelope. At the 128 kbps encoder default that is about 40 KiB/s
+/// continuous, and the encoder can reach 192 kbps. 128 KiB/s leaves about 3×
+/// for that overshoot and for bursty speech, so the supernode does not drop
+/// frames that the client then reports as packet loss. Direct voice uses the
+/// same cap. Its frames are smaller, and a lower cap throttled a direct call
+/// below what a room already allows.
+pub const VOICE_BYTES_PER_SEC: u32 = 128 * 1024;
+
+/// Datagram quota for one voice sender, direct or room.
+///
+/// 50 frames/s at 20 ms, with headroom for a short burst.
+pub const VOICE_DATAGRAMS_PER_SEC: u32 = 200;
+
 /// `core.audio.opus` — direct peer voice (Opus over `transport.quic.audio.v1`).
 pub fn core_audio_opus() -> CapabilityDescriptor {
     CapabilityDescriptor::new("core.audio.opus", "1.0", ChannelKind::Datagram)
-        // 64 kbps Opus + overhead, 50 frames/s (20 ms). Cap at ~3×.
         .with_params(json!({
             "codec": "opus",
-            "quota_bytes_per_sec": 32 * 1024,
-            "quota_datagrams_per_sec": 200,
+            "quota_bytes_per_sec": VOICE_BYTES_PER_SEC,
+            "quota_datagrams_per_sec": VOICE_DATAGRAMS_PER_SEC,
         }))
         .with_auth(AuthTier::TrustedPeer)
 }
 
 /// `room.audio.sfu` — SFU room voice via QUIC relay.
 ///
-/// Byte quota is sized for the **signed JSON wire frame**, not raw Opus:
-/// each 20 ms frame is E2E-sealed, base64'd, and wrapped in an Ed25519-signed
-/// `SfuAudio` envelope (`[ROOM_AUDIO_TAG][json]`). At the default 128 kbps
-/// ceiling that is ~40 KiB/s continuous; 128 KiB/s leaves ~3× headroom for
-/// ABR overshoot and bursty speech without the supernode dropping frames
-/// (which clients report as 6–30% "packet loss" even when ICMP is clean).
+/// Rate limits match [`core_audio_opus`]: [`VOICE_BYTES_PER_SEC`] and
+/// [`VOICE_DATAGRAMS_PER_SEC`] in both directions.
 pub fn room_audio_sfu() -> CapabilityDescriptor {
     CapabilityDescriptor::new("room.audio.sfu", "1.0", ChannelKind::Datagram)
         .with_params(json!({
             "codec": "opus",
-            "quota_bytes_per_sec": 128 * 1024,
-            "quota_datagrams_per_sec": 200,
+            "quota_bytes_per_sec": VOICE_BYTES_PER_SEC,
+            "quota_datagrams_per_sec": VOICE_DATAGRAMS_PER_SEC,
             "allow_public_rooms": false,
             "allow_private_rooms": true,
         }))
@@ -402,8 +414,9 @@ pub fn room_video_sfu_for(codecs: &[VideoCodec]) -> CapabilityDescriptor {
 ///   audio. This stream uses `Application::Audio` at a higher rate, and one
 ///   Opus encoder cannot be in both modes at once.
 ///
-/// Quota sits above voice because the bitrate is higher and frames are not
-/// gated by voice activity, so the stream is continuous rather than bursty.
+/// Rate limits match voice: [`VOICE_BYTES_PER_SEC`] and
+/// [`VOICE_DATAGRAMS_PER_SEC`] in both directions. The stream is continuous,
+/// so it uses that same 128 KiB/s cap.
 pub fn core_audio_content_v1() -> CapabilityDescriptor {
     CapabilityDescriptor::new("core.audio.content.v1", "1.0", ChannelKind::Datagram)
         .with_params(json!({
@@ -411,17 +424,18 @@ pub fn core_audio_content_v1() -> CapabilityDescriptor {
             "opus_application": "audio",
             "av_sync": 1,
             "pts_unit": "us",
-            "quota_bytes_per_sec": 64 * 1024,
-            "quota_datagrams_per_sec": 200,
+            "quota_bytes_per_sec": VOICE_BYTES_PER_SEC,
+            "quota_datagrams_per_sec": VOICE_DATAGRAMS_PER_SEC,
         }))
         .with_auth(AuthTier::TrustedPeer)
 }
 
 /// `room.audio.content.sfu` — content audio relayed through a supernode.
 ///
-/// See [`core_audio_content_v1`]. The supernode forwards these frames opaquely
-/// and never parses the timestamp: teaching the SFU a media timeline would give
-/// it a reason to inspect content it is not trusted with.
+/// See [`core_audio_content_v1`]. Rate limits match it. The supernode
+/// forwards these frames opaquely and never parses the timestamp: teaching
+/// the SFU a media timeline would give it a reason to inspect content it is
+/// not trusted with.
 pub fn room_audio_content_sfu() -> CapabilityDescriptor {
     CapabilityDescriptor::new("room.audio.content.sfu", "1.0", ChannelKind::Datagram)
         .with_params(json!({
@@ -429,8 +443,8 @@ pub fn room_audio_content_sfu() -> CapabilityDescriptor {
             "opus_application": "audio",
             "av_sync": 1,
             "pts_unit": "us",
-            "quota_bytes_per_sec": 64 * 1024,
-            "quota_datagrams_per_sec": 200,
+            "quota_bytes_per_sec": VOICE_BYTES_PER_SEC,
+            "quota_datagrams_per_sec": VOICE_DATAGRAMS_PER_SEC,
             "allow_public_rooms": false,
             "allow_private_rooms": true,
         }))
@@ -590,6 +604,47 @@ mod tests {
             ids, expected,
             "local_capabilities() ID list changed — update this test AND \
              coordinate the change with all peers before shipping"
+        );
+    }
+
+    #[test]
+    fn voice_and_shared_audio_share_rate_limits() {
+        let direct = super::core_audio_opus();
+        let room = super::room_audio_sfu();
+        assert_eq!(
+            direct.params["quota_bytes_per_sec"], room.params["quota_bytes_per_sec"],
+            "direct and room voice byte quotas diverged"
+        );
+        assert_eq!(
+            direct.params["quota_datagrams_per_sec"], room.params["quota_datagrams_per_sec"],
+            "direct and room voice datagram quotas diverged"
+        );
+        assert_eq!(
+            direct.params["quota_bytes_per_sec"],
+            serde_json::json!(super::VOICE_BYTES_PER_SEC)
+        );
+        assert_eq!(
+            direct.params["quota_datagrams_per_sec"],
+            serde_json::json!(super::VOICE_DATAGRAMS_PER_SEC)
+        );
+
+        let direct_content = super::core_audio_content_v1();
+        let room_content = super::room_audio_content_sfu();
+        assert_eq!(
+            direct_content.params["quota_bytes_per_sec"], direct.params["quota_bytes_per_sec"],
+            "shared-audio byte quota diverged from voice"
+        );
+        assert_eq!(
+            direct_content.params["quota_datagrams_per_sec"],
+            direct.params["quota_datagrams_per_sec"]
+        );
+        assert_eq!(
+            room_content.params["quota_bytes_per_sec"],
+            direct_content.params["quota_bytes_per_sec"]
+        );
+        assert_eq!(
+            room_content.params["quota_datagrams_per_sec"],
+            direct_content.params["quota_datagrams_per_sec"]
         );
     }
 }
