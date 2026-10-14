@@ -12,11 +12,15 @@
 //!   • `isSelf`      — true if this client is the sender
 //!   • `purpose`     — e.g. "file" or "image"
 
+use std::collections::HashMap;
 use std::pin::Pin;
+use std::time::Instant;
 
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::{QByteArray, QHash, QHashPair_i32_QByteArray, QModelIndex, QString, QVariant};
 use serde::Deserialize;
+
+use crate::file_transfer::TransferSpeed;
 
 // Role constants
 mod roles {
@@ -46,6 +50,10 @@ pub struct TransferRow {
     pub is_self: bool,
     #[serde(default = "default_purpose")]
     pub purpose: String,
+    /// Original file size in bytes, from the offer. The rate is this times
+    /// the change in `progress`.
+    #[serde(default)]
+    pub size: u64,
     #[serde(default)]
     pub reason: String,
     /// The partial is still stored and the chip should offer Retry.
@@ -64,9 +72,22 @@ fn default_purpose() -> String {
 // Rust state
 // ---------------------------------------------------------------------------
 
-#[derive(Default)]
 pub struct FileTransferModelRust {
     rows: Vec<TransferRow>,
+    /// Smoothed rate per transfer. Not part of the row JSON.
+    speeds: HashMap<String, TransferSpeed>,
+    /// Monotonic origin for [`TransferSpeed::observe`].
+    clock_base: Instant,
+}
+
+impl Default for FileTransferModelRust {
+    fn default() -> Self {
+        Self {
+            rows: Vec::new(),
+            speeds: HashMap::new(),
+            clock_base: Instant::now(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +168,12 @@ pub mod ffi {
         #[rust_name = "progress_for"]
         fn progressFor(&self, transfer_id: &QString) -> f64;
 
+        /// Smoothed rate for a live transfer, e.g. "1.2 MB/s", or empty until
+        /// a window of progress has been measured.
+        #[qinvokable]
+        #[rust_name = "speed_for"]
+        fn speedFor(&self, transfer_id: &QString) -> QString;
+
         /// Fail reason for a transfer shown inside a chat bubble, or empty.
         #[qinvokable]
         #[rust_name = "reason_for"]
@@ -226,6 +253,7 @@ impl ffi::FileTransferModel {
         let tid = row.transfer_id.clone();
         // Check if it already exists
         let exists = self.rust().rows.iter().any(|r| r.transfer_id == tid);
+        let size = row.size;
         if exists {
             // Update via full reset (correct for small lists)
             self.as_mut().begin_reset_model();
@@ -236,7 +264,9 @@ impl ffi::FileTransferModel {
                 .iter_mut()
                 .find(|r| r.transfer_id == tid)
             {
+                let kept = if row.size == 0 { r.size } else { row.size };
                 *r = row;
+                r.size = kept;
             }
             self.as_mut().end_reset_model();
         } else {
@@ -246,10 +276,28 @@ impl ffi::FileTransferModel {
             self.as_mut().rust_mut().rows.push(row);
             self.as_mut().end_insert_rows();
         }
+        // Remember the size for the rate. A repeat of the same offer keeps the
+        // window already open, so a second copy does not blank the speed.
+        let size = self
+            .as_mut()
+            .rust_mut()
+            .rows
+            .iter()
+            .find(|r| r.transfer_id == tid)
+            .map(|r| r.size)
+            .unwrap_or(size);
+        let mut rust = self.as_mut().rust_mut();
+        let speed = rust
+            .speeds
+            .entry(tid)
+            .or_insert_with(|| TransferSpeed::new(size));
+        speed.set_size(size);
     }
 
     fn set_progress(mut self: Pin<&mut Self>, transfer_id: &QString, progress: f64) {
         let tid = transfer_id.to_string();
+        let now_ms = self.rust().clock_base.elapsed().as_millis() as u64;
+        let mut size = 0u64;
         let changed = {
             let rows = &mut self.as_mut().rust_mut().rows;
             if let Some(r) = rows.iter_mut().find(|r| r.transfer_id == tid) {
@@ -259,20 +307,31 @@ impl ffi::FileTransferModel {
                     r.reason.clear();
                     r.retryable = false;
                 }
+                size = r.size;
                 true
             } else {
                 false
             }
         };
-        if changed {
-            // Emit a lightweight reset so the view refreshes
-            self.as_mut().begin_reset_model();
-            self.as_mut().end_reset_model();
+        if !changed {
+            return;
         }
+        {
+            let speeds = &mut self.as_mut().rust_mut().speeds;
+            let speed = speeds
+                .entry(tid)
+                .or_insert_with(|| TransferSpeed::new(size));
+            speed.set_size(size);
+            speed.observe(progress, now_ms);
+        }
+        // Emit a lightweight reset so the view refreshes
+        self.as_mut().begin_reset_model();
+        self.as_mut().end_reset_model();
     }
 
     fn mark_complete(mut self: Pin<&mut Self>, transfer_id: &QString) {
         let tid = transfer_id.to_string();
+        self.as_mut().rust_mut().speeds.remove(&tid);
         let changed = {
             let rows = &mut self.as_mut().rust_mut().rows;
             if let Some(r) = rows.iter_mut().find(|r| r.transfer_id == tid) {
@@ -292,6 +351,7 @@ impl ffi::FileTransferModel {
     fn mark_failed(mut self: Pin<&mut Self>, transfer_id: &QString, reason: &QString) {
         let tid = transfer_id.to_string();
         let why = reason.to_string();
+        self.as_mut().rust_mut().speeds.remove(&tid);
         let changed = {
             let rows = &mut self.as_mut().rust_mut().rows;
             if let Some(r) = rows.iter_mut().find(|r| r.transfer_id == tid) {
@@ -315,6 +375,7 @@ impl ffi::FileTransferModel {
         if let Some(i) = idx {
             self.as_mut().begin_reset_model();
             self.as_mut().rust_mut().rows.remove(i);
+            self.as_mut().rust_mut().speeds.remove(&tid);
             self.as_mut().end_reset_model();
         }
     }
@@ -337,6 +398,15 @@ impl ffi::FileTransferModel {
             .find(|r| r.transfer_id == tid)
             .map(|r| r.progress)
             .unwrap_or(0.0)
+    }
+
+    fn speed_for(&self, transfer_id: &QString) -> QString {
+        let tid = transfer_id.to_string();
+        self.rust()
+            .speeds
+            .get(&tid)
+            .map(|speed| QString::from(speed.label().as_str()))
+            .unwrap_or_default()
     }
 
     fn reason_for(&self, transfer_id: &QString) -> QString {

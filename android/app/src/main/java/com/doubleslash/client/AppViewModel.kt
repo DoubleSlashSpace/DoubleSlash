@@ -7,6 +7,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.Lifecycle
@@ -32,6 +33,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
+import java.util.Locale
+import kotlin.math.roundToInt
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
@@ -202,8 +205,13 @@ data class AppState(
     val stalledVideo: Set<String> = emptySet(),
     /** An inbound file offer waiting on accept or decline. */
     val fileOffer: FileOffer? = null,
-    /** Live transfers by id, 0.0-1.0, for the progress line. */
-    val transfers: Map<String, Float> = emptyMap(),
+    /** Live transfers by id, for the progress line and its rate. */
+    val transfers: Map<String, LiveTransfer> = emptyMap(),
+    /**
+     * Size and name from the offer, including our own send. Kept across a
+     * retryable stall so the rate can be measured when bytes move again.
+     */
+    val transferFacts: Map<String, TransferFacts> = emptyMap(),
     /**
      * Interrupted transfers whose partial is still stored, by id, with the
      * reason to show beside Retry. Cleared when bytes move again.
@@ -381,6 +389,116 @@ internal fun AppState.streamingStillPresent(): Set<String> {
         peers.firstOrNull { it.peerId == id }?.identityPub?.let { present += it.videoKey() }
     }
     return streamingPeers.filterTo(mutableSetOf()) { it in present }
+}
+
+/**
+ * One file moving right now.
+ *
+ * [progress] is 0..1. [speedLabel] is empty until a quarter-second of
+ * progress has been measured, then `1.2 MB/s`. The window and the 0.45
+ * smoothing match `TransferSpeed` in the core.
+ */
+data class LiveTransfer(
+    val progress: Float = 0f,
+    val name: String = "",
+    val speedLabel: String = "",
+    val markedProgress: Float = -1f,
+    val markedAtMs: Long = 0L,
+    val bytesPerSec: Double = 0.0,
+)
+
+/** Offer facts the rate needs: original size, and a name for the progress line. */
+data class TransferFacts(
+    val sizeBytes: Long = 0L,
+    val name: String = "",
+)
+
+/** Same 250 ms window as the desktop's `TransferSpeed`. */
+internal const val TRANSFER_SPEED_WINDOW_MS = 250L
+
+private const val TRANSFER_SPEED_SMOOTH = 0.45
+
+/** `1.2 MB/s`, or empty below 1 B/s. Units match the desktop's `format_byte_size`. */
+internal fun formatTransferSpeed(bytesPerSec: Double): String {
+    if (!bytesPerSec.isFinite() || bytesPerSec < 1.0) return ""
+    val body = when {
+        bytesPerSec >= 1024.0 * 1024.0 * 1024.0 ->
+            "%.1f GB".format(Locale.US, bytesPerSec / (1024.0 * 1024.0 * 1024.0))
+        bytesPerSec >= 1024.0 * 1024.0 ->
+            "%.1f MB".format(Locale.US, bytesPerSec / (1024.0 * 1024.0))
+        bytesPerSec >= 1024.0 ->
+            "%.1f KB".format(Locale.US, bytesPerSec / 1024.0)
+        else -> "${bytesPerSec.toLong()} B"
+    }
+    return "$body/s"
+}
+
+/** File name from an offer path, for the progress line. */
+internal fun transferFileName(path: String): String =
+    path.substringAfterLast('/').substringAfterLast('\\')
+
+/**
+ * Fold one progress sample into [prev].
+ *
+ * The first sample only opens the window. A sample before
+ * [TRANSFER_SPEED_WINDOW_MS] keeps the previous rate. A quiet window clears
+ * it. A backwards sample (a chunk the transport did not take) restarts the
+ * window and keeps the last rate.
+ */
+internal fun LiveTransfer.observe(
+    progress: Float,
+    sizeBytes: Long,
+    nowMs: Long,
+    name: String,
+): LiveTransfer {
+    val clamped = if (progress.isFinite()) progress.coerceIn(0f, 1f) else 0f
+    val named = name.ifBlank { this.name }
+    if (markedProgress < 0f) {
+        return copy(
+            progress = clamped,
+            name = named,
+            markedProgress = clamped,
+            markedAtMs = nowMs,
+        )
+    }
+    if (nowMs < markedAtMs || clamped < markedProgress) {
+        return copy(
+            progress = clamped,
+            name = named,
+            markedProgress = clamped,
+            markedAtMs = nowMs,
+        )
+    }
+    val dtMs = nowMs - markedAtMs
+    if (dtMs < TRANSFER_SPEED_WINDOW_MS) {
+        return copy(progress = clamped, name = named)
+    }
+    val dt = dtMs / 1000.0
+    val gained = (clamped - markedProgress).toDouble() * sizeBytes.toDouble()
+    val nextRate = if (sizeBytes <= 0L || gained <= 0.0 || dt <= 0.0) {
+        0.0
+    } else {
+        val instant = gained / dt
+        if (bytesPerSec <= 0.0) {
+            instant
+        } else {
+            TRANSFER_SPEED_SMOOTH * instant + (1.0 - TRANSFER_SPEED_SMOOTH) * bytesPerSec
+        }
+    }
+    return copy(
+        progress = clamped,
+        name = named,
+        speedLabel = formatTransferSpeed(nextRate),
+        markedProgress = clamped,
+        markedAtMs = nowMs,
+        bytesPerSec = nextRate,
+    )
+}
+
+/** `42%` or `42% · 1.2 MB/s`. */
+internal fun LiveTransfer.progressCaption(): String {
+    val pct = (progress.coerceIn(0f, 1f) * 100f).roundToInt()
+    return if (speedLabel.isEmpty()) "$pct%" else "$pct% · $speedLabel"
 }
 
 /** An inbound offer: nothing arrives until it is accepted. */
@@ -1192,7 +1310,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.update {
             it.copy(
                 fileRetries = it.fileRetries - transferId,
-                transfers = it.transfers + (transferId to (it.transfers[transferId] ?: 0f)),
+                transfers = it.transfers + (transferId to (it.transfers[transferId] ?: LiveTransfer())),
             )
         }
     }
@@ -2409,14 +2527,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // Our own offers echo back as events too; only an inbound one is
             // a question for the user.
             "file_offered" -> {
+                val offeredId = event.stringOrEmpty("transfer_id")
+                val offeredName = transferFileName(event.stringOrEmpty("rel_path"))
+                val offeredSize = event.number("size").toLong()
+                if (offeredId.isNotEmpty()) {
+                    _state.update {
+                        it.copy(
+                            transferFacts = it.transferFacts + (
+                                offeredId to TransferFacts(
+                                    sizeBytes = offeredSize.coerceAtLeast(0L),
+                                    name = offeredName,
+                                )
+                            ),
+                        )
+                    }
+                }
                 if (!event.isSelfEvent()) {
                     _state.update {
                         it.copy(
                             fileOffer = FileOffer(
-                                transferId = event.stringOrEmpty("transfer_id"),
+                                transferId = offeredId,
                                 peerId = event.stringOrEmpty("peer_id"),
                                 name = event.stringOrEmpty("rel_path"),
-                                size = event.number("size").toLong(),
+                                size = offeredSize,
                                 // Room offers carry the hosting supernode; 1:1
                                 // offers leave it empty.
                                 isRoom = event.stringOrEmpty("supernode_id").isNotBlank(),
@@ -2440,9 +2573,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             "file_progress" -> {
                 val id = event.stringOrEmpty("transfer_id")
                 val progress = event.number("progress").toFloat()
+                val now = SystemClock.elapsedRealtime()
                 _state.update {
+                    val facts = it.transferFacts[id]
+                    val prev = it.transfers[id] ?: LiveTransfer()
                     it.copy(
-                        transfers = it.transfers + (id to progress),
+                        transfers = it.transfers + (
+                            id to prev.observe(
+                                progress = progress,
+                                sizeBytes = facts?.sizeBytes ?: 0L,
+                                nowMs = now,
+                                name = facts?.name.orEmpty(),
+                            )
+                        ),
                         fileRetries = it.fileRetries - id,
                     )
                 }
@@ -2455,6 +2598,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update {
                     it.copy(
                         transfers = it.transfers - id,
+                        transferFacts = it.transferFacts - id,
                         fileRetries = it.fileRetries - id,
                         // Only a received file can be saved out; our own
                         // completed upload is already on this device.
@@ -2486,6 +2630,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     _state.update {
                         it.copy(
                             transfers = it.transfers - id,
+                            transferFacts = it.transferFacts - id,
                             fileRetries = it.fileRetries - id,
                             error = reason,
                         )

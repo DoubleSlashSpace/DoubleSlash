@@ -48,6 +48,8 @@ Item {
     }
     property string xferState: ""
     property real xferProgress: 0
+    /// Smoothed rate while the transfer is moving, e.g. "1.2 MB/s".
+    property string xferSpeed: ""
     property bool xferRetryable: false
     readonly property bool xferLive: root.xferState === "pending" || root.xferState === "active"
     /// Ours, but sent from our other device: a send made here always records
@@ -82,11 +84,13 @@ Item {
         if (!root.fileTransferModel || root.transferId === "") {
             root.xferState = ""
             root.xferProgress = 0
+            root.xferSpeed = ""
             root.xferRetryable = false
             return
         }
         root.xferState = root.fileTransferModel.stateFor(root.transferId)
         root.xferProgress = root.fileTransferModel.progressFor(root.transferId)
+        root.xferSpeed = "" + (root.fileTransferModel.speedFor(root.transferId) || "")
         // Copied out of the model: retryableFor() is not a binding, so a
         // later reset that only flips the flag would leave the button hidden.
         root.xferRetryable = root.fileTransferModel.retryableFor(root.transferId)
@@ -660,7 +664,10 @@ Item {
                                       : qsTr("Offered"))
                         if (root.xferState === "active") {
                             var pct = Math.round(root.xferProgress * 100)
-                            return (root.sizeStr !== "" ? root.sizeStr + " · " : "") + pct + "%"
+                            var line = (root.sizeStr !== "" ? root.sizeStr + " · " : "") + pct + "%"
+                            if (root.xferSpeed !== "")
+                                line += " · " + root.xferSpeed
+                            return line
                         }
                         if (root.xferState === "failed") {
                             var why = (root.fileTransferModel && root.transferId !== "")

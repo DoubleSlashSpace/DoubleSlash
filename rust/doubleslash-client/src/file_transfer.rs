@@ -2317,6 +2317,177 @@ fn progress_is_reportable(sent: usize, total: usize) -> bool {
     sent.is_multiple_of(step)
 }
 
+/// File-chip throughput. The headless client has no progress line, so this
+/// stays out of that build. Tests and the Qt model are the callers.
+#[cfg(any(test, feature = "qt-ui"))]
+mod transfer_speed {
+    /// Shortest gap that produces a new rate.
+    ///
+    /// Progress is reported about once per percent. Folding anything closer than
+    /// this into the open window keeps a burst of those reports from reading as
+    /// an unbounded spike. The Android client uses the same window.
+    const SPEED_WINDOW_MS: u64 = 250;
+
+    /// Weight of the newest sample in the smoothed rate. The Android client uses
+    /// the same mix.
+    const SPEED_SMOOTH: f64 = 0.45;
+
+    /// Smoothed throughput for one transfer, from the progress the UI already shows.
+    ///
+    /// Bytes are `size * Δprogress`, which for a streamed file is the file itself
+    /// (`payload_len == size`). The first sample only opens the window. A sample
+    /// before [`SPEED_WINDOW_MS`] has elapsed keeps the previous rate.
+    #[derive(Debug, Clone)]
+    pub(crate) struct TransferSpeed {
+        size: u64,
+        marked_progress: f64,
+        marked_at_ms: u64,
+        bytes_per_sec: f64,
+        started: bool,
+    }
+
+    impl TransferSpeed {
+        pub(crate) fn new(size: u64) -> Self {
+            Self {
+                size,
+                marked_progress: 0.0,
+                marked_at_ms: 0,
+                bytes_per_sec: 0.0,
+                started: false,
+            }
+        }
+
+        /// The offer can arrive after the tracker, or a later copy can fill in a
+        /// size the first one omitted. Only the Qt model calls this.
+        #[cfg(feature = "qt-ui")]
+        pub(crate) fn set_size(&mut self, size: u64) {
+            if size > 0 {
+                self.size = size;
+            }
+        }
+
+        /// Note `progress` (0..=1) at a monotonic `now_ms`. Returns the smoothed
+        /// bytes per second, or 0 until a full window has something to measure.
+        pub(crate) fn observe(&mut self, progress: f64, now_ms: u64) -> f64 {
+            let progress = if progress.is_finite() {
+                progress.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            if !self.started {
+                self.started = true;
+                self.marked_progress = progress;
+                self.marked_at_ms = now_ms;
+                return self.bytes_per_sec;
+            }
+            // A rewind (a chunk the transport did not take) restarts the window
+            // and keeps the last rate, so the line does not flash empty.
+            if now_ms < self.marked_at_ms || progress < self.marked_progress {
+                self.marked_progress = progress;
+                self.marked_at_ms = now_ms;
+                return self.bytes_per_sec;
+            }
+            let dt_ms = now_ms - self.marked_at_ms;
+            if dt_ms < SPEED_WINDOW_MS {
+                return self.bytes_per_sec;
+            }
+            let dt = dt_ms as f64 / 1000.0;
+            let gained = (progress - self.marked_progress) * self.size as f64;
+            self.marked_progress = progress;
+            self.marked_at_ms = now_ms;
+            if self.size == 0 || gained <= 0.0 || dt <= 0.0 {
+                self.bytes_per_sec = 0.0;
+                return 0.0;
+            }
+            let instant = gained / dt;
+            self.bytes_per_sec = if self.bytes_per_sec <= 0.0 {
+                instant
+            } else {
+                SPEED_SMOOTH * instant + (1.0 - SPEED_SMOOTH) * self.bytes_per_sec
+            };
+            self.bytes_per_sec
+        }
+
+        /// `1.2 MB/s`, or empty until a rate is known. Units match
+        /// [`crate::chat_store::format_byte_size`].
+        pub(crate) fn label(&self) -> String {
+            if !self.bytes_per_sec.is_finite() || self.bytes_per_sec < 1.0 {
+                return String::new();
+            }
+            format!(
+                "{}/s",
+                crate::chat_store::format_byte_size(self.bytes_per_sec.round() as u64)
+            )
+        }
+    }
+
+    #[cfg(test)]
+    mod transfer_speed_tests {
+        use super::TransferSpeed;
+
+        #[test]
+        fn first_sample_opens_the_window() {
+            let mut speed = TransferSpeed::new(10 * 1024 * 1024);
+            assert_eq!(speed.observe(0.0, 0), 0.0);
+            assert!(speed.label().is_empty());
+            // Inside the window: still nothing to show.
+            assert_eq!(speed.observe(0.05, 100), 0.0);
+            assert!(speed.label().is_empty());
+        }
+
+        #[test]
+        fn rate_is_file_bytes_over_the_window() {
+            let mut speed = TransferSpeed::new(10 * 1024 * 1024);
+            speed.observe(0.0, 0);
+            // 10% of 10 MiB in one second is 1 MiB/s.
+            let rate = speed.observe(0.10, 1000);
+            assert!((rate - 1_048_576.0).abs() < 1.0, "{rate}");
+            assert_eq!(speed.label(), "1.0 MB/s");
+        }
+
+        #[test]
+        fn next_window_smooths_toward_the_new_pace() {
+            let mut speed = TransferSpeed::new(10 * 1024 * 1024);
+            speed.observe(0.0, 0);
+            speed.observe(0.10, 1000);
+            // The next second moves twice as far: 2 MiB/s.
+            let rate = speed.observe(0.30, 2000);
+            let expect = 0.45 * 2_097_152.0 + 0.55 * 1_048_576.0;
+            assert!((rate - expect).abs() < 1.0, "{rate} vs {expect}");
+        }
+
+        #[test]
+        fn a_quiet_window_clears_the_rate() {
+            let mut speed = TransferSpeed::new(10 * 1024 * 1024);
+            speed.observe(0.0, 0);
+            speed.observe(0.10, 1000);
+            assert_eq!(speed.observe(0.10, 2000), 0.0);
+            assert!(speed.label().is_empty());
+        }
+
+        #[test]
+        fn a_rewind_keeps_the_last_rate() {
+            let mut speed = TransferSpeed::new(10 * 1024 * 1024);
+            speed.observe(0.0, 0);
+            speed.observe(0.10, 1000);
+            let kept = speed.observe(0.05, 1100);
+            assert!((kept - 1_048_576.0).abs() < 1.0, "{kept}");
+            assert_eq!(speed.label(), "1.0 MB/s");
+        }
+
+        #[test]
+        fn unknown_size_never_invents_a_rate() {
+            let mut speed = TransferSpeed::new(0);
+            speed.observe(0.0, 0);
+            assert_eq!(speed.observe(0.5, 1000), 0.0);
+            assert!(speed.label().is_empty());
+        }
+    }
+}
+
+#[cfg(feature = "qt-ui")]
+pub(crate) use transfer_speed::TransferSpeed;
+
 // ── Received-file storage ─────────────────────────────────────────────────────
 
 /// Directory received files land in. Mirrors `ui::bridge::save_received_file`.

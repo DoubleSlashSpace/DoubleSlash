@@ -122,6 +122,8 @@ import com.doubleslash.client.CallState
 import com.doubleslash.client.AppSettings
 import com.doubleslash.client.Legal
 import com.doubleslash.client.FileOffer
+import com.doubleslash.client.LiveTransfer
+import com.doubleslash.client.progressCaption
 import com.doubleslash.client.SavedFile
 import com.doubleslash.client.SupernodeInfo
 import com.doubleslash.client.ConnectionMode
@@ -1580,7 +1582,7 @@ private fun ChatScreen(
     onAcceptInvite: (String) -> Unit,
     onJoinRoom: (String) -> Unit,
     joinableRoomIds: Set<String>,
-    transfers: Map<String, Float>,
+    transfers: Map<String, LiveTransfer>,
     fileRetries: Map<String, String>,
     onRetryFile: (String) -> Unit,
     onSendFile: (android.net.Uri) -> Unit,
@@ -1655,6 +1657,7 @@ private fun ChatScreen(
                         fileRetries = fileRetries,
                         onRetryFile = onRetryFile,
                         timeFormat = timeFormat,
+                        transfers = transfers,
                     )
                 }
             }
@@ -1665,12 +1668,7 @@ private fun ChatScreen(
         // One bar per transfer in flight, sending or receiving. A file moving
         // is the only thing here slow enough to need one, so it takes space
         // only while it is happening.
-        transfers.forEach { (_, progress) ->
-            LinearProgressIndicator(
-                progress = { progress },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-            )
-        }
+        TransferBars(transfers)
 
         Row(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
@@ -1713,6 +1711,7 @@ private fun MessageBubble(
     fileRetries: Map<String, String> = emptyMap(),
     onRetryFile: (String) -> Unit = {},
     timeFormat: String = DateTimeFormats.DEFAULT,
+    transfers: Map<String, LiveTransfer> = emptyMap(),
 ) {
     val invite = remember(message.body) { findInviteUrl(message.body) }
     // With the link lifted into the card, a message that was only a link has
@@ -1742,6 +1741,7 @@ private fun MessageBubble(
                 if (hasAttachment) {
                     val transferId = transferIdFromMessage(message.id)
                     val retryReason = transferId?.let { fileRetries[it] }
+                    val live = transferId?.let { transfers[it] }
                     AttachmentContent(
                         kind = message.kind,
                         name = message.attachmentName,
@@ -1752,6 +1752,7 @@ private fun MessageBubble(
                         onRetry = transferId?.takeIf { retryReason != null }?.let { id ->
                             { onRetryFile(id) }
                         },
+                        progressCaption = live?.progressCaption().orEmpty(),
                     )
                 } else {
                     Text(text, modifier = Modifier.padding(10.dp))
@@ -1844,7 +1845,7 @@ private fun RoomChatScreen(
     onToggleVideo: (Boolean) -> Unit,
     onAcceptInvite: (String) -> Unit,
     onJoinRoom: (String) -> Unit,
-    transfers: Map<String, Float>,
+    transfers: Map<String, LiveTransfer>,
     fileRetries: Map<String, String>,
     onRetryFile: (String) -> Unit,
     onSendFile: (android.net.Uri) -> Unit,
@@ -2083,6 +2084,7 @@ private fun RoomChatScreen(
                             fileRetries = fileRetries,
                             onRetryFile = onRetryFile,
                             timeFormat = state.prefs.timeFormat,
+                            transfers = transfers,
                         )
                     }
                 }
@@ -2094,12 +2096,7 @@ private fun RoomChatScreen(
             }
         }
 
-        transfers.forEach { (_, progress) ->
-            LinearProgressIndicator(
-                progress = { progress },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-            )
-        }
+        TransferBars(transfers)
 
         Row(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
@@ -2211,6 +2208,7 @@ private fun RoomMessageBubble(
     fileRetries: Map<String, String> = emptyMap(),
     onRetryFile: (String) -> Unit = {},
     timeFormat: String = DateTimeFormats.DEFAULT,
+    transfers: Map<String, LiveTransfer> = emptyMap(),
 ) {
     val invite = remember(message.body) { findInviteUrl(message.body) }
     val text = if (invite == null) message.body else bodyWithoutInvite(message.body, invite)
@@ -2250,6 +2248,7 @@ private fun RoomMessageBubble(
                 Card(colors = CardDefaults.cardColors(containerColor = container)) {
                     val transferId = transferIdFromMessage(message.messageId)
                     val retryReason = transferId?.let { fileRetries[it] }
+                    val live = transferId?.let { transfers[it] }
                     AttachmentContent(
                         kind = message.kind,
                         name = message.attachmentName,
@@ -2260,6 +2259,7 @@ private fun RoomMessageBubble(
                         onRetry = transferId?.takeIf { retryReason != null }?.let { id ->
                             { onRetryFile(id) }
                         },
+                        progressCaption = live?.progressCaption().orEmpty(),
                     )
                 }
             } else if (text.isNotBlank()) {
@@ -3261,6 +3261,29 @@ private fun SaveFilePrompt(
         },
         dismissButton = { SquareTextButton(onClick = onDismiss) { Text("Not now") } },
     )
+}
+
+/**
+ * The bar under a chat, one per file that is moving, with how far along it is
+ * and how fast.
+ */
+@Composable
+private fun TransferBars(transfers: Map<String, LiveTransfer>) {
+    transfers.forEach { (_, live) ->
+        val caption = live.progressCaption()
+        Text(
+            text = if (live.name.isBlank()) caption else "${live.name} · $caption",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        )
+        LinearProgressIndicator(
+            progress = { live.progress },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        )
+    }
 }
 
 /** Byte counts the way the desktop's `format_byte_size` renders them. */

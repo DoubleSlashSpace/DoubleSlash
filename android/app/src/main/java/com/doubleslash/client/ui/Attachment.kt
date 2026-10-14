@@ -100,13 +100,20 @@ fun AttachmentContent(
     /** Set when this transfer stopped and the partial is still stored. */
     retryReason: String? = null,
     onRetry: (() -> Unit)? = null,
+    /** `42% · 1.2 MB/s` while this file is moving, or empty. */
+    progressCaption: String = "",
 ) {
     val preview = if (kind.equals("image", ignoreCase = true)) rememberPreview(path) else null
     var zoomed by remember { mutableStateOf(false) }
 
+    val detail = when {
+        progressCaption.isBlank() -> sizeStr
+        sizeStr.isBlank() -> progressCaption
+        else -> "$sizeStr · $progressCaption"
+    }
     Column(modifier) {
         if (preview == null) {
-            AttachmentLine(kind, name, sizeStr, Modifier)
+            AttachmentLine(kind, name, detail, Modifier)
         } else {
             Image(
                 bitmap = preview,
@@ -120,7 +127,7 @@ fun AttachmentContent(
             )
             if (name.isNotBlank()) {
                 Text(
-                    if (sizeStr.isBlank()) name else "$name · $sizeStr",
+                    if (detail.isBlank()) name else "$name · $detail",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
