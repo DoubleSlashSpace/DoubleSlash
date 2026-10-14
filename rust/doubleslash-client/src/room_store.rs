@@ -512,6 +512,46 @@ impl RoomStore {
         self.upsert(entry)
     }
 
+    /// Drop every local copy of a room and tombstone each host.
+    ///
+    /// Hide keeps the stored room so Show hidden can restore it. This removes
+    /// the entry, so the room is gone from this device. The tombstone stops a
+    /// later room list from writing it back. Joining again goes through
+    /// [`upsert`] and clears that tombstone.
+    ///
+    /// `extra_supernode_ids` covers hosts the room was never stored under, so a
+    /// list from a cluster sibling is tombstoned too. The built-in `default`
+    /// room is refused.
+    pub fn delete_local(&mut self, room_id: &str, extra_supernode_ids: &[String]) -> Result<()> {
+        if room_id.is_empty() || room_id == "default" {
+            return Ok(());
+        }
+        let mut hosts: Vec<String> = self
+            .rooms
+            .values()
+            .filter(|entry| entry.room_id == room_id)
+            .map(|entry| entry.supernode_id.clone())
+            .collect();
+        hosts.extend(
+            extra_supernode_ids
+                .iter()
+                .filter(|id| !id.is_empty())
+                .cloned(),
+        );
+        hosts.sort();
+        hosts.dedup();
+        for host in hosts {
+            let key = Self::entry_key(&host, room_id);
+            self.rooms.remove(&key);
+            self.deleted_ids.insert(key);
+        }
+        info!(
+            "RoomStore: deleted room {} on this device",
+            &room_id[..room_id.len().min(12)]
+        );
+        self.save()
+    }
+
     /// Remove a room by supernode + id, record as deleted, and persist.
     pub fn remove(&mut self, supernode_id: &str, room_id: &str) -> Result<()> {
         let key = Self::entry_key(supernode_id, room_id);
@@ -1067,6 +1107,37 @@ mod tests {
         // The whole point: it must still be un-hidden after a restart.
         let store = RoomStore::open(&identity, Some(&path)).expect("reopen");
         assert!(!store.is_hidden_from_sidebar("sn-a", "r1"));
+    }
+
+    #[test]
+    fn delete_local_drops_the_entry_and_blocks_a_list_sync() {
+        let dir = tempdir().expect("temp dir");
+        let identity = Identity::generate();
+        let mut store =
+            RoomStore::open(&identity, Some(&dir.path().join("my_rooms.dat"))).expect("open");
+        store
+            .add(RoomEntry::new("raid", "Raid").with_supernode("sn-a"))
+            .expect("add");
+        store
+            .delete_local("raid", &["sn-b".to_owned()])
+            .expect("delete");
+        assert!(store.get("sn-a", "raid").is_none());
+        assert!(store.is_hidden_from_sidebar("sn-a", "raid"));
+        assert!(store.is_hidden_from_sidebar("sn-b", "raid"));
+        store
+            .upsert_from_remote(RoomEntry::new("raid", "Raid").with_supernode("sn-a"))
+            .expect("sync");
+        assert!(
+            store.get("sn-a", "raid").is_none(),
+            "a room list must not restore a room this device deleted"
+        );
+        store
+            .delete_local("default", &["sn-a".to_owned()])
+            .expect("default");
+        assert!(
+            !store.is_hidden_from_sidebar("sn-a", "default"),
+            "the built-in room is not deleted"
+        );
     }
 
     #[test]

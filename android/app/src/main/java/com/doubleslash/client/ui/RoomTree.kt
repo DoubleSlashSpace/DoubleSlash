@@ -701,6 +701,8 @@ internal class RoomTreeActions(
     /** Join a room's voice: runs the microphone explanation first. */
     val onJoinVoice: (Room) -> Unit,
     val onSetHidden: (Room, Boolean) -> Unit,
+    /** Delete the room on this device. The flag also deletes its chat history. */
+    val onDeleteRoom: (Room, Boolean) -> Unit = { _, _ -> },
     /** Create a room nested inside this one, with the parent already chosen. */
     val onCreateSubRoom: (Room) -> Unit,
     val members: MemberActions,
@@ -789,7 +791,8 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
     val unread = state.roomUnread[room.roomId] ?: 0
     val alertsOn = room.roomId in state.prefs.roomMessageAlerts
     var menuOpen by remember(room.key) { mutableStateOf(false) }
-    var confirmRemove by remember(room.key) { mutableStateOf(false) }
+    var confirmHide by remember(room.key) { mutableStateOf(false) }
+    var confirmDelete by remember(room.key) { mutableStateOf(false) }
     Box {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -858,15 +861,6 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                     Spacer(Modifier.width(6.dp))
                     Text("top", color = ds.accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
-                if (voiceHere) {
-                    Spacer(Modifier.width(6.dp))
-                    Icon(
-                        painterResource(R.drawable.ds_headphone),
-                        contentDescription = "You are in voice here",
-                        tint = ds.online,
-                        modifier = Modifier.size(16.dp),
-                    )
-                }
                 if (room.hidden) {
                     Spacer(Modifier.width(6.dp))
                     Text("hidden", color = ds.muted, fontSize = 12.sp)
@@ -906,7 +900,9 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
             // Join voice, as on the desktop. The green handset is on the open
             // room; this list has no hover. The hang-up on the live voice room
             // stays. Other rows join from the long-press menu.
-            if (row.showCall && state.connectedSupernodes.isNotEmpty() && (row.inVoice || reading)) {
+            if (row.showCall && state.connectedSupernodes.isNotEmpty() &&
+                (row.inVoice || (reading && !room.hidden))
+            ) {
                 Spacer(Modifier.width(4.dp))
                 // Solid green on a green square, so joining stands out. In the
                 // voice room we are in it turns into hang-up: the handset
@@ -928,26 +924,35 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
         val showMove = order.mode == ROOM_SORT_MANUAL || pinned
         val visibleRooms = state.rooms.filter { state.showHiddenRooms || !it.hidden }
         val canInviteContact = state.peers.inviteContacts().isNotEmpty()
+        val listed = !room.hidden
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-            TreeMenuItem(R.drawable.ds_phone, "Join Voice Room") {
+            TreeMenuItem(R.drawable.ds_phone, "Join Voice Room", enabled = listed) {
                 menuOpen = false
                 actions.onJoinVoice(room)
             }
-            TreeMenuItem(R.drawable.ds_clipboard, "Copy Room Invite") {
+            TreeMenuItem(R.drawable.ds_clipboard, "Copy Room Invite", enabled = listed) {
                 menuOpen = false
                 actions.onCopyInvite(room)
             }
-            TreeMenuItem(R.drawable.ic_invite, "Invite Contact to Room", enabled = canInviteContact) {
+            TreeMenuItem(
+                R.drawable.ic_invite,
+                "Invite Contact to Room",
+                enabled = listed && canInviteContact,
+            ) {
                 menuOpen = false
                 actions.onInviteContact(room)
             }
             HorizontalDivider()
-            TreeMenuItem(R.drawable.ds_plus, "Create room inside ${room.label}...") {
+            TreeMenuItem(R.drawable.ds_plus, "Create room inside ${room.label}...", enabled = listed) {
                 menuOpen = false
                 actions.onCreateSubRoom(room)
             }
             HorizontalDivider()
-            TreeMenuItem(R.drawable.ds_pin, if (pinned) "Stop keeping at top" else "Keep at top") {
+            TreeMenuItem(
+                R.drawable.ds_pin,
+                if (pinned) "Stop keeping at top" else "Keep at top",
+                enabled = listed,
+            ) {
                 menuOpen = false
                 actions.onTogglePin(room)
             }
@@ -955,7 +960,7 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                 TreeMenuItem(
                     R.drawable.ds_arrow_up,
                     "Move up",
-                    enabled = canMoveRoom(
+                    enabled = listed && canMoveRoom(
                         order, visibleRooms, room, -1, state.roomVoiceRosters, state.roomTextRosters,
                     ),
                 ) {
@@ -965,7 +970,7 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                 TreeMenuItem(
                     R.drawable.ds_arrow_down,
                     "Move down",
-                    enabled = canMoveRoom(
+                    enabled = listed && canMoveRoom(
                         order, visibleRooms, room, 1, state.roomVoiceRosters, state.roomTextRosters,
                     ),
                 ) {
@@ -976,35 +981,41 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
             TreeMenuItem(
                 if (alertsOn) R.drawable.ds_bell_off else R.drawable.ds_bell,
                 if (alertsOn) "Mute message alerts" else "Enable message alerts",
+                enabled = listed,
             ) {
                 menuOpen = false
                 actions.onSetMessageAlerts(room, !alertsOn)
             }
-            // The built-in default room has no Remove item. A hidden one can
-            // still be put back, because Show hidden only reveals the row.
+            // Hide only takes the room off this list. Remove deletes it here.
+            // The built-in default can be hidden and has no Remove. A hidden
+            // room keeps Show in list and Remove, and greys out everything above.
             val canRemove = room.roomId != "default"
-            if (room.hidden || canRemove) {
-                HorizontalDivider()
-                if (room.hidden) {
-                    TreeMenuItem(R.drawable.ds_eye, "Show in list") {
-                        actions.onSetHidden(room, false)
-                        menuOpen = false
-                    }
-                } else {
-                    TreeMenuItem(
-                        R.drawable.ds_trash,
-                        "Remove room",
-                        color = ds.danger,
-                    ) {
-                        menuOpen = false
-                        confirmRemove = true
-                    }
+            HorizontalDivider()
+            if (room.hidden) {
+                TreeMenuItem(R.drawable.ds_eye, "Show in list") {
+                    actions.onSetHidden(room, false)
+                    menuOpen = false
+                }
+            } else {
+                TreeMenuItem(R.drawable.ds_eye_off, "Hide room") {
+                    menuOpen = false
+                    confirmHide = true
+                }
+            }
+            if (canRemove) {
+                TreeMenuItem(
+                    R.drawable.ds_trash,
+                    "Remove room",
+                    color = ds.danger,
+                ) {
+                    menuOpen = false
+                    confirmDelete = true
                 }
             }
         }
-        if (confirmRemove) {
+        if (confirmHide) {
             DsDialog(
-                onDismissRequest = { confirmRemove = false },
+                onDismissRequest = { confirmHide = false },
                 title = { Text("Are you sure?") },
                 text = {
                     Text(
@@ -1014,12 +1025,44 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                 },
                 confirmButton = {
                     SquareTextButton(onClick = {
-                        confirmRemove = false
+                        confirmHide = false
                         actions.onSetHidden(room, true)
-                    }) { Text("Remove", color = ds.danger) }
+                    }) { Text("Hide", color = ds.danger) }
                 },
                 dismissButton = {
-                    SquareTextButton(onClick = { confirmRemove = false }) { Text("Cancel") }
+                    SquareTextButton(onClick = { confirmHide = false }) { Text("Cancel") }
+                },
+            )
+        }
+        if (confirmDelete) {
+            DsDialog(
+                onDismissRequest = { confirmDelete = false },
+                title = { Text("Are you sure?") },
+                text = {
+                    Text(
+                        "This removes ${room.label} from this device. Other people still " +
+                            "have the room, and an invite can bring it back here. If you are " +
+                            "in its voice, that call ends. Remove the chat history stored on " +
+                            "this device as well, or only the room?",
+                    )
+                },
+                // Stacked: "Only the room", "Room and history", and Cancel
+                // do not fit one footer row on a phone.
+                confirmButton = {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalAlignment = Alignment.End,
+                    ) {
+                        SquareTextButton(onClick = {
+                            confirmDelete = false
+                            actions.onDeleteRoom(room, false)
+                        }) { Text("Only the room", color = ds.danger) }
+                        SquareTextButton(onClick = {
+                            confirmDelete = false
+                            actions.onDeleteRoom(room, true)
+                        }) { Text("Room and history", color = ds.danger) }
+                        SquareTextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+                    }
                 },
             )
         }

@@ -878,6 +878,31 @@ ApplicationWindow {
         root.setRoomHiddenFlag(supernodeId, roomId, false)
     }
 
+    // Delete drops the row. Show hidden cannot bring back a room whose
+    // definition is gone. Alerts for it would badge a room that is not listed.
+    function forgetRoomRow(supernodeId, roomId) {
+        if (!roomId)
+            return
+        if (roomPanel.supernodeId === supernodeId && roomPanel.roomId === roomId)
+            roomPanel.switchToRoom("", "", "")
+        root.setRoomMessageAlerts(roomId, false)
+        root.setRoomUnread(roomId, 0)
+        var nodeIdx = root.findNodeIndex(supernodeId)
+        if (nodeIdx < 0) {
+            root.recountRooms()
+            return
+        }
+        var rooms = []
+        try { rooms = JSON.parse(nodeListModel.get(nodeIdx).rooms_json || "[]") } catch (e) {}
+        var kept = []
+        for (var i = 0; i < rooms.length; i++) {
+            if (!rooms[i] || rooms[i].room_id !== roomId)
+                kept.push(rooms[i])
+        }
+        nodeListModel.setProperty(nodeIdx, "rooms_json", JSON.stringify(kept))
+        root.recountRooms()
+    }
+
     // ── Custom frameless title bar with embedded logo + invite controls ─────
     TitleBar {
         id: customTitleBar
@@ -1983,6 +2008,9 @@ ApplicationWindow {
             // Keep the row, marked hidden, so + can show it again.
             root.setRoomHiddenFlag(supernodeId, roomId, true)
         }
+        function onRoomDeleted(supernodeId, roomId) {
+            root.forgetRoomRow(supernodeId, roomId)
+        }
         function onRoomCreated(supernodeId, roomId, roomName, roomType, inviteToken) {
             roomPanel.switchToRoom(roomName, roomId, supernodeId)
             backend.joinRoomWithVoice(supernodeId, roomId)
@@ -2111,15 +2139,15 @@ ApplicationWindow {
         }
     }
 
-    // Remove Peer and Remove Room share this. Closing it, including Escape,
-    // does nothing; only Remove runs the stored action.
+    // Remove Peer, Hide Room, and Remove Room share this. Closing it,
+    // including Escape, does nothing; only a footer button runs the action.
     Dialog {
         id: confirmRemoveDialog
         title: qsTr("Are you sure?")
         modal: true
         anchors.centerIn: parent
         closePolicy: Dialog.CloseOnEscape
-        width: 420
+        width: kind === "delete" ? 560 : 420
         padding: Theme.spacingXl
         z: 100
         implicitHeight: headerBar.height + bodyText.implicitHeight + footerBar.implicitHeight
@@ -2140,8 +2168,17 @@ ApplicationWindow {
             open()
         }
 
-        function askRoom(sid, rid, message) {
-            kind = "room"
+        function askHide(sid, rid, message) {
+            kind = "hide"
+            peerId = ""
+            supernodeId = sid
+            roomId = rid
+            body = message
+            open()
+        }
+
+        function askDelete(sid, rid, message) {
+            kind = "delete"
             peerId = ""
             supernodeId = sid
             roomId = rid
@@ -2152,8 +2189,17 @@ ApplicationWindow {
         function applyRemoval() {
             if (kind === "peer" && peerId !== "")
                 backend.removePeer(peerId)
-            else if (kind === "room" && supernodeId !== "" && roomId !== "")
+            else if (kind === "hide" && supernodeId !== "" && roomId !== "")
                 backend.removeRoom(supernodeId, roomId)
+            else if (kind === "delete" && supernodeId !== "" && roomId !== "")
+                backend.deleteRoom(supernodeId, roomId, false)
+            kind = ""
+            close()
+        }
+
+        function applyDeleteHistory() {
+            if (kind === "delete" && supernodeId !== "" && roomId !== "")
+                backend.deleteRoom(supernodeId, roomId, true)
             kind = ""
             close()
         }
@@ -2212,7 +2258,18 @@ ApplicationWindow {
                 }
 
                 StyledButton {
-                    text: qsTr("Remove")
+                    visible: confirmRemoveDialog.kind === "delete"
+                    text: qsTr("Room and history")
+                    danger: true
+                    onClicked: confirmRemoveDialog.applyDeleteHistory()
+                }
+
+                StyledButton {
+                    text: confirmRemoveDialog.kind === "hide"
+                        ? qsTr("Hide")
+                        : (confirmRemoveDialog.kind === "delete"
+                            ? qsTr("Only the room")
+                            : qsTr("Remove"))
                     danger: true
                     onClicked: confirmRemoveDialog.applyRemoval()
                 }
@@ -2568,6 +2625,7 @@ ApplicationWindow {
                         MenuItem {
                             text: qsTr("Join Voice Room")
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
+                            enabled: !roomContextMenu.targetHidden
                             onTriggered: {
                                 roomPanel.switchToRoom(
                                     roomContextMenu.targetRoomName,
@@ -2585,6 +2643,7 @@ ApplicationWindow {
                         MenuItem {
                             text: qsTr("Copy Room Invite")
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
+                            enabled: !roomContextMenu.targetHidden
                             onTriggered: {
                                 var url = backend.generateRoomInvite(
                                     roomContextMenu.targetSupernodeId,
@@ -2608,7 +2667,7 @@ ApplicationWindow {
                             id: inviteContactMenu
                             title: qsTr("Invite Contact to Room")
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
-                            enabled: contactInviteInstantiator.count > 0
+                            enabled: !roomContextMenu.targetHidden && contactInviteInstantiator.count > 0
                             Instantiator {
                                 id: contactInviteInstantiator
                                 model: peerModel
@@ -2639,6 +2698,7 @@ ApplicationWindow {
                         MenuItem {
                             text: qsTr("Create Public Sub-room…")
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
+                            enabled: !roomContextMenu.targetHidden
                             onTriggered: createRoomDialog.openForParent(
                                 roomContextMenu.targetSupernodeId,
                                 "public",
@@ -2648,6 +2708,7 @@ ApplicationWindow {
                         MenuItem {
                             text: qsTr("Create Private Sub-room…")
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg"
+                            enabled: !roomContextMenu.targetHidden
                             onTriggered: createRoomDialog.openForParent(
                                 roomContextMenu.targetSupernodeId,
                                 "private",
@@ -2660,6 +2721,7 @@ ApplicationWindow {
                                 ? qsTr("Stop keeping at top")
                                 : qsTr("Keep at top")
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/pin.svg"
+                            enabled: !roomContextMenu.targetHidden
                             onTriggered: root.commitRoomOrder(
                                 RoomTree.togglePin(root.roomListOrder, roomContextMenu.targetKey))
                         }
@@ -2668,7 +2730,7 @@ ApplicationWindow {
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/arrow-up.svg"
                             visible: roomContextMenu.targetManual || roomContextMenu.targetPinned
                             height: visible ? implicitHeight : 0
-                            enabled: RoomTree.canMove(
+                            enabled: !roomContextMenu.targetHidden && RoomTree.canMove(
                                 roomContextMenu.targetRooms,
                                 roomContextMenu.targetSupernodeId,
                                 roomContextMenu.targetRoomId,
@@ -2686,7 +2748,7 @@ ApplicationWindow {
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/arrow-down.svg"
                             visible: roomContextMenu.targetManual || roomContextMenu.targetPinned
                             height: visible ? implicitHeight : 0
-                            enabled: RoomTree.canMove(
+                            enabled: !roomContextMenu.targetHidden && RoomTree.canMove(
                                 roomContextMenu.targetRooms,
                                 roomContextMenu.targetSupernodeId,
                                 roomContextMenu.targetRoomId,
@@ -2706,37 +2768,52 @@ ApplicationWindow {
                             icon.source: roomContextMenu.targetAlerts
                                 ? "qrc:/qt/qml/DoubleSlash/Client/icons/bell-off.svg"
                                 : "qrc:/qt/qml/DoubleSlash/Client/icons/bell.svg"
+                            enabled: !roomContextMenu.targetHidden
                             onTriggered: root.setRoomMessageAlerts(
                                 roomContextMenu.targetRoomId,
                                 !roomContextMenu.targetAlerts)
                         }
-                        MenuSeparator {
+                        MenuSeparator { visible: true }
+                        // Hidden rooms keep Show in list and Remove. Hide is
+                        // the same slot as Show in list. The built-in default
+                        // can be hidden and has no Remove.
+                        MenuItem {
+                            text: qsTr("Show in list")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/eye.svg"
                             visible: roomContextMenu.targetHidden
-                                || roomContextMenu.targetCanRemove
+                            height: visible ? implicitHeight : 0
+                            onTriggered: root.unhideRoom(
+                                roomContextMenu.targetSupernodeId,
+                                roomContextMenu.targetRoomId)
                         }
                         MenuItem {
-                            text: roomContextMenu.targetHidden
-                                ? qsTr("Show in list")
-                                : qsTr("Remove Room")
-                            icon.source: roomContextMenu.targetHidden
-                                ? "qrc:/qt/qml/DoubleSlash/Client/icons/eye.svg"
-                                : "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
-                            visible: roomContextMenu.targetHidden
-                                || roomContextMenu.targetCanRemove
+                            text: qsTr("Hide Room")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/eye-off.svg"
+                            visible: !roomContextMenu.targetHidden
+                            height: visible ? implicitHeight : 0
                             onTriggered: {
-                                if (roomContextMenu.targetHidden) {
-                                    root.unhideRoom(
-                                        roomContextMenu.targetSupernodeId,
-                                        roomContextMenu.targetRoomId)
-                                    return
-                                }
                                 var name = roomContextMenu.targetRoomName
                                 if (!name || name === "")
                                     name = roomContextMenu.targetRoomId
-                                confirmRemoveDialog.askRoom(
+                                confirmRemoveDialog.askHide(
                                     roomContextMenu.targetSupernodeId,
                                     roomContextMenu.targetRoomId,
                                     qsTr("This hides %1 from your list on this device. The room stays on the supernode. If you are in its voice, that call ends. Show hidden brings it back.").arg(name))
+                            }
+                        }
+                        MenuItem {
+                            text: qsTr("Remove Room")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+                            visible: roomContextMenu.targetCanRemove
+                            height: visible ? implicitHeight : 0
+                            onTriggered: {
+                                var name = roomContextMenu.targetRoomName
+                                if (!name || name === "")
+                                    name = roomContextMenu.targetRoomId
+                                confirmRemoveDialog.askDelete(
+                                    roomContextMenu.targetSupernodeId,
+                                    roomContextMenu.targetRoomId,
+                                    qsTr("This removes %1 from this device. Other people still have the room, and an invite can bring it back here. If you are in its voice, that call ends. Remove the chat history stored on this device as well, or only the room?").arg(name))
                             }
                         }
                     }
@@ -2951,8 +3028,12 @@ ApplicationWindow {
 
                                                 onClicked: root.openRoomFromTree(
                                                     roomGroup.node_id, row.room_id, roomDelegate.roomName)
-                                                onDoubleClicked: root.joinVoiceFromTree(
-                                                    roomGroup.node_id, row.room_id, roomDelegate.roomName)
+                                                onDoubleClicked: {
+                                                    if (row.hidden === true)
+                                                        return
+                                                    root.joinVoiceFromTree(
+                                                        roomGroup.node_id, row.room_id, roomDelegate.roomName)
+                                                }
 
                                                 MouseArea {
                                                     anchors.fill: parent
@@ -3083,18 +3164,6 @@ ApplicationWindow {
                                                         Layout.alignment: Qt.AlignVCenter
                                                     }
 
-                                                    Image {
-                                                        visible: roomDelegate.voiceHere
-                                                        source: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
-                                                        sourceSize.width: 13; sourceSize.height: 13
-                                                        Layout.preferredWidth: 13
-                                                        Layout.preferredHeight: 13
-                                                        Layout.alignment: Qt.AlignVCenter
-                                                        ToolTip.text: qsTr("You are in voice here")
-                                                        ToolTip.visible: youHereHover.hovered
-                                                        HoverHandler { id: youHereHover }
-                                                    }
-
                                                     // Folded: who is inside, without unfolding.
                                                     Row {
                                                         visible: row.collapsed && row.stack_ids.length > 0
@@ -3170,7 +3239,8 @@ ApplicationWindow {
                                                         readonly property bool endsCall: row.voice_here === true
                                                         readonly property color callColor:
                                                             endsCall ? Theme.danger : Theme.online
-                                                        visible: endsCall || (row.show_call === true
+                                                        visible: endsCall || (row.hidden !== true
+                                                            && row.show_call === true
                                                             && (roomHover.hovered
                                                                 || roomDelegate.hovered
                                                                 || roomDelegate.roomSelected))
@@ -3715,6 +3785,11 @@ ApplicationWindow {
                                  && root.voiceRoomId !== ""
                                  && root.voiceRoomId === roomPanel.roomId
                                  && root.voiceSupernodeId === roomPanel.supernodeId
+                roomHidden: {
+                    root.roomListStamp
+                    var room = root.sidebarRoom(roomPanel.supernodeId, roomPanel.roomId)
+                    return !!(room && room.hidden)
+                }
                 onLeaveRoom: {
                     root.closeAllVideoPopouts()
                     root.expandedVideoPeers = []

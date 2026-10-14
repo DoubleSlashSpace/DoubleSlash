@@ -178,18 +178,20 @@ read.
 
 * **Core** — `room_store.rs`, `group_key.rs`, `sfu_client.rs`.
 * **Desktop** — `createRoom`, `createSubRoom`, `joinRoom`, `joinRoomWithInvite`,
-  `joinRoomWithVoice`, `leaveRoom`, `removeRoom`, `subscribeRoomChat`,
+  `joinRoomWithVoice`, `leaveRoom`, `removeRoom`, `deleteRoom`, `subscribeRoomChat`,
   `sendRoomChat`, `loadRoomChatHistory`, `generateRoomInvite`,
   `generateRoomInviteForPeer`.
 * **Android** — `room.list`, `room.create`, `room.join`, `room.leave`,
-  `room.hide`, `room.unhide`, `room.chat.subscribe`, `room.chat.unsubscribe`,
+  `room.hide`, `room.unhide`, `room.delete`, `room.chat.subscribe`, `room.chat.unsubscribe`,
   `room.chat.send`, `room.history`, `room.request_list`, `room.voice.join`,
   `room.voice.leave`, `room.invite`. `room.create` takes an optional
   `parent_room_id`. A shareable link carries a Space inclusion proof and no
   grant. `room.invite` with `peer_id` adds an owner-signed SpaceGrant for that
   contact, the same link the desktop's `generateRoomInviteForPeer` copies.
-  Press and hold a room for Join Voice Room, Copy Room Invite, and Invite
-  Contact to Room.
+  Press and hold a room for Join Voice Room, Copy Room Invite, Invite
+  Contact to Room, Hide room, and Remove room. Hide room only takes it off
+  this device's list. Remove room deletes it here and asks whether to also
+  delete its chat history. The built-in default room has no Remove item.
 
   Creation was not just a missing command. Nothing else on Android writes to
   the room store — the rooms a phone lists were persisted by a desktop client
@@ -262,7 +264,8 @@ peer-to-peer, sealed under the room sender key.
   header uses the same green call icon and the same two counts; each count
   reveals that list in the tree. On the rooms list the green join handset is
   drawn while the pointer is over that room or while that room is the open
-  one; the hang-up on the live voice room stays visible. The live session's
+  one; the hang-up on the live voice room stays visible and is the marker
+  that this room is the one we are voicing. The live session's
   leaf is drawn from `roomModel`, so it
   carries levels and per-member mute and volume.
 * **Android** — `room.voice.join`, `room.voice.leave`, the same tree
@@ -271,7 +274,8 @@ peer-to-peer, sealed under the room sender key.
   the desktop. The room screen joins voice with the same green call icon and
   shows the same two counts; each count opens the Members sheet on that list.
   The rooms list draws the green join handset only for the open room and keeps
-  the hang-up on the live voice room. Long-press still offers Join Voice Room.
+  the hang-up on the live voice room. That hang-up is the marker that this
+  room is the one we are voicing. Long-press still offers Join Voice Room.
   The sheet shows that room's two leaves
   with the same rows.
   Speaking rings come from `remote_speaking` / `local_speaking`; per-member

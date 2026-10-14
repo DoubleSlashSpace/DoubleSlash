@@ -451,6 +451,22 @@ pub mod ffi {
         #[rust_name = "room_removed"]
         fn roomRemoved(self: Pin<&mut AppBridge>, supernode_id: QString, room_id: QString);
 
+        /// Delete a room from this device. The room stays for everyone else.
+        /// `clear_history` also deletes this device's messages for that room.
+        #[qinvokable]
+        #[rust_name = "delete_room"]
+        fn deleteRoom(
+            self: Pin<&mut AppBridge>,
+            supernode_id: &QString,
+            room_id: &QString,
+            clear_history: bool,
+        );
+
+        /// Emitted when a room was deleted from this device, as opposed to hidden.
+        #[qsignal]
+        #[rust_name = "room_deleted"]
+        fn roomDeleted(self: Pin<&mut AppBridge>, supernode_id: QString, room_id: QString);
+
         /// Register the doubleslash:// URI scheme handler (Windows only, no-op elsewhere).
         #[qinvokable]
         #[rust_name = "register_uri_scheme"]
@@ -4645,7 +4661,8 @@ impl ffi::AppBridge {
             return;
         };
         let rid = room_id.to_string();
-        if sid.is_empty() || rid.is_empty() || rid == "default" {
+        // The built-in room can be hidden. It cannot be deleted.
+        if sid.is_empty() || rid.is_empty() {
             return;
         }
         if let Some(ref rs) = self.rust().room_store {
@@ -4682,6 +4699,78 @@ impl ffi::AppBridge {
         }
         self.as_mut()
             .room_removed(QString::from(sid.as_str()), QString::from(rid.as_str()));
+    }
+
+    fn delete_room(
+        mut self: Pin<&mut Self>,
+        supernode_id: &QString,
+        room_id: &QString,
+        clear_history: bool,
+    ) {
+        let Some(sid) = self
+            .rust()
+            .resolve_supernode_node_id_str(&supernode_id.to_string())
+        else {
+            return;
+        };
+        let rid = room_id.to_string();
+        if sid.is_empty() || rid.is_empty() || rid == "default" {
+            return;
+        }
+        let mut hosts = vec![sid.clone()];
+        if let Some(ref ps) = self.rust().peer_store {
+            hosts.extend(
+                ps.read()
+                    .supernodes()
+                    .iter()
+                    .map(|peer| peer.identity_pub.clone()),
+            );
+        }
+        if let Some(ref rs) = self.rust().room_store {
+            if let Err(e) = rs.write().delete_local(&rid, &hosts) {
+                warn!("room_store delete_local error: {e}");
+                return;
+            }
+        }
+        if clear_history {
+            let key = crate::chat_store::room_conversation_id(&rid);
+            if let Some(ref cs) = self.rust().chat_store {
+                if let Err(e) = cs.clear_history(&key) {
+                    warn!("delete_room clear_history: {e}");
+                } else {
+                    self.as_mut()
+                        .peer_history_cleared(QString::from(key.as_str()));
+                }
+            }
+        }
+        if let Some(ref tx) = self.rust().conn_cmd_tx {
+            let _ = tx.try_send(ConnectionCommand::UnsubscribeRoomChat {
+                supernode_id: sid.clone(),
+                room_id: rid.clone(),
+            });
+        }
+        let voice_here = self.rust().voice_supernode_id == sid && self.rust().voice_room_id == rid;
+        let chat_here =
+            self.rust().current_supernode_id == sid && self.rust().current_room_id == rid;
+        if voice_here {
+            self.as_mut().leave_room();
+        }
+        if chat_here {
+            {
+                let mut r = self.as_mut().rust_mut();
+                r.current_supernode_id.clear();
+                r.current_room_id.clear();
+                r.text_member_ids.clear();
+            }
+            self.as_mut().text_members_updated(QString::from("[]"));
+            if !self.rust().voice_active {
+                self.as_mut()
+                    .set_session_banner(QString::from("Offline \u{00b7} Room removed"));
+                self.as_mut().set_connection_mode(QString::from("offline"));
+            }
+        }
+        self.as_mut()
+            .room_deleted(QString::from(sid.as_str()), QString::from(rid.as_str()));
     }
 
     fn unhide_room(self: Pin<&mut Self>, supernode_id: &QString, room_id: &QString) {
@@ -8171,14 +8260,50 @@ fn annotate_sidebar_hidden(
     serde_json::Value::Array(marked)
 }
 
+/// A hidden room with no stored entry was deleted, not hidden. Show hidden
+/// can only restore a room whose definition is still on this device.
+fn drop_unstored_hidden_rooms(
+    rooms: &serde_json::Value,
+    is_stored: impl Fn(&str) -> bool,
+) -> serde_json::Value {
+    let Some(arr) = rooms.as_array() else {
+        return rooms.clone();
+    };
+    serde_json::Value::Array(
+        arr.iter()
+            .filter(|room| {
+                let hidden = room
+                    .get("hidden")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                if !hidden {
+                    return true;
+                }
+                let room_id = room
+                    .get("room_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                is_stored(room_id)
+            })
+            .cloned()
+            .collect(),
+    )
+}
+
 fn filter_sfu_rooms_for_sidebar(
     room_store: &crate::room_store::RoomStore,
     supernode_id: &str,
     rooms: &serde_json::Value,
 ) -> serde_json::Value {
-    annotate_sidebar_hidden(rooms, |room_id| {
+    let marked = annotate_sidebar_hidden(rooms, |room_id| {
         room_store.is_hidden_from_sidebar(supernode_id, room_id)
-    })
+    });
+    let stored: std::collections::HashSet<&str> = room_store
+        .list()
+        .iter()
+        .map(|entry| entry.room_id.as_str())
+        .collect();
+    drop_unstored_hidden_rooms(&marked, |room_id| stored.contains(room_id))
 }
 
 /// Re-pad a base64url `public_id` to its canonical padded form. Relay-sourced
@@ -11156,8 +11281,8 @@ mod own_peer_row_tests {
 mod room_voice_count_tests {
     use super::{
         annotate_room_members, annotate_sidebar_hidden, cluster_chat_counts_from,
-        cluster_chat_rosters_from, enrich_room_voice_participants, overlay_cluster_voice_ids,
-        repad_public_id, union_voice_ids, RoomMemberLabels,
+        cluster_chat_rosters_from, drop_unstored_hidden_rooms, enrich_room_voice_participants,
+        overlay_cluster_voice_ids, repad_public_id, union_voice_ids, RoomMemberLabels,
     };
 
     #[test]
@@ -11189,6 +11314,23 @@ mod room_voice_count_tests {
         assert_eq!(arr[0]["hidden"], serde_json::json!(false));
         assert_eq!(arr[1]["room_id"], "gone");
         assert_eq!(arr[1]["hidden"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn a_hidden_room_with_no_stored_entry_is_dropped() {
+        let rooms = serde_json::json!([
+            { "room_id": "kept", "hidden": true },
+            { "room_id": "deleted", "hidden": true },
+            { "room_id": "live", "hidden": false }
+        ]);
+        let out = drop_unstored_hidden_rooms(&rooms, |id| id == "kept");
+        let ids: Vec<&str> = out
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|room| room.get("room_id").and_then(|value| value.as_str()))
+            .collect();
+        assert_eq!(ids, vec!["kept", "live"]);
     }
 
     #[test]

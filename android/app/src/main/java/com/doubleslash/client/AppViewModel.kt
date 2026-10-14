@@ -1707,6 +1707,47 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Delete a room from this device.
+     *
+     * The room stays for everyone else. [clearHistory] also deletes the
+     * messages stored here. Show hidden cannot bring a deleted room back;
+     * joining it again with an invite can.
+     */
+    fun deleteRoom(room: Room, clearHistory: Boolean) {
+        if (room.roomId == "default") return
+        val inThisVoice = _state.value.voiceRoom?.roomId == room.roomId
+        if (inThisVoice) leaveRoomVoice()
+        val open = (_state.value.screen as? Screen.RoomChat)?.room
+        if (open?.roomId == room.roomId) closeRoom()
+        setRoomMessageAlerts(room, false)
+        viewModelScope.launch {
+            val reply = core.command("room.delete") {
+                put("supernode_id", room.supernodeId)
+                put("room_id", room.roomId)
+                put("clear_history", clearHistory)
+            }
+            if (!reply.ok) {
+                // The room may already be gone from the store when clearing
+                // its history is what failed. Refresh either way.
+                _state.update { it.copy(error = reply.errorText) }
+                refreshRooms()
+                return@launch
+            }
+            val name = room.roomName.ifBlank { "room" }
+            _state.update {
+                it.copy(
+                    notice = if (clearHistory) {
+                        "Removed $name and its chat history"
+                    } else {
+                        "Removed $name"
+                    },
+                )
+            }
+            refreshRooms()
+        }
+    }
+
+    /**
      * Open a room: join it, then subscribe to its chat.
      *
      * Order matters — the supernode only forwards room chat to peers it has

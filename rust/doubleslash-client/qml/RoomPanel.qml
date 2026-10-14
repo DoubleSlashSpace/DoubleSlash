@@ -35,6 +35,8 @@ Item {
     // True when voice is already live for *this* room, so the header's Join
     // Voice control hides instead of re-joining what you are already in.
     property bool voiceActiveHere: false
+    // A hidden room has no join from the header. Show in list puts it back.
+    property bool roomHidden: false
 
     // Supporting nodes for this room: one row per cluster member (a standalone
     // node is a cluster of one), as returned by backend.roomNodeStatus and
@@ -467,7 +469,8 @@ Item {
                 // while no room is actually open.
                 IconButton {
                     readonly property color callColor: Theme.online
-                    visible: !root.voiceActiveHere && root.roomId !== "" && root.supernodeId !== ""
+                    visible: !root.voiceActiveHere && !root.roomHidden
+                        && root.roomId !== "" && root.supernodeId !== ""
                     implicitWidth: 26
                     implicitHeight: 26
                     padding: 0

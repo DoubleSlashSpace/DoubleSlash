@@ -211,6 +211,7 @@ fun AppRoot(viewModel: AppViewModel) {
                 requestMicForJoin()
             },
             onSetHidden = viewModel::setRoomHidden,
+            onDeleteRoom = viewModel::deleteRoom,
             onCreateSubRoom = onCreateSubRoom,
             members = memberActions,
             onPeerAudio = viewModel::setPeerAudio,
@@ -1949,7 +1950,7 @@ private fun RoomChatScreen(
                 val ds = LocalDsColors.current
                 // The same green call icon as the room row. Leave stays on
                 // the dock and on that row once this room's voice is live.
-                if (joined && state.voiceRoom == null) {
+                if (joined && state.voiceRoom == null && !room.hidden) {
                     SquareIconButton(
                         onClick = requestMic,
                         tile = ds.online.copy(alpha = 0.18f),
@@ -2142,6 +2143,7 @@ private fun RoomChatScreen(
                 treeActions.onJoinVoice(r)
             },
             onSetHidden = treeActions.onSetHidden,
+            onDeleteRoom = treeActions.onDeleteRoom,
             onCreateSubRoom = treeActions.onCreateSubRoom,
             onTogglePin = treeActions.onTogglePin,
             onMoveRoom = treeActions.onMoveRoom,

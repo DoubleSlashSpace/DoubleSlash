@@ -53,6 +53,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "room.create",
     "room.hide",
     "room.unhide",
+    "room.delete",
     "room.join",
     "room.leave",
     "room.chat.subscribe",
@@ -665,6 +666,40 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                     store.unhide_from_sidebar(id, room_id)
                 };
             }
+            json!({ "ok": true })
+        }
+        // Delete the room on this device. The supernode and other members keep
+        // it. `clear_history` also deletes this device's messages for the room.
+        // The built-in default room is refused.
+        "room.delete" => {
+            let (Some(supernode_id), Some(room_id)) = (
+                arg_str(&parsed, "supernode_id"),
+                arg_str(&parsed, "room_id"),
+            ) else {
+                return err("removing a room requires \"supernode_id\" and \"room_id\"");
+            };
+            if room_id == "default" {
+                return err("the built-in room cannot be removed");
+            }
+            let clear_history = parsed
+                .get("clear_history")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let mut hosts = session.known_supernode_ids();
+            hosts.push(supernode_id.to_owned());
+            if let Err(e) = session.room_store.write().delete_local(room_id, &hosts) {
+                return err(format!("could not remove the room: {e}"));
+            }
+            if clear_history {
+                let key = doubleslash_client::chat_store::room_conversation_id(room_id);
+                if let Err(e) = session.chat_store.clear_history(&key) {
+                    return err(format!("could not clear the room's chat history: {e}"));
+                }
+            }
+            let _ = session.send(ConnectionCommand::UnsubscribeRoomChat {
+                supernode_id: supernode_id.to_owned(),
+                room_id: room_id.to_owned(),
+            });
             json!({ "ok": true })
         }
         "room.join" => {
