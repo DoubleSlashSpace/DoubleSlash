@@ -3123,6 +3123,10 @@ ApplicationWindow {
 
                                                     Label {
                                                         Layout.fillWidth: true
+                                                        // The full name is this label's minimum unless
+                                                        // it is pinned at 0, and that minimum is what
+                                                        // crushed the text count once hang-up appeared.
+                                                        Layout.minimumWidth: 0
                                                         text: roomDelegate.roomName
                                                         color: row.hidden
                                                             ? Theme.muted
@@ -3214,7 +3218,9 @@ ApplicationWindow {
                                                         text: String(row.room_chat)
                                                         tint: Theme.accent
                                                         active: true
-                                                        tip: qsTr("Show text members")
+                                                        tip: row.text_lists_room
+                                                            ? qsTr("Show who's in the room")
+                                                            : qsTr("Show text members")
                                                         // This sits on the pill so the click opens the
                                                         // text list and does not also select the room.
                                                         MouseArea {
@@ -3248,6 +3254,8 @@ ApplicationWindow {
                                                         implicitHeight: 26
                                                         padding: 0
                                                         Layout.alignment: Qt.AlignVCenter
+                                                        Layout.minimumWidth: implicitWidth
+                                                        Layout.maximumWidth: implicitWidth
                                                         icon.source: endsCall
                                                             ? "qrc:/qt/qml/DoubleSlash/Client/icons/phone-hangup.svg"
                                                             : "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
@@ -3340,8 +3348,12 @@ ApplicationWindow {
                                                                 Layout.preferredWidth: 14
                                                                 Layout.preferredHeight: 14
                                                                 Layout.alignment: Qt.AlignVCenter
-                                                                Accessible.name: groupRow.isVoice ? qsTr("Voice") : qsTr("Text only")
-                                                                ToolTip.text: groupRow.isVoice ? qsTr("Voice") : qsTr("Text only")
+                                                                Accessible.name: groupRow.isVoice
+                                                                    ? qsTr("Voice")
+                                                                    : (row.room_roster ? qsTr("In room") : qsTr("Text only"))
+                                                                ToolTip.text: groupRow.isVoice
+                                                                    ? qsTr("Voice")
+                                                                    : (row.room_roster ? qsTr("In room") : qsTr("Text only"))
                                                                 ToolTip.visible: leafIconHover.hovered
                                                                 ToolTip.delay: Theme.animSlow
                                                                 HoverHandler { id: leafIconHover }
@@ -3760,7 +3772,9 @@ ApplicationWindow {
                 visible: navIndex === 1
                 // Text members only — never the active voice roster (voice rail
                 // owns roomModel). The header counts come from the sidebar
-                // rosters, the same lists the room row draws.
+                // rosters, the same lists the room row draws. While we are in
+                // this room's voice and nobody is left text-only, the text
+                // count lists the voice roster.
                 roomModel: textRoomModel
                 voiceCount: {
                     root.roomListStamp
@@ -3771,8 +3785,16 @@ ApplicationWindow {
                 textCount: {
                     root.roomListStamp
                     var counts = RoomTree.rosterCounts(
-                        root.sidebarRoom(roomPanel.supernodeId, roomPanel.roomId))
+                        root.sidebarRoom(roomPanel.supernodeId, roomPanel.roomId),
+                        roomPanel.voiceActiveHere)
                     return counts.textKnown ? counts.text : 0
+                }
+                textListsRoom: {
+                    root.roomListStamp
+                    var counts = RoomTree.rosterCounts(
+                        root.sidebarRoom(roomPanel.supernodeId, roomPanel.roomId),
+                        roomPanel.voiceActiveHere)
+                    return counts.textListsRoom === true
                 }
                 fileTransferModel: fileTransferModel
                 settingsModel: settingsModel

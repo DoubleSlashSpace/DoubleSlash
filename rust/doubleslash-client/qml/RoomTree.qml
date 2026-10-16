@@ -140,18 +140,40 @@ QtObject {
         return String(name)
     }
 
-    /// Voice and text-only counts for a sidebar room, the numbers its row shows.
+    /// Who the text count lists.
+    ///
+    /// Text-only people, when there are any. While this device is in that
+    /// room's voice and nobody is left text-only, the voice roster instead, so
+    /// the count stays and can still be opened onto who is in the room. Other
+    /// rooms keep an empty text list empty. `fromVoice` is that fallback.
+    function textListing(room, inVoice) {
+        var text = root.memberList(room && room.text_members)
+        if (text && text.length > 0)
+            return { members: text, fromVoice: false }
+        if (inVoice === true) {
+            var voice = root.memberList(room && room.voice_members)
+            if (voice && voice.length > 0)
+                return { members: voice, fromVoice: true }
+        }
+        return { members: text && text.length > 0 ? text : null, fromVoice: false }
+    }
+
+    /// Voice and text counts for a sidebar room, the numbers its row shows.
     ///
     /// A list the bridge has not sent yet is unknown (`voiceKnown` / `textKnown`
     /// false), which is different from a room that really has nobody there.
-    function rosterCounts(room) {
+    /// `inVoice` applies [textListing]'s fallback for the room we are voicing.
+    function rosterCounts(room, inVoice) {
         var voice = root.memberList(room && room.voice_members)
-        var text = root.memberList(room && room.text_members)
+        var listing = root.textListing(room, inVoice === true)
+        var textKnown = listing.fromVoice
+            || root.memberList(room && room.text_members) !== null
         return {
             voice: voice ? voice.length : 0,
-            text: text ? text.length : 0,
+            text: listing.members ? listing.members.length : 0,
             voiceKnown: voice !== null,
-            textKnown: text !== null
+            textKnown: textKnown,
+            textListsRoom: listing.fromVoice
         }
     }
 
@@ -463,7 +485,7 @@ QtObject {
         var seen = {}
         var out = []
 
-        function emitGroup(room, group, members, pass, isLast) {
+        function emitGroup(room, group, members, pass, isLast, roomRoster) {
             var key = nodeId + ":" + room.room_id + ":" + group
             var isSession = group === "voice" && room.room_id === voiceHere
             var reading = room.room_id === selected
@@ -482,6 +504,9 @@ QtObject {
                 row_kind: "group", group: group, key: key,
                 room_id: room.room_id, room_name: room.name || room.room_id,
                 count: members.length, expanded: expanded,
+                // The text leaf is listing the voice roster: nobody was left
+                // text-only, and we are in this room's voice.
+                room_roster: roomRoster === true,
                 guide_cols: guides,
                 box: box, box_depth: boxDepth, box_start: expanded,
                 // A list with nobody in it ends with its leaf row.
@@ -541,9 +566,7 @@ QtObject {
             // A disconnected node has no live roster: its leaves would be
             // guesses, so they are not drawn and the room shows "—" instead.
             var voice = connected ? root.memberList(room.voice_members) : null
-            var text = connected ? root.memberList(room.text_members) : null
             var voiceMembers = voice && voice.length > 0 ? voice : null
-            var textMembers = text && text.length > 0 ? text : null
             // The chevron and the voice count toggle the voice list. Sub-rooms
             // stay listed either way, so a room of only sub-rooms has nothing
             // to fold. Text-only people are not part of that fold.
@@ -552,6 +575,12 @@ QtObject {
             var voiceKey = foldKey + ":voice"
             var textKey = foldKey + ":text"
             var isVoice = voiceHere !== "" && room.room_id === voiceHere
+            // Text-only people, or the voice roster while we are in this room
+            // and that list would otherwise be empty.
+            var listing = connected
+                ? root.textListing(room, isVoice)
+                : { members: null, fromVoice: false }
+            var textMembers = listing.members
             // Nothing but these flags opens a list.
             var voiceOpen = hasVoice && ctx.leaves[voiceKey] === true
             var textOpen = textMembers !== null && ctx.leaves[textKey] === true
@@ -572,6 +601,7 @@ QtObject {
                 // Stays put while the list is open, so the count can toggle it shut.
                 item.voice_count = voiceMembers ? voiceMembers.length : 0
                 item.room_chat = textOpen ? 0 : (textMembers ? textMembers.length : 0)
+                item.text_lists_room = listing.fromVoice === true && !textOpen
                 // The row may offer a call: the node is connected. The join
                 // handset is drawn only while the pointer is on that row; in
                 // the voice room we are in, the same control ends the call
@@ -585,14 +615,15 @@ QtObject {
             if (voiceOpen)
                 items.push({ group: "voice", members: voiceMembers })
             if (textOpen)
-                items.push({ group: "text", members: textMembers })
+                items.push({ group: "text", members: textMembers, roomRoster: listing.fromVoice })
             for (var c = 0; c < kids.length; c++) items.push({ room: kids[c] })
             for (var n = 0; n < items.length; n++) {
                 var last = n === items.length - 1
                 if (items[n].room)
                     emitRoom(items[n].room, depth + 1, childPass, last, visible)
                 else if (visible)
-                    emitGroup(room, items[n].group, items[n].members, childPass, last)
+                    emitGroup(room, items[n].group, items[n].members, childPass, last,
+                              items[n].roomRoster)
             }
         }
 

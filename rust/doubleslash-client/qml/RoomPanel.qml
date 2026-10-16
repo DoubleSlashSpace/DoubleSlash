@@ -19,6 +19,9 @@ Item {
     // sidebar rosters. Zero hides that badge, as on the row.
     property int voiceCount: 0
     property int textCount: 0
+    // The text count is listing the voice roster: we are in this room's voice
+    // and nobody is left text-only.
+    property bool textListsRoom: false
     // Still attached so text-member updates have a model. The header counts
     // come from the sidebar rosters, not from this model's length.
     property var roomModel: null
@@ -446,6 +449,7 @@ Item {
                     font.pixelSize: Theme.fontSizeTitle
                     font.bold: true
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                     elide: Text.ElideRight
                 }
 
@@ -507,7 +511,9 @@ Item {
                     iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
                     text: String(root.textCount)
                     tint: Theme.accent
-                    tip: qsTr("Show text members")
+                    tip: root.textListsRoom
+                        ? qsTr("Show who's in the room")
+                        : qsTr("Show text members")
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor

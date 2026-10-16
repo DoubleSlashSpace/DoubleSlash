@@ -260,7 +260,9 @@ peer-to-peer, sealed under the room sender key.
   `RoomTreeMember.qml`) and `VoiceDock`. Each room lists a Voice leaf and a
   Text-only leaf from the `voice_members` / `text_members` the bridge adds to
   its sidebar entry. The voice count toggles the voice list. The text-only
-  leaf stays shut until that row's text count is clicked. The open room's
+  leaf stays shut until that row's text count is clicked. While you are in
+  that room's voice and nobody is left text-only, that count stays and lists
+  the voice roster, so it can still be opened onto who is in the room. The open room's
   header uses the same green call icon and the same two counts; each count
   reveals that list in the tree. On the rooms list the green join handset is
   drawn while the pointer is over that room or while that room is the open
@@ -271,7 +273,8 @@ peer-to-peer, sealed under the room sender key.
 * **Android** — `room.voice.join`, `room.voice.leave`, the same tree
   (`ui/RoomTree.kt`), and `VoiceDock` at the foot of every screen. The voice
   count toggles the voice list and the text count opens the text list, as on
-  the desktop. The room screen joins voice with the same green call icon and
+  the desktop. While you are in that room's voice and nobody is left
+  text-only, the text count stays and lists who is in the room. The room screen joins voice with the same green call icon and
   shows the same two counts; each count opens the Members sheet on that list.
   The rooms list draws the green join handset only for the open room and keeps
   the hang-up on the live voice room. That hang-up is the marker that this

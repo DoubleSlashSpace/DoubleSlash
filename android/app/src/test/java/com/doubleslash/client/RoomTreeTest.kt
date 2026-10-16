@@ -215,6 +215,7 @@ class RoomTreeTest {
             rooms, voice, withNia, null, VoiceRoom("n", "raid", "Raid"), shown("raid:text"),
         )
         assertTrue("member:nia" in kinds(textOnly))
+        assertFalse("member:sam" in kinds(textOnly))
         assertTrue("leaf:raid:voice" !in kinds(textOnly))
         val voiceOpen = buildRoomTree(
             rooms, voice, withNia, null, VoiceRoom("n", "raid", "Raid"), shown("raid:voice"),
@@ -232,6 +233,27 @@ class RoomTreeTest {
         assertFalse(openRaid.collapsed)
         assertEquals(1, openRaid.voiceCount)
         assertEquals(1, openRaid.roomChat)
+    }
+
+    @Test
+    fun `in voice with nobody text-only the text count lists who is in the room`() {
+        val rows = tree(voiceRoom = VoiceRoom("n", "raid", "Raid"))
+        val raid = rows.filterIsInstance<TreeRow.RoomNode>().first { it.room.roomId == "raid" }
+        assertEquals(1, raid.roomChat)
+        assertTrue(raid.textListsRoom)
+        assertEquals(1, raid.voiceCount)
+        val lobby = rows.filterIsInstance<TreeRow.RoomNode>().first { it.room.roomId == "lobby" }
+        assertEquals(1, lobby.roomChat)
+        assertFalse(lobby.textListsRoom)
+        val strat = rows.filterIsInstance<TreeRow.RoomNode>().first { it.room.roomId == "strat" }
+        assertEquals(0, strat.roomChat)
+        val open = tree(shown("raid:text"), voiceRoom = VoiceRoom("n", "raid", "Raid"))
+        assertTrue("member:sam" in kinds(open))
+        assertTrue("leaf:raid:voice" !in kinds(open))
+        val textLeaf = open.filterIsInstance<TreeRow.Leaf>().first { it.room.roomId == "raid" && !it.voice }
+        assertTrue(textLeaf.listsRoom)
+        val openRaid = open.filterIsInstance<TreeRow.RoomNode>().first { it.room.roomId == "raid" }
+        assertEquals(0, openRaid.roomChat)
     }
 
     @Test

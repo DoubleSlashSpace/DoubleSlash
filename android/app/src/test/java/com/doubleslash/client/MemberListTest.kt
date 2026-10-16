@@ -76,9 +76,14 @@ class MemberListTest {
     @Test
     fun `a voice member is in our session only when our voice is in that room`() {
         val voice = listOf("RnJpZW5k==")
-        val here = members(voice, voice, VoiceRoom("nodeA", "room", "Room")).single()
+        // Nobody is left text-only, so the open text leaf lists the same voice roster.
+        val here = members(voice, voice, VoiceRoom("nodeA", "room", "Room"))
+        val voiceRow = here.single { it.voice }
+        val textRow = here.single { !it.voice }
+        assertTrue(voiceRow.inSession)
+        assertFalse(textRow.inSession)
+        assertEquals(voiceRow.id, textRow.id)
         val reading = members(voice, voice, voiceRoom = null).single()
-        assertTrue(here.voice && here.inSession)
         assertTrue(reading.voice)
         assertFalse(reading.inSession)
     }

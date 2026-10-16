@@ -22,6 +22,11 @@ Rectangle {
     Layout.alignment: Qt.AlignVCenter
     implicitWidth: content.implicitWidth + 10
     implicitHeight: Math.max(20, content.implicitHeight + 6)
+    // A neighbouring control (the hang-up on a live voice row) must not
+    // squeeze this badge to nothing. The name ellipsizes instead.
+    Layout.minimumWidth: implicitWidth
+    Layout.maximumWidth: implicitWidth
+    Layout.fillWidth: false
     color: !root.active ? Theme.bg2
         : root.checked ? Theme.semanticTint(root.tint, 0.36)
         : Theme.semanticTint(root.tint, 0.16)

@@ -1898,13 +1898,19 @@ private fun RoomChatScreen(
 
     Column(Modifier.fillMaxSize().imePadding()) {
         val voiceHere = state.voiceRoom?.roomId == room.roomId
-        // The same two counts the room row shows. Voice is the roster union;
-        // text is everyone else in the room.
+        // The same two counts the room row shows. Voice is the roster union.
+        // Text is everyone else in the room. While we are in this room's voice
+        // and nobody is left text-only, the text count stays and lists the
+        // voice roster so it can still be opened onto who is in the room.
         val voiceIds = state.roomVoiceRosters.roomMembersUnion(room.roomId)
         val voiceKeys = voiceIds.map { it.videoKey() }.toSet()
         val voiceCount = voiceIds.size
-        val textCount = state.roomTextRosters.roomMembersUnion(room.roomId)
+        val inThisVoice = state.voiceRoom?.roomId == room.roomId &&
+            state.voiceRoom?.supernodeId == room.supernodeId
+        val textOnlyCount = state.roomTextRosters.roomMembersUnion(room.roomId)
             .count { it.videoKey() !in voiceKeys }
+        val textListsRoom = textOnlyCount == 0 && inThisVoice && voiceCount > 0
+        val textCount = if (textListsRoom) voiceCount else textOnlyCount
         val revealMembers = { kind: String ->
             treeActions.onFold(
                 treeFold.copy(leaves = treeFold.leaves + ("${room.key}:$kind" to true)),
@@ -1979,7 +1985,7 @@ private fun RoomChatScreen(
                         R.drawable.ds_speech,
                         textCount,
                         ds.accent,
-                        "Show text members",
+                        if (textListsRoom) "Show who's in the room" else "Show text members",
                     ) { revealMembers("text") }
                 }
                 if (joined && voiceCount == 0 && textCount == 0) {

@@ -315,6 +315,7 @@ TestCase {
                                    leaves: shown("raid:text") }))
         k = kinds(rows)
         verify(k.indexOf("member:nia") !== -1)
+        verify(k.indexOf("member:sam") === -1)
         verify(k.indexOf("session:raid") === -1)
         compare(rows[k.indexOf("room:raid")].room_chat, 0)
         verify(rows[k.indexOf("room:raid")].collapsed)
@@ -481,6 +482,43 @@ TestCase {
         compare(swapped.pinned[0], "n:gaming")
     }
 
+    function test_voice_room_keeps_a_text_count_of_who_is_here() {
+        // Raid's text list is empty. Being in its voice must not drop the
+        // text count: that count is how the row opens onto who is here, and
+        // it lists the voice roster. Lobby still lists only Jonah.
+        var rows = RoomTree.rows(sample(), "n", true,
+                                 ctx({ voiceNode: "n", voiceRoom: "raid" }))
+        var k = kinds(rows)
+        var raid = rows[k.indexOf("room:raid")]
+        compare(raid.room_chat, 1)
+        verify(raid.text_lists_room)
+        compare(raid.voice_count, 1)
+        compare(rows[k.indexOf("room:lobby")].room_chat, 1)
+        verify(!rows[k.indexOf("room:lobby")].text_lists_room)
+        compare(rows[k.indexOf("room:gaming")].room_chat, 0)
+        compare(rows[k.indexOf("room:strat")].room_chat, 0)
+        verify(k.indexOf("member:sam") === -1)
+        rows = RoomTree.rows(sample(), "n", true,
+                             ctx({ voiceNode: "n", voiceRoom: "raid",
+                                   leaves: shown("raid:text") }))
+        k = kinds(rows)
+        verify(k.indexOf("member:sam") !== -1)
+        verify(k.indexOf("session:raid") === -1)
+        compare(rows[k.indexOf("group:raid:text")].room_roster, true)
+        compare(rows[k.indexOf("room:raid")].room_chat, 0)
+        // A real text-only member stays the text list. Sam is not added to it.
+        var rooms = sample()
+        rooms[2].text_members = [member("nia")]
+        rows = RoomTree.rows(rooms, "n", true,
+                             ctx({ voiceNode: "n", voiceRoom: "raid",
+                                   leaves: shown("raid:text") }))
+        k = kinds(rows)
+        verify(k.indexOf("member:nia") !== -1)
+        verify(k.indexOf("member:sam") === -1)
+        verify(!rows[k.indexOf("room:raid")].text_lists_room)
+        verify(!rows[k.indexOf("group:raid:text")].room_roster)
+    }
+
     function test_roster_counts_follow_the_member_lists() {
         var counts = RoomTree.rosterCounts({
             voice_members: [member("a"), member("b")],
@@ -503,5 +541,25 @@ TestCase {
         compare(unknown.voiceKnown, false)
         compare(unknown.textKnown, false)
         compare(RoomTree.rosterCounts(null).voiceKnown, false)
+
+        // In this room's voice, an empty text list keeps a count of who is here.
+        var here = RoomTree.rosterCounts({
+            voice_members: [member("sam")],
+            text_members: []
+        }, true)
+        compare(here.text, 1)
+        verify(here.textListsRoom)
+        var away = RoomTree.rosterCounts({
+            voice_members: [member("sam")],
+            text_members: []
+        }, false)
+        compare(away.text, 0)
+        verify(!away.textListsRoom)
+        var nia = RoomTree.rosterCounts({
+            voice_members: [member("sam")],
+            text_members: [member("nia")]
+        }, true)
+        compare(nia.text, 1)
+        verify(!nia.textListsRoom)
     }
 }

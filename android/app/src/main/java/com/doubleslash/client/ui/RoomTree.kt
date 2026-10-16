@@ -120,6 +120,11 @@ internal sealed interface TreeRow {
         /** Voice members, including while that list is open, so the count can close it. */
         val voiceCount: Int = 0,
         val roomChat: Int,
+        /**
+         * The text count is listing the voice roster: we are in this room's
+         * voice and nobody is left text-only.
+         */
+        val textListsRoom: Boolean = false,
         /** The call icon on the row: it joins this room's voice, or hangs up when [inVoice]. */
         val showCall: Boolean = false,
         /** We are in this room's voice, so its call icon ends the call. */
@@ -133,6 +138,11 @@ internal sealed interface TreeRow {
         val voice: Boolean,
         val count: Int,
         val expanded: Boolean,
+        /**
+         * This text leaf is listing the voice roster, because we are in the
+         * room's voice and nobody is left text-only.
+         */
+        val listsRoom: Boolean = false,
         /** Set while open: the leaf row starts its list's box. */
         val box: ListBox? = null,
     ) : TreeRow
@@ -202,7 +212,11 @@ private fun Modifier.listBox(box: ListBox?, ds: DsColors): Modifier =
 
 /** What sits under a room, in order: its leaves, then its sub-rooms. */
 private sealed interface TreeItem {
-    data class LeafItem(val voice: Boolean, val members: List<String>) : TreeItem
+    data class LeafItem(
+        val voice: Boolean,
+        val members: List<String>,
+        val listsRoom: Boolean = false,
+    ) : TreeItem
     data class SubRoom(val room: Room) : TreeItem
 }
 
@@ -524,9 +538,13 @@ internal fun buildRoomTree(
     val seen = mutableSetOf<String>()
 
     fun voiceOf(r: Room) = voiceRosters.roomMembersUnion(r.roomId)
-    fun textOf(r: Room, voice: List<String>): List<String> {
+    /** Text-only people, or the voice roster when [inThisVoice] and that list is empty. */
+    fun textOf(r: Room, voice: List<String>, inThisVoice: Boolean): Pair<List<String>, Boolean> {
         val inVoice = voice.map { it.videoKey() }.toSet()
-        return textRosters.roomMembersUnion(r.roomId).filter { it.videoKey() !in inVoice }
+        val textOnly = textRosters.roomMembersUnion(r.roomId).filter { it.videoKey() !in inVoice }
+        if (textOnly.isNotEmpty()) return textOnly to false
+        if (inThisVoice && voice.isNotEmpty()) return voice to true
+        return textOnly to false
     }
     val orderNorm = order.normalized()
     val children = grouped.mapValues { (_, list) ->
@@ -534,7 +552,14 @@ internal fun buildRoomTree(
             compareRooms(a, b, orderNorm) { roomPeerCount(it, voiceRosters, textRosters) }
         }
     }
-    fun emitLeaf(r: Room, voice: Boolean, members: List<String>, pass: List<Boolean>?, last: Boolean) {
+    fun emitLeaf(
+        r: Room,
+        voice: Boolean,
+        members: List<String>,
+        pass: List<Boolean>?,
+        last: Boolean,
+        listsRoom: Boolean = false,
+    ) {
         val leafKey = r.key + ":" + if (voice) "voice" else "text"
         val isReading = reading != null && r.roomId == reading.roomId && r.supernodeId == reading.supernodeId
         val inThisVoice = voiceRoom != null && r.roomId == voiceRoom.roomId && r.supernodeId == voiceRoom.supernodeId
@@ -551,6 +576,7 @@ internal fun buildRoomTree(
             voice = voice,
             count = members.size,
             expanded = expanded,
+            listsRoom = listsRoom,
             // A list with nobody in it ends with its leaf row.
             box = if (expanded) ListBox(voice, depth, start = true, end = members.isEmpty()) else null,
         )
@@ -590,13 +616,13 @@ internal fun buildRoomTree(
         if (!seen.add(r.roomId)) return
         val kids = children[r.roomId].orEmpty()
         val voice = voiceOf(r)
-        val text = textOf(r, voice)
         // The chevron toggles this room's voice list. Sub-rooms stay listed
         // either way, so a room with nobody in voice has nothing to fold.
         val voiceKey = r.key + ":voice"
         val textKey = r.key + ":text"
         val isVoiceRoom = voiceRoom != null && r.roomId == voiceRoom.roomId &&
             r.supernodeId == voiceRoom.supernodeId
+        val (text, listsRoom) = textOf(r, voice, isVoiceRoom)
         val voiceOpen = voice.isNotEmpty() && fold.leaves[voiceKey] == true
         val textOpen = text.isNotEmpty() && fold.leaves[textKey] == true
         val collapsed = voice.isNotEmpty() && !voiceOpen
@@ -612,6 +638,7 @@ internal fun buildRoomTree(
                 subtreeVoice = ownVoice.size,
                 voiceCount = voice.size,
                 roomChat = if (textOpen) 0 else text.size,
+                textListsRoom = listsRoom && !textOpen,
                 showCall = true,
                 inVoice = isVoiceRoom,
             )
@@ -620,7 +647,7 @@ internal fun buildRoomTree(
         // Leaves first, then sub-rooms: who is here reads before where to go.
         val items = buildList<TreeItem> {
             if (voiceOpen) add(TreeItem.LeafItem(true, voice))
-            if (textOpen) add(TreeItem.LeafItem(false, text))
+            if (textOpen) add(TreeItem.LeafItem(false, text, listsRoom))
             kids.forEach { add(TreeItem.SubRoom(it)) }
         }
         items.forEachIndexed { i, item ->
@@ -628,7 +655,7 @@ internal fun buildRoomTree(
             when (item) {
                 is TreeItem.SubRoom -> emitRoom(item.room, depth + 1, childPass, isLast, visible)
                 is TreeItem.LeafItem ->
-                    if (visible) emitLeaf(r, item.voice, item.members, childPass, isLast)
+                    if (visible) emitLeaf(r, item.voice, item.members, childPass, isLast, item.listsRoom)
             }
         }
     }
@@ -893,7 +920,12 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
             }
             if (row.roomChat > 0) {
                 Spacer(Modifier.width(6.dp))
-                CountBadge(R.drawable.ds_speech, row.roomChat, ds.accent, "Show text members") {
+                CountBadge(
+                    R.drawable.ds_speech,
+                    row.roomChat,
+                    ds.accent,
+                    if (row.textListsRoom) "Show who's in the room" else "Show text members",
+                ) {
                     actions.onFold(fold.copy(leaves = fold.leaves + (room.key + ":text" to true)))
                 }
             }
@@ -1190,7 +1222,11 @@ private fun LeafRow(row: TreeRow.Leaf, fold: TreeFold, actions: RoomTreeActions)
                 }
                 .semantics {
                     contentDescription = (if (row.expanded) "Collapse " else "Expand ") +
-                        (if (row.voice) "voice" else "text-only") + " members"
+                        (when {
+                            row.voice -> "voice"
+                            row.listsRoom -> "room"
+                            else -> "text-only"
+                        }) + " members"
                 },
         ) {
             // An open list reads in full; a folded one recedes.
