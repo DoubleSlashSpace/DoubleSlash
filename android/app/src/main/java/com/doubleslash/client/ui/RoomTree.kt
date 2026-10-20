@@ -91,7 +91,8 @@ import kotlinx.serialization.json.put
  *
  * Sub-rooms stay listed. A room's voice and text lists both start shut.
  * [leaves] opens them, keyed `"<room key>:voice"` or `":text"`. The voice
- * count toggles the voice list. The text count opens the text list. Selecting
+ * count opens the voice list and hides once it is open. The chevron still
+ * toggles it. The text count opens the text list. Selecting
  * the room or being in its voice does neither. Voice includes anyone also on
  * video.
  */
@@ -114,10 +115,7 @@ internal sealed interface TreeRow {
         val room: Room,
         val hasChildren: Boolean,
         val collapsed: Boolean,
-        /** Who is inside a folded room, for its stacked avatars. */
-        val stack: List<String>,
-        val subtreeVoice: Int,
-        /** Voice members, including while that list is open, so the count can close it. */
+        /** Voice members. The row badge hides this once the list is open; the leaf still shows it. */
         val voiceCount: Int = 0,
         val roomChat: Int,
         /**
@@ -627,15 +625,12 @@ internal fun buildRoomTree(
         val textOpen = text.isNotEmpty() && fold.leaves[textKey] == true
         val collapsed = voice.isNotEmpty() && !voiceOpen
         if (visible) {
-            val ownVoice = if (collapsed) voice else emptyList()
             out += TreeRow.RoomNode(
                 key = r.key,
                 guides = if (depth > 0) codes(pass, last) else emptyList(),
                 room = r,
                 hasChildren = voice.isNotEmpty(),
                 collapsed = collapsed,
-                stack = ownVoice.take(3),
-                subtreeVoice = ownVoice.size,
                 voiceCount = voice.size,
                 roomChat = if (textOpen) 0 else text.size,
                 textListsRoom = listsRoom && !textOpen,
@@ -893,26 +888,12 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                     Text("hidden", color = ds.muted, fontSize = 12.sp)
                 }
             }
-            if (row.collapsed && row.stack.isNotEmpty()) {
-                // Overlapped, so a folded room shows who is inside in little room.
-                Box(Modifier.width(18.dp + 12.dp * (row.stack.size - 1)).height(18.dp)) {
-                    row.stack.forEachIndexed { i, id ->
-                        state.avatars[id]?.let {
-                            Box(Modifier.offset(x = 12.dp * i).size(18.dp).clip(RectangleShape)) {
-                                Avatar(it, Modifier.size(18.dp))
-                            }
-                        }
-                    }
-                }
-                Spacer(Modifier.width(6.dp))
-            }
-            if (row.voiceCount > 0) {
+            if (row.collapsed && row.voiceCount > 0) {
                 CountBadge(
                     R.drawable.ds_headphone,
                     row.voiceCount,
                     ds.online,
-                    if (row.collapsed) "Show voice members" else "Hide voice members",
-                    checked = !row.collapsed,
+                    "Show voice members",
                 ) {
                     val key = room.key + ":voice"
                     actions.onFold(fold.copy(leaves = fold.leaves + (key to (fold.leaves[key] != true))))

@@ -1,6 +1,6 @@
 // CountPill.qml — A small icon-and-number badge for a Rooms-tree row: voice
-// or chat occupancy, or "—" when its node is offline. `checked` is the voice
-// count while that list is open.
+// or chat occupancy, or "—" when its node is offline. The voice badge is
+// hidden once its list is open; the Voice leaf shows that count.
 
 import QtQuick
 import QtQuick.Controls

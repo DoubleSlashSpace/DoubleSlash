@@ -259,7 +259,9 @@ peer-to-peer, sealed under the room sender key.
 * **Desktop** — `joinRoomWithVoice`, the Rooms tree (`RoomTree.qml`,
   `RoomTreeMember.qml`) and `VoiceDock`. Each room lists a Voice leaf and a
   Text-only leaf from the `voice_members` / `text_members` the bridge adds to
-  its sidebar entry. The voice count toggles the voice list. The text-only
+  its sidebar entry. The voice count opens the voice list and hides once
+  that list is open; the Voice leaf keeps the count, and the chevron toggles
+  the list. The text-only
   leaf stays shut until that row's text count is clicked. While you are in
   that room's voice and nobody is left text-only, that count stays and lists
   the voice roster, so it can still be opened onto who is in the room. The open room's
@@ -272,7 +274,7 @@ peer-to-peer, sealed under the room sender key.
   carries levels and per-member mute and volume.
 * **Android** — `room.voice.join`, `room.voice.leave`, the same tree
   (`ui/RoomTree.kt`), and `VoiceDock` at the foot of every screen. The voice
-  count toggles the voice list and the text count opens the text list, as on
+  count opens the voice list and hides once that list is open, and the text count opens the text list, as on
   the desktop. While you are in that room's voice and nobody is left
   text-only, the text count stays and lists who is in the room. The room screen joins voice with the same green call icon and
   shows the same two counts; each count opens the Members sheet on that list.

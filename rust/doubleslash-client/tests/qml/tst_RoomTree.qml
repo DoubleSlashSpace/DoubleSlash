@@ -90,7 +90,6 @@ TestCase {
         var lobby = rows[k.indexOf("room:lobby")]
         compare(lobby.room_chat, 1)
         compare(lobby.voice_count, 2)
-        compare(lobby.subtree_voice, 0)
         verify(!lobby.collapsed)
         // The text count's flag lists them, even while the voice list stays shut.
         rows = RoomTree.rows(sample(), "n", true,
@@ -208,11 +207,8 @@ TestCase {
         verify(k.indexOf("member:ade") === -1)
         var raid = rows[k.indexOf("room:raid")]
         verify(raid.collapsed)
-        compare(raid.subtree_voice, 1)
         compare(raid.voice_count, 1)
-        compare(raid.stack_ids, ["sam"])
         // Ade counts on Strategy, not on Raid.
-        compare(rows[k.indexOf("room:strat")].subtree_voice, 1)
         compare(rows[k.indexOf("room:strat")].voice_count, 1)
     }
 
@@ -270,23 +266,18 @@ TestCase {
         }
         var lobby = room("lobby")
         verify(lobby.collapsed)
-        compare(lobby.subtree_voice, 2)
         compare(lobby.voice_count, 2)
         compare(lobby.room_chat, 1)
-        compare(lobby.stack_ids, ["mara", "theo"])
         // Gaming has nobody of its own: it is the row its sub-rooms hang from.
         var gaming = room("gaming")
         verify(!gaming.has_children)
-        compare(gaming.subtree_voice, 0)
         compare(gaming.voice_count, 0)
         var raid = room("raid")
         verify(raid.collapsed)
-        compare(raid.subtree_voice, 1)
         compare(raid.voice_count, 1)
         compare(raid.room_chat, 0)
         var strat = room("strat")
         verify(strat.collapsed)
-        compare(strat.subtree_voice, 1)
         compare(strat.voice_count, 1)
     }
 
@@ -333,7 +324,6 @@ TestCase {
         k = kinds(rows)
         verify(!rows[k.indexOf("room:raid")].collapsed)
         compare(rows[k.indexOf("room:raid")].voice_count, 1)
-        compare(rows[k.indexOf("room:raid")].subtree_voice, 0)
         compare(rows[k.indexOf("room:raid")].room_chat, 1)
     }
 

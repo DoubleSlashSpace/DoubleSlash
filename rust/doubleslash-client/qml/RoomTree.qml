@@ -438,7 +438,8 @@ QtObject {
     //
     // Sub-rooms are always listed. Voice and text lists both start shut, so
     // the row shows its own counts. `leaves[node:room:voice] === true` shows
-    // the voice list; the row's voice count toggles that flag. The text-only
+    // the voice list; the row's voice count sets that flag and then hides.
+    // The chevron toggles it. The text-only
     // list stays shut until `leaves[node:room:text] === true`, which the
     // row's text count sets. Selecting the room or being in its voice does
     // not open either list. Voice includes anyone also on video.
@@ -592,13 +593,8 @@ QtObject {
                 item.has_children = hasVoice
                 item.collapsed = isCollapsed
                 item.guide_cols = depth > 0 ? codes(pass, isLast) : []
-                var own = isCollapsed && voiceMembers ? voiceMembers : []
-                var stack = []
-                for (var s = 0; s < own.length && stack.length < 3; s++)
-                    stack.push(own[s].id)
-                item.stack_ids = stack
-                item.subtree_voice = own.length
-                // Stays put while the list is open, so the count can toggle it shut.
+                // Kept while the list is open so the leaf and the header
+                // can still show it. The room-row badge hides once open.
                 item.voice_count = voiceMembers ? voiceMembers.length : 0
                 item.room_chat = textOpen ? 0 : (textMembers ? textMembers.length : 0)
                 item.text_lists_room = listing.fromVoice === true && !textOpen

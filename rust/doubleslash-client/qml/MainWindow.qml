@@ -222,7 +222,8 @@ ApplicationWindow {
 
     // Leaves opened or closed by hand, keyed `node_id:room_id:voice|text`.
     // Both stay shut until their row count says otherwise. The voice count
-    // toggles its list. The text count opens its list. Selecting the room
+    // opens its list and hides once that list is open. The text count opens
+    // its list. Selecting the room
     // or joining its voice does neither.
     property var memberLeafState: ({})
     // Leaves showing every member rather than the first few.
@@ -3168,38 +3169,21 @@ ApplicationWindow {
                                                         Layout.alignment: Qt.AlignVCenter
                                                     }
 
-                                                    // Folded: who is inside, without unfolding.
-                                                    Row {
-                                                        visible: row.collapsed && row.stack_ids.length > 0
-                                                        spacing: -5
-                                                        Layout.alignment: Qt.AlignVCenter
-                                                        Repeater {
-                                                            model: row.stack_ids
-                                                            delegate: Avatar {
-                                                                required property var modelData
-                                                                peerId: modelData
-                                                                size: 16
-                                                            }
-                                                        }
-                                                    }
-
                                                     CountPill {
-                                                        // Stays on the row while the list is open, so the
-                                                        // same control toggles it shut. A node that is gone
-                                                        // has no live roster: "—" rather than a stale number.
-                                                        readonly property bool voiceShown:
-                                                            roomGroup.connected && !row.collapsed
-                                                        visible: !roomGroup.connected || row.voice_count > 0
+                                                        // Hidden once the voice list is open: that leaf
+                                                        // already shows this count, the people, and their
+                                                        // avatars. The chevron closes the list. A node
+                                                        // that is gone has no live roster: "—" rather
+                                                        // than a stale number.
+                                                        visible: !roomGroup.connected
+                                                            || (row.collapsed && row.voice_count > 0)
                                                         iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
                                                         text: roomGroup.connected ? String(row.voice_count) : "—"
                                                         tint: roomGroup.connected ? Theme.online : Theme.muted
                                                         active: roomGroup.connected
-                                                        checked: voiceShown
                                                         tip: !roomGroup.connected
                                                             ? qsTr("Supernode offline — counts may be stale")
-                                                            : (voiceShown
-                                                                ? qsTr("Hide voice members")
-                                                                : qsTr("Show voice members"))
+                                                            : qsTr("Show voice members")
                                                         MouseArea {
                                                             anchors.fill: parent
                                                             enabled: roomGroup.connected && row.voice_count > 0

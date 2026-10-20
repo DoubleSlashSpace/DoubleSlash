@@ -124,10 +124,9 @@ class RoomTreeTest {
         assertTrue("member:ade" !in names)
         val raid = rows.filterIsInstance<TreeRow.RoomNode>().first { it.room.roomId == "raid" }
         assertTrue(raid.collapsed)
-        assertEquals(1, raid.subtreeVoice)
-        assertEquals(listOf("sam"), raid.stack)
+        assertEquals(1, raid.voiceCount)
         val strat = rows.filterIsInstance<TreeRow.RoomNode>().first { it.room.roomId == "strat" }
-        assertEquals(1, strat.subtreeVoice)
+        assertEquals(1, strat.voiceCount)
     }
 
     @Test
@@ -185,18 +184,17 @@ class RoomTreeTest {
         assertEquals(listOf("room:gaming", "room:raid", "room:strat", "room:lobby"), kinds(rows))
         val gaming = rows[0] as TreeRow.RoomNode
         assertFalse(gaming.hasChildren)
-        assertEquals(0, gaming.subtreeVoice)
+        assertEquals(0, gaming.voiceCount)
         val raid = rows[1] as TreeRow.RoomNode
         assertTrue(raid.collapsed)
-        assertEquals(1, raid.subtreeVoice)
-        assertEquals(listOf("sam"), raid.stack)
+        assertEquals(1, raid.voiceCount)
         assertEquals(0, raid.roomChat)
         val strat = rows[2] as TreeRow.RoomNode
         assertTrue(strat.collapsed)
-        assertEquals(1, strat.subtreeVoice)
+        assertEquals(1, strat.voiceCount)
         val lobby = rows[3] as TreeRow.RoomNode
         assertTrue(lobby.collapsed)
-        assertEquals(2, lobby.subtreeVoice)
+        assertEquals(2, lobby.voiceCount)
         assertEquals(1, lobby.roomChat)
     }
 
