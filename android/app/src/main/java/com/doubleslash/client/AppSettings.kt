@@ -27,6 +27,7 @@ class AppSettings(context: Context) {
         put("output_gain", outputGain)
         put("noise_strength", noiseStrength)
         put("voice_bitrate", voiceBitrate)
+        put("decoder_complexity", decoderComplexity)
         put("theme", theme)
         put("skin", skin)
         put("font_scale_percent", fontScalePercent)
@@ -41,6 +42,7 @@ class AppSettings(context: Context) {
         (values["output_gain"] as? JsonPrimitive)?.intOrNull?.let { outputGain = it }
         (values["noise_strength"] as? JsonPrimitive)?.intOrNull?.let { noiseStrength = it }
         (values["voice_bitrate"] as? JsonPrimitive)?.intOrNull?.let { voiceBitrate = it }
+        (values["decoder_complexity"] as? JsonPrimitive)?.intOrNull?.let { decoderComplexity = it }
         (values["theme"] as? JsonPrimitive)?.contentOrNull?.takeIf { it in listOf(THEME_SYSTEM, THEME_LIGHT, THEME_DARK) }?.let { theme = it }
         (values["skin"] as? JsonPrimitive)?.contentOrNull?.let { skin = it }
         (values["font_scale_percent"] as? JsonPrimitive)?.intOrNull?.let { fontScalePercent = it }
@@ -107,6 +109,20 @@ class AppSettings(context: Context) {
     var voiceBitrate: Int
         get() = prefs.getInt(KEY_VOICE_BITRATE, 32_000)
         set(value) = prefs.edit().putInt(KEY_VOICE_BITRATE, value.coerceIn(8_000, 128_000)).apply()
+
+    /**
+     * Opus decoder complexity, 0–10. 5 is Deep PLC. 6 adds LACE and 7–10 add
+     * NOLACE. Local to this phone: other clients decode the same packets.
+     */
+    var decoderComplexity: Int
+        get() = prefs.getInt(KEY_DECODER_COMPLEXITY, DECODER_COMPLEXITY_DEFAULT)
+            .coerceIn(DECODER_COMPLEXITY_MIN, DECODER_COMPLEXITY_MAX)
+        set(value) = prefs.edit()
+            .putInt(
+                KEY_DECODER_COMPLEXITY,
+                value.coerceIn(DECODER_COMPLEXITY_MIN, DECODER_COMPLEXITY_MAX),
+            )
+            .apply()
 
     /** "system", "light" or "dark". */
     var theme: String
@@ -187,6 +203,22 @@ class AppSettings(context: Context) {
         const val THEME_LIGHT = "light"
         const val THEME_DARK = "dark"
 
+        const val DECODER_COMPLEXITY_MIN = 0
+        const val DECODER_COMPLEXITY_MAX = 10
+
+        /** Deep PLC. LACE is 6 and NOLACE starts at 7. */
+        const val DECODER_COMPLEXITY_DEFAULT = 5
+
+        /** Same four bands as the desktop caption and `decoder_complexity_label`. */
+        fun decoderComplexityLabel(value: Int): String = when (
+            value.coerceIn(DECODER_COMPLEXITY_MIN, DECODER_COMPLEXITY_MAX)
+        ) {
+            in 0..4 -> "Basic concealment"
+            5 -> "Deep PLC"
+            6 -> "Deep PLC and LACE"
+            else -> "Deep PLC and NOLACE"
+        }
+
         /** Half the designed size. */
         const val FONT_SCALE_PERCENT_MIN = -50
 
@@ -207,6 +239,7 @@ class AppSettings(context: Context) {
         private const val KEY_NOISE_STRENGTH = "noise_strength"
         private const val KEY_SPEAKERPHONE = "speakerphone"
         private const val KEY_VOICE_BITRATE = "voice_bitrate"
+        private const val KEY_DECODER_COMPLEXITY = "decoder_complexity"
         private const val KEY_ACCEPTED_TERMS = "accepted_terms_version"
         private const val KEY_NOTIFICATION_RATIONALE = "notification_rationale_shown"
     }

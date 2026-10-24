@@ -17,7 +17,9 @@ use std::time::Duration;
 use crate::connection_manager::ConnectionCommand;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
-use doubleslash_opus::{Application as OpusApp, OpusDecoder, OpusEncoder};
+use doubleslash_opus::{
+    Application as OpusApp, OpusDecoder, OpusEncoder, DECODER_COMPLEXITY_DEFAULT,
+};
 use ringbuf::{
     traits::{Consumer, Observer, Producer, Split},
     HeapRb,
@@ -124,6 +126,8 @@ struct AudioPipeline {
     output_gain: Arc<AtomicU32>,
     /// Per-peer Opus decoders (lazily created on first inbound frame).
     decoders: HashMap<String, OpusDecoder>,
+    /// Complexity installed on every decoder, 0–10. 5 turns Deep PLC on.
+    decoder_complexity: i32,
     /// Listener-local playback preferences per peer ("mute for me", volume).
     ///
     /// A plain field rather than an `Arc<Mutex<_>>` because the pipeline is
@@ -280,6 +284,7 @@ impl AudioPipeline {
         initial_output_vol: u32,
         initial_noise_idx: u32,
         outgoing_bitrate_bps: u32,
+        decoder_complexity: i32,
         agent_voice: Arc<AtomicBool>,
         agent_speaking: Arc<AtomicBool>,
     ) -> anyhow::Result<(
@@ -673,6 +678,7 @@ impl AudioPipeline {
                 input_gain: input_gain_arc,
                 output_gain: output_gain_arc,
                 decoders: HashMap::new(),
+                decoder_complexity: decoder_complexity.clamp(0, 10),
                 peer_mix: HashMap::new(),
                 content_mix: HashMap::new(),
                 content_viewers: HashSet::new(),
@@ -705,7 +711,7 @@ impl AudioPipeline {
         opus_data: Option<&[u8]>,
     ) -> Option<([i16; SAMPLES_PER_FRAME], usize, f32)> {
         if !self.decoders.contains_key(peer_id) {
-            let Ok(dec) = OpusDecoder::new(48_000, 1) else {
+            let Ok(dec) = OpusDecoder::with_complexity(48_000, 1, self.decoder_complexity) else {
                 tracing::error!("Opus decoder init failed for peer {peer_id}");
                 return None;
             };
@@ -942,6 +948,18 @@ impl AudioPipeline {
         );
     }
 
+    /// Install `complexity` (clamped to 0–10) on this pipeline and every
+    /// decoder it already holds. New peers pick it up when they are created.
+    fn set_decoder_complexity(&mut self, complexity: i32) {
+        let complexity = complexity.clamp(0, 10);
+        self.decoder_complexity = complexity;
+        for dec in self.decoders.values_mut() {
+            if let Err(e) = dec.set_complexity(complexity) {
+                warn!("Failed to set decoder complexity {complexity}: {e}");
+            }
+        }
+    }
+
     /// V12: Update the FEC packet-loss hint (0–50 %) fed to the Opus encoder.
     fn set_fec_loss_pct(&self, pct: u8) {
         self.fec_loss_pct
@@ -1135,6 +1153,9 @@ pub enum CallCommand {
     /// Update the jitter buffer depth (in Opus frames, 1–20). Takes effect
     /// immediately on the next playout cycle.
     SetJitterDepth(usize),
+    /// Decoder complexity, 0–10. Applied to live decoders and to ones created
+    /// afterwards. 5 is Deep PLC. 6 adds LACE. 7 and above add NOLACE.
+    SetDecoderComplexity(i32),
     /// Enter SFU room audio mode: outbound frames are sent via the supernode
     /// rather than directly to individual QUIC peers.
     SetRoomMode {
@@ -1333,6 +1354,9 @@ pub struct CallController {
     content_viewers: HashSet<String>,
     /// Noise gate strength index 0–4. Sent to AudioPipeline on start.
     noise_strength_idx: u32,
+    /// Decoder complexity 0–10, applied to every voice and content decoder.
+    /// 5 turns Deep PLC on. Sent to AudioPipeline on start and on change.
+    decoder_complexity: i32,
     /// Live outgoing Opus bitrate in bits per second (direct + room audio).
     /// Adaptive control may lower this below [`Self::bitrate_ceiling_bps`].
     outgoing_bitrate_bps: u32,
@@ -1416,6 +1440,7 @@ impl CallController {
             content_prefs: HashMap::new(),
             content_viewers: HashSet::new(),
             noise_strength_idx: 2,
+            decoder_complexity: DECODER_COMPLEXITY_DEFAULT,
             outgoing_bitrate_bps: DEFAULT_OUTGOING_BITRATE_BPS,
             bitrate_ceiling_bps: DEFAULT_OUTGOING_BITRATE_BPS,
             net_loss_ema: 0.0,
@@ -1477,6 +1502,7 @@ impl CallController {
             self.output_vol,
             self.noise_strength_idx,
             self.outgoing_bitrate_bps,
+            self.decoder_complexity,
             Arc::clone(&self.agent_voice),
             Arc::clone(&self.agent_speaking),
         ) {
@@ -1954,6 +1980,10 @@ impl CallController {
     /// Deliberately **independent of `jitter_adaptive`**: pinning the jitter
     /// depth must not freeze the bitrate (and thus block recovery). Gated only
     /// on room mode, live audio, and a window with playout this tick.
+    ///
+    /// Also refreshes the encoder's FEC loss hint from the same EMA. Direct
+    /// calls do that from `UpdateNetworkQuality`, which room audio never
+    /// receives, so without this the hint stays at its initial 10%.
     fn adapt_room_bitrate(&mut self) {
         if !self.room_mode || self.audio.is_none() || self.playout_frames == 0 {
             return;
@@ -1974,15 +2004,25 @@ impl CallController {
             self.bitrate_ceiling_bps,
             self.net_loss_ema,
         );
-        if new_bps != self.outgoing_bitrate_bps {
-            self.outgoing_bitrate_bps = new_bps;
-            if let Some(p) = &self.audio {
+        if let Some(p) = &self.audio {
+            if new_bps != self.outgoing_bitrate_bps {
+                self.outgoing_bitrate_bps = new_bps;
                 p.set_outgoing_bitrate(new_bps);
+                debug!(
+                    "Room ABR → {} bps (relay loss proxy EMA {:.1}%)",
+                    new_bps, self.net_loss_ema
+                );
             }
-            debug!(
-                "Room ABR → {} bps (relay loss proxy EMA {:.1}%)",
-                new_bps, self.net_loss_ema
-            );
+            p.set_fec_loss_pct(fec_hint_pct(self.net_loss_ema));
+        }
+    }
+
+    /// Store the decoder complexity and apply it to a live pipeline.
+    fn apply_decoder_complexity(&mut self, value: i32) {
+        let value = value.clamp(0, 10);
+        self.decoder_complexity = value;
+        if let Some(p) = &mut self.audio {
+            p.set_decoder_complexity(value);
         }
     }
 
@@ -2278,8 +2318,7 @@ impl CallController {
                             // encoder packs more in-band redundancy as measured
                             // loss rises, without a separate control path.
                             if let Some(p) = &self.audio {
-                                let fec_pct = self.net_loss_ema.round().clamp(0.0, 50.0) as u8;
-                                p.set_fec_loss_pct(fec_pct);
+                                p.set_fec_loss_pct(fec_hint_pct(self.net_loss_ema));
                             }
                         }
                         CallCommand::DirectAudioInbound { peer_id, opus_data } => {
@@ -2321,6 +2360,9 @@ impl CallController {
                                 &peer_id,
                                 crate::content_playout::PendingFrame { seq, pts_us, opus },
                             );
+                        }
+                        CallCommand::SetDecoderComplexity(value) => {
+                            self.apply_decoder_complexity(value);
                         }
                         CallCommand::SetJitterDepth(depth) => {
                             // Explicit user setting pins the depth and disables
@@ -2490,6 +2532,13 @@ fn next_bitrate(current: u32, ceiling: u32, loss_pct: f32) -> u32 {
         MIN_OUTGOING_BITRATE_BPS,
         ceiling.max(MIN_OUTGOING_BITRATE_BPS),
     )
+}
+
+/// Packet-loss percentage handed to the Opus encoder, 0–50.
+///
+/// Direct calls and room ABR both derive it from the smoothed loss EMA.
+fn fec_hint_pct(loss_ema: f32) -> u8 {
+    loss_ema.round().clamp(0.0, 50.0) as u8
 }
 
 /// Update the smoothed loss EMA for room/relay calls from jitter-buffer
@@ -3780,5 +3829,24 @@ mod tests {
     fn room_bitrate_still_backs_off_under_heavy_loss() {
         let out = next_room_bitrate(128_000, 128_000, 15.0);
         assert_eq!(out, (128_000f32 * 0.8) as u32);
+    }
+
+    #[test]
+    fn fec_hint_follows_the_loss_ema_and_caps_at_50() {
+        assert_eq!(fec_hint_pct(0.0), 0);
+        assert_eq!(fec_hint_pct(10.4), 10);
+        assert_eq!(fec_hint_pct(10.5), 11);
+        assert_eq!(fec_hint_pct(80.0), 50);
+        assert_eq!(fec_hint_pct(-4.0), 0);
+    }
+
+    #[test]
+    fn decoder_complexity_defaults_to_deep_plc_and_clamps() {
+        let (mut ctrl, _tx, _rx) = CallController::new(None);
+        assert_eq!(ctrl.decoder_complexity, DECODER_COMPLEXITY_DEFAULT);
+        ctrl.apply_decoder_complexity(11);
+        assert_eq!(ctrl.decoder_complexity, 10);
+        ctrl.apply_decoder_complexity(-2);
+        assert_eq!(ctrl.decoder_complexity, 0);
     }
 }

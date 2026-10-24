@@ -43,6 +43,13 @@ Item {
     readonly property var avatarGridSizes: [8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]
     readonly property var avatarDualHueModes: ["topbot", "checker", "quad"]
 
+    function decoderComplexityCaption(value) {
+        if (value < 5) return "Basic concealment"
+        if (value === 5) return "Deep PLC"
+        if (value === 6) return "Deep PLC and LACE"
+        return "Deep PLC and NOLACE"
+    }
+
     function pttKeyName(event) {
         switch (event.key) {
             case Qt.Key_Space: return "space"
@@ -432,6 +439,36 @@ Item {
                                 root.settings.voice_bitrate = value
                                 if (backend) backend.setVoiceBitrate(value)
                             }
+                        }
+
+                        Label { text: "Decode quality"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            SpinBox {
+                                id: complexitySpin
+                                from: 0
+                                to: 10
+                                value: root.settings ? root.settings.decoder_complexity : 5
+                                onValueModified: {
+                                    if (!root.settings) return
+                                    root.settings.decoder_complexity = value
+                                    if (backend) backend.setDecoderComplexity(value)
+                                }
+                            }
+                            Label {
+                                text: root.decoderComplexityCaption(complexitySpin.value)
+                                color: Theme.muted
+                                font.pixelSize: Theme.fontSizeCaption
+                            }
+                        }
+
+                        Label {
+                            Layout.columnSpan: 2
+                            Layout.fillWidth: true
+                            text: "How hard this device works to conceal gaps in voice. 5 is Deep PLC. Other people decode the same packets."
+                            color: Theme.muted
+                            font.pixelSize: Theme.fontSizeCaption
+                            wrapMode: Text.WordWrap
                         }
 
                         Label { text: "Jitter buffer"; color: Theme.muted; Layout.alignment: Qt.AlignRight }

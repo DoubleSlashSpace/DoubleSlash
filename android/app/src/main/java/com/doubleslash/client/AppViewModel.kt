@@ -535,6 +535,8 @@ data class Prefs(
     val outputGain: Int = 100,
     val noiseStrength: Int = 2,
     val voiceBitrate: Int = 32_000,
+    /** Opus decoder complexity, 0–10. 5 is Deep PLC. */
+    val decoderComplexity: Int = AppSettings.DECODER_COMPLEXITY_DEFAULT,
     /** Rooms list order. Same choices as the desktop. */
     val roomListOrder: RoomListOrder = RoomListOrder(),
     /** Room ids whose text messages alert. Empty mutes every room. */
@@ -674,6 +676,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             put("noise_suppression", settings.noiseStrength > 0)
             put("bitrate_bps", settings.voiceBitrate)
             put("voice_activation", settings.voiceActivation)
+            put("decoder_complexity", settings.decoderComplexity)
         }
     }
 
@@ -698,6 +701,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setVoiceBitrate(value: Int) {
         settings.voiceBitrate = value
         _state.update { it.copy(prefs = it.prefs.copy(voiceBitrate = settings.voiceBitrate)) }
+        applyAudioTuning()
+    }
+
+    fun setDecoderComplexity(value: Int) {
+        settings.decoderComplexity = value
+        _state.update {
+            it.copy(prefs = it.prefs.copy(decoderComplexity = settings.decoderComplexity))
+        }
         applyAudioTuning()
     }
 
@@ -969,6 +980,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         outputGain = settings.outputGain,
         noiseStrength = settings.noiseStrength,
         voiceBitrate = settings.voiceBitrate,
+        decoderComplexity = settings.decoderComplexity,
         roomListOrder = parseRoomListOrder(settings.roomListOrderJson),
         roomMessageAlerts = settings.roomMessageAlerts,
     )

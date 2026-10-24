@@ -126,6 +126,9 @@ extern "C" {
 
     /// Apply Q8 dB gain to decoded output (0 = no adjustment).
     pub fn doubleslash_dec_set_gain(dec: *mut OpusDecoder, value: i32) -> c_int;
+    /// Decoder complexity, 0–10. libopus defaults this to 0.
+    pub fn doubleslash_dec_set_complexity(dec: *mut OpusDecoder, value: i32) -> c_int;
+    pub fn doubleslash_dec_get_complexity(dec: *mut OpusDecoder, value: *mut i32) -> c_int;
     pub fn doubleslash_dec_set_dnn_blob(
         dec: *mut OpusDecoder,
         data: *const c_void,

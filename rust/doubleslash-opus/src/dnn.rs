@@ -8,8 +8,12 @@
 //! Because the weights are compiled into the library itself:
 //! - `OPUS_SET_DNN_BLOB_REQUEST` returns `OPUS_UNIMPLEMENTED` (the compiled-in
 //!   weights are used instead), which we treat as a successful no-op.
-//! - DRED and OSCE activate automatically once `OPUS_SET_DRED_DURATION_REQUEST`
-//!   is called on the encoder.
+//! - DRED activates once `OPUS_SET_DRED_DURATION_REQUEST` is called on the
+//!   encoder.
+//! - OSCE does not. The decoder's complexity defaults to 0. Deep PLC needs
+//!   5 or higher, LACE needs 6, NOLACE needs 7, and bandwidth extension needs
+//!   4 plus `OPUS_SET_OSCE_BWE`. [`OpusDecoder::new`](crate::OpusDecoder::new)
+//!   sets complexity 5, which is the Deep PLC floor.
 //! - No runtime I/O or separate binary blob is needed.
 
 use crate::ffi;
@@ -26,8 +30,9 @@ pub(crate) unsafe fn load_into_encoder(_enc: *mut ffi::OpusEncoder) -> Result<()
 
 /// No-op: weights are compiled into libopus from the C data source arrays.
 ///
-/// OSCE activates automatically for SILK-layer voice packets once the model
-/// C arrays are compiled in.
+/// Compiling the weights in does not turn OSCE on. The decoder still has to
+/// set complexity: Deep PLC needs 5 or higher, LACE needs 6, NOLACE needs 7,
+/// and bandwidth extension needs 4 plus `OPUS_SET_OSCE_BWE`.
 pub(crate) unsafe fn load_into_decoder(_dec: *mut ffi::OpusDecoder) -> Result<(), OpusError> {
     Ok(())
 }

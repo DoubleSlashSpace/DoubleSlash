@@ -39,3 +39,8 @@ doubleslash-opus = { path = "../doubleslash-opus", default-features = false }
 ```
 
 DRED and OSCE will be inactive; libopus builds without the data C files.
+
+Compiling the weights in does not by itself turn decoder features on. libopus
+defaults decoder complexity to 0. Deep PLC needs 5 or higher (the client
+default). LACE needs 6, NOLACE needs 7, and bandwidth extension also needs an
+explicit enable.

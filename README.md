@@ -233,6 +233,7 @@ These are selected **desktop** defaults from [SettingsModel](rust/doubleslash-cl
 | `ptt_key` | `space` | Push-to-talk binding |
 | `noise_suppression` / `noise_strength` | `true` / `moderate` | Microphone noise suppression |
 | `jitter_buffer_depth` | `3` | Configured voice buffer depth, in frames |
+| `decoder_complexity` | `5` | Opus decoder complexity, 0–10, on this device only. 5 is Deep PLC. 0–4 is basic concealment, 6 adds LACE, and 7–10 add NOLACE. The packets stay ordinary Opus, so other clients decode them at whatever complexity they use. Bandwidth extension stays off. The phone stores the same 0–10 int |
 | `audio_input_device` / `audio_output_device` | empty | Follow the OS default devices, including when they change during a call |
 | `video_enabled` / `video_input_device` | `false` / empty | Sharing off; no saved source |
 | `video_quality` / `video_codec` | `balanced` / `auto` | Quality preset and codec preference |

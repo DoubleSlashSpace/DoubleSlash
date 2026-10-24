@@ -274,6 +274,7 @@ fun AppRoot(viewModel: AppViewModel) {
                     onSetOutputGain = viewModel::setOutputGain,
                     onSetNoiseStrength = viewModel::setNoiseStrength,
                     onSetVoiceBitrate = viewModel::setVoiceBitrate,
+                    onSetDecoderComplexity = viewModel::setDecoderComplexity,
                     onRemoveSupernode = viewModel::removeSupernode,
                     onOpenPortal = viewModel::openPortal,
                     onSetSkin = viewModel::setSkin,
@@ -2616,6 +2617,7 @@ private fun SettingsScreen(
     onSetOutputGain: (Int) -> Unit,
     onSetNoiseStrength: (Int) -> Unit,
     onSetVoiceBitrate: (Int) -> Unit,
+    onSetDecoderComplexity: (Int) -> Unit,
     onRemoveSupernode: (String) -> Unit,
     onOpenPortal: (SupernodeInfo) -> Unit,
     onSetSkin: (String) -> Unit,
@@ -2826,6 +2828,22 @@ private fun SettingsScreen(
                 // A ceiling, not a promise: the core drops below it under loss.
                 display = "${state.prefs.voiceBitrate / 1000} kbps max",
                 onChange = { onSetVoiceBitrate((it / 1000).toInt() * 1000) },
+            )
+            Text(
+                "How hard this phone works to conceal gaps in voice. 5 is Deep PLC. Other people decode the same packets.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TuningSlider(
+                label = "Decode quality",
+                value = state.prefs.decoderComplexity.toFloat(),
+                range = AppSettings.DECODER_COMPLEXITY_MIN.toFloat()..AppSettings.DECODER_COMPLEXITY_MAX.toFloat(),
+                // Stops on every integer between the ends.
+                steps = AppSettings.DECODER_COMPLEXITY_MAX - AppSettings.DECODER_COMPLEXITY_MIN - 1,
+                display = "${state.prefs.decoderComplexity} · ${
+                    AppSettings.decoderComplexityLabel(state.prefs.decoderComplexity)
+                }",
+                onChange = { onSetDecoderComplexity(kotlin.math.round(it).toInt()) },
             )
 
             Spacer(Modifier.height(16.dp))

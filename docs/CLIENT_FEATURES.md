@@ -239,14 +239,16 @@ signed, and admission is proved against it rather than asserted.
   plus the full audio stack: `listAudioDevices`, `setAudioDevices`,
   `setInputVolume`, `setOutputVolume`, `startMicTest`, `stopMicTest`,
   `testSpeaker`, `setVoiceActivation`, `setNoiseStrength`, `setJitterDepth`,
-  `setVoiceBitrate`, `enablePtt`, `disablePtt`.
+  `setVoiceBitrate`, `setDecoderComplexity`, `enablePtt`, `disablePtt`.
+  Decoder complexity is 0–10 and local to this device (5 is Deep PLC).
 * **Android** — `call.start`, `call.accept`, `call.reject`, `call.end`,
   `audio.start`, `audio.stop`, `audio.set_muted`, `audio.tune`. The last takes
-  input/output gain, noise suppression and strength, bitrate ceiling and voice
-  activation as optional fields — they are set together from one screen, and
-  the call controller persists none of them, so the client re-applies on every
-  start. No device selection (the platform picks), no mic test, no PTT, and no
-  jitter-depth control — that one has no `CallCommand` behind it.
+  input/output gain, noise suppression and strength, bitrate ceiling, voice
+  activation, and `decoder_complexity` as optional fields — they are set
+  together from one screen, and the call controller persists none of them, so
+  the client re-applies on every start. No device selection (the platform
+  picks), no mic test, no PTT, and no jitter-depth control — that one has no
+  `CallCommand` behind it.
 
 `ndk_context` must be initialised in `nativeStart` before any audio starts, or
 cpal's Oboe backend panics and takes the call controller with it.

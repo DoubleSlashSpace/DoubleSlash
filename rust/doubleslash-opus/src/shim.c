@@ -61,6 +61,16 @@ int doubleslash_dec_set_gain(OpusDecoder *dec, opus_int32 value) {
     return opus_decoder_ctl(dec, OPUS_SET_GAIN_REQUEST, value);
 }
 
+/* Decoder complexity is 0 by default. Deep PLC needs >= 5, OSCE LACE >= 6,
+ * NOLACE >= 7. Bandwidth extension also needs OPUS_SET_OSCE_BWE. */
+int doubleslash_dec_set_complexity(OpusDecoder *dec, opus_int32 value) {
+    return opus_decoder_ctl(dec, OPUS_SET_COMPLEXITY_REQUEST, value);
+}
+
+int doubleslash_dec_get_complexity(OpusDecoder *dec, opus_int32 *value) {
+    return opus_decoder_ctl(dec, OPUS_GET_COMPLEXITY_REQUEST, value);
+}
+
 int doubleslash_dec_set_dnn_blob(OpusDecoder *dec, const void *data, opus_int32 len) {
     return opus_decoder_ctl(dec, OPUS_SET_DNN_BLOB_REQUEST, data, len);
 }

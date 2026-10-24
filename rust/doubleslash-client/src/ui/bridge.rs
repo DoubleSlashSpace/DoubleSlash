@@ -621,6 +621,12 @@ pub mod ffi {
         #[rust_name = "set_jitter_depth"]
         fn setJitterDepth(self: Pin<&mut AppBridge>, depth: i32);
 
+        /// Opus decoder complexity, 0–10. 5 is Deep PLC. Takes effect on
+        /// decoders that already exist and on ones created later.
+        #[qinvokable]
+        #[rust_name = "set_decoder_complexity"]
+        fn setDecoderComplexity(self: Pin<&mut AppBridge>, complexity: i32);
+
         /// Emitted when a peer starts or stops typing.
         #[qsignal]
         #[rust_name = "typing_changed"]
@@ -2617,6 +2623,15 @@ impl ffi::AppBridge {
             let bitrate = read_voice_bitrate_setting();
             if let Some(ref tx) = self.rust().call_cmd_tx {
                 let _ = tx.try_send(CallCommand::SetOutgoingBitrate(bitrate));
+            }
+        }
+
+        // Always send decoder complexity. The controller starts at 5, and a
+        // saved 0 or 7 has to arrive before the first packet is decoded.
+        {
+            let complexity = read_decoder_complexity_setting();
+            if let Some(ref tx) = self.rust().call_cmd_tx {
+                let _ = tx.try_send(CallCommand::SetDecoderComplexity(complexity));
             }
         }
 
@@ -5020,6 +5035,12 @@ impl ffi::AppBridge {
         }
     }
 
+    fn set_decoder_complexity(self: Pin<&mut Self>, complexity: i32) {
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(CallCommand::SetDecoderComplexity(complexity));
+        }
+    }
+
     fn set_noise_strength(self: Pin<&mut Self>, level: &QString) {
         let idx = match level.to_string().to_lowercase().as_str() {
             "off" => 0u32,
@@ -6415,6 +6436,30 @@ fn read_jitter_depth_setting() -> usize {
         }
     }
     3
+}
+
+/// Read the persisted Opus decoder complexity (0–10) from the settings file.
+/// Defaults to 5 (Deep PLC) when the field is absent or unreadable.
+fn read_decoder_complexity_setting() -> i32 {
+    let path = crate::ui::settings_model::settings_file();
+    if let Ok(txt) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+            return v
+                .get("decoder_complexity")
+                .and_then(|x| x.as_i64())
+                .map(|n| doubleslash_opus::clamp_decoder_complexity(clamp_i64_to_i32(n)))
+                .unwrap_or(doubleslash_opus::DECODER_COMPLEXITY_DEFAULT);
+        }
+    }
+    doubleslash_opus::DECODER_COMPLEXITY_DEFAULT
+}
+
+/// Saturate an `i64` into `i32` before the 0–10 complexity clamp.
+///
+/// A plain `as i32` wraps, so a hand-edited huge value would become negative
+/// and then clamp to 0 instead of 10.
+fn clamp_i64_to_i32(n: i64) -> i32 {
+    n.clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
 // ---------------------------------------------------------------------------

@@ -54,7 +54,10 @@ pub mod ffi;
 mod decoder;
 mod encoder;
 
-pub use decoder::OpusDecoder;
+pub use decoder::{
+    clamp_decoder_complexity, decoder_complexity_label, OpusDecoder, DECODER_COMPLEXITY_DEFAULT,
+    DECODER_COMPLEXITY_MAX, DECODER_COMPLEXITY_MIN,
+};
 pub use encoder::OpusEncoder;
 
 // ── Public types ─────────────────────────────────────────────────────────────

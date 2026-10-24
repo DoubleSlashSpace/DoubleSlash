@@ -1005,9 +1005,9 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
             queued(session.send(command))
         }
 
-        // Audio tuning. One command with optional fields rather than six: they
-        // are set together from one screen, and a caller that sends none has
-        // asked for nothing.
+        // Audio tuning. One command with optional fields rather than one
+        // command per setting: they are set together from one screen, and a
+        // caller that sends none has asked for nothing.
         "audio.tune" => {
             let mut applied = 0;
 
@@ -1045,6 +1045,13 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                 let _ = session
                     .call_tx
                     .try_send(CallCommand::SetVoiceActivation(on));
+                applied += 1;
+            }
+            if let Some(complexity) = parsed.get("decoder_complexity").and_then(Value::as_i64) {
+                let complexity = complexity.clamp(0, 10) as i32;
+                let _ = session
+                    .call_tx
+                    .try_send(CallCommand::SetDecoderComplexity(complexity));
                 applied += 1;
             }
 

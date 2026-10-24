@@ -37,6 +37,9 @@ pub mod ffi {
         #[qproperty(bool, noise_suppression)]
         #[qproperty(bool, voice_activation)]
         #[qproperty(i32, jitter_buffer_depth)]
+        /// Opus decoder complexity, 0–10. 5 is Deep PLC. 6 adds LACE and
+        /// 7–10 add NOLACE. Bandwidth extension stays off.
+        #[qproperty(i32, decoder_complexity)]
         #[qproperty(i32, input_volume)]
         #[qproperty(i32, output_volume)]
         #[qproperty(QString, voice_bitrate)]
@@ -253,6 +256,9 @@ struct SettingsSnapshot {
     voice_activation: bool,
     #[serde(default = "default_jitter")]
     jitter_buffer_depth: i32,
+    /// Opus decoder complexity, 0–10. Missing files keep Deep PLC (5).
+    #[serde(default = "default_decoder_complexity")]
+    decoder_complexity: i32,
     #[serde(default = "default_100")]
     input_volume: i32,
     #[serde(default = "default_100")]
@@ -406,6 +412,11 @@ fn default_ollama_system_prompt() -> String {
 fn default_jitter() -> i32 {
     3
 }
+
+/// Deep PLC. LACE is 6 and NOLACE starts at 7; see `decoder_complexity_label`.
+fn default_decoder_complexity() -> i32 {
+    doubleslash_opus::DECODER_COMPLEXITY_DEFAULT
+}
 fn default_100() -> i32 {
     100
 }
@@ -508,6 +519,7 @@ impl Default for SettingsSnapshot {
             noise_suppression: true,
             voice_activation: false,
             jitter_buffer_depth: 3,
+            decoder_complexity: default_decoder_complexity(),
             input_volume: 100,
             output_volume: 100,
             voice_bitrate: default_voice_bitrate(),
@@ -586,6 +598,7 @@ pub struct SettingsModelRust {
     noise_suppression: bool,
     voice_activation: bool,
     jitter_buffer_depth: i32,
+    decoder_complexity: i32,
     input_volume: i32,
     output_volume: i32,
     voice_bitrate: QString,
@@ -670,6 +683,7 @@ impl Default for SettingsModelRust {
             noise_suppression: s.noise_suppression,
             voice_activation: s.voice_activation,
             jitter_buffer_depth: s.jitter_buffer_depth,
+            decoder_complexity: s.decoder_complexity,
             input_volume: s.input_volume,
             output_volume: s.output_volume,
             voice_bitrate: QString::from(s.voice_bitrate.as_str()),
@@ -843,6 +857,7 @@ impl ffi::SettingsModel {
             noise_suppression: r.noise_suppression,
             voice_activation: r.voice_activation,
             jitter_buffer_depth: r.jitter_buffer_depth,
+            decoder_complexity: doubleslash_opus::clamp_decoder_complexity(r.decoder_complexity),
             input_volume: r.input_volume,
             output_volume: r.output_volume,
             voice_bitrate: r.voice_bitrate.to_string(),
@@ -1044,6 +1059,10 @@ impl ffi::SettingsModel {
         self.as_mut().set_voice_activation(snap.voice_activation);
         self.as_mut()
             .set_jitter_buffer_depth(snap.jitter_buffer_depth);
+        self.as_mut()
+            .set_decoder_complexity(doubleslash_opus::clamp_decoder_complexity(
+                snap.decoder_complexity,
+            ));
         self.as_mut().set_input_volume(snap.input_volume);
         self.as_mut().set_output_volume(snap.output_volume);
         self.as_mut()
