@@ -180,6 +180,8 @@ Rectangle {
                     color: Theme.text
                     wrapMode: TextEdit.Wrap
                     selectByMouse: true
+                    placeholderText: root.enabledForTarget ? "Message..." : "Select a chat"
+                    placeholderTextColor: Theme.muted
                     onTextChanged: root.composing(text.length > 0)
                     Keys.onPressed: function(event) {
                         if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
@@ -188,18 +190,6 @@ Rectangle {
                             event.accepted = true
                         }
                     }
-                }
-
-                Text {
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.leftMargin: composer.leftPadding
-                    visible: composer.text.length === 0
-                    text: root.enabledForTarget ? "Message..." : "Select a chat"
-                    color: Theme.muted
-                    font.pixelSize: composer.font.pixelSize
-                    elide: Text.ElideRight
                 }
             }
 
