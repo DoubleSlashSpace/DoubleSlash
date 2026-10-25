@@ -136,6 +136,13 @@ pub fn device_from_cert_der(
     Some(doubleslash_features::DeviceId(bytes.try_into().ok()?))
 }
 
+/// Verify that the TLS handshake signature `dss` over `message` was produced
+/// by the identity the certificate's CN claims (`hex(identity_pub)`, with an
+/// optional `.b64(device_id)` suffix) — not merely by whatever key the peer
+/// put in the certificate's own SubjectPublicKeyInfo. A self-signed cert lets
+/// the presenter set CN to anyone's hex pubkey while signing with a key of
+/// their own choosing; without this check, that forged CN becomes the
+/// `peer_id` the connection is keyed under (see `cn_from_cert_der` callers).
 fn verify_device_root_signature(
     message: &[u8],
     cert: &CertificateDer<'_>,
@@ -144,12 +151,16 @@ fn verify_device_root_signature(
     let cn = parse_cn_from_der(cert.as_ref()).ok_or(rustls::Error::InvalidCertificate(
         rustls::CertificateError::BadEncoding,
     ))?;
-    if !cn.contains('.') {
-        return Ok(());
-    }
     let check = || -> Option<()> {
-        device_from_cert_der(cert)?;
-        let root: [u8; 32] = hex::decode(cn.split_once('.')?.0).ok()?.try_into().ok()?;
+        let identity_hex = match cn.split_once('.') {
+            Some((identity, _)) => {
+                // Validate the device suffix shape before trusting the claim.
+                device_from_cert_der(cert)?;
+                identity
+            }
+            None => cn.as_str(),
+        };
+        let root: [u8; 32] = hex::decode(identity_hex).ok()?.try_into().ok()?;
         if dss.scheme != rustls::SignatureScheme::ED25519 {
             return None;
         }
@@ -535,6 +546,49 @@ mod tests {
         ));
         let server = quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap()).unwrap();
         let client = make_quic_endpoint(&owner, 0).unwrap();
+        let connect = client
+            .connect(server.local_addr().unwrap(), "doubleslash")
+            .unwrap();
+        let accept = async { server.accept().await.unwrap().await };
+        let (client_result, server_result) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(connect, accept)
+        })
+        .await
+        .unwrap();
+        assert!(client_result.is_err());
+        assert!(server_result.is_err());
+    }
+
+    #[tokio::test]
+    async fn direct_tls_rejects_legacy_claim_signed_by_another_root() {
+        // No device suffix on the CN — the plain identity-cert shape every
+        // client used before device routing existed. An attacker self-signs
+        // with their own key but sets CN to the victim's hex pubkey; the
+        // handshake must fail rather than connecting under the victim's id.
+        let attacker = SigningKey::from_bytes(&[44; 32]);
+        let victim = SigningKey::from_bytes(&[45; 32]);
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(build_ed25519_pkcs8(&attacker)));
+        let pair = KeyPair::from_der_and_sign_algo(&key, &PKCS_ED25519).unwrap();
+        let mut params = CertificateParams::default();
+        params.distinguished_name.push(
+            DnType::CommonName,
+            hex::encode(victim.verifying_key().as_bytes()),
+        );
+        let cert = params.self_signed(&pair).unwrap();
+        let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.der().clone()], key)
+        .unwrap();
+        config.alpn_protocols = vec![ALPN.to_vec()];
+        let config = quinn::ServerConfig::with_crypto(Arc::new(
+            quinn::crypto::rustls::QuicServerConfig::try_from(config).unwrap(),
+        ));
+        let server = quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap()).unwrap();
+        let client = make_quic_endpoint(&victim, 0).unwrap();
         let connect = client
             .connect(server.local_addr().unwrap(), "doubleslash")
             .unwrap();
