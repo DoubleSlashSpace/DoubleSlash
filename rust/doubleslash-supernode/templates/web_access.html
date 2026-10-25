@@ -126,6 +126,10 @@
     <div class="gate-sub" id="gate-subtitle">This supernode requires you to continue.</div>
     <div class="gate-panel">
       <div id="gate-tos-text">Loading…</div>
+      <div class="gate-actions" id="gate-code-row" style="display:none;">
+        <input type="text" id="gate-code-input" placeholder="Access code" autocomplete="off"
+               style="background:var(--bg);border:1px solid var(--border);border-radius:7px;color:var(--text);padding:9px 12px;font:inherit;">
+      </div>
       <div class="gate-actions">
         <button class="btn" id="gate-accept">I Accept</button>
         <span class="gate-note" id="gate-note"></span>
@@ -218,9 +222,9 @@
       } else if (mode === "code") {
         el("gate-title").textContent = "Access required";
         el("gate-subtitle").textContent = "This supernode requires an access code.";
-        el("gate-tos-text").textContent =
-          "Continue to request access. (Code entry UI uses the accept action on this build.)";
-        acceptBtn.textContent = "Continue";
+        el("gate-tos-text").textContent = "Enter the access code provided by the supernode operator.";
+        el("gate-code-row").style.display = "flex";
+        acceptBtn.textContent = "Submit";
       } else {
         el("gate-title").textContent = "Access required";
         el("gate-subtitle").textContent =
@@ -230,11 +234,21 @@
       }
 
       acceptBtn.onclick = async () => {
+        let acceptUrl = "/api/access/accept";
+        if (mode === "code") {
+          const code = (el("gate-code-input").value || "").trim();
+          if (!code) {
+            note.className = "gate-note err";
+            note.textContent = "Enter an access code.";
+            return;
+          }
+          acceptUrl += "?code=" + encodeURIComponent(code);
+        }
         acceptBtn.disabled = true;
         note.className = "gate-note";
         note.textContent = "Submitting…";
         try {
-          const r = await doubleslashFetch("/api/access/accept");
+          const r = await doubleslashFetch(acceptUrl);
           const body = await r.json().catch(() => ({}));
           if (r.status === 200 && body.granted) {
             note.className = "gate-note ok";

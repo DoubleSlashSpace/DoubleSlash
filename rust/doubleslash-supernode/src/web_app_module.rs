@@ -186,10 +186,13 @@ impl WebAppHostModule {
                 }
                 "/api/access/accept" => {
                     // Pass the access gate. The caller is cryptographically
-                    // identified by the QUIC relay stream (peer_id), so no body
-                    // is needed — hitting this endpoint *is* the authenticated
-                    // acceptance. Promotes the guest to a full relay ticket.
-                    let granted = state.grant_portal_access(peer_id);
+                    // identified by the QUIC relay stream (peer_id); gates that
+                    // need no further input (open/tos/ad) treat hitting this
+                    // endpoint as the authenticated acceptance. The code gate
+                    // additionally requires a `?code=` query param, checked by
+                    // `AccessController::check_submission`.
+                    let submitted = query_param(request.query.as_deref(), "code");
+                    let granted = state.grant_portal_access(peer_id, submitted.as_deref());
                     let status = if granted { 200 } else { 403 };
                     return self
                         .send_json(
@@ -380,6 +383,53 @@ impl WebAppHostModule {
     }
 }
 
+/// Find `key` in a raw `a=b&c=d` query string (no leading `?`) and
+/// percent/`+`-decode its value. Returns `None` if the key is absent.
+fn query_param(query: Option<&str>, key: &str) -> Option<String> {
+    query?.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        if k == key {
+            Some(percent_decode(v))
+        } else {
+            None
+        }
+    })
+}
+
+/// Minimal `application/x-www-form-urlencoded` value decoder: `+` → space,
+/// `%XX` → byte. Invalid escapes/UTF-8 pass through as literal bytes.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+                match hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                    Some(byte) => {
+                        out.push(byte);
+                        i += 3;
+                    }
+                    None => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_owned())
+}
+
 /// Resolve `rel` (which may be empty for the index) under `root`,
 /// rewriting `""` and trailing `/` to `index.html`. Returns `None` if
 /// canonicalisation escapes the root (defence in depth — caller already
@@ -470,6 +520,24 @@ mod tests {
         let (root, rel) = m.route("/");
         assert!(root.ends_with("web"));
         assert_eq!(rel, "");
+    }
+
+    #[test]
+    fn query_param_finds_and_decodes_value() {
+        assert_eq!(
+            query_param(Some("code=ab%20cd&other=1"), "code"),
+            Some("ab cd".to_owned())
+        );
+        assert_eq!(
+            query_param(Some("a=1&code=plus+space"), "code"),
+            Some("plus space".to_owned())
+        );
+    }
+
+    #[test]
+    fn query_param_missing_key_or_query_is_none() {
+        assert_eq!(query_param(Some("a=1&b=2"), "code"), None);
+        assert_eq!(query_param(None, "code"), None);
     }
 
     #[test]

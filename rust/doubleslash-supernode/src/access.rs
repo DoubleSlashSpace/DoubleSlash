@@ -136,6 +136,14 @@ pub trait AccessController: Send + Sync {
     /// Called after access is granted via portal.
     fn on_peer_granted(&self, _peer_id: &str) {}
 
+    /// Validate whatever extra credential the gate's portal page collects
+    /// alongside acceptance (e.g. the code typed into the code gate). Modes
+    /// that require nothing beyond clicking accept (open/tos/ad) accept any
+    /// input, including none.
+    fn check_submission(&self, _submitted: Option<&str>) -> bool {
+        true
+    }
+
     /// The portal entry path for this access mode.
     fn portal_entry_path(&self) -> &str {
         "/access.html"
@@ -274,7 +282,6 @@ impl AccessController for AdGateAccessController {
 
 /// Requires entering an access code via web portal.
 pub struct CodeGateAccessController {
-    #[cfg_attr(not(test), expect(dead_code, reason = "exercised by unit tests only"))]
     code: String,
     granted: GrantStore,
 }
@@ -297,9 +304,8 @@ impl CodeGateAccessController {
         }
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "exercised by unit tests only"))]
     pub fn check_code(&self, submitted: &str) -> bool {
-        submitted == self.code
+        !self.code.is_empty() && submitted == self.code
     }
 }
 
@@ -310,6 +316,10 @@ impl AccessController for CodeGateAccessController {
 
     fn on_peer_granted(&self, peer_id: &str) {
         self.granted.insert(peer_id);
+    }
+
+    fn check_submission(&self, submitted: Option<&str>) -> bool {
+        submitted.is_some_and(|code| self.check_code(code))
     }
 
     fn portal_entry_path(&self) -> &str {
@@ -443,6 +453,32 @@ mod tests {
         assert!(ac.check_code("secret"));
         assert!(!ac.check_code("wrong"));
         assert!(!ac.check_code(""));
+    }
+
+    #[test]
+    fn code_gate_check_submission_requires_the_correct_code() {
+        // The bug this guards: the portal's accept endpoint used to call
+        // `on_peer_granted` directly, never consulting `check_code` at all,
+        // so the code gate granted access to anyone who asked.
+        let ac = CodeGateAccessController::new("secret".into());
+        assert!(ac.check_submission(Some("secret")));
+        assert!(!ac.check_submission(Some("wrong")));
+        assert!(!ac.check_submission(Some("")));
+        assert!(!ac.check_submission(None));
+    }
+
+    #[test]
+    fn code_gate_empty_configured_code_never_matches() {
+        let ac = CodeGateAccessController::new(String::new());
+        assert!(!ac.check_submission(Some("")));
+        assert!(!ac.check_submission(None));
+    }
+
+    #[test]
+    fn open_tos_ad_accept_any_submission() {
+        assert!(OpenAccessController::new().check_submission(None));
+        assert!(TOSAccessController::new().check_submission(None));
+        assert!(AdGateAccessController::new().check_submission(Some("anything")));
     }
 
     #[test]

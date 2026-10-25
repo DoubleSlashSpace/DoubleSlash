@@ -962,16 +962,27 @@ impl SupernodeState {
     /// access gate in the in-app portal. `relay_peer_id` is the un-padded id
     /// from the portal QUIC stream; it is re-padded to the canonical
     /// `public_id` so the peer store and access controller are keyed
-    /// consistently with the signaling/trust path. Records the grant and issues
-    /// a full relay ticket (which upgrades the guest's live relay connection in
-    /// place). Returns `false` when the caller is not a currently-trusted peer
-    /// (guards against un-handshaken callers reaching the grant endpoint).
-    pub(crate) fn grant_portal_access(&self, relay_peer_id: &str) -> bool {
+    /// consistently with the signaling/trust path. `submitted` is whatever
+    /// extra credential the gate's page collected (e.g. the code typed into
+    /// the code gate); modes that need none ignore it via
+    /// `AccessController::check_submission`'s default. Records the grant and
+    /// issues a full relay ticket (which upgrades the guest's live relay
+    /// connection in place). Returns `false` when the caller is not a
+    /// currently-trusted peer, or fails the mode's submission check.
+    pub(crate) fn grant_portal_access(&self, relay_peer_id: &str, submitted: Option<&str>) -> bool {
         let identity_pub = pad_base64url(relay_peer_id);
         if !self.peer_store.read().is_trusted(&identity_pub) {
             warn!(
                 "Portal access grant refused for untrusted peer {}",
                 &identity_pub[..12.min(identity_pub.len())]
+            );
+            return false;
+        }
+        if !self.access_controller.check_submission(submitted) {
+            warn!(
+                "Portal access grant refused for {} ({} gate rejected submission)",
+                &identity_pub[..12.min(identity_pub.len())],
+                self.access_controller.mode_name()
             );
             return false;
         }
