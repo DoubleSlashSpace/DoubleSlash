@@ -225,7 +225,7 @@ Global:
 
 **TUI** (ratatui): fleet table, node add/edit, per-node supernode config editor (features + SFU policy), settings (version/repo/privilege/firewall/build source), install/start/stop/restart, build and deploy, cluster sync, config push, logs viewer, invite copy, uninstall with purge confirmation, auto-refresh.
 
-`build-deploy` requires `--source` in CLI mode even when `defaults.build_source` is configured; the TUI reads `defaults.build_source` directly.
+`build-deploy` requires `--source` in CLI mode even when `defaults.build_source` is configured; the TUI reads `defaults.build_source` directly. Local builds locate the executable through Cargo compiler-artifact messages, honoring workspace and custom target directories and cross-target executable suffixes.
 
 **Not implemented yet:** `plan` (dry-run diff), dedicated `update` (stage + symlink flip + health check + rollback), signed `releases_manifest.json` verification, audit log, HTTP metrics scrape.
 

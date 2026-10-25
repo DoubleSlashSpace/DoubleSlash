@@ -91,7 +91,7 @@ pub fn build_local_binary(
     } else {
         cmd.arg("build");
     }
-    cmd.arg("--release");
+    cmd.args(["--release", "--message-format=json-render-diagnostics"]);
     if let Some(triple) = target_triple {
         cmd.arg("--target").arg(triple);
     }
@@ -120,34 +120,30 @@ pub fn build_local_binary(
 
     // If the source path (or its default target dir) contains spaces the zig
     // linker will misparse it.  Redirect output to a space-free temp location.
-    let alt_target: Option<std::path::PathBuf> = if source_dir.to_string_lossy().contains(' ') {
+    if source_dir.to_string_lossy().contains(' ') {
         let dir = std::env::temp_dir().join("snm-build").join("target");
-        std::fs::create_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).context("Create build target directory")?;
         cmd.env("CARGO_TARGET_DIR", &dir);
-        Some(dir)
-    } else {
-        None
-    };
+    }
 
-    // Capture stderr (where cargo writes errors) while letting stdout pass through.
-    cmd.stderr(std::process::Stdio::piped());
-
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("spawn {} (is it installed?)", tool.as_str()))?;
-    let stderr_bytes = child
-        .stderr
-        .take()
-        .map(|mut r| {
-            let mut buf = Vec::new();
-            std::io::Read::read_to_end(&mut r, &mut buf).ok();
-            buf
-        })
-        .unwrap_or_default();
-    let status = child.wait().context("wait for cargo")?;
+    // Cargo reports the actual executable, including workspace/config/env target
+    // directories and cross-target suffixes. Drain both pipes together.
+    let output = cmd
+        .output()
+        .with_context(|| format!("run {} (is it installed?)", tool.as_str()))?;
+    let status = output.status;
 
     if !status.success() {
-        let stderr = String::from_utf8_lossy(&stderr_bytes);
+        let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        // Rust diagnostics use stdout in JSON mode; retain their rendered text
+        // in the TUI error instead of only reporting Cargo's final summary.
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Ok(message) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(rendered) = message["message"]["rendered"].as_str() {
+                    stderr.push_str(rendered);
+                }
+            }
+        }
         // Extract the most useful lines: error[…] and ^^ lines, capped at 40 lines.
         let error_lines: Vec<&str> = stderr
             .lines()
@@ -170,24 +166,7 @@ pub fn build_local_binary(
         );
     }
 
-    // Locate the binary.
-    // When CARGO_TARGET_DIR is overridden (alt_target), that path IS the target
-    // dir and cargo writes directly into it: <alt_target>/<triple>/release/bin
-    // When using the source dir, cargo creates a `target` sub-dir:
-    //   <source_dir>/target/<triple>/release/bin
-    let binary_name = if cfg!(target_os = "windows") && target_triple.is_none() {
-        "doubleslash-supernode.exe"
-    } else {
-        "doubleslash-supernode"
-    };
-    let target_dir: PathBuf = match &alt_target {
-        Some(alt) => alt.clone(),
-        None => source_dir.join("target"),
-    };
-    let binary_path = match target_triple {
-        Some(triple) => target_dir.join(triple).join("release").join(binary_name),
-        None => target_dir.join("release").join(binary_name),
-    };
+    let binary_path = built_supernode_executable(&output.stdout)?;
 
     if !binary_path.exists() {
         bail!(
@@ -230,6 +209,26 @@ pub fn build_local_binary(
     );
     license_files(&binary_path)?;
     Ok(binary_path)
+}
+
+fn built_supernode_executable(messages: &[u8]) -> Result<PathBuf> {
+    String::from_utf8_lossy(messages)
+        .lines()
+        .filter_map(|line| {
+            let message: serde_json::Value = serde_json::from_str(line).ok()?;
+            if message["reason"] != "compiler-artifact"
+                || message["target"]["name"] != "doubleslash-supernode"
+                || !message["target"]["kind"]
+                    .as_array()?
+                    .iter()
+                    .any(|kind| kind == "bin")
+            {
+                return None;
+            }
+            message["executable"].as_str().map(PathBuf::from)
+        })
+        .next()
+        .context("Cargo did not report a doubleslash-supernode executable")
 }
 
 pub fn resolve_release_artifact(defaults: &Defaults, platform: &str) -> Result<ReleaseArtifact> {
@@ -617,9 +616,84 @@ mod tests {
     }
 
     #[test]
+    fn cargo_artifacts_locate_workspace_and_cross_target_executables() {
+        for executable in [
+            "/repo/rust/target/release/doubleslash-supernode",
+            "/custom output/aarch64-unknown-linux-musl/release/doubleslash-supernode",
+            "C:/build/target/x86_64-pc-windows-msvc/release/doubleslash-supernode.exe",
+        ] {
+            let messages = format!(
+                "{}\n{}\n{}\n{}\n",
+                serde_json::json!({"reason":"compiler-artifact", "target":{"name":"dependency", "kind":["lib"]}, "executable":null}),
+                serde_json::json!({"reason":"compiler-artifact", "target":{"name":"doubleslash-supernode", "kind":["custom-build"]}, "executable":"wrong"}),
+                serde_json::json!({"reason":"compiler-artifact", "target":{"name":"doubleslash-supernode", "kind":["bin"]}, "executable":executable}),
+                serde_json::json!({"reason":"build-finished", "success":true})
+            );
+            assert_eq!(
+                built_supernode_executable(messages.as_bytes()).unwrap(),
+                PathBuf::from(executable)
+            );
+        }
+        assert!(
+            built_supernode_executable(b"{\"reason\":\"build-finished\",\"success\":true}\n")
+                .is_err()
+        );
+    }
+
+    #[test]
     fn release_extraction_rejects_missing_notices_or_duplicate_binary() {
         assert!(extract_from_tar_gz(&package_fixture(false, false)).is_err());
         assert!(extract_from_tar_gz(&package_fixture(true, true)).is_err());
+    }
+
+    #[test]
+    fn workspace_build_uses_cargos_reported_custom_target_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "snm-artifact-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let package = dir.join("node");
+        std::fs::create_dir_all(package.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[workspace]\nmembers = ['node']\nresolver = '2'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("Cargo.toml"),
+            "[package]\nname = 'doubleslash-supernode'\nversion = '0.0.0'\nedition = '2021'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("src/main.rs"),
+            "fn main() { println!(\"artifact-ok\"); }\n",
+        )
+        .unwrap();
+        let output = std::process::Command::new("cargo")
+            .current_dir(&package)
+            .args([
+                "build",
+                "--offline",
+                "--message-format=json-render-diagnostics",
+            ])
+            .env("CARGO_TARGET_DIR", dir.join("custom output"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let executable = built_supernode_executable(&output.stdout).unwrap();
+        assert!(executable.starts_with(dir.join("custom output")));
+        let run = std::process::Command::new(executable).output().unwrap();
+        assert!(run.status.success());
+        assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "artifact-ok");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
