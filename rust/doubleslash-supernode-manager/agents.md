@@ -54,7 +54,7 @@ There is deliberately no `sfu_rooms.json`: room definitions are encrypted, clien
 - **Preferred:** `<data_dir>/supernode.toml` — manager generates per instance via `snm-supernode::manifest::render_supernode_toml`.
 - **SFU room policy:** `[defaults.supernode]` / per-instance overrides for `allow_public_rooms` / `allow_private_rooms` are emitted as **inline** `params = { … }` on the `room.audio.sfu` feature row (not a separate `[feature.params]` table).
 - **Legacy env vars** (still written in systemd drop-ins): `supernode_host`, `supernode_port`, `supernode_signaling_port`. Manifest fields (`listen_addr`, `ws_listen_addr`) are authoritative in `supernode.toml`. The in-app portal uses QUIC (`web.host.app.v1`) — no public HTTP port.
-- **Current runtime limitation:** the manager also serializes `identity_file` and `access_mode`, but `doubleslash-supernode::manifest::apply_to_config` does not currently apply either field. The runtime always loads `<data_dir>/identity.json`, and access control comes from `supernode_access_mode` plus its related environment variables. The generated systemd drop-in does not set those access variables, so manager inventory values other than the default open mode are descriptive only until that implementation gap is closed. Do not rely on them to enforce a gate.
+- **Runtime settings:** `listen_addr` and `ws_listen_addr` preserve the bind IP and port. Manifest `access_mode` overrides the environment and accepts `open`, `tos`, `access_code`/`code`, and `timer`/`ad`; unsupported values or invalid manifests stop startup. Code credentials and gate presentation still come from the related environment variables. `identity_file` remains descriptive only: the runtime loads `<data_dir>/identity.json`.
 - **Clustering:** an optional `[cluster]` section (with `[[cluster.member]]` rows) links several supernodes into one logical node. Additive to `schema_version = 1` — the manager renders and pushes the shared roster to every member. Full contract, provisioning flow, and firewalling in §8.
 - `DOUBLESLASH_BUILD_ID` is compiled into the binary; status probes it via `strings` when present.
 
@@ -176,7 +176,7 @@ Rules:
 
 - `(host.name, instance.id)` is the unique deployment key.
 - `[[host.instance]]` in TOML deserializes to `host.instances` in Rust.
-- Effective per-instance overrides: `listen_bind`, `allow_public_rooms`, and `allow_private_rooms`. The schema also accepts `access_mode` and `identity_file`, but the current supernode runtime does not apply those generated manifest fields; see the runtime limitation in §2.
+- Effective per-instance overrides: `listen_bind`, `access_mode`, `allow_public_rooms`, and `allow_private_rooms`. IPv6 bind IPs are bracketed in generated socket addresses. `identity_file` is accepted by the schema but remains unapplied; see §2.
 - Features accept bare strings or `{ id, enabled, params }` objects.
 - `init` scaffolds `inventory.toml` and a `secrets.toml` template; live SSH passwords typically live in gitignored `secrets.local.ps1` on Windows.
 
@@ -379,7 +379,7 @@ Implementation: `snm-supernode::binary_probe` — remote `readlink`, `sha256sum`
 | Embedded + OpenSSH transport | Done |
 | GitHub release fetch + sha256 | Done |
 | `config-push` + SFU inline params | Done |
-| Manager-generated `access_mode` / `identity_file` runtime application | Gap — fields are serialized but not applied by `doubleslash-supernode` |
+| Manager-generated `identity_file` runtime application | Gap — runtime always loads `identity.json` |
 | ufw firewall tagging | Done |
 | Binary identity in status/TUI | Done |
 | Supernode clustering (chat/ACL/trust replication + client failover) | Done — supernode + client sides |
@@ -391,7 +391,7 @@ Implementation: `snm-supernode::binary_probe` — remote `readlink`, `sha256sum`
 | macOS/Windows remote supervisors | Not started |
 | Plugin keys / asset sync | Not started |
 
-**Suggested next work:** apply or remove the manager-generated `access_mode` / `identity_file` fields; dedicated `update` with symlink flip + health poll + rollback; `plan` diff; persist auto-allocated ports; rootless systemd; signed release verification.
+**Suggested next work:** apply or remove the manager-generated `identity_file` field; dedicated `update` with symlink flip + health poll + rollback; `plan` diff; persist auto-allocated ports; rootless systemd; signed release verification.
 
 ---
 

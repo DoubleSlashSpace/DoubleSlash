@@ -107,11 +107,11 @@ pub fn render_supernode_toml_with_cluster(
     );
     root.insert(
         "listen_addr".into(),
-        toml::Value::String(format!("{}:{}", config.listen_bind, config.relay_port)),
+        toml::Value::String(listen_address(&config.listen_bind, config.relay_port)),
     );
     root.insert(
         "ws_listen_addr".into(),
-        toml::Value::String(format!("{}:{}", config.listen_bind, config.ws_port)),
+        toml::Value::String(listen_address(&config.listen_bind, config.ws_port)),
     );
     root.insert(
         "identity_file".into(),
@@ -151,6 +151,14 @@ fn render_cluster_section(roster: &ClusterRoster) -> String {
         lines.push(String::new());
     }
     lines.join("\n")
+}
+
+fn listen_address(bind: &str, port: u16) -> String {
+    match bind.parse::<std::net::IpAddr>() {
+        Ok(ip) => std::net::SocketAddr::new(ip, port).to_string(),
+        // Leave invalid inventory values visible for the runtime to reject.
+        Err(_) => format!("{bind}:{port}"),
+    }
 }
 
 #[cfg(test)]
@@ -199,6 +207,15 @@ mod tests {
         let raw = render_supernode_toml(&config);
         assert!(raw.contains("params"));
         assert!(raw.contains("scope = \"session\""));
+    }
+
+    #[test]
+    fn ipv6_binds_are_bracketed_in_both_listener_addresses() {
+        let mut config = sample_config();
+        config.listen_bind = "::1".into();
+        let manifest: toml::Value = render_supernode_toml(&config).parse().unwrap();
+        assert_eq!(manifest["listen_addr"].as_str(), Some("[::1]:3478"));
+        assert_eq!(manifest["ws_listen_addr"].as_str(), Some("[::1]:34935"));
     }
 
     #[test]

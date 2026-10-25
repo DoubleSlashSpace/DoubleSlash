@@ -154,12 +154,16 @@ params = { allow_public_rooms = false, allow_private_rooms = true }
 
 ## Access Control
 
-Supported modes are currently selected with the `supernode_access_mode` environment variable:
+Set `access_mode` in `supernode.toml`, or use `supernode_access_mode` when the manifest omits it. Supported modes are:
 
 - `open`
 - `tos` (terms of service acceptance)
-- `code`
-- `ad` (timer / ad-gate)
+- `code` (also `access_code`)
+- `ad` (also `timer`, the timer / ad-gate)
+
+The manifest takes precedence. Unknown manifest modes and invalid manifest files stop startup. Code-gate credentials still come from `supernode_access_code`; configure that environment variable on the host.
+
+Listener addresses in `listen_addr` and `ws_listen_addr` preserve both the IP and port, including loopback restrictions. Use numeric IP addresses and bracket IPv6, for example `[::1]:3478`. Invalid addresses stop startup. Without these fields, listeners use `0.0.0.0` and their environment-configured ports.
 
 See `src/access.rs` for the trait and examples.
 

@@ -145,6 +145,8 @@ pub enum ManifestError {
     UnsupportedSchema { found: u32, expected: u32 },
     #[error("duplicate feature id: {0}")]
     DuplicateId(String),
+    #[error("invalid {field}: {value}")]
+    InvalidSetting { field: &'static str, value: String },
 }
 
 impl SupernodeManifest {
@@ -187,8 +189,18 @@ impl SupernodeManifest {
         }
     }
 
-    /// Reject schemas we don't understand and duplicate ids.
+    /// Reject invalid listener/access settings, unsupported schemas and duplicate ids.
     pub fn validate(&self) -> Result<(), ManifestError> {
+        self.network_address("listen_addr", self.listen_addr.as_deref())?;
+        self.network_address("ws_listen_addr", self.ws_listen_addr.as_deref())?;
+        if let Some(mode) = &self.access_mode {
+            if crate::config::AccessMode::parse(mode).is_none() {
+                return Err(ManifestError::InvalidSetting {
+                    field: "access_mode",
+                    value: mode.clone(),
+                });
+            }
+        }
         if self.schema_version != SCHEMA_VERSION {
             return Err(ManifestError::UnsupportedSchema {
                 found: self.schema_version,
@@ -218,21 +230,45 @@ impl SupernodeManifest {
             .collect()
     }
 
-    /// Merge network fields from the manifest into runtime [`Config`].
+    /// Merge network and access settings into runtime [`Config`].
     ///
     /// Env vars win when the manifest omits a field. Portal traffic uses
     /// `web.host.app.v1` on the identity QUIC session — no public HTTP port.
-    pub fn apply_to_config(&self, config: &mut Config) {
-        if let Some(addr) = &self.listen_addr {
-            if let Some(port) = parse_socket_port(addr) {
-                config.relay_port = port;
-            }
+    pub fn apply_to_config(&self, config: &mut Config) -> Result<(), ManifestError> {
+        self.validate()?;
+        if let Some(addr) = self.network_address("listen_addr", self.listen_addr.as_deref())? {
+            config.relay_port = addr.port();
+            config.relay_bind_ip = addr.ip();
         }
-        if let Some(addr) = &self.ws_listen_addr {
-            if let Some(port) = parse_socket_port(addr) {
-                config.signaling_port = port;
-            }
+        if let Some(addr) =
+            self.network_address("ws_listen_addr", self.ws_listen_addr.as_deref())?
+        {
+            config.signaling_port = addr.port();
+            config.signaling_bind_ip = addr.ip();
         }
+        if let Some(mode) = self
+            .access_mode
+            .as_deref()
+            .and_then(crate::config::AccessMode::parse)
+        {
+            config.access_mode = mode;
+        }
+        Ok(())
+    }
+
+    fn network_address(
+        &self,
+        field: &'static str,
+        value: Option<&str>,
+    ) -> Result<Option<std::net::SocketAddr>, ManifestError> {
+        value
+            .map(|value| {
+                value.parse().map_err(|_| ManifestError::InvalidSetting {
+                    field,
+                    value: value.to_owned(),
+                })
+            })
+            .transpose()
     }
 
     /// Enabled entries that carry a `cdylib_manifest` path.
@@ -341,12 +377,6 @@ pub fn sfu_room_creation_policy(registry: &FeatureRegistry) -> SfuRoomCreationPo
         allow_public: param_bool(&params, "allow_public_rooms", false),
         allow_private: param_bool(&params, "allow_private_rooms", true),
     }
-}
-
-/// Parse the port component from `host:port` listen addresses.
-fn parse_socket_port(addr: &str) -> Option<u16> {
-    let (_, port) = addr.rsplit_once(':')?;
-    port.parse().ok()
 }
 
 /// Shallow JSON object merge: keys from `over` win.
@@ -510,7 +540,7 @@ mod tests {
         let mut config = legacy_config_for(std::path::Path::new("."));
         config.relay_port = 3478;
         config.signaling_port = 34935;
-        m.apply_to_config(&mut config);
+        m.apply_to_config(&mut config).unwrap();
         assert_eq!(config.relay_port, 3578);
         assert_eq!(config.signaling_port, 35035);
     }
@@ -527,8 +557,81 @@ mod tests {
         let m = SupernodeManifest::from_toml_str(toml).unwrap();
         let mut config = legacy_config_for(std::path::Path::new("."));
         config.relay_port = 3478;
-        m.apply_to_config(&mut config);
+        m.apply_to_config(&mut config).unwrap();
         assert_eq!(config.relay_port, 3478);
+    }
+
+    #[test]
+    fn manifest_preserves_bind_addresses_and_applies_access_gate() {
+        let m = SupernodeManifest::from_toml_str(
+            r#"
+            listen_addr = "127.0.0.1:3578"
+            ws_listen_addr = "[::1]:35035"
+            access_mode = "access_code"
+        "#,
+        )
+        .unwrap();
+        let mut config = legacy_config_for(std::path::Path::new("."));
+        config.access_code = "operator-secret".into();
+        m.apply_to_config(&mut config).unwrap();
+        assert_eq!(
+            std::net::SocketAddr::new(config.relay_bind_ip, config.relay_port),
+            "127.0.0.1:3578".parse().unwrap()
+        );
+        assert_eq!(
+            std::net::SocketAddr::new(config.signaling_bind_ip, config.signaling_port),
+            "[::1]:35035".parse().unwrap()
+        );
+        let gate = crate::access::create_access_controller(
+            config.access_mode,
+            &config.access_code,
+            &config.data_dir,
+        );
+        assert!(!gate.check_access("new-peer"));
+        assert!(!gate.check_submission(Some("wrong")));
+        assert!(gate.check_submission(Some("operator-secret")));
+    }
+
+    #[test]
+    fn invalid_security_settings_are_rejected() {
+        for setting in [
+            r#"access_mode = "custom""#,
+            r#"access_mode = "typo""#,
+            r#"listen_addr = "bad:3478""#,
+            r#"ws_listen_addr = "127.0.0.1:99999""#,
+        ] {
+            assert!(
+                SupernodeManifest::from_toml_str(setting).is_err(),
+                "{setting}"
+            );
+        }
+    }
+
+    #[test]
+    fn access_modes_support_manager_names_and_legacy_aliases() {
+        for (mode, expected) in [
+            ("open", crate::config::AccessMode::Open),
+            ("tos", crate::config::AccessMode::Tos),
+            ("timer", crate::config::AccessMode::Ad),
+            ("ad", crate::config::AccessMode::Ad),
+            ("access_code", crate::config::AccessMode::Code),
+            ("code", crate::config::AccessMode::Code),
+        ] {
+            let mut config = legacy_config_for(std::path::Path::new("."));
+            SupernodeManifest::from_toml_str(&format!("access_mode = {mode:?}"))
+                .unwrap()
+                .apply_to_config(&mut config)
+                .unwrap();
+            assert_eq!(config.access_mode, expected);
+        }
+        let mut config = legacy_config_for(std::path::Path::new("."));
+        config.access_mode = crate::config::AccessMode::Tos;
+        config.relay_bind_ip = std::net::Ipv4Addr::LOCALHOST.into();
+        SupernodeManifest::default_manifest()
+            .apply_to_config(&mut config)
+            .unwrap();
+        assert_eq!(config.access_mode, crate::config::AccessMode::Tos);
+        assert!(config.relay_bind_ip.is_loopback());
     }
 
     #[test]
@@ -715,6 +818,8 @@ mod tests {
         Config {
             signaling_port: 0,
             relay_port: 0,
+            relay_bind_ip: std::net::Ipv4Addr::UNSPECIFIED.into(),
+            signaling_bind_ip: std::net::Ipv4Addr::UNSPECIFIED.into(),
             chat_enabled: true,
             files_enabled: true,
             sfu_enabled: true,

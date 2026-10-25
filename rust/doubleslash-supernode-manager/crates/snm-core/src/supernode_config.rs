@@ -2,7 +2,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use toml::Value;
 
 /// Documented supernode access modes (`access.rs`).
-pub const ACCESS_MODES: &[&str] = &["open", "tos", "access_code", "timer", "custom"];
+pub const ACCESS_MODES: &[&str] = &["open", "tos", "access_code", "timer"];
 
 /// Default SFU room-creation policy when inventory/manifest omit explicit values.
 pub const DEFAULT_ALLOW_PUBLIC_ROOMS: bool = false;

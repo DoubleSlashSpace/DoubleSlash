@@ -1,14 +1,16 @@
 // DoubleSlash supernode — config.rs
-// Environment-variable-based configuration.
+// Environment defaults and runtime settings, overridden by the manifest.
 
 use std::env;
 
-/// All supernode configuration sourced from environment variables.
+/// Supernode runtime settings. Environment defaults are overridden by the manifest.
 #[derive(Debug, Clone)]
 pub struct Config {
     // Networking
     pub signaling_port: u16,
     pub relay_port: u16,
+    pub relay_bind_ip: std::net::IpAddr,
+    pub signaling_bind_ip: std::net::IpAddr,
 
     // Features
     pub chat_enabled: bool,
@@ -41,6 +43,18 @@ pub enum AccessMode {
     Code,
 }
 
+impl AccessMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "open" => Some(Self::Open),
+            "tos" => Some(Self::Tos),
+            "ad" | "timer" => Some(Self::Ad),
+            "code" | "access_code" => Some(Self::Code),
+            _ => None,
+        }
+    }
+}
+
 impl Config {
     pub fn from_env() -> Self {
         let data_dir = match doubleslash_features::first_env(&[doubleslash_features::ENV_HOME]) {
@@ -64,20 +78,18 @@ impl Config {
         Config {
             signaling_port: env_u16("supernode_signaling_port", 34935),
             relay_port: env_u16("supernode_port", 3478),
+            relay_bind_ip: std::net::Ipv4Addr::UNSPECIFIED.into(),
+            signaling_bind_ip: std::net::Ipv4Addr::UNSPECIFIED.into(),
             chat_enabled: env_bool("supernode_chat", true),
             files_enabled: env_bool("supernode_files", true),
             sfu_enabled: env_bool("supernode_sfu", true),
             invite_ttl_seconds,
             web_title: env::var("supernode_web_title").unwrap_or_else(|_| "Relay Node".into()),
-            access_mode: match env::var("supernode_access_mode")
-                .unwrap_or_default()
-                .as_str()
-            {
-                "tos" => AccessMode::Tos,
-                "ad" => AccessMode::Ad,
-                "code" => AccessMode::Code,
-                _ => AccessMode::Open,
-            },
+            access_mode: env::var("supernode_access_mode")
+                .ok()
+                .as_deref()
+                .and_then(AccessMode::parse)
+                .unwrap_or(AccessMode::Open),
             access_code: env::var("supernode_access_code").unwrap_or_else(|_| "doubleslash".into()),
             ad_duration: env::var("supernode_ad_duration")
                 .ok()

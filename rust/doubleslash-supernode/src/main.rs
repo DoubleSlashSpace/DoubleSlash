@@ -53,26 +53,19 @@ const ENDPOINT_MAX_AGE_S: f64 = 86400.0;
 
 /// Build the supernode's [`FeatureRegistry`] from the manifest at
 /// `<data_dir>/supernode.toml`, or the full first-party default when the file
-/// is absent / unreadable. Built-in first-party descriptors are upserted later
-/// so relay/quota accounting can still classify core, room, and game traffic
-/// when the manifest omits those entries.
+/// is absent. Invalid or unreadable manifests stop startup. Built-in first-party
+/// descriptors are upserted later so relay/quota accounting can still classify
+/// core, room, and game traffic when the manifest omits those entries.
 ///
 /// After registering well-known capabilities, any manifest entries with a
 /// `cdylib_manifest` path are loaded via [`NativeModuleLoader`]. Signer
 /// keys must be listed in `<data_dir>/trusted_module_keys.txt`; unknown
 /// keys cause the entry to be skipped with a warning (no interactive
 /// prompt on the supernode — add keys to the file to pre-authorise them).
-fn load_manifest(config: &Config) -> manifest::SupernodeManifest {
-    match manifest::SupernodeManifest::load_or_default(&config.data_dir) {
-        Ok(m) => m,
-        Err(e) => {
-            warn!(
-                "[features] failed to load supernode.toml ({}); using default first-party manifest",
-                e
-            );
-            manifest::SupernodeManifest::default_manifest()
-        }
-    }
+fn load_manifest(config: &Config) -> Result<manifest::SupernodeManifest, manifest::ManifestError> {
+    // A missing file uses defaults; a broken access or bind configuration must
+    // stop startup rather than silently opening the node.
+    manifest::SupernodeManifest::load_or_default(&config.data_dir)
 }
 
 fn build_feature_registry(
@@ -3611,8 +3604,8 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let mut config = Config::from_env();
-    let manifest = load_manifest(&config);
-    manifest.apply_to_config(&mut config);
+    let manifest = load_manifest(&config)?;
+    manifest.apply_to_config(&mut config)?;
     info!(
         "DoubleSlash supernode v{} starting (signaling={}, relay={})",
         APP_VERSION, config.signaling_port, config.relay_port
@@ -3659,7 +3652,7 @@ async fn main() -> anyhow::Result<()> {
     // QUIC relay server
     let relay = {
         let relay = QUICRelayServer::new(identity.public_id(), Arc::clone(&features));
-        let bind = SocketAddr::from(([0, 0, 0, 0], config.relay_port));
+        let bind = SocketAddr::new(config.relay_bind_ip, config.relay_port);
         let port = relay.start(bind).await?;
         info!("QUIC relay on port {}", port);
         // Pre-authorize existing trusted peers
@@ -4045,7 +4038,7 @@ async fn main() -> anyhow::Result<()> {
     let handler = Arc::new(SupernodeHandler {
         state: state.clone(),
     });
-    let bind = SocketAddr::from(([0, 0, 0, 0], config.signaling_port));
+    let bind = SocketAddr::new(config.signaling_bind_ip, config.signaling_port);
     let sig_port = state.signaling.start(bind, handler).await?;
     info!("Signaling on port {}", sig_port);
 
@@ -4940,6 +4933,8 @@ mod build_feature_registry_tests {
         Config {
             signaling_port: 0,
             relay_port: 0,
+            relay_bind_ip: std::net::Ipv4Addr::UNSPECIFIED.into(),
+            signaling_bind_ip: std::net::Ipv4Addr::UNSPECIFIED.into(),
             chat_enabled: true,
             files_enabled: true,
             sfu_enabled: true,
@@ -4973,7 +4968,7 @@ mod build_feature_registry_tests {
     fn default_manifest_when_no_file() {
         let dir = tempdir();
         let config = cfg(dir);
-        let manifest = load_manifest(&config);
+        let manifest = load_manifest(&config).unwrap();
         let registry = build_feature_registry(&manifest, &config);
         let ids: Vec<String> = registry.snapshot().iter().map(|c| c.id.clone()).collect();
         assert!(ids.iter().any(|i| i == "core.chat.v1"));
@@ -4982,6 +4977,20 @@ mod build_feature_registry_tests {
         assert!(ids.iter().any(|i| i == "web.host.app.v1"));
         assert!(ids.iter().any(|i| i == "game.relay.v1"));
         assert!(ids.iter().all(|i| i != "web.host.h3.v1"));
+    }
+
+    #[test]
+    fn invalid_manifest_stops_startup_instead_of_opening_access() {
+        let dir = tempdir();
+        for body in [
+            "access_mode = 'typo'",
+            "listen_addr = 'bad:3478'",
+            "not valid toml",
+        ] {
+            std::fs::write(dir.join("supernode.toml"), body).unwrap();
+            assert!(load_manifest(&cfg(dir.clone())).is_err());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -4995,7 +5004,7 @@ mod build_feature_registry_tests {
         )
         .unwrap();
         let config = cfg(dir);
-        let manifest = load_manifest(&config);
+        let manifest = load_manifest(&config).unwrap();
         let registry = build_feature_registry(&manifest, &config);
         let mut ids: Vec<String> = registry.snapshot().iter().map(|c| c.id.clone()).collect();
         ids.sort();
