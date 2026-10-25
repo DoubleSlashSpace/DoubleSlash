@@ -284,7 +284,7 @@ Maintain open work and acceptance criteria in [backlog.md](backlog.md), not a se
 
 Current boundaries that affect agent claims:
 
-- A/V sync and adaptive bitrate are implemented. Windows has camera, screen/window, and shared-audio capture; Linux/macOS camera hardware validation and non-Windows screen/shared-audio capture remain gaps. Android sends camera video and decodes opted-in incoming video; on-device rendering is not yet validated. It lacks an incoming shared-audio consumer. Full media acceptance still needs physical-device/two-client/room checks.
+- A/V sync and adaptive bitrate are implemented. Windows has camera, screen/window, and shared-audio capture; Linux/macOS camera hardware validation and non-Windows screen/shared-audio capture remain gaps. Android sends camera video and decodes opted-in incoming video; on-device rendering is not yet validated. Incoming shared audio reaches the call controller for playout and A/V anchoring, with gain following the watched peers; device playback validation remains pending. Full media acceptance still needs physical-device/two-client/room checks.
 - Device routing, device keys/registries, and portable backups exist. Pairing, delegated live authorization, continuous local-data sync, remaining endpoint-state integration, and the call-answer and restore-edge-case parts of installed simultaneous-use acceptance are unfinished.
 - Space Layer 1 supplies signed trees and admission proofs; remaining Space crypto work is in the backlog. Native plugin sandboxing is not implemented.
 - Portal demo state is ephemeral. Browser fixtures do not establish real-device QUIC acceptance; Focus Timer also assumes synchronized device clocks.

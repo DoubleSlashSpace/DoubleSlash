@@ -294,6 +294,12 @@ example"]
 
 ## Key Data Flows
 
+Android's event pump routes shared-audio frames directly to `CallController`,
+preserving their sequence and capture PTS. The controller reorders and mixes
+them separately from voice and anchors video to each sender's playout timeline.
+The complete watched-peer set controls shared-audio gain; media bytes never
+cross the UI JSON channel. Device playback acceptance remains pending.
+
 Room alerts are device-local consumers of decrypted room-chat events. Desktop
 `MainWindow` reports foreground room-text visibility to `AppBridge`; selection
 alone does not mark incoming text read. Clicking the desktop balloon opens

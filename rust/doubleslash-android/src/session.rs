@@ -594,6 +594,17 @@ fn route_media(call_tx: &mpsc::Sender<CallCommand>, event: &ConnectionEvent) {
             seq: *seq,
             opus_data: opus_data.clone(),
         },
+        ConnectionEvent::ContentAudioReceived {
+            peer_id,
+            seq,
+            pts_us,
+            opus,
+        } => CallCommand::ContentAudioInbound {
+            peer_id: peer_id.clone(),
+            seq: *seq,
+            pts_us: *pts_us,
+            opus: opus.clone(),
+        },
         _ => return,
     };
     let _ = call_tx.try_send(command);
@@ -1389,6 +1400,41 @@ mod tests {
             rx.try_recv().is_err(),
             "only media belongs on the call-controller channel",
         );
+    }
+
+    #[test]
+    fn shared_audio_preserves_its_sequence_and_capture_time() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let event = ConnectionEvent::ContentAudioReceived {
+            peer_id: "presenter".into(),
+            seq: 42,
+            pts_us: 120_000,
+            opus: vec![1, 2, 3],
+        };
+        assert!(event::to_json(&event).is_none());
+        route_media(&tx, &event);
+        match rx.try_recv().unwrap() {
+            CallCommand::ContentAudioInbound {
+                peer_id,
+                seq,
+                pts_us,
+                opus,
+            } => {
+                assert_eq!(peer_id, "presenter");
+                assert_eq!(seq, 42);
+                assert_eq!(pts_us, 120_000);
+                assert_eq!(opus, [1, 2, 3]);
+            }
+            _ => panic!("shared audio must reach its separate playout queue"),
+        }
+        // Backpressure must not stall the event pump or overwrite queued audio.
+        route_media(&tx, &event);
+        route_media(&tx, &event);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(CallCommand::ContentAudioInbound { .. })
+        ));
+        assert!(rx.try_recv().is_err());
     }
 
     /// The pump must keep draining the event channel even when playout is

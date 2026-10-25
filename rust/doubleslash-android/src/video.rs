@@ -297,7 +297,7 @@ pub fn watch(
     // Whole set, every time: the manager suppresses a repeat within one room,
     // and a room the phone just joined needs to hear it even when it is empty,
     // or its supernode forwards every camera by default.
-    let _ = cmd_tx.try_send(ConnectionCommand::SetVideoSubscriptions { senders: peers });
+    publish_subscriptions(peers, cmd_tx, call_tx);
 
     // Outside the lock: dropping the receiver joins its decode thread.
     if let Some(receiver) = retired {
@@ -305,6 +305,17 @@ pub fn watch(
         receiver.forget_all();
         drop(receiver);
     }
+}
+
+fn publish_subscriptions(
+    peers: Vec<String>,
+    cmd_tx: &mpsc::Sender<ConnectionCommand>,
+    call_tx: &mpsc::Sender<CallCommand>,
+) {
+    let _ = call_tx.try_send(CallCommand::SetContentViewers {
+        peer_ids: peers.clone(),
+    });
+    let _ = cmd_tx.try_send(ConnectionCommand::SetVideoSubscriptions { senders: peers });
 }
 
 fn start_receiver(cmd_tx: mpsc::Sender<ConnectionCommand>, events: EventSink) -> VideoReceiver {
@@ -363,6 +374,23 @@ mod tests {
         let next = ids(&["AbCd", "EfGh"]);
         assert_eq!(added(&previous, &next), vec!["EfGh"]);
         assert!(added(&next, &previous).is_empty());
+    }
+
+    #[test]
+    fn shared_audio_follows_the_whole_watched_set_including_stop() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(4);
+        let (call_tx, mut call_rx) = mpsc::channel(4);
+        for peers in [ids(&["alice", "bob"]), ids(&["bob"]), vec![]] {
+            publish_subscriptions(peers.clone(), &cmd_tx, &call_tx);
+            match cmd_rx.try_recv().unwrap() {
+                ConnectionCommand::SetVideoSubscriptions { senders } => assert_eq!(senders, peers),
+                _ => panic!("expected room video subscriptions"),
+            }
+            match call_rx.try_recv().unwrap() {
+                CallCommand::SetContentViewers { peer_ids } => assert_eq!(peer_ids, peers),
+                _ => panic!("expected matching shared-audio viewers"),
+            }
+        }
     }
 
     #[test]

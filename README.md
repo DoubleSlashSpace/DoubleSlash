@@ -24,7 +24,7 @@ The desktop client includes video tiles, a pop-out view, full screen, local prev
 | Windows | Camera, screen/window, system or application audio | Media Foundation H.264, VP9, VP8 | Full media path implemented; the remaining product acceptance checklist is in [backlog.md](backlog.md) |
 | Linux | V4L2 camera | VP9, VP8 | Camera hardware validation pending; no screen/window or shared-audio capture |
 | macOS | AVFoundation camera | VP9, VP8 | Camera hardware validation pending; no screen/window or shared-audio capture |
-| Android | CameraX camera, sending and receiving | VP9, VP8 | Incoming video is opt-in per peer and not yet validated on a device; shared-audio playback is not connected yet |
+| Android | CameraX camera, sending and receiving | VP9, VP8 | Incoming video and shared audio follow the watched peers; device playback validation remains pending |
 
 Direct video negotiates a common codec. Rooms default to VP9, which every build decodes; a device that cannot encode VP9 in real time drops to VP8 mid-call. H.264 is used in a room only when chosen in Settings, and only Windows members can display it. Room video requires QUIC relay datagrams. Room voice also has a WebSocket fallback.
 

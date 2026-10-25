@@ -171,9 +171,12 @@ subscriptions are narrowed to the watched set. Still missing:
    in Settings (expected: no picture). Check logcat for
    `[room.video.sfu] subscribing` with an empty set on voice join, and for
    `starting Android capture (vp9` when the phone's camera goes into a room.
-2. **Shared-audio playout.** Android has no content-audio capture *or* playout
-   anchor. Incoming `ContentAudioReceived` must not be serialized into UI JSON;
-   route it like voice in `session.rs::route_media`.
+2. **Shared-audio playback on a device.** Incoming `ContentAudioReceived` now
+   reaches the Rust call controller's reorder buffer, speaker mixer and video
+   playout anchor. It stays out of UI JSON. Shared audio follows the entire
+   watched-peer set independently of voice mute. Verify playback and A/V sync
+   from a desktop share, with two presenters, Stop watching, voice mute, and
+   leave/rejoin. Android content-audio capture is still unbuilt.
 
 ### Screen share at 1080p60 and HDR: live acceptance
 
