@@ -460,8 +460,8 @@ ApplicationWindow {
     }
 
     // The content page to return to from Settings. There is no Chat/Settings
-    // switch any more: the title-bar avatar opens Settings, and its Back
-    // button or the Peers | Rooms toggle leaves it.
+    // switch any more: the title-bar logo and the avatar open Settings, and
+    // its Back button or the Peers | Rooms toggle leaves it.
     property int lastContentNav: 0
     // The sidebar's list: 0 = Peers, 1 = Rooms. Driven by the title-bar toggle.
     property int sidebarTab: 0
@@ -470,6 +470,12 @@ ApplicationWindow {
     function leaveSettings() {
         if (navIndex === 2)
             navIndex = root.lastContentNav
+    }
+
+    /// Settings › Identity. The title-bar logo and the avatar both use this.
+    function openSettings() {
+        navIndex = 2
+        settingsTab = settingsPage.tabIdentity
     }
 
     /// The voice room as "Parent › Room", from the sidebar's own room list.
@@ -915,13 +921,36 @@ ApplicationWindow {
         }
         appWindow: root
 
-        Image {
-            id: logoImage
+        // The D:// mark opens Settings › Identity. The hit area is the bar
+        // height so the mark itself can stay its drawn size.
+        Item {
+            id: logoButton
             Layout.preferredWidth: 48
-            Layout.preferredHeight: 22
+            Layout.preferredHeight: Theme.titleBarHeight
             Layout.alignment: Qt.AlignVCenter
-            fillMode: Image.PreserveAspectFit
-            source: "qrc:/qt/qml/DoubleSlash/Client/icons/logo.svg"
+            Accessible.role: Accessible.Button
+            Accessible.name: qsTr("Settings")
+            Accessible.onPressAction: root.openSettings()
+
+            Image {
+                id: logoImage
+                anchors.centerIn: parent
+                width: 48
+                height: 22
+                fillMode: Image.PreserveAspectFit
+                source: "qrc:/qt/qml/DoubleSlash/Client/icons/logo.svg"
+            }
+
+            HoverHandler { id: logoHover }
+            ToolTip.text: qsTr("Settings")
+            ToolTip.visible: logoHover.hovered
+            ToolTip.delay: Theme.animSlow
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.openSettings()
+            }
         }
 
         // Peers | Rooms — the one switch between the two lists, where the
@@ -1092,9 +1121,7 @@ ApplicationWindow {
             MouseArea {
                 anchors.fill: parent
                 cursorShape: Qt.PointingHandCursor
-                // 2 = Identity, where the avatar editor lives. Shifted from 1
-                // when the Video section was inserted after Audio.
-                onClicked: { navIndex = 2; settingsTab = settingsPage.tabIdentity }
+                onClicked: root.openSettings()
             }
         }
     }

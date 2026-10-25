@@ -12,8 +12,8 @@ Rectangle {
     property bool dirty: false
     signal sectionActivated(int index)
     signal saveRequested()
-    /// Leave Settings for the page it was opened from. The title-bar avatar
-    /// is the way in; there is no Chat/Settings switch to toggle back.
+    /// Leave Settings for the page it was opened from. The title-bar logo and
+    /// avatar are the way in; there is no Chat/Settings switch to toggle back.
     signal backRequested()
 
     Layout.preferredWidth: Theme.sidebarWidth

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -100,6 +101,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -869,10 +871,25 @@ private fun HomeScreen(
             // rather than its topBar slot, so the inset is not theirs to add.
             windowInsets = WindowInsets(0, 0, 0, 0),
             navigationIcon = {
-                Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                // The D:// mark opens Settings, the same action as the desktop
+                // title-bar logo. No ripple: Material's is a circle, and the
+                // mark is the control, not a tiled button.
+                Box(
+                    Modifier
+                        .size(48.dp)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClickLabel = "Open settings",
+                            role = Role.Button,
+                            onClick = viewModel::openSettings,
+                        )
+                        .semantics { contentDescription = "DoubleSlash" },
+                    contentAlignment = Alignment.Center,
+                ) {
                     Image(
                         painter = painterResource(R.drawable.ic_logo),
-                        contentDescription = "DoubleSlash",
+                        contentDescription = null,
                         modifier = Modifier.width(34.dp).height(16.dp),
                     )
                 }
@@ -890,7 +907,7 @@ private fun HomeScreen(
             },
             actions = {
                 // Your avatar opens Settings on Identity, as the desktop's
-                // title-bar avatar does. The logo's old app menu lives there.
+                // title-bar avatar does. The logo does the same.
                 SquareIconButton(
                     onClick = viewModel::openSettings,
                     modifier = Modifier.semantics { contentDescription = "Your identity" },
@@ -2661,8 +2678,8 @@ private fun SettingsScreen(
             },
         )
 
-        // The desktop's settings sections, a tap away. The avatar opens this
-        // screen at Identity; every other section is one chip along.
+        // The desktop's settings sections, a tap away. The logo and the avatar
+        // open this screen at Identity; every other section is one chip along.
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier
