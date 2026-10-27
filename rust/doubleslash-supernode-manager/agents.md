@@ -135,6 +135,8 @@ Credentials are resolved per host. `SNM_SSH_PASSWORD_<HOST>` and `SNM_SSH_USER_<
 
 Capabilities used today: remote command + exit code, upload bytes/files (SFTP or scp), no streaming log follow over SSH in TUI (fetches journal snapshot).
 
+**Embedding applications** (the desktop client) build the embedded backend with `SshTransport::with_auth(target, SessionAuth)`. That transport logs in only with the keys and password in `SessionAuth` (plus `~/.ssh/id_*` when asked), never reads `SNM_SSH_*` or prompts on a terminal, and trusts only the pinned host key: any other key fails the connection, naming both fingerprints. `fetch_host_key` reads a host's key without authenticating so the user can confirm its `SHA256:` fingerprint before it is pinned. `generate_ed25519_key` makes a login key in OpenSSH encoding; storing it encrypted is the caller's job.
+
 ---
 
 ## 5. Inventory model
@@ -227,7 +229,7 @@ Global:
 
 `build-deploy` requires `--source` in CLI mode even when `defaults.build_source` is configured; the TUI reads `defaults.build_source` directly. Local builds locate the executable through Cargo compiler-artifact messages, honoring workspace and custom target directories and cross-target executable suffixes.
 
-**Not implemented yet:** `plan` (dry-run diff), dedicated `update` (stage + symlink flip + health check + rollback), signed `releases_manifest.json` verification, audit log, HTTP metrics scrape.
+**Not implemented yet:** `plan` (dry-run diff), a CLI `update` subcommand (the library updater in §10 has no CLI or TUI entry yet), signed `releases_manifest.json` verification, audit log, HTTP metrics scrape.
 
 ---
 
@@ -250,6 +252,8 @@ Uninstall: stop/disable → remove drop-in → optional `--purge` of data dir �
 **Privilege modes:** `sudo` and `root` work. `rootless-systemd` is recognized in inventory/TUI but install/uninstall bail with "not implemented".
 
 **Firewall:** `firewall = "ufw"` adds idempotent tagged `ufw allow` rules on install and removes them on uninstall. `report` prints required ports only. `off` skips mutation.
+
+**Unit sandbox:** the template runs the node with no capabilities, `NoNewPrivileges`, `ProtectSystem=strict` with only `data_root` writable, and the usual kernel/home/device protections (`systemd.rs`). Every file the supernode writes lives in its data directory; a new write path elsewhere must be added to `ReadWritePaths` or it will fail with `EROFS`. `RestrictAddressFamilies` keeps `AF_NETLINK` for interface discovery. The next `install` or `build-deploy` rewrites the template on existing hosts.
 
 ---
 
@@ -346,7 +350,8 @@ Implementation: `snm-supernode::binary_probe` — remote `readlink`, `sha256sum`
 
 **Partial / gaps:**
 
-- Re-running `install` overwrites the versioned binary path and refreshes the `current` symlink — there is no separate `update` command with rollback.
+- Re-running `install` overwrites the versioned binary path and refreshes the `current` symlink without a health check.
+- `autoupdate.rs` installs an on-server updater (`/usr/local/lib/doubleslash/update-supernode`, config in `/etc/doubleslash/update.env`, unit `doubleslash-supernode-update.service`). It downloads the release package over HTTPS, checks it against the `.sha256` sidecar and the notice files, installs it as `doubleslash-supernode-<channel>-<sha12>` beside the running binary, flips `current`, restarts every active instance on the host, and flips back if an instance is not active, or has restarted, 23 seconds later. It keeps the running and previous builds and records the installed package hash under `/var/lib/doubleslash-update`. `UpdateMode::ServerTimer` enables a daily timer (randomised by two hours, persistent); `ClientDriven` leaves the timer off and runs the same unit on request (`run_update_now`), so the two can never overlap. Data directories are never touched. The updater is reached only through the library (the guided client flow); the CLI and TUI do not install it.
 - No Ed25519 verification against DoubleSlash `releases_manifest.json`.
 - `version = "local"` skips download; operator must set `defaults.binary_path`
   and supply its adjacent `.licenses/` directory. `build-deploy` generates that
@@ -359,7 +364,9 @@ Implementation: `snm-supernode::binary_probe` — remote `readlink`, `sha256sum`
 
 ## 11. Security considerations
 
-- **SSH host-key verification** enabled for embedded backend (`known_hosts`); OpenSSH uses system `known_hosts`.
+- **SSH host-key verification** enabled for embedded backend (`known_hosts`, accept-new); OpenSSH uses system `known_hosts`. A `SessionAuth` transport instead requires the one pinned key.
+- **SSH lockdown** (`ssh_access.rs`) writes `/etc/ssh/sshd_config.d/10-doubleslash.conf` (password and keyboard-interactive login off, root key-only). It needs a `KeyLoginVerified`, which only a successful key-only login produces; sshd validates the file before reload, a rejected file is removed, and the guided flow logs in with the key again afterwards. It refuses hosts whose `sshd_config` does not include `sshd_config.d`.
+- **Host hardening** (`harden.rs`, Debian 11+/Ubuntu 20.04+ only): ufw default-deny with SSH rate-limited on the port sshd actually accepted the session on (`SSH_CONNECTION`), allowed before ufw is enabled; unattended-upgrades with optional 04:00 reboot; optional fail2ban on the systemd journal. Packages wait up to 10 minutes for apt's lock. These are a baseline, not ongoing administration.
 - **Secrets:** `SNM_SSH_PASSWORD[_<HOST>]` / `SNM_SSH_USER[_<HOST>]` via gitignored `secrets.local.ps1`; `secrets.toml` template for future access codes — not logged.
 - **Least privilege:** dedicated service user created on install; `sudo`/`root` for unit installation.
 - **Binary provenance:** SHA-256 sidecar verified on download; running binary SHA shown in status. Signed manifest verification not yet implemented.
@@ -384,14 +391,16 @@ Implementation: `snm-supernode::binary_probe` — remote `readlink`, `sha256sum`
 | Binary identity in status/TUI | Done |
 | Supernode clustering (chat/ACL/trust replication + client failover) | Done — supernode + client sides |
 | Manager cluster provisioning (roster render, identity collection, cluster port + firewall, cluster section preservation across redeploys) | Done |
-| `plan`, `update` + rollback | Not started |
+| On-server updater with rollback, timer or on-request | Library done; unit-tested, not yet run against a live host |
+| Guided setup (`guided.rs`: probe, key install, hardening, install, updater, SSH lockdown, invite) | Library done; unit-tested, not yet run against a live host; client UI pending |
+| `plan`; CLI `update` | Not started |
 | rootless systemd | Stub only |
 | Signed manifest verify | Not started |
 | Audit log | Not started |
 | macOS/Windows remote supervisors | Not started |
 | Plugin keys / asset sync | Not started |
 
-**Suggested next work:** apply or remove the manager-generated `identity_file` field; dedicated `update` with symlink flip + health poll + rollback; `plan` diff; persist auto-allocated ports; rootless systemd; signed release verification.
+**Suggested next work:** live-test the guided flow and updater on a disposable Debian and Ubuntu host; apply or remove the manager-generated `identity_file` field; `plan` diff; persist auto-allocated ports; rootless systemd; signed release verification.
 
 ---
 

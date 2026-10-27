@@ -67,6 +67,12 @@ impl SshTransport {
         }
     }
 
+    /// Embedded transport that logs in with `auth` only and trusts only its
+    /// pinned host key, for an application with its own credential UI.
+    pub fn with_auth(raw_target: impl Into<String>, auth: crate::SessionAuth) -> Self {
+        Self::Embedded(EmbeddedTransport::with_auth(raw_target, auth))
+    }
+
     pub fn from_env(raw_target: impl Into<String>) -> Self {
         Self::new(raw_target, SshBackend::from_env())
     }

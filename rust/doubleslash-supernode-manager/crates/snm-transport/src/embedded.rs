@@ -19,6 +19,7 @@ use crate::auth_prompt::{
 use crate::known_hosts::KnownHosts;
 use crate::openssh::shell_escape;
 use crate::openssh::RemoteOutput;
+use crate::session_auth::{host_key_fingerprint, host_key_matches, SessionAuth};
 use crate::target::SshTarget;
 use crate::traits::{Transport, TransportError};
 
@@ -48,6 +49,9 @@ impl From<russh::Error> for ClientError {
 #[derive(Debug, Clone)]
 pub struct EmbeddedTransport {
     target: SshTarget,
+    /// Explicit credentials and a pinned host key. When set, the transport
+    /// ignores the environment and the terminal, and `~/.ssh` unless asked.
+    auth: Option<Arc<SessionAuth>>,
 }
 
 impl EmbeddedTransport {
@@ -60,6 +64,15 @@ impl EmbeddedTransport {
     pub fn new_for_host(raw_target: impl Into<String>, label: Option<&str>) -> Self {
         Self {
             target: SshTarget::parse_for_host(&raw_target.into(), label),
+            auth: None,
+        }
+    }
+
+    /// Transport that logs in only with `auth` and trusts only its pinned key.
+    pub fn with_auth(raw_target: impl Into<String>, auth: SessionAuth) -> Self {
+        Self {
+            target: SshTarget::parse(&raw_target.into()),
+            auth: Some(Arc::new(auth)),
         }
     }
 
@@ -76,19 +89,35 @@ impl EmbeddedTransport {
             inactivity_timeout: Some(Duration::from_secs(30)),
             ..<_>::default()
         });
-        let known_hosts =
-            KnownHosts::load().map_err(|e| TransportError::Other(format!("known_hosts: {e}")))?;
+        let trust = match &self.auth {
+            Some(auth) => HostTrust::Pinned(auth.host_key.clone()),
+            None => HostTrust::KnownHosts(
+                KnownHosts::load()
+                    .map_err(|e| TransportError::Other(format!("known_hosts: {e}")))?,
+            ),
+        };
         let handler = ClientHandler {
             host: self.target.host.clone(),
-            known_hosts,
+            trust,
         };
         let addr = (self.target.host.as_str(), self.target.port);
         let mut session = client::connect(config, addr, handler)
             .await
             .map_err(|e| TransportError::Other(format!("ssh connect: {e}")))?;
 
-        if !authenticate(&mut session, &self.target).await? {
-            return Err(TransportError::Other(auth_failure_message(&self.target)));
+        let authenticated = match &self.auth {
+            Some(auth) => authenticate_explicit(&mut session, &self.target, auth).await?,
+            None => authenticate(&mut session, &self.target).await?,
+        };
+        if !authenticated {
+            let message = match &self.auth {
+                Some(_) => format!(
+                    "ssh authentication failed for {} (the server rejected the supplied key and password)",
+                    self.target.display()
+                ),
+                None => auth_failure_message(&self.target),
+            };
+            return Err(TransportError::Other(message));
         }
 
         op(session).await
@@ -97,7 +126,14 @@ impl EmbeddedTransport {
 
 struct ClientHandler {
     host: String,
-    known_hosts: KnownHosts,
+    trust: HostTrust,
+}
+
+enum HostTrust {
+    /// `~/.ssh/known_hosts` with OpenSSH `accept-new` semantics.
+    KnownHosts(KnownHosts),
+    /// Only this key, as the user confirmed it.
+    Pinned(russh::keys::PublicKey),
 }
 
 impl client::Handler for ClientHandler {
@@ -118,9 +154,20 @@ impl client::Handler for ClientHandler {
                 self.host
             )));
         };
-        self.known_hosts
-            .verify_or_accept_new(&self.host, key)
-            .map_err(|e| ClientError::Other(format!("host key verification: {e}")))
+        match &mut self.trust {
+            HostTrust::KnownHosts(known_hosts) => known_hosts
+                .verify_or_accept_new(&self.host, key)
+                .map_err(|e| ClientError::Other(format!("host key verification: {e}"))),
+            HostTrust::Pinned(pinned) if host_key_matches(pinned, key) => Ok(true),
+            HostTrust::Pinned(pinned) => Err(ClientError::Other(format!(
+                "host key verification: {} now presents {}, not the confirmed {}. \
+                 The server was reinstalled or the connection is being intercepted; \
+                 refusing to connect",
+                self.host,
+                host_key_fingerprint(key),
+                host_key_fingerprint(pinned)
+            ))),
+        }
     }
 }
 
@@ -180,25 +227,82 @@ async fn authenticate(
     Ok(false)
 }
 
+/// Keys, then password, then a password-only keyboard-interactive round —
+/// never the environment or a terminal.
+async fn authenticate_explicit(
+    session: &mut client::Handle<ClientHandler>,
+    target: &SshTarget,
+    auth: &SessionAuth,
+) -> Result<bool, TransportError> {
+    let user = target.user.as_str();
+    let mut keys = auth.keys.clone();
+    if auth.default_identity_files {
+        keys.extend(load_default_identity_keys());
+    }
+    if try_keys(session, user, keys).await? {
+        return Ok(true);
+    }
+    let Some(password) = auth.password.as_deref() else {
+        return Ok(false);
+    };
+    let result = session
+        .authenticate_password(user, password.as_str())
+        .await
+        .map_err(|e| TransportError::Other(format!("password auth: {e}")))?;
+    if result.success() {
+        return Ok(true);
+    }
+    let mut response = session
+        .authenticate_keyboard_interactive_start(user, None)
+        .await
+        .map_err(|e| TransportError::Other(format!("keyboard-interactive auth: {e}")))?;
+    loop {
+        match response {
+            KeyboardInteractiveAuthResponse::Success => return Ok(true),
+            KeyboardInteractiveAuthResponse::Failure { .. } => return Ok(false),
+            KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
+                if !can_auto_fill_password_prompts(&prompts) {
+                    return Err(TransportError::Other(format!(
+                        "{} asked for more than a password (for example a one-time code); \
+                         set up key login on the server first",
+                        target.display()
+                    )));
+                }
+                response = session
+                    .authenticate_keyboard_interactive_respond(vec![password.to_string()])
+                    .await
+                    .map_err(|e| {
+                        TransportError::Other(format!("keyboard-interactive respond: {e}"))
+                    })?;
+            }
+        }
+    }
+}
+
 async fn try_public_key_auth(
     session: &mut client::Handle<ClientHandler>,
     user: &str,
 ) -> Result<bool, TransportError> {
+    try_keys(session, user, load_default_identity_keys()).await
+}
+
+async fn try_keys(
+    session: &mut client::Handle<ClientHandler>,
+    user: &str,
+    keys: Vec<Arc<russh::keys::PrivateKey>>,
+) -> Result<bool, TransportError> {
+    if keys.is_empty() {
+        return Ok(false);
+    }
     let rsa_hash = session
         .best_supported_rsa_hash()
         .await
         .map_err(|e| TransportError::Other(format!("rsa hash negotiation: {e}")))?
         .flatten();
 
-    for key_path in default_identity_files() {
-        let Ok(key) = load_secret_key(&key_path, None) else {
-            continue;
-        };
+    for key in keys {
         let auth = session
-            .authenticate_publickey(
-                user.to_string(),
-                PrivateKeyWithHashAlg::new(Arc::new(key), rsa_hash),
-            )
+            .authenticate_publickey(user.to_string(), PrivateKeyWithHashAlg::new(key, rsa_hash))
             .await
             .map_err(|e| TransportError::Other(format!("publickey auth: {e}")))?;
         if auth.success() {
@@ -206,6 +310,16 @@ async fn try_public_key_auth(
         }
     }
     Ok(false)
+}
+
+/// Unencrypted keys among `~/.ssh/id_*`. An encrypted key needs a passphrase
+/// this path cannot ask for, so it is skipped.
+fn load_default_identity_keys() -> Vec<Arc<russh::keys::PrivateKey>> {
+    default_identity_files()
+        .into_iter()
+        .filter_map(|path| load_secret_key(&path, None).ok())
+        .map(Arc::new)
+        .collect()
 }
 
 async fn try_password_auth(

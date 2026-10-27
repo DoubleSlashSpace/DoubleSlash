@@ -11,6 +11,35 @@ Add a first-run **Deploy my supernode** path and a persistent Supernode Admin pa
 - Keep nonsecret inventory per client profile and allow importing existing `inventory.toml` on either device. SSH credentials are set up separately on each device and kept in OS protected storage. Confirm a new host fingerprint and reject a changed key.
 - Make Update stage a uniquely named binary and retain the prior binary link and configuration. If service health fails after restart, restore them and report the rollback result. Preserve node identity and persistent peer state.
 
+## Responsibility notice
+
+Before the first deploy, the wizard shows this notice and requires the user to accept it. Acceptance is stored per profile, and the admin panel links back to the notice:
+
+> DoubleSlash can automate initial setup of your server: installing the supernode, configuring a firewall, enabling automatic security updates, and restricting SSH to key login. This is a starting point, not a managed service. You remain solely responsible for the server, including its security, operating-system and software updates, backups, hosting costs, legal compliance where you live and where it runs, and how it is used. Nightly supernode builds are pre-release and may break or change without notice.
+
+## Hardening, access, and update choices
+
+These are implemented in the manager library (`snm-supernode`: `harden.rs`, `ssh_access.rs`, `autoupdate.rs`, `guided.rs`). The wizard shows each choice with its default:
+
+- **SSH access**, chosen in the wizard:
+  - *Client key, password login off* (default): the profile's own ed25519 key is installed with the one-time password. A fresh key-only login must succeed, then password login is turned off as the last step. The user is told that losing the profile key means using the provider's console.
+  - *Client key, password left on*: the same key, with sshd unchanged.
+  - *Own key*: the user's `~/.ssh` key; nothing is installed or changed.
+
+  The password is used for setup only and never stored. Every mode pins the host key the user confirmed by fingerprint.
+- **Hardening** (Debian 11+/Ubuntu 20.04+), each step shown and individually optional:
+  - a ufw default-deny firewall with SSH rate-limited on the port sshd actually uses;
+  - unattended security upgrades, with an optional reboot at 04:00 server time;
+  - fail2ban for SSH.
+
+  The probe lists other public listeners the firewall would block. The node's unit is always sandboxed (no capabilities, read-only system, writable data root only).
+- **Supernode updates**, chosen in the wizard:
+  - *On the server* (default): a daily timer.
+  - *From DoubleSlash*: only when the user chooses Update.
+
+  Both run the same on-server updater. It verifies the SHA-256 sidecar, keeps the previous build, and rolls back when an instance does not stay up. The admin panel can switch modes and run Update now in either one.
+- **Clustering** is in the first release: the admin panel can add another server to an existing managed node. The wizard deploys the new host, then runs `cluster_sync_report_with` using the client's own transports, which restricts the cluster port to member addresses.
+
 ## Setup and provider choice
 
 - After identity setup, both clients offer **Join by invite**, **Deploy my node**, and **Skip**. Deploy collects SSH access and public address, checks the host, previews saved ports and configuration, installs, verifies service health, fetches the reusable invite, and enters the existing signed invite flow. Show success only when the expected node identity connects live; keep failed steps resumable.
@@ -42,7 +71,7 @@ Add a first-run **Deploy my supernode** path and a persistent Supernode Admin pa
 
 ## Defaults and verification
 
-- Use nightly for guided installs until a stable release is published, then prefer the latest stable release. Pin the resolved version for each node; updates require an explicit action and verify the package against its SHA-256 sidecar. In the manual host path, show cloud firewall setup as a visible prerequisite; a future provider adapter configures it before SSH deployment.
+- Use nightly for guided installs until a stable release is published, then prefer the latest stable release. Pin the channel for each node. Updates follow the mode chosen in the wizard, and always verify the package against its SHA-256 sidecar. In the manual host path, show cloud firewall setup as a visible prerequisite; a future provider adapter configures it before SSH deployment.
 - Test shared operations with fake SSH transport, especially host-key changes, interrupted installs, failed updates and rollback, inventory import, and cluster preservation. Test both onboarding flows, provider disclosure and link opening, retries, confirmations, and matching the invite identity to the live connection.
 - For future provider adapters, test mocked provision/poll/firewall failures, duplicate or resumed creates, credential loss, and billing confirmation. Then validate the full provision-to-invite flow on disposable Vultr and DigitalOcean instances and check Vultr referral attribution separately; API documentation alone does not establish those live results.
 - Run formatting, focused tests, Clippy, Qt integration build, and Android target checks for affected workspaces. Validate deploy, update, rollback, and reconnect on a disposable Linux systemd host from both clients, recording live acceptance separately from automated results.

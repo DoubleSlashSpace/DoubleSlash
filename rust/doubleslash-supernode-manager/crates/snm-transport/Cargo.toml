@@ -8,10 +8,12 @@ license.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 crossterm.workspace = true
+getrandom = "0.2"
 home = "0.5.12"
 log = "0.4.32"
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 russh-sftp = "2.3"
 tempfile = "3"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["process", "rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["process", "rt-multi-thread", "macros", "time"] }
+zeroize = "1"

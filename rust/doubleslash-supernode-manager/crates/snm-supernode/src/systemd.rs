@@ -7,7 +7,12 @@ pub const UNIT_TEMPLATE_NAME: &str = "doubleslash-supernode@.service";
 const UNIT_DROPIN_FILENAME: &str = "override.conf";
 
 /// Shared templated unit — no per-instance ports or data dir (those live in drop-ins).
-pub fn render_unit_template(layout: &InstanceLayout, _defaults: &Defaults) -> String {
+///
+/// The sandbox leaves the node able to write only under `data_root`, which is
+/// where it keeps everything (identity, peers, portal assets, the endpoint
+/// mailbox). Its ports are unprivileged, so it needs no capabilities.
+/// `AF_NETLINK` stays allowed for interface address discovery.
+pub fn render_unit_template(layout: &InstanceLayout, defaults: &Defaults) -> String {
     format!(
         r#"[Unit]
 Description=DoubleSlash Supernode (%i)
@@ -19,11 +24,33 @@ ExecStart={exec_start}
 Restart=on-failure
 LimitNOFILE=65536
 
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths={data_root}
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+
 [Install]
 WantedBy=multi-user.target
 "#,
         user = layout.service_user,
         exec_start = shell_escape(&layout.current_binary_link),
+        data_root = shell_escape(&defaults.data_root),
     )
 }
 
@@ -97,6 +124,19 @@ mod tests {
         assert!(unit.contains("User=doubleslash"));
         assert!(!unit.contains("DOUBLESLASH_HOME"));
         assert!(!unit.contains("supernode_port"));
+    }
+
+    #[test]
+    fn template_sandboxes_the_node_to_its_data_root() {
+        let defaults = Defaults {
+            data_root: "/var/lib/conquerd".into(),
+            ..Defaults::default()
+        };
+        let unit = render_unit_template(&sample_layout(), &defaults);
+        assert!(unit.contains("ProtectSystem=strict\n"));
+        assert!(unit.contains("ReadWritePaths=/var/lib/conquerd\n"));
+        assert!(unit.contains("NoNewPrivileges=true\n"));
+        assert!(unit.contains("CapabilityBoundingSet=\n"));
     }
 
     #[test]

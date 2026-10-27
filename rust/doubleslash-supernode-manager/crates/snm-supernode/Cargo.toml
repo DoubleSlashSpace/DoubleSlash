@@ -17,3 +17,4 @@ snm-transport = { workspace = true }
 tar.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+tokio.workspace = true

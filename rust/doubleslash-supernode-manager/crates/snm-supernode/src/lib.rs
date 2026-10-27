@@ -1,19 +1,27 @@
+mod autoupdate;
 mod binary_probe;
 mod cluster_cache;
 mod firewall;
+mod guided;
+mod harden;
 mod invite;
 mod layout;
 mod manifest;
 mod ops;
 mod release;
+mod ssh_access;
 mod systemd;
 
+pub use autoupdate::*;
 pub use binary_probe::*;
 pub use cluster_cache::*;
 pub use firewall::*;
+pub use guided::*;
+pub use harden::*;
 pub use invite::*;
 pub use layout::*;
 pub use manifest::*;
 pub use ops::*;
 pub use release::*;
+pub use ssh_access::*;
 pub use systemd::*;

@@ -275,6 +275,7 @@ pub async fn resolve_install_binary(
                 asset_url: "local".into(),
                 sha256_url: "local".into(),
             },
+            archive_sha256: None,
         });
     }
 
@@ -610,7 +611,7 @@ async fn run_tolerant(transport: &SshTransport, command: &str) -> Result<()> {
 }
 
 /// Push small text files over SSH (avoids flaky SFTP on some hosts).
-async fn upload_text_file(
+pub(crate) async fn upload_text_file(
     transport: &SshTransport,
     prefix: &str,
     remote_path: &str,
@@ -637,7 +638,7 @@ async fn upload_text_file(
     Ok(())
 }
 
-async fn run_checked(transport: &SshTransport, command: &str) -> Result<RemoteOutput> {
+pub(crate) async fn run_checked(transport: &SshTransport, command: &str) -> Result<RemoteOutput> {
     let output = transport.run(command).await?;
     if output.exit_code != 0 {
         return Err(TransportError::CommandFailed {
@@ -740,6 +741,20 @@ pub async fn cluster_sync_report(
     backend: SshBackend,
     cache_path: &Path,
 ) -> Result<Vec<String>> {
+    cluster_sync_report_with(inventory, cluster, cache_path, |host| {
+        Ok(SshTransport::for_host(&host.name, &host.ssh, backend))
+    })
+    .await
+}
+
+/// [`cluster_sync_report`] with the caller choosing how each member host is
+/// reached, for an application that holds its own SSH credentials.
+pub async fn cluster_sync_report_with(
+    inventory: &Inventory,
+    cluster: &ClusterDef,
+    cache_path: &Path,
+    transport_for: impl Fn(&snm_core::Host) -> Result<SshTransport>,
+) -> Result<Vec<String>> {
     let members = inventory.resolve_cluster_members(cluster)?;
     if members.is_empty() {
         return Ok(vec![format!("cluster {}: no members to sync", cluster.id)]);
@@ -756,7 +771,7 @@ pub async fn cluster_sync_report(
     for resolved in &members {
         let layout = InstanceLayout::from_resolved(resolved);
         let label = instance_label(&resolved.host.name, resolved.instance);
-        let transport = SshTransport::for_host(&resolved.host.name, &resolved.host.ssh, backend);
+        let transport = transport_for(resolved.host)?;
         let pub_key = collect_identity_pub(&transport, &layout)
             .await
             .with_context(|| {
@@ -804,7 +819,7 @@ pub async fn cluster_sync_report(
         let network = NetworkEnv::from_resolved(resolved);
         let label = instance_label(&resolved.host.name, resolved.instance);
         let prefix = privilege_prefix(resolved.defaults.privilege);
-        let transport = SshTransport::for_host(&resolved.host.name, &resolved.host.ssh, backend);
+        let transport = transport_for(resolved.host)?;
 
         let config = resolve_supernode_config(
             resolved.defaults,

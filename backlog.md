@@ -366,6 +366,28 @@ stay-unlocked, Legal reader, backups. Do not re-open those as missing.
 1. **Android room per-peer grants** (`generateRoomInviteForPeer`) are not wired;
    shareable links carry a Space inclusion proof and no grant. Desktop has it.
 
+### Host a supernode from the client
+
+Plan: [SUPERNODE_CLIENT_ADMIN_PLAN.md](docs/SUPERNODE_CLIENT_ADMIN_PLAN.md).
+The manager library has the guided flow, host hardening, SSH key install and
+lockdown, the unit sandbox, and the on-server updater with rollback. All of it
+is unit-tested only. Remaining:
+
+- Desktop: the managed-node store (encrypted per profile), the wizard with the
+  responsibility notice, the admin panel, and accepting the node's invite.
+- Desktop: add a server to a managed node as a cluster member.
+- Android: the same flows.
+- **Live acceptance:** on disposable Debian 12 and Ubuntu 24.04 hosts, run each
+  SSH access mode and both update modes. Then confirm all of these:
+  - the firewall leaves SSH reachable;
+  - password login is refused after lockdown, and key login still works;
+  - a forced bad update rolls back;
+  - the sandboxed unit runs the node, including portal seeding and the
+    endpoint mailbox;
+  - the client connects to the expected node identity.
+- Redeploy the acdc fleet once, to confirm the sandboxed unit template on an
+  existing cluster.
+
 ### Video non-goals (near-term)
 
 - Multiple independent outbound streams per peer (camera + screen without

@@ -22,6 +22,8 @@ pub struct ReleaseArtifact {
 pub struct DownloadedSupernode {
     pub binary_path: PathBuf,
     pub artifact: ReleaseArtifact,
+    /// SHA-256 of the verified release archive; `None` for a local binary.
+    pub archive_sha256: Option<String>,
 }
 
 /// Which cargo-based build front-end to use when building from source.
@@ -285,6 +287,7 @@ pub async fn download_supernode_artifact(
     Ok(DownloadedSupernode {
         binary_path: path,
         artifact,
+        archive_sha256: Some(archive_hash),
     })
 }
 

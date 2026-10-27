@@ -2864,6 +2864,7 @@ dependencies = [
  "snm-transport",
  "tar",
  "thiserror 2.0.18",
+ "tokio",
  "toml",
 ]
 
@@ -2874,6 +2875,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "crossterm",
+ "getrandom 0.2.17",
  "home",
  "log",
  "russh",
@@ -2881,6 +2883,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
