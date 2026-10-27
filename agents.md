@@ -155,6 +155,14 @@ Supernodes may use peer/device IDs, room/session IDs, membership, indices, signa
 - Re-enumerate share sources on every popup open. A missing saved source must show “Source unavailable,” not silently select another. Ask about audio when starting a share, not stopping it.
 - Drive video UI from `video_active`, `content_audio_active`, and `video_preview_active`. Show an explicit unavailable state where a capture/encode path is absent.
 - Pop-out and full screen open one window per peer (`VideoPopoutWindow`). The watched set is the expanded tiles plus those windows. Assign a new `videoPopouts` object when it changes: writing into the existing one does not republish the subscription, so a pop-out of someone who was not already on screen never receives video. Full screen hides that window's title bar; Escape or the corner button leaves it. The tile's pop-out and full-screen buttons stay visible while the tile offers them.
+- **Host a supernode** (`supernode_admin/`, feature `supernode-admin`, on with `qt-ui`) drives the manager library over SSH. It is surfaced through Settings › Network › Your servers (`SupernodeAdminCard.qml`) and `HostSupernodeWizard.qml`, via `supernodeCommand` / `supernodeAdminEvent`.
+  - Deploying is refused until the responsibility notice is accepted.
+  - Every connection pins the host key the user confirmed by fingerprint.
+  - The server password is used once and never stored. `managed_supernodes.dat` holds the profile's SSH key, encrypted under an identity-derived store key, and stays out of backups.
+  - A deployed node joins only through `AcceptInvite` with its own signed invite: setup grants it no trust.
+  - Password login is turned off last, and only after a fresh key-only login succeeds.
+  - Adding a server to a node requires the same root/sudo mode as its first server, because the node's inventory shares one privilege setting.
+  - This is all unit-tested only: no live host has run it yet (see the backlog).
 - Keep avatar serialization in `avatar_config.rs`, SettingsModel, and `Avatar.qml` aligned; exchange custom configs only after trust. Keep the core avatar module available without Qt.
 - Keep privacy controls wired to the actual ChatStore trim/purge methods and identity-keyring deletion. Every CXX-Qt qproperty needs a matching Rust field and initialization; headless checks alone do not validate the Qt build.
 

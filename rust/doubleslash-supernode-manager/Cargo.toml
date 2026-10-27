@@ -31,5 +31,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 snm-core = { path = "crates/snm-core" }
-snm-transport = { path = "crates/snm-transport" }
+snm-transport = { path = "crates/snm-transport", default-features = false }
 snm-supernode = { path = "crates/snm-supernode" }

@@ -1926,6 +1926,11 @@ ApplicationWindow {
         appBackend: backend
     }
 
+    HostSupernodeWizard {
+        id: hostSupernodeWizard
+        appBackend: backend
+    }
+
     // Listen for "Incorrect passphrase" banner to re-show dialog with error
     Connections {
         target: backend
@@ -3872,6 +3877,9 @@ ApplicationWindow {
             SettingsPage {
                 id: settingsPage
                 onBackupsRequested: { settingsModel.save(); backupWizard.open() }
+                onHostSupernodeRequested: function(nodeId, nodeName) {
+                    hostSupernodeWizard.openFor(nodeId, nodeName)
+                }
                 anchors.fill: parent
                 visible: navIndex === 2
                 settings: settingsModel

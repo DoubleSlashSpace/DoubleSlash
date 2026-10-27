@@ -396,6 +396,8 @@ fn build_qt_ui() {
         QmlFile::from("qml/ComponentGallery.qml"),
         QmlFile::from("qml/OnboardingWizard.qml"),
         QmlFile::from("qml/BackupWizard.qml"),
+        QmlFile::from("qml/HostSupernodeWizard.qml"),
+        QmlFile::from("qml/SupernodeAdminCard.qml"),
         QmlFile::from("qml/SidebarItem.qml"),
         QmlFile::from("qml/RoomTreeMember.qml"),
         QmlFile::from("qml/TreeGuides.qml"),

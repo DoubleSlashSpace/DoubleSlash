@@ -16,7 +16,7 @@ crossterm.workspace = true
 ratatui.workspace = true
 snm-core = { workspace = true }
 snm-supernode = { workspace = true }
-snm-transport = { workspace = true }
+snm-transport = { workspace = true, features = ["terminal"] }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

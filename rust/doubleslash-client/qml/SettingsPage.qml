@@ -11,6 +11,9 @@ Item {
 
     property var settings: null
     signal backupsRequested()
+    // Open the host-a-supernode wizard: empty for a new node, or a managed
+    // node's id and name to add a server to it.
+    signal hostSupernodeRequested(string nodeId, string nodeName)
     property int currentTab: 0
 
     // The Rooms sidebar's node list, handed in by MainWindow. Reused rather
@@ -2860,11 +2863,19 @@ Item {
                     Label {
                         Layout.fillWidth: true
                         text: "Supernodes are added by accepting a supernode invite from its "
-                            + "owner — there is nothing to type in here. Open the invite "
-                            + "link you were sent and the node joins this list."
+                            + "owner. Open the invite link you were sent and the node joins "
+                            + "this list, or host your own below."
                         color: Theme.muted
                         wrapMode: Text.WordWrap
                         font.pixelSize: Theme.fontSizeCaption
+                    }
+                }
+
+                SupernodeAdminCard {
+                    appBackend: backend
+                    supernodeModel: root.supernodeModel
+                    onHostRequested: function(nodeId, nodeName) {
+                        root.hostSupernodeRequested(nodeId, nodeName)
                     }
                 }
 

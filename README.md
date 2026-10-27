@@ -106,7 +106,7 @@ Rooms require a supernode. Direct one-to-one sessions do not, provided the peers
 
 ## Running a Supernode
 
-The standalone supernode does not require Qt. Release workflows package Linux x86_64, Linux ARM64, and Windows x86_64 binaries with SHA-256 sidecars. Deployment, systemd configuration, portal templates, and clustering are covered in the [operator guide](docs/SUPERNODE.md). The [supernode manager](docs/supernode-manager.md) provides provisioning, deployment, cluster synchronization, and remote commands.
+The standalone supernode does not require Qt. Release workflows package Linux x86_64, Linux ARM64, and Windows x86_64 binaries with SHA-256 sidecars. Deployment, systemd configuration, portal templates, and clustering are covered in the [operator guide](docs/SUPERNODE.md). The [supernode manager](docs/supernode-manager.md) provides provisioning, deployment, cluster synchronization, and remote commands. The desktop client builds the same library in: Settings › Network › Your servers sets up a supernode on a Debian or Ubuntu server you rent, applies baseline hardening, keeps it updated, and can add more servers as a cluster. The server stays your responsibility, and this path has not yet been tested against a live host.
 
 Build from the repository root:
 

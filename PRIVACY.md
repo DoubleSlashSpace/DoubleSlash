@@ -34,6 +34,7 @@ optional feature described below (updates, link previews, Ollama, and so on).
 | `chat_history.db` | Local chat history; message bodies and sender handles are AES-256-GCM encrypted at rest |
 | `settings.json` | App preferences (audio, video/capture choices, plugins, privacy toggles, window size, etc.) |
 | `my_rooms.dat` | Saved room invites (encrypted) |
+| `managed_supernodes.dat` | Only if you host a supernode from Settings › Network (encrypted): this profile's SSH login key, each server's address, login name and pinned host key, and its node identity. Server passwords are never stored. Not included in backups |
 | OS keyring (`doubleslash` service) | Optional cached AES unlock key so you are not prompted for your passphrase every launch |
 | OS **Downloads** folder | Files received from peers (saved by the desktop client on completion) |
 | `installer.log` | Installer/updater activity log (written when `doubleslash-installer` runs) |
@@ -256,6 +257,26 @@ DoubleSlash profile.
 this client* to keep auto-reply text-only, or just *Let the assistant send
 files* to stop it sending files. Restored backups strip the auto-respond,
 tools, and file-sharing settings, including the shared folder.
+
+### Hosting your own supernode — desktop only
+
+**What:** When you choose *Host a supernode* in Settings › Network, DoubleSlash
+connects to the server you name over SSH. It installs and configures the
+supernode and the security settings you select, and later runs the status,
+log, update and removal actions you click.
+
+**Servers contacted:** Your server, over SSH, using the address, login and
+password or key you enter. The password is used for setup only and is not
+stored. For the first install the desktop client downloads the supernode
+release from GitHub (`github.com/DoubleSlashSpace/DoubleSlash`), checks its
+SHA-256, and uploads it to the server. Later updates are downloaded by the
+server itself from the same place, and its operating-system updates come from
+its distribution's mirrors.
+
+**What is disclosed:** GitHub sees your desktop's IP address during the first
+install, and your server's during updates. The distribution mirrors see your
+server's address. Whoever runs the server, usually you, can see the commands
+DoubleSlash runs on it.
 
 ### Supernode portal and gated relay pages
 

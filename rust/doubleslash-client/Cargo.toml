@@ -82,6 +82,12 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "mul
 # UPnP port mapping (optional — graceful fallback when no gateway)
 rupnp = { version = "1", default-features = false }
 
+# Supernode manager library, for hosting a supernode from the desktop UI.
+# Terminal prompts stay off: the UI passes credentials explicitly.
+snm-core = { path = "../doubleslash-supernode-manager/crates/snm-core", optional = true }
+snm-supernode = { path = "../doubleslash-supernode-manager/crates/snm-supernode", optional = true }
+snm-transport = { path = "../doubleslash-supernode-manager/crates/snm-transport", default-features = false, optional = true }
+
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -185,7 +191,10 @@ tempfile = "3"
 device-routing = ["doubleslash-features/device-routing"]
 # Enable this when Qt6 is installed and QTDIR is set.
 # Activates the cxx-qt bridge and QML UI layer.
-qt-ui = ["dep:cxx-qt", "dep:cxx-qt-lib", "dep:cxx", "dep:arboard"]
+qt-ui = ["dep:cxx-qt", "dep:cxx-qt-lib", "dep:cxx", "dep:arboard", "supernode-admin"]
+# Host and manage a supernode over SSH from the desktop UI, through the
+# supernode manager's library. Desktop only: `qt-ui` turns it on.
+supernode-admin = ["dep:snm-core", "dep:snm-supernode", "dep:snm-transport"]
 # Enable Qt WebEngine (Chromium embed) for inline YouTube, file preview,
 # and the node browser panel. Requires Qt WebEngine to be installed via
 # the Qt Maintenance Tool (separate optional Qt component).

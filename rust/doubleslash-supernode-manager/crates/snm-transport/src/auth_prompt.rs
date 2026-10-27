@@ -1,10 +1,6 @@
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
-
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
 /// Non-interactive SSH password for the embedded backend.
 ///
@@ -17,8 +13,6 @@ pub const SSH_PASSWORD_ENV: &str = "SNM_SSH_PASSWORD";
 /// `inventory.toml`; the bare variable only fills in when the host's `ssh`
 /// string has no `user@` prefix.
 pub const SSH_USER_ENV: &str = "SNM_SSH_USER";
-
-const MASK_CHAR: char = '*';
 
 static SESSION_PASSWORDS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 
@@ -110,105 +104,131 @@ pub fn clear_session_password() {
 }
 
 pub fn interactive_allowed() -> bool {
-    io::stdin().is_terminal()
+    cfg!(feature = "terminal") && io::stdin().is_terminal()
 }
 
-fn format_password_label(prompt: &str) -> String {
-    if prompt.is_empty() {
-        "Password: ".to_string()
-    } else if prompt.ends_with(": ") || prompt.ends_with(':') {
-        prompt.to_string()
-    } else {
-        format!("{prompt}: ")
+#[cfg(not(feature = "terminal"))]
+mod masked {
+    pub(super) fn read_masked_password(_prompt: &str) -> Result<String, String> {
+        Err("terminal password prompts are not built into this program".into())
     }
 }
 
-fn password_chars(text: &str) -> impl Iterator<Item = char> + '_ {
-    text.chars().filter(|c| *c != '\n' && *c != '\r')
-}
+use masked::read_masked_password;
 
-fn append_masked_chars(password: &mut String, text: &str) -> Result<(), String> {
-    let count = password_chars(text).count();
-    if count == 0 {
-        return Ok(());
-    }
-    password.extend(password_chars(text));
-    let mask = MASK_CHAR.to_string().repeat(count);
-    eprint!("{mask}");
-    io::stderr().flush().map_err(|e| e.to_string())?;
-    Ok(())
-}
+/// Masked password entry on a terminal. Built only with the `terminal`
+/// feature: an application with its own UI passes credentials through
+/// `SessionAuth` and has no use for raw-mode key handling.
+#[cfg(feature = "terminal")]
+mod masked {
+    use std::io::{self, Write};
+    use std::time::Duration;
 
-fn erase_masked_char() -> Result<(), String> {
-    // Backspace + space + backspace clears one displayed mask character.
-    eprint!("\x08 \x08");
-    io::stderr().flush().map_err(|e| e.to_string())
-}
+    use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
-fn read_masked_password(prompt: &str) -> Result<String, String> {
-    let label = format_password_label(prompt);
-    eprint!("{label}");
-    io::stderr().flush().map_err(|e| e.to_string())?;
+    const MASK_CHAR: char = '*';
 
-    enable_raw_mode().map_err(|e| format!("enable raw mode: {e}"))?;
-    let result = read_masked_password_raw();
-    disable_raw_mode().map_err(|e| format!("disable raw mode: {e}"))?;
-    eprintln!();
-    result
-}
-
-fn read_masked_password_raw() -> Result<String, String> {
-    let mut password = String::new();
-
-    loop {
-        if !event::poll(Duration::from_millis(100)).map_err(|e| e.to_string())? {
-            continue;
-        }
-
-        match event::read().map_err(|e| e.to_string())? {
-            Event::Key(key) => match handle_password_key(&mut password, key)? {
-                PasswordKeyAction::Continue => {}
-                PasswordKeyAction::Submit => return Ok(password),
-                PasswordKeyAction::Cancel => {
-                    return Err("password entry cancelled".into());
-                }
-            },
-            Event::Paste(text) => append_masked_chars(&mut password, &text)?,
-            _ => {}
+    pub(super) fn format_password_label(prompt: &str) -> String {
+        if prompt.is_empty() {
+            "Password: ".to_string()
+        } else if prompt.ends_with(": ") || prompt.ends_with(':') {
+            prompt.to_string()
+        } else {
+            format!("{prompt}: ")
         }
     }
-}
 
-enum PasswordKeyAction {
-    Continue,
-    Submit,
-    Cancel,
-}
-
-fn handle_password_key(password: &mut String, key: KeyEvent) -> Result<PasswordKeyAction, String> {
-    if key.kind != KeyEventKind::Press {
-        return Ok(PasswordKeyAction::Continue);
+    pub(super) fn password_chars(text: &str) -> impl Iterator<Item = char> + '_ {
+        text.chars().filter(|c| *c != '\n' && *c != '\r')
     }
 
-    match key.code {
-        KeyCode::Enter => Ok(PasswordKeyAction::Submit),
-        KeyCode::Esc => Ok(PasswordKeyAction::Cancel),
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Ok(PasswordKeyAction::Cancel)
+    fn append_masked_chars(password: &mut String, text: &str) -> Result<(), String> {
+        let count = password_chars(text).count();
+        if count == 0 {
+            return Ok(());
         }
-        KeyCode::Backspace => {
-            if password.pop().is_some() {
-                erase_masked_char()?;
+        password.extend(password_chars(text));
+        let mask = MASK_CHAR.to_string().repeat(count);
+        eprint!("{mask}");
+        io::stderr().flush().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn erase_masked_char() -> Result<(), String> {
+        // Backspace + space + backspace clears one displayed mask character.
+        eprint!("\x08 \x08");
+        io::stderr().flush().map_err(|e| e.to_string())
+    }
+
+    pub(super) fn read_masked_password(prompt: &str) -> Result<String, String> {
+        let label = format_password_label(prompt);
+        eprint!("{label}");
+        io::stderr().flush().map_err(|e| e.to_string())?;
+
+        enable_raw_mode().map_err(|e| format!("enable raw mode: {e}"))?;
+        let result = read_masked_password_raw();
+        disable_raw_mode().map_err(|e| format!("disable raw mode: {e}"))?;
+        eprintln!();
+        result
+    }
+
+    fn read_masked_password_raw() -> Result<String, String> {
+        let mut password = String::new();
+
+        loop {
+            if !event::poll(Duration::from_millis(100)).map_err(|e| e.to_string())? {
+                continue;
             }
-            Ok(PasswordKeyAction::Continue)
+
+            match event::read().map_err(|e| e.to_string())? {
+                Event::Key(key) => match handle_password_key(&mut password, key)? {
+                    PasswordKeyAction::Continue => {}
+                    PasswordKeyAction::Submit => return Ok(password),
+                    PasswordKeyAction::Cancel => {
+                        return Err("password entry cancelled".into());
+                    }
+                },
+                Event::Paste(text) => append_masked_chars(&mut password, &text)?,
+                _ => {}
+            }
         }
-        KeyCode::Char(c) => {
-            password.push(c);
-            eprint!("{MASK_CHAR}");
-            io::stderr().flush().map_err(|e| e.to_string())?;
-            Ok(PasswordKeyAction::Continue)
+    }
+
+    enum PasswordKeyAction {
+        Continue,
+        Submit,
+        Cancel,
+    }
+
+    fn handle_password_key(
+        password: &mut String,
+        key: KeyEvent,
+    ) -> Result<PasswordKeyAction, String> {
+        if key.kind != KeyEventKind::Press {
+            return Ok(PasswordKeyAction::Continue);
         }
-        _ => Ok(PasswordKeyAction::Continue),
+
+        match key.code {
+            KeyCode::Enter => Ok(PasswordKeyAction::Submit),
+            KeyCode::Esc => Ok(PasswordKeyAction::Cancel),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Ok(PasswordKeyAction::Cancel)
+            }
+            KeyCode::Backspace => {
+                if password.pop().is_some() {
+                    erase_masked_char()?;
+                }
+                Ok(PasswordKeyAction::Continue)
+            }
+            KeyCode::Char(c) => {
+                password.push(c);
+                eprint!("{MASK_CHAR}");
+                io::stderr().flush().map_err(|e| e.to_string())?;
+                Ok(PasswordKeyAction::Continue)
+            }
+            _ => Ok(PasswordKeyAction::Continue),
+        }
     }
 }
 
@@ -314,14 +334,17 @@ mod tests {
         assert!(store.get("root@10.0.0.2:22").is_none());
     }
 
+    #[cfg(feature = "terminal")]
     #[test]
     fn strips_newlines_from_paste_text() {
-        let chars: Vec<char> = password_chars("abc\r\ndef").collect();
+        let chars: Vec<char> = masked::password_chars("abc\r\ndef").collect();
         assert_eq!(chars, vec!['a', 'b', 'c', 'd', 'e', 'f']);
     }
 
+    #[cfg(feature = "terminal")]
     #[test]
     fn formats_password_label() {
+        use masked::format_password_label;
         assert_eq!(format_password_label(""), "Password: ");
         assert_eq!(
             format_password_label("root@host's password: "),

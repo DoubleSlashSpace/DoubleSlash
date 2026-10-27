@@ -8,7 +8,7 @@ Add a first-run **Deploy my supernode** path and a persistent Supernode Admin pa
 
 - Extract the standalone manager’s inventory and operations into a headless Rust service shared by its CLI/TUI and both clients. Expose request IDs, progress, results, and errors without blocking a UI or connection manager loop.
 - Provide host and instance editing, connection probe, install, update, start, stop, restart, status, logs, invite, configuration and feature editing, config push, cluster sync, remote command, inventory removal, and confirmed uninstall or purge. Desktop retains compile-from-source deployment; Android deploys verified Linux release packages.
-- Keep nonsecret inventory per client profile and allow importing existing `inventory.toml` on either device. SSH credentials are set up separately on each device and kept in OS protected storage. Confirm a new host fingerprint and reject a changed key.
+- Keep nonsecret inventory per client profile and allow importing existing `inventory.toml` on either device. SSH credentials are set up separately on each device. The desktop keeps them in `managed_supernodes.dat`, encrypted under an identity-derived store key (like the other profile stores) and excluded from backups; passwords are never stored. Confirm a new host fingerprint and reject a changed key.
 - Make Update stage a uniquely named binary and retain the prior binary link and configuration. If service health fails after restart, restore them and report the rollback result. Preserve node identity and persistent peer state.
 
 ## Responsibility notice

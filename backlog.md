@@ -17,6 +17,7 @@ in [`README.md`](README.md) and on the website must have a home here.
 | Screen and shared-audio capture outside Windows | 3 |
 | WASM plugin sandbox | 7 |
 | Space Layer 2 cryptography | 7 |
+| Host a supernode from the desktop client | 5 |
 
 ---
 
@@ -370,12 +371,14 @@ stay-unlocked, Legal reader, backups. Do not re-open those as missing.
 
 Plan: [SUPERNODE_CLIENT_ADMIN_PLAN.md](docs/SUPERNODE_CLIENT_ADMIN_PLAN.md).
 The manager library has the guided flow, host hardening, SSH key install and
-lockdown, the unit sandbox, and the on-server updater with rollback. All of it
-is unit-tested only. Remaining:
+lockdown, the unit sandbox, and the on-server updater with rollback. The
+desktop has the encrypted managed-node store, the wizard with the
+responsibility notice, the Your servers card (status, logs, restart, updates,
+update mode, add a server as a cluster member, uninstall, forget), and accepts
+the node's invite after setup. All of it is unit-tested, and the QML is only
+rendered against a mock backend. Remaining:
 
-- Desktop: the managed-node store (encrypted per profile), the wizard with the
-  responsibility notice, the admin panel, and accepting the node's invite.
-- Desktop: add a server to a managed node as a cluster member.
+- Import an existing `inventory.toml`; edit a node's features and room policy.
 - Android: the same flows.
 - **Live acceptance:** on disposable Debian 12 and Ubuntu 24.04 hosts, run each
   SSH access mode and both update modes. Then confirm all of these:

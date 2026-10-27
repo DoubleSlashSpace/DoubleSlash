@@ -107,11 +107,28 @@ pub mod ffi {
         #[qproperty(bool, video_preview_active)]
         #[qproperty(bool, backup_busy)]
         #[qproperty(QString, backup_result)]
+        /// True while a command that changes a managed server is running.
+        #[qproperty(bool, supernode_admin_busy)]
+        /// Managed supernodes, the responsibility notice and whether it was
+        /// accepted, as JSON (`AdminService::state`).
+        #[qproperty(QString, supernode_admin_state)]
         type AppBridge = super::AppBridgeRust;
 
         #[qinvokable]
         #[rust_name = "backup_command"]
         fn backupCommand(self: Pin<&mut AppBridge>, request: &QString);
+
+        /// Run one supernode admin request (`supernode_admin::Request` JSON,
+        /// plus an optional `request_id` echoed in every event it causes).
+        #[qinvokable]
+        #[rust_name = "supernode_command"]
+        fn supernodeCommand(self: Pin<&mut AppBridge>, request: &QString);
+
+        /// Progress (`kind` `plan` / `step`) and the final `result` of a
+        /// `supernodeCommand`, as one JSON object each.
+        #[qsignal]
+        #[rust_name = "supernode_admin_event"]
+        fn supernodeAdminEvent(self: Pin<&mut AppBridge>, event_json: QString);
 
         // ── Signals ───────────────────────────────────────────────────────
 
@@ -1331,6 +1348,10 @@ pub struct AppBridgeRust {
     backup_busy: bool,
     backup_result: QString,
     backup_service: Arc<crate::backup::BackupService>,
+    supernode_admin_busy: bool,
+    supernode_admin_state: QString,
+    /// Opened on the first admin command, once the identity is unlocked.
+    supernode_admin: Option<Arc<crate::supernode_admin::AdminService>>,
     // QML property backing fields
     peer_count: i32,
     in_room: bool,
@@ -1855,6 +1876,9 @@ impl Default for AppBridgeRust {
             backup_busy: false,
             backup_result: QString::default(),
             backup_service: Arc::default(),
+            supernode_admin_busy: false,
+            supernode_admin_state: QString::from("{}"),
+            supernode_admin: None,
             pending_release: None,
             rt_thread: None,
             rt_handle: None,
@@ -2322,6 +2346,124 @@ impl ffi::AppBridge {
                 bridge
                     .as_mut()
                     .set_backup_result(QString::from(reply.as_str()));
+            });
+        });
+    }
+
+    fn supernode_command(mut self: Pin<&mut Self>, request: &QString) {
+        // May carry a server password: kept zeroized and never logged.
+        let text = zeroize::Zeroizing::new(request.to_string());
+        let header: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        let request_id = header
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let op = header
+            .get("op")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_owned();
+        drop(header);
+
+        let fail = |mut bridge: Pin<&mut Self>, error: &str| {
+            let event = serde_json::json!({
+                "kind": "result", "request_id": request_id, "op": op,
+                "ok": false, "error": error,
+            });
+            bridge
+                .as_mut()
+                .supernode_admin_event(QString::from(event.to_string().as_str()));
+        };
+
+        let request: crate::supernode_admin::Request = match serde_json::from_str(&text) {
+            Ok(request) => request,
+            Err(e) => return fail(self, &format!("Malformed request: {e}")),
+        };
+        let Some(handle) = self.rust().rt_handle.clone() else {
+            return fail(self, "DoubleSlash is still starting; try again in a moment");
+        };
+        let service = match self.rust().supernode_admin.clone() {
+            Some(service) => service,
+            None => {
+                let Some(identity) = self.rust().identity.clone() else {
+                    return fail(self, "Unlock your identity first");
+                };
+                let directory = crate::identity::Identity::default_key_dir();
+                match crate::supernode_admin::ManagedNodeStore::open(&identity, &directory) {
+                    Ok(store) => {
+                        let service =
+                            Arc::new(crate::supernode_admin::AdminService::new(store, directory));
+                        self.as_mut().rust_mut().supernode_admin = Some(Arc::clone(&service));
+                        service
+                    }
+                    Err(e) => {
+                        warn!("[supernode-admin] open store: {e}");
+                        return fail(self, &format!("Could not open managed supernodes: {e}"));
+                    }
+                }
+            }
+        };
+        let mutating = request.is_mutating();
+        if mutating {
+            if self.rust().supernode_admin_busy {
+                return fail(self, "Another server task is still running");
+            }
+            self.as_mut().set_supernode_admin_busy(true);
+        }
+        info!("[supernode-admin] {op}");
+
+        let qt = self.qt_thread();
+        handle.spawn(async move {
+            let emit = {
+                let qt = qt.clone();
+                let request_id = request_id.clone();
+                move |mut event: serde_json::Value| {
+                    event["request_id"] = serde_json::Value::from(request_id.as_str());
+                    let text = event.to_string();
+                    let _ = qt.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                        bridge
+                            .as_mut()
+                            .supernode_admin_event(QString::from(text.as_str()));
+                    });
+                }
+            };
+            let result = service.handle(request, &emit).await;
+            let state = service.state().to_string();
+            let _ = qt.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                if mutating {
+                    bridge.as_mut().set_supernode_admin_busy(false);
+                }
+                bridge
+                    .as_mut()
+                    .set_supernode_admin_state(QString::from(state.as_str()));
+                let event = match result {
+                    Ok(value) => {
+                        // A new node joins through its signed invite, like any
+                        // other: setup grants it no trust of its own.
+                        if let Some(url) = value.get("accept_invite").and_then(|v| v.as_str()) {
+                            if let Some(tx) = bridge.rust().conn_cmd_tx.as_ref() {
+                                let _ = tx.try_send(ConnectionCommand::AcceptInvite {
+                                    invite_url: url.to_owned(),
+                                });
+                            }
+                        }
+                        serde_json::json!({
+                            "kind": "result", "request_id": request_id, "op": op,
+                            "ok": true, "value": value,
+                        })
+                    }
+                    Err(error) => {
+                        warn!("[supernode-admin] {op} failed: {error}");
+                        serde_json::json!({
+                            "kind": "result", "request_id": request_id, "op": op,
+                            "ok": false, "error": error,
+                        })
+                    }
+                };
+                bridge
+                    .as_mut()
+                    .supernode_admin_event(QString::from(event.to_string().as_str()));
             });
         });
     }

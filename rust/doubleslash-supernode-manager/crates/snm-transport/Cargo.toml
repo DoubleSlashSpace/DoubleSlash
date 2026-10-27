@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-crossterm.workspace = true
+crossterm = { workspace = true, optional = true }
 getrandom = "0.2"
 home = "0.5.12"
 log = "0.4.32"
@@ -17,3 +17,9 @@ tempfile = "3"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "rt-multi-thread", "macros", "time"] }
 zeroize = "1"
+
+[features]
+default = ["terminal"]
+# Masked password prompts on a terminal (CLI/TUI). Applications with their own
+# credential UI leave it off and use `SessionAuth`.
+terminal = ["dep:crossterm"]

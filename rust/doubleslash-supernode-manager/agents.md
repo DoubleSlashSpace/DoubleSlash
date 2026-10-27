@@ -135,7 +135,7 @@ Credentials are resolved per host. `SNM_SSH_PASSWORD_<HOST>` and `SNM_SSH_USER_<
 
 Capabilities used today: remote command + exit code, upload bytes/files (SFTP or scp), no streaming log follow over SSH in TUI (fetches journal snapshot).
 
-**Embedding applications** (the desktop client) build the embedded backend with `SshTransport::with_auth(target, SessionAuth)`. That transport logs in only with the keys and password in `SessionAuth` (plus `~/.ssh/id_*` when asked), never reads `SNM_SSH_*` or prompts on a terminal, and trusts only the pinned host key: any other key fails the connection, naming both fingerprints. `fetch_host_key` reads a host's key without authenticating so the user can confirm its `SHA256:` fingerprint before it is pinned. `generate_ed25519_key` makes a login key in OpenSSH encoding; storing it encrypted is the caller's job.
+**Embedding applications** (the desktop client) build the embedded backend with `SshTransport::with_auth(target, SessionAuth)`. That transport logs in only with the keys and password in `SessionAuth` (plus `~/.ssh/id_*` when asked), never reads `SNM_SSH_*` or prompts on a terminal, and trusts only the pinned host key: any other key fails the connection, naming both fingerprints. `fetch_host_key` reads a host's key without authenticating so the user can confirm its `SHA256:` fingerprint before it is pinned. `generate_ed25519_key` makes a login key in OpenSSH encoding; storing it encrypted is the caller's job. Terminal password prompts (and `crossterm`) sit behind `snm-transport`'s `terminal` feature: the CLI enables it, the workspace dependency leaves it off, so an embedding application builds without them.
 
 ---
 

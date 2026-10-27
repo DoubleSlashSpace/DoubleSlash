@@ -9,6 +9,12 @@ members = [
 # doubleslash-client is intentionally excluded: it has its own workspace root
 # (rust/doubleslash-client/Cargo.toml) so the cxx-qt patch stays isolated there
 # and does not affect server-side builds.
+#
+# The supernode manager is its own workspace too. Listing it here matters: the
+# client depends on both this workspace's crates and the manager's, and Cargo
+# reuses a workspace root it has already loaded for any package beneath it, so
+# without the exclusion the manager's crates would inherit from this manifest.
+exclude = ["doubleslash-supernode-manager"]
 resolver = "2"
 
 [workspace.lints.clippy]

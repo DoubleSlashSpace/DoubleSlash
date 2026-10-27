@@ -46,6 +46,8 @@ pub mod session_state;
 pub mod sfu_client;
 pub mod space;
 pub mod store_migration;
+#[cfg(feature = "supernode-admin")]
+pub mod supernode_admin;
 #[cfg(feature = "qt-ui")]
 pub mod taskbar_badge;
 #[cfg(feature = "qt-ui")]
