@@ -1,6 +1,7 @@
 package com.doubleslash.client
 
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -25,6 +26,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Room video is 8-bit RGBA. An HDR window composites those bytes as a
+        // fraction of the extended range, and the tile is black.
+        window.colorMode = ActivityInfo.COLOR_MODE_DEFAULT
         enableEdgeToEdge()
 
         setContent {

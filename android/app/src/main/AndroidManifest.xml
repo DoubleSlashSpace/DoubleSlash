@@ -51,6 +51,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:colorMode="default"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
 

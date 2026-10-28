@@ -65,9 +65,12 @@ the boundary every time one moved. One channel means a new feature is a new
 `PortalGameDatagram` are filtered out in `event.rs` — they arrive hundreds of
 times a second carrying raw payload bytes, and their pipelines live on the Rust
 side. Audio I/O reaches the device through cpal's Oboe backend without touching
-JNI at all. Received video is decoded in Rust and drawn straight into the
-`Surface` a `TextureView` attached; only rare, edge-triggered facts
-(`peer_video_size`, `peer_video_stalled`) come back as events.
+JNI at all. Received video is decoded in Rust and drawn into the `Surface`
+a `TextureView` attached. The window is asked for an RGBA buffer the size of
+the frame; a lock that comes back a different size is scaled into, so the tile
+is not posted empty. The buffer keeps the consumer's dataspace unless that
+dataspace is HDR, in which case it is set to sRGB. Only rare, edge-triggered
+facts (`peer_video_size`, `peer_video_stalled`) come back as events.
 
 ### Threading
 

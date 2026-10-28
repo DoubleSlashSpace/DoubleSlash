@@ -1,5 +1,6 @@
 package com.doubleslash.client.ui
 
+import android.content.Context
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
@@ -30,34 +31,75 @@ import com.doubleslash.client.VideoSize
  * A `TextureView` rather than a `SurfaceView`: this sits inside the voice
  * rail's scrolling row and under a full-screen dialog, and a `SurfaceView`
  * punches a hole in the window that neither clips nor layers with the rest of
- * Compose. The native side sizes the buffer to the picture, and the view
- * scales it — so callers keep the aspect ratio, see [VideoTile].
+ * Compose. The native side asks for a buffer the size of the picture. When
+ * [frameSize] is known the texture is asked for that size too, because a
+ * TextureView otherwise keeps the view's size and the native side has to scale.
  *
  * The surface is attached while it exists and detached before the view lets
  * go of it; frames for a peer with no attached surface are never decoded.
  */
 @Composable
-fun RemoteVideo(peerId: String, modifier: Modifier = Modifier) {
+fun RemoteVideo(peerId: String, frameSize: VideoSize?, modifier: Modifier = Modifier) {
     // A different peer needs a different view: the attach is bound to the id
     // the surface was created for.
     key(peerId) {
         AndroidView(
             modifier = modifier,
             factory = { context ->
-                TextureView(context).apply {
-                    surfaceTextureListener = NativeSurfaceBinding(peerId)
+                VideoTextureView(context).apply {
+                    isOpaque = true
+                    surfaceTextureListener = NativeSurfaceBinding(peerId, this)
                 }
+            },
+            update = { view ->
+                val width = frameSize?.width ?: return@AndroidView
+                view.askForFrame(width, frameSize.height)
             },
         )
     }
 }
 
+/**
+ * A TextureView that asks its buffer queue for the decoded frame size.
+ *
+ * The size often arrives after the surface exists, and sometimes before it.
+ * Applying it in both places keeps the native copy one-to-one; until then the
+ * native side scales into whatever size the lock returns.
+ */
+private class VideoTextureView(context: Context) : TextureView(context) {
+    private var wantedWidth = 0
+    private var wantedHeight = 0
+    private var appliedWidth = 0
+    private var appliedHeight = 0
+
+    fun askForFrame(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+        wantedWidth = width
+        wantedHeight = height
+        applyWantedSize()
+    }
+
+    fun applyWantedSize() {
+        if (wantedWidth <= 0 || wantedHeight <= 0) return
+        if (appliedWidth == wantedWidth && appliedHeight == wantedHeight) return
+        val texture = surfaceTexture ?: return
+        texture.setDefaultBufferSize(wantedWidth, wantedHeight)
+        appliedWidth = wantedWidth
+        appliedHeight = wantedHeight
+    }
+}
+
 /** Attaches a texture's surface to the native renderer for its lifetime. */
-private class NativeSurfaceBinding(private val peerId: String) : TextureView.SurfaceTextureListener {
+private class NativeSurfaceBinding(
+    private val peerId: String,
+    private val view: VideoTextureView,
+) : TextureView.SurfaceTextureListener {
     private var surface: Surface? = null
     private var token = 0L
 
     override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
+        // Size the queue before the first buffer is taken.
+        view.applyWantedSize()
         val created = Surface(texture)
         surface = created
         token = NativeCore.nativeAttachVideoSurface(created, peerId)
@@ -100,7 +142,18 @@ fun VideoTile(
             .background(Color.Black)
             .let { if (onClick != null) it.clickable(onClick = onClick) else it },
     ) {
-        RemoteVideo(peerId, Modifier.fillMaxSize())
+        RemoteVideo(peerId, size, Modifier.fillMaxSize())
+        if (size == null && !stalled) {
+            Text(
+                "Waiting for video…",
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+        }
         if (stalled) {
             // The tile keeps its last frame; this says that picture is old.
             Text(
