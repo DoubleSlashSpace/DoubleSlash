@@ -177,6 +177,25 @@ pub async fn install_instance_report(
 
     run_checked(transport, &format!("{prefix}systemctl daemon-reload")).await?;
 
+    // Older supernodes reuse a saved invite across restarts even after the
+    // public host or signaling port changed, so new members would dial an
+    // address the node no longer serves. Remove a stale one; the restart
+    // below mints a fresh invite for the current address.
+    let expected = format!("ws://{}:{}", network.public_host, network.ws_port);
+    let stale = run_checked(
+        transport,
+        &format!(
+            "{prefix}sh -c {}",
+            shell_escape(&stale_invite_script(&layout.data_dir, &expected))
+        ),
+    )
+    .await?;
+    if stale.stdout.contains("removed") {
+        report.push(format!(
+            "{label}: replaced the saved invite, which pointed at an old address"
+        ));
+    }
+
     report.extend(
         apply_firewall_on_install_report(
             transport,
@@ -878,6 +897,13 @@ pub async fn cluster_sync_report_with(
     Ok(report)
 }
 
+/// Remove `reusable_invite.json` unless it advertises `expected_url`.
+fn stale_invite_script(data_dir: &str, expected_url: &str) -> String {
+    let file = shell_escape(&crate::invite::reusable_invite_path(data_dir));
+    let needle = shell_escape(&format!("\"{expected_url}\""));
+    format!("if [ -f {file} ] && ! grep -qF {needle} {file}; then rm -f {file}; echo removed; fi")
+}
+
 /// The host of a `host:port` roster address, without IPv6 brackets: ufw takes
 /// `2001:db8::7`, not `[2001:db8::7]`.
 fn address_host(address: &str) -> &str {
@@ -888,6 +914,15 @@ fn address_host(address: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_invite_check_matches_the_quoted_url_only() {
+        let script = stale_invite_script("/var/lib/doubleslash/a", "ws://[2001:db8::7]:34935");
+        assert!(script.contains("/var/lib/doubleslash/a/reusable_invite.json"));
+        // Quoted, so ws://1.2.3.4:3493 cannot match a hint for port 34935.
+        assert!(script.contains("'\"ws://[2001:db8::7]:34935\"'"));
+        assert!(script.contains("grep -qF"));
+    }
 
     #[test]
     fn roster_address_hosts_drop_port_and_brackets() {

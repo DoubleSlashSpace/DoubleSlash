@@ -7,7 +7,7 @@
 // from the form when the dialog closes.
 pragma ComponentBehavior: Bound
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Material
 import QtQuick.Layouts
 import DoubleSlash.Client 1.0
 
@@ -21,6 +21,25 @@ Dialog {
     modal: true
     closePolicy: Popup.NoAutoClose
     title: root.addToNodeId !== "" ? "Add a server to " + root.addToNodeName : "Host a supernode"
+
+    // The app's own surfaces, like the other dialogs: square, themed, and a
+    // dark scrim behind instead of the style's default.
+    Overlay.modal: Rectangle {
+        color: Theme.withAlpha(Theme.overlayScrim, 0.72)
+    }
+    background: Rectangle {
+        color: Theme.bg1
+        border.color: Theme.bg3
+        border.width: 1
+    }
+    header: Label {
+        text: root.title
+        color: Theme.text
+        font.pixelSize: Theme.fontSizeDialog
+        font.bold: true
+        padding: Theme.spacingLg
+        elide: Text.ElideRight
+    }
 
     // Empty for a new node; a managed node's id to add a cluster member.
     property string addToNodeId: ""
@@ -542,73 +561,92 @@ Dialog {
         }
     }
 
-    footer: DialogButtonBox {
-        background: Rectangle { color: "transparent" }
+    // A plain row, not DialogButtonBox: the box kept laying out the buttons
+    // hidden on the current page, which pushed Done past the dialog's edge.
+    footer: Rectangle {
+        color: Theme.bg1
+        implicitHeight: footerRow.implicitHeight + Theme.spacingMd * 2
 
-        StyledButton {
-            text: "Cancel"
-            visible: root.page !== "run" && root.page !== "done"
-            DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
-            onClicked: root.close()
-        }
-        StyledButton {
-            text: "Back"
-            visible: root.page === "hostkey" || root.page === "options"
-            onClicked: root.page = root.page === "options" ? "hostkey" : "server"
-        }
-        StyledButton {
-            visible: root.page === "notice"
-            primary: true
-            text: "Continue"
-            enabled: noticeSwitch.checked
-            onClicked: root.send({ op: "accept_notice" })
-        }
-        StyledButton {
-            visible: root.page === "server"
-            primary: true
-            text: "Next"
-            enabled: hostField.text.trim() !== ""
-            onClicked: root.send({
-                op: "fetch_host_key",
-                host: hostField.text.trim(),
-                port: parseInt(portField.text) || 22
-            })
-        }
-        StyledButton {
-            visible: root.page === "hostkey"
-            primary: true
-            text: "The key matches"
-            onClicked: root.page = "options"
-        }
-        StyledButton {
-            visible: root.page === "options"
-            primary: true
-            text: root.addToNodeId !== "" ? "Add server" : "Set up supernode"
-            enabled: !root.busy
-            onClicked: root.startSetup()
-        }
-        StyledButton {
-            visible: root.page === "run" && root.errorText !== ""
-            text: "Change answers"
-            onClicked: { root.errorText = ""; root.page = "options" }
-        }
-        StyledButton {
-            visible: root.page === "run" && root.errorText !== ""
-            primary: true
-            text: "Retry"
-            enabled: !root.busy
-            onClicked: root.startSetup()
-        }
-        StyledButton {
-            visible: root.page === "run" && root.errorText !== ""
-            text: "Close"
-            onClicked: root.close()
-        }
-        StyledButton {
-            visible: root.page === "done"
-            primary: true
-            text: "Done"
-            onClicked: root.close()
+        RowLayout {
+            id: footerRow
+            anchors.fill: parent
+            anchors.margins: Theme.spacingMd
+            spacing: Theme.spacingSm
+
+            StyledButton {
+                text: "Cancel"
+                visible: root.page !== "run" && root.page !== "done"
+                onClicked: root.close()
+            }
+            StyledButton {
+                text: "Back"
+                visible: root.page === "hostkey" || root.page === "options"
+                onClicked: root.page = root.page === "options" ? "hostkey" : "server"
+            }
+            // Setup keeps running on the backend; Settings › Network shows
+            // the node once it finishes.
+            StyledButton {
+                text: "Hide"
+                visible: root.page === "run" && root.errorText === ""
+                onClicked: root.close()
+            }
+            StyledButton {
+                visible: root.page === "run" && root.errorText !== ""
+                text: "Change answers"
+                onClicked: { root.errorText = ""; root.page = "options" }
+            }
+            StyledButton {
+                visible: root.page === "run" && root.errorText !== ""
+                text: "Close"
+                onClicked: root.close()
+            }
+
+            Item { Layout.fillWidth: true }
+
+            StyledButton {
+                visible: root.page === "notice"
+                primary: true
+                text: "Continue"
+                enabled: noticeSwitch.checked
+                onClicked: root.send({ op: "accept_notice" })
+            }
+            StyledButton {
+                visible: root.page === "server"
+                primary: true
+                text: "Next"
+                enabled: hostField.text.trim() !== ""
+                onClicked: root.send({
+                    op: "fetch_host_key",
+                    host: hostField.text.trim(),
+                    port: parseInt(portField.text) || 22
+                })
+            }
+            StyledButton {
+                visible: root.page === "hostkey"
+                primary: true
+                text: "The key matches"
+                onClicked: root.page = "options"
+            }
+            StyledButton {
+                visible: root.page === "options"
+                primary: true
+                text: root.addToNodeId !== "" ? "Add server" : "Set up supernode"
+                enabled: !root.busy
+                onClicked: root.startSetup()
+            }
+            StyledButton {
+                visible: root.page === "run" && root.errorText !== ""
+                primary: true
+                text: "Retry"
+                enabled: !root.busy
+                onClicked: root.startSetup()
+            }
+            StyledButton {
+                visible: root.page === "done"
+                primary: true
+                text: "Done"
+                onClicked: root.close()
+            }
         }
     }
 }

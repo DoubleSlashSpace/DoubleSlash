@@ -326,6 +326,18 @@ impl HandshakeManager {
             }
         };
 
+        // An invite minted for another address (the node's public host or
+        // signaling port changed since) would send every new member to a
+        // socket that is not there. Mint a fresh one instead.
+        if invite.relay_hint.as_deref() != Some(self.listener_url.as_str()) {
+            tracing::info!(
+                "Reusable invite points at {:?}, not {}; minting a new one",
+                invite.relay_hint,
+                self.listener_url
+            );
+            return false;
+        }
+
         // Restore the pending entry so handshake can complete
         self.restore_pending(invite.invite_id.clone(), secret_bytes, invite.expires_at);
         self.reusable_invite = Some(invite);
@@ -455,6 +467,36 @@ mod tests {
         // …and the client can still reduce it to the payload it parses.
         let rest = doubleslash_features::normalize_app_url(&uri).expect("normalize");
         assert!(rest.starts_with("invite#"), "rest={rest}");
+    }
+
+    #[test]
+    fn reusable_invite_is_replaced_when_the_address_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "ds-reusable-invite-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = Identity::generate();
+        let old_url = "ws://[2001:db8::7]:34935".to_string();
+
+        let mut first = HandshakeManager::new(id.clone(), old_url.clone(), -1);
+        let minted = first.get_or_create_reusable_invite(Some("Node"));
+        first.save_reusable_invite(&dir);
+
+        let mut same = HandshakeManager::new(id.clone(), old_url, -1);
+        assert!(same.load_reusable_invite(&dir));
+        assert_eq!(
+            same.reusable_invite.as_ref().map(|i| i.invite_id.clone()),
+            Some(minted.invite_id)
+        );
+
+        let mut moved = HandshakeManager::new(id, "ws://198.51.100.7:34935".into(), -1);
+        assert!(!moved.load_reusable_invite(&dir));
+        assert!(moved.reusable_invite.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
