@@ -227,7 +227,7 @@ pub async fn run_guided_setup(
             let others: Vec<_> = os
                 .public_listeners
                 .iter()
-                .filter(|l| !is_ssh_listener(l, os.ssh_port))
+                .filter(|l| !is_ssh_listener(l, os.ssh_port) && !is_node_listener(l, &setup.instance))
                 .cloned()
                 .collect();
             if setup.hardening.firewall && !others.is_empty() {
@@ -449,6 +449,15 @@ fn target_port(target: &str) -> u16 {
     snm_transport::SshTarget::parse(target).port
 }
 
+/// The node's own sockets, seen when setup runs again on a server that has it.
+fn is_node_listener(listener: &str, instance: &Instance) -> bool {
+    let port = listener
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse::<u16>().ok());
+    port.is_some() && (port == instance.relay_port || port == instance.ws_port)
+}
+
 fn is_ssh_listener(listener: &str, ssh_port: Option<u16>) -> bool {
     let port = listener
         .rsplit(':')
@@ -548,5 +557,9 @@ mod tests {
         assert!(is_ssh_listener("tcp [::]:2222", Some(2222)));
         assert!(!is_ssh_listener("tcp 0.0.0.0:80", Some(22)));
         assert!(!is_ssh_listener("udp 0.0.0.0:22", Some(22)));
+        let node = GuidedSetup::default_instance("198.51.100.7");
+        assert!(is_node_listener("udp *:3478", &node));
+        assert!(is_node_listener("tcp *:34935", &node));
+        assert!(!is_node_listener("udp 0.0.0.0:123", &node));
     }
 }

@@ -375,19 +375,45 @@ lockdown, the unit sandbox, and the on-server updater with rollback. The
 desktop has the encrypted managed-node store, the wizard with the
 responsibility notice, the Your servers card (status, logs, restart, updates,
 update mode, add a server as a cluster member, uninstall, forget), and accepts
-the node's invite after setup. All of it is unit-tested, and the QML is only
-rendered against a mock backend. Remaining:
+the node's invite after setup. The QML is only rendered against a mock backend.
 
+**Live result, 2026-10-27, IPv6-only Debian 12 (Vultr),** driven through
+`AdminService` by `examples/supernode_admin_live.rs`.
+
+Passed:
+- Setup with `client-key` and with `client-key-only`.
+- The firewall kept SSH reachable.
+- After lockdown, password login is refused (`publickey` only) and key login
+  works.
+- The sandboxed unit ran the node, including portal seeding and the invite.
+- Re-running setup kept the node identity and the single store entry.
+- Check-for-update and a pushed Update now.
+- A forced bad package rolled back.
+- Setup and the update-mode switch both refused the server timer, because the
+  host cannot reach GitHub.
+- A headless client completed the invite handshake over WebSocket.
+
+Fixed on the way:
+- `ufw limit` locked the installer out.
+- IPv4-only node binds.
+- IPv6 SSH targets.
+
+Remaining:
+
+- **Client QUIC is IPv4-only.** `quic_tls.rs` binds `0.0.0.0`, so a relay
+  ticket for an IPv6-only node fails with `invalid remote address`. Room
+  traffic falls back to WebSocket, while relay and direct QUIC do not work.
+  The fix is a dual-stack bind (`[::]`, `IPV6_V6ONLY` off, IPv4 fallback). It
+  touches every peer path, so take relay and two-client baselines first.
+- Not yet run:
+  - `own-key` access;
+  - the server-timer update mode, on a host that can reach GitHub;
+  - Ubuntu 24.04;
+  - adding a second server as a cluster member;
+  - uninstall;
+  - the wizard in the real desktop app.
 - Import an existing `inventory.toml`; edit a node's features and room policy.
 - Android: the same flows.
-- **Live acceptance:** on disposable Debian 12 and Ubuntu 24.04 hosts, run each
-  SSH access mode and both update modes. Then confirm all of these:
-  - the firewall leaves SSH reachable;
-  - password login is refused after lockdown, and key login still works;
-  - a forced bad update rolls back;
-  - the sandboxed unit runs the node, including portal seeding and the
-    endpoint mailbox;
-  - the client connects to the expected node identity.
 - Redeploy the acdc fleet once, to confirm the sandboxed unit template on an
   existing cluster.
 

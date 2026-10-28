@@ -267,14 +267,15 @@ log, update and removal actions you click.
 
 **Servers contacted:** Your server, over SSH, using the address, login and
 password or key you enter. The password is used for setup only and is not
-stored. For the first install the desktop client downloads the supernode
-release from GitHub (`github.com/DoubleSlashSpace/DoubleSlash`), checks its
-SHA-256, and uploads it to the server. Later updates are downloaded by the
-server itself from the same place, and its operating-system updates come from
-its distribution's mirrors.
+stored. For the install, for update checks and for Update now, the desktop client
+downloads the supernode release from GitHub
+(`github.com/DoubleSlashSpace/DoubleSlash`), checks its SHA-256, and uploads it
+to the server. If you choose automatic updates on the server, the server
+downloads them from the same place itself. Its operating-system updates come
+from its distribution's mirrors.
 
-**What is disclosed:** GitHub sees your desktop's IP address during the first
-install, and your server's during updates. The distribution mirrors see your
+**What is disclosed:** GitHub sees your desktop's IP address when DoubleSlash
+downloads a release, and your server's when the server updates itself. The distribution mirrors see your
 server's address. Whoever runs the server, usually you, can see the commands
 DoubleSlash runs on it.
 

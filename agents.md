@@ -162,7 +162,8 @@ Supernodes may use peer/device IDs, room/session IDs, membership, indices, signa
   - A deployed node joins only through `AcceptInvite` with its own signed invite: setup grants it no trust.
   - Password login is turned off last, and only after a fresh key-only login succeeds.
   - Adding a server to a node requires the same root/sudo mode as its first server, because the node's inventory shares one privilege setting.
-  - This is all unit-tested only: no live host has run it yet (see the backlog).
+  - Updates are downloaded and verified by the client and pushed over SSH (`push_update`), so they work on servers that cannot reach GitHub. Only the optional daily timer pulls from the server, and setup refuses that mode when the probe cannot reach github.com. An IPv6 public address binds `::` and is advertised bracketed, because relay tickets must be IP literals.
+  - Live-tested once on an IPv6-only Debian 12 host (see the backlog for what passed and what remains).
 - Keep avatar serialization in `avatar_config.rs`, SettingsModel, and `Avatar.qml` aligned; exchange custom configs only after trust. Keep the core avatar module available without Qt.
 - Keep privacy controls wired to the actual ChatStore trim/purge methods and identity-keyring deletion. Every CXX-Qt qproperty needs a matching Rust field and initialization; headless checks alone do not validate the Qt build.
 
