@@ -70,7 +70,8 @@ async fn same_identity_devices_route_reconnect_and_disconnect_independently() {
     let root = SigningKey::generate(&mut rand::thread_rng());
     let public = root.verifying_key().to_bytes();
     let id = crate::crypto::b64url_encode(&public);
-    let server = QUICRelayServer::new("test-server".into(), tests::test_features());
+    let server = QUICRelayServer::new("test-server".into(), tests::test_features())
+        .with_signing_key(root.clone());
     server.state.write().device_routing_ready = true;
     server.allow_peer(&id);
     let port = server.start("127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -168,7 +169,8 @@ async fn device_certificate_requires_root_possession_and_explicit_activation() {
     let root = SigningKey::generate(&mut rand::thread_rng());
     let public = root.verifying_key().to_bytes();
     let id = crate::crypto::b64url_encode(&public);
-    let server = QUICRelayServer::new("test-server".into(), tests::test_features());
+    let server = QUICRelayServer::new("test-server".into(), tests::test_features())
+        .with_signing_key(root.clone());
     server.state.write().device_routing_ready = false;
     server.allow_peer(&id);
     let port = server.start("127.0.0.1:0".parse().unwrap()).await.unwrap();

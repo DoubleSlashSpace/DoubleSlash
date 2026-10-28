@@ -256,10 +256,14 @@ pub struct QUICRelayServer {
     state: Arc<RwLock<RelayState>>,
     shutdown: Arc<Notify>,
     identity_pub_id: String,
+    /// Identity key the relay certificate is signed with. Absent only for
+    /// tests that never call [`Self::start`].
+    identity_key: Option<ed25519_dalek::SigningKey>,
     bidi_hook: Arc<RwLock<Option<BidiStreamHook>>>,
     signal_hook: Arc<RwLock<Option<SignalStreamHook>>>,
     room_audio_bridge: Arc<RwLock<Option<RoomAudioBridgeHook>>>,
     game_relay_bridge: Arc<RwLock<Option<GameRelayBridgeHook>>>,
+    room_video_bridge: Arc<RwLock<Option<RoomVideoBridgeHook>>>,
     features: Arc<FeatureRegistry>,
 }
 
@@ -308,18 +312,55 @@ pub type RoomAudioBridgeHook = Arc<dyn Fn(String, u8, String, Vec<u8>) + Send + 
 /// member is sent.
 pub type GameRelayBridgeHook = Arc<dyn Fn(String, String, Vec<u8>) + Send + Sync + 'static>;
 
+/// Hook for a room-video broadcast, so the node can replicate the opaque
+/// datagram to cluster members that have someone in the same room.
+///
+/// Room video has no WebSocket path. A sender's datagrams exist only on the
+/// node their relay session is joined to, while another member of the same
+/// room — often another device of someone who can already see the stream —
+/// may be voiced on a sibling. Audio and camera on/off already cross that
+/// gap; without this hook the sibling hears the room and sees "camera on"
+/// and never receives a fragment.
+///
+/// Arguments: `(room_id, from_peer, payload)`, where `payload` is the bytes
+/// after the datagram's leading target-index byte (`[ROOM_VIDEO_TAG][fragment]`).
+/// The hook must copy those bytes and must not parse them.
+pub type RoomVideoBridgeHook = Arc<dyn Fn(String, String, Vec<u8>) + Send + Sync + 'static>;
+
+/// The three datagram hooks, grouped so connection handling stays under
+/// clippy's argument limit. Each hook is re-read per datagram.
+#[derive(Clone)]
+struct DatagramBridges {
+    room_audio: Arc<RwLock<Option<RoomAudioBridgeHook>>>,
+    game: Arc<RwLock<Option<GameRelayBridgeHook>>>,
+    room_video: Arc<RwLock<Option<RoomVideoBridgeHook>>>,
+}
+
 impl QUICRelayServer {
     pub fn new(identity_pub_id: String, features: Arc<FeatureRegistry>) -> Self {
         Self {
             state: Arc::new(RwLock::new(RelayState::new())),
             shutdown: Arc::new(Notify::new()),
             identity_pub_id,
+            identity_key: None,
             bidi_hook: Arc::new(RwLock::new(None)),
             signal_hook: Arc::new(RwLock::new(None)),
             room_audio_bridge: Arc::new(RwLock::new(None)),
             game_relay_bridge: Arc::new(RwLock::new(None)),
+            room_video_bridge: Arc::new(RwLock::new(None)),
             features,
         }
+    }
+
+    /// Sign the relay certificate with the node identity.
+    ///
+    /// Required before [`Self::start`]. Clients check that the TLS handshake
+    /// was signed by the public key named in the certificate, so a random
+    /// key leaves every relay connect as `BadSignature` and room video, which
+    /// has no WebSocket fallback, is dropped.
+    pub fn with_signing_key(mut self, key: ed25519_dalek::SigningKey) -> Self {
+        self.identity_key = Some(key);
+        self
     }
 
     /// Install (or replace) the bidi-stream hook. Must be called before
@@ -346,6 +387,12 @@ impl QUICRelayServer {
     /// inbound datagram, so registering it after `start` still applies.
     pub fn set_game_relay_bridge(&self, hook: GameRelayBridgeHook) {
         *self.game_relay_bridge.write() = Some(hook);
+    }
+
+    /// Install (or replace) the room-video cluster bridge hook. Re-read per
+    /// inbound datagram, so registering it after `start` still applies.
+    pub fn set_room_video_bridge(&self, hook: RoomVideoBridgeHook) {
+        *self.room_video_bridge.write() = Some(hook);
     }
 
     /// Session ids this node currently holds local members for.
@@ -426,6 +473,46 @@ impl QUICRelayServer {
             result = Some(result.unwrap_or(false) || sent);
         }
         result
+    }
+
+    /// Deliver a room-video datagram replicated from another cluster member.
+    ///
+    /// `payload` is the opaque `[ROOM_VIDEO_TAG][fragment]` the origin forwarded
+    /// locally. It is not parsed. The receiver ignores the leading index and
+    /// reads the fragment, so the index is [`wire::BROADCAST_INDEX`]: the
+    /// sender has no index in this node's table.
+    ///
+    /// Same recipients as local fan-out: every relay endpoint in `room_id`
+    /// except the sender's identity (their other devices on the origin already
+    /// got the frame; echoing it here would hand it back), and only when that
+    /// endpoint's `room_id` matches and [`RelayState::wants_video`] says so.
+    /// Charged to `room.video.sfu` outbound. No WebSocket fallback — room video
+    /// stays a relay datagram. Does not re-replicate.
+    pub fn forward_replicated_room_video(&self, room_id: &str, sender: &str, payload: &[u8]) {
+        if payload.is_empty() || room_id.is_empty() {
+            return;
+        }
+        let fwd = wire::build_forwarded_datagram(wire::BROADCAST_INDEX, payload);
+        let st = self.state.read();
+        let Some(members) = st.rooms.get(room_id) else {
+            return;
+        };
+        let sender_bare = sender.trim_end_matches('=');
+        for member_id in members {
+            if member_id.trim_end_matches('=') == sender_bare {
+                continue;
+            }
+            for (_, member) in st.peers.endpoints(member_id) {
+                if member.room_id.as_deref() != Some(room_id) {
+                    continue;
+                }
+                if !st.wants_video(member_id, sender) {
+                    continue;
+                }
+                let _ =
+                    try_forward_datagram(&self.features, "room.video.sfu", member_id, &fwd, member);
+            }
+        }
     }
 
     /// Authorize a peer to connect via QUIC relay.
@@ -662,17 +749,29 @@ impl QUICRelayServer {
 
     /// Start the relay server. Returns the bound port.
     pub async fn start(&self, bind_addr: SocketAddr) -> anyhow::Result<u16> {
-        let (server_config, _cert_der) = build_quinn_server_config(&self.identity_pub_id)?;
+        let Some(signing_key) = self.identity_key.as_ref() else {
+            anyhow::bail!(
+                "relay server has no identity key; refusing a certificate that clients would reject"
+            );
+        };
+        let (server_config, _cert_der) = build_quinn_server_config(signing_key)?;
         let endpoint = Endpoint::server(server_config, bind_addr)?;
         let port = endpoint.local_addr()?.port();
-        info!("QUIC relay listening on {}", endpoint.local_addr()?);
+        let shown = &self.identity_pub_id[..self.identity_pub_id.len().min(12)];
+        info!(
+            "QUIC relay listening on {} for {shown}",
+            endpoint.local_addr()?
+        );
 
         let state = self.state.clone();
         let shutdown = self.shutdown.clone();
         let bidi_hook = self.bidi_hook.clone();
         let signal_hook = self.signal_hook.clone();
-        let room_audio_bridge = self.room_audio_bridge.clone();
-        let game_relay_bridge = self.game_relay_bridge.clone();
+        let datagram_bridges = DatagramBridges {
+            room_audio: self.room_audio_bridge.clone(),
+            game: self.game_relay_bridge.clone(),
+            room_video: self.room_video_bridge.clone(),
+        };
         let features = self.features.clone();
 
         // Accept loop
@@ -688,8 +787,7 @@ impl QUICRelayServer {
                         // set_bidi_hook() is called get hook=None forever.
                         let hook = bidi_hook.clone();
                         let signal_hook = signal_hook.clone();
-                        let room_audio_bridge = room_audio_bridge.clone();
-                        let game_relay_bridge = game_relay_bridge.clone();
+                        let datagram_bridges = datagram_bridges.clone();
                         let features = features.clone();
                         tokio::spawn(async move {
                             if let Err(e) =
@@ -698,8 +796,7 @@ impl QUICRelayServer {
                                     state,
                                     hook,
                                     signal_hook,
-                                    room_audio_bridge,
-                                    game_relay_bridge,
+                                    datagram_bridges,
                                     features,
                                 )
                                 .await
@@ -748,8 +845,7 @@ async fn handle_connection(
     state: Arc<RwLock<RelayState>>,
     bidi_hook: Arc<RwLock<Option<BidiStreamHook>>>,
     signal_hook: Arc<RwLock<Option<SignalStreamHook>>>,
-    room_audio_bridge: Arc<RwLock<Option<RoomAudioBridgeHook>>>,
-    game_relay_bridge: Arc<RwLock<Option<GameRelayBridgeHook>>>,
+    datagram_bridges: DatagramBridges,
     features: Arc<FeatureRegistry>,
 ) -> anyhow::Result<()> {
     let connection = incoming.await?;
@@ -944,8 +1040,6 @@ async fn handle_connection(
     let state_clone = state.clone();
     let peer_id_clone = peer_id.clone();
     let features_clone = features.clone();
-    let room_audio_bridge_clone = room_audio_bridge.clone();
-    let game_relay_bridge_clone = game_relay_bridge.clone();
 
     // Datagram forwarding loop
     loop {
@@ -961,8 +1055,7 @@ async fn handle_connection(
                             handle_datagram(
                                 &state_clone,
                                 &features_clone,
-                                &room_audio_bridge_clone,
-                                &game_relay_bridge_clone,
+                                &datagram_bridges,
                                 &peer_id_clone,
                                 (device, connection.stable_id()),
                                 &data,
@@ -1062,8 +1155,7 @@ fn try_forward_datagram(
 fn handle_datagram(
     state: &Arc<RwLock<RelayState>>,
     features: &FeatureRegistry,
-    room_audio_bridge: &Arc<RwLock<Option<RoomAudioBridgeHook>>>,
-    game_relay_bridge: &Arc<RwLock<Option<GameRelayBridgeHook>>>,
+    bridges: &DatagramBridges,
     from_peer: &str,
     endpoint: (Option<DeviceId>, usize),
     data: &[u8],
@@ -1099,7 +1191,7 @@ fn handle_datagram(
     // would silently partition WS-only members. The frame stays end-to-end
     // signed; the supernode just chooses each member's transport.
     if target_idx == wire::BROADCAST_INDEX && feature_id == "room.audio.sfu" {
-        let bridge = room_audio_bridge.read().clone();
+        let bridge = bridges.room_audio.read().clone();
         if let Some(bridge) = bridge {
             // Prefer room_id from the signed SfuAudio payload (always present
             // on a well-formed frame). Fall back to the relay peer's last
@@ -1171,7 +1263,7 @@ fn handle_datagram(
                 // is usually on another member, so a session with no local
                 // members but remote ones is the normal two-player case, not
                 // a dead end.
-                let bridge = game_relay_bridge.read().clone();
+                let bridge = bridges.game.read().clone();
                 if let Some(bridge) = bridge {
                     bridge(session_id, from_peer.to_owned(), payload.to_vec());
                 }
@@ -1197,6 +1289,11 @@ fn handle_datagram(
         // five 1080p senders in a room is tens of Mbps of egress per member,
         // most of it decoded by nobody. Every other channel is small, and a
         // member missing one is a correctness bug rather than a saving.
+        //
+        // After this local fan-out the same opaque payload is handed to the
+        // cluster hook, including when nobody on this node wanted it. The
+        // member who is watching is often voiced on a sibling. The hook copies
+        // the bytes; it does not parse them.
         let filter_by_subscription = feature_id == "room.video.sfu";
         if let Some(ref room_id) = from.room_id {
             if let Some(members) = st.rooms.get(room_id) {
@@ -1245,16 +1342,29 @@ fn handle_datagram(
         }
     }
 
-    if relayed == 0 {
-        return;
-    }
+    // Clone while `st` is still held. `from` borrows it. An empty local fan-out
+    // is not a reason to skip: the watcher may be the only recipient, and on
+    // another node. The hook runs only after both locks are dropped.
+    let video_replicate = if target_idx == wire::BROADCAST_INDEX && feature_id == "room.video.sfu" {
+        bridges.room_video.read().clone().and_then(|bridge| {
+            from.room_id
+                .clone()
+                .map(|room_id| (bridge, room_id, payload.to_vec()))
+        })
+    } else {
+        None
+    };
 
-    // Update stats (drop read lock, take write)
     drop(st);
-    let mut st = state.write();
-    st.total_bytes_relayed += relayed;
-    if let Some(peer) = st.peers.get_endpoint_mut(from_peer, from_device) {
-        peer.bytes_relayed += relayed;
+    if relayed > 0 {
+        let mut st = state.write();
+        st.total_bytes_relayed += relayed;
+        if let Some(peer) = st.peers.get_endpoint_mut(from_peer, from_device) {
+            peer.bytes_relayed += relayed;
+        }
+    }
+    if let Some((bridge, room_id, bytes)) = video_replicate {
+        bridge(room_id, from_peer.to_owned(), bytes);
     }
 }
 
@@ -1489,17 +1599,29 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Build a quinn server config with a self-signed cert.
-/// Requests client certificates (accepted without CA verification)
-/// so we can extract peer_id from the client cert CN.
+/// Build a quinn server config whose certificate is the node identity.
+///
+/// The CN is `hex(ed25519 public key)` and the handshake is signed by that
+/// same key. Desktop and phone clients reject anything else
+/// (`verify_device_root_signature`), which drops room video: those frames
+/// travel only as relay datagrams. Requests client certificates (accepted
+/// without CA verification) so we can extract peer_id from the client cert CN.
 pub(crate) fn build_quinn_server_config(
-    identity_pub_id: &str,
+    signing_key: &ed25519_dalek::SigningKey,
 ) -> anyhow::Result<(ServerConfig, CertificateDer<'static>)> {
+    use ed25519_dalek::pkcs8::EncodePrivateKey;
+
+    let cn = hex::encode(signing_key.verifying_key().as_bytes());
     let mut params = rcgen::CertificateParams::new(vec![])?;
     params
         .distinguished_name
-        .push(rcgen::DnType::CommonName, identity_pub_id);
-    let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519)?;
+        .push(rcgen::DnType::CommonName, &cn);
+    let pkcs8 = signing_key
+        .to_pkcs8_der()
+        .map_err(|e| anyhow::anyhow!("identity key pkcs8: {e}"))?;
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pkcs8.as_bytes().to_vec()));
+    let key_pair = rcgen::KeyPair::from_der_and_sign_algo(&key_der, &rcgen::PKCS_ED25519)
+        .map_err(|e| anyhow::anyhow!("identity key pair: {e}"))?;
     let cert = params.self_signed(&key_pair)?;
     let cert_der = CertificateDer::from(cert.der().to_vec());
     let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
@@ -1873,15 +1995,6 @@ mod tests {
         assert_eq!(fid, "room.video.sfu");
     }
 
-    /// Room video needs **no dedicated arm** in `handle_datagram`: it is not
-    /// `room.audio.sfu` (so it skips the SFU bridge, which would try to parse
-    /// it as JSON and fail) and not `game.relay.v1` (so it skips the game
-    /// session lookup), leaving it to the generic broadcast that forwards to
-    /// `st.rooms[from.room_id]` opaquely.
-    ///
-    /// This test exists because that behaviour is load-bearing but invisible:
-    /// adding an arm above the generic broadcast, or making the audio bridge
-    /// match more broadly, would silently break room video.
     /// Content audio is the newest media tag and must inherit the same
     /// opacity: the supernode routes it and meters its bytes, but never parses
     /// the frame — which would mean reading a presentation timestamp it has no
@@ -1910,6 +2023,20 @@ mod tests {
         assert_eq!(room_id_from_room_audio_payload(&payload), None);
     }
 
+    /// Room video is not parsed. It is not `room.audio.sfu` (that bridge reads
+    /// the frame as JSON) and not `game.relay.v1` (that arm looks up a game
+    /// session). Local delivery is the generic broadcast to
+    /// `st.rooms[from.room_id]`.
+    ///
+    /// The cluster hook that runs after that broadcast copies these same bytes.
+    /// It must not grow into an arm that interprets the fragment: a sealed
+    /// frame is often not valid UTF-8. Deleting the hook because this test
+    /// says "no dedicated arm" strands a member who is voiced on a sibling
+    /// node — they hear the room and never receive a picture.
+    ///
+    /// This test exists because that opacity is load-bearing but invisible:
+    /// an arm above the generic broadcast, or an audio bridge that matches
+    /// more broadly, would silently break room video.
     #[test]
     fn room_video_is_forwarded_opaquely_without_a_dedicated_arm() {
         use doubleslash_features::channel_frame::{encode_frame, ROOM_VIDEO_TAG};
@@ -2240,6 +2367,119 @@ mod tests {
         Ok((endpoint, signing_key))
     }
 
+    /// The check the desktop and phone run on a supernode certificate: the
+    /// handshake signature must belong to the hex public key in the CN.
+    #[derive(Debug)]
+    struct StrictIdentityCert;
+
+    impl rustls::client::danger::ServerCertVerifier for StrictIdentityCert {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &rustls::pki_types::ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::BadSignature,
+            ))
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            let cn = x509_parser_lite(cert.as_ref()).map_err(|_| {
+                rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
+            })?;
+            let root = hex::decode(cn).map_err(|_| {
+                rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
+            })?;
+            let root: [u8; 32] = root.try_into().map_err(|_| {
+                rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
+            })?;
+            if dss.scheme != rustls::SignatureScheme::ED25519 {
+                return Err(rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::BadSignature,
+                ));
+            }
+            let key = ed25519_dalek::VerifyingKey::from_bytes(&root).map_err(|_| {
+                rustls::Error::InvalidCertificate(rustls::CertificateError::BadSignature)
+            })?;
+            let signature =
+                ed25519_dalek::Signature::from_slice(dss.signature()).map_err(|_| {
+                    rustls::Error::InvalidCertificate(rustls::CertificateError::BadSignature)
+                })?;
+            key.verify_strict(message, &signature).map_err(|_| {
+                rustls::Error::InvalidCertificate(rustls::CertificateError::BadSignature)
+            })?;
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            vec![rustls::SignatureScheme::ED25519]
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_cert_satisfies_the_client_identity_check() {
+        let server_key = SigningKey::generate(&mut rand::thread_rng());
+        let (server_config, _) = build_quinn_server_config(&server_key).unwrap();
+        let server = Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+
+        // A legacy client cert: no device suffix, signed by its own key. The
+        // relay still accepts that shape. The strict verifier is what judges
+        // the server, which is the check that was failing in the field.
+        let client_key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+        let mut params = rcgen::CertificateParams::new(vec![]).unwrap();
+        params.distinguished_name.push(
+            rcgen::DnType::CommonName,
+            hex::encode(
+                SigningKey::generate(&mut rand::thread_rng())
+                    .verifying_key()
+                    .as_bytes(),
+            ),
+        );
+        let cert = params.self_signed(&client_key).unwrap();
+        let cert_der = CertificateDer::from(cert.der().to_vec());
+        let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(client_key.serialize_der()));
+        let mut client_crypto = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(StrictIdentityCert))
+            .with_client_auth_cert(vec![cert_der], key_der)
+            .unwrap();
+        client_crypto.alpn_protocols = vec![b"doubleslash/1".to_vec()];
+        let mut strict = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+        strict.set_default_client_config(quinn::ClientConfig::new(Arc::new(
+            quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto).unwrap(),
+        )));
+
+        let connect = strict
+            .connect(server.local_addr().unwrap(), "doubleslash")
+            .unwrap();
+        let accept = async { server.accept().await.unwrap().await.unwrap() };
+        let (client_result, _accepted) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(connect, accept)
+        })
+        .await
+        .expect("handshake timed out");
+        client_result.expect("relay certificate was not signed by the identity in its CN");
+        server.close(0u32.into(), b"done");
+        strict.close(0u32.into(), b"done");
+    }
+
     #[tokio::test]
     async fn p0_real_localhost_quic_relay_authenticated_connection_smoke() {
         // --- Server side (supernode identity) ---
@@ -2247,9 +2487,8 @@ mod tests {
         let server_pub_bytes = server_signing_key.verifying_key().to_bytes();
         let server_id = crate::crypto::b64url_encode(&server_pub_bytes);
 
-        let srv = QUICRelayServer::new(server_id.clone(), test_features());
-
-        // --- Client identity that we will allow ---
+        let srv = QUICRelayServer::new(server_id.clone(), test_features())
+            .with_signing_key(server_signing_key);
         let client_signing_key = SigningKey::generate(&mut rand::thread_rng());
         let client_pub_bytes = client_signing_key.verifying_key().to_bytes();
         let client_peer_id = crate::crypto::b64url_encode(&client_pub_bytes);
@@ -2392,7 +2631,8 @@ mod tests {
         let server_pub = server_key.verifying_key().to_bytes();
         let server_id = crate::crypto::b64url_encode(&server_pub);
 
-        let srv = QUICRelayServer::new(server_id.clone(), test_features());
+        let srv =
+            QUICRelayServer::new(server_id.clone(), test_features()).with_signing_key(server_key);
         let port = srv.start("127.0.0.1:0".parse().unwrap()).await.unwrap();
 
         // Peer A
@@ -2462,7 +2702,8 @@ mod tests {
         let server_pub = server_key.verifying_key().to_bytes();
         let server_id = crate::crypto::b64url_encode(&server_pub);
 
-        let srv = QUICRelayServer::new(server_id.clone(), test_features());
+        let srv =
+            QUICRelayServer::new(server_id.clone(), test_features()).with_signing_key(server_key);
         let port = srv.start("127.0.0.1:0".parse().unwrap()).await.unwrap();
 
         // A peer that is NOT allowed
@@ -2508,7 +2749,8 @@ mod tests {
         let server_pub = server_key.verifying_key().to_bytes();
         let server_id = crate::crypto::b64url_encode(&server_pub);
 
-        let srv = QUICRelayServer::new(server_id.clone(), test_features());
+        let srv =
+            QUICRelayServer::new(server_id.clone(), test_features()).with_signing_key(server_key);
         let port = srv.start("127.0.0.1:0".parse().unwrap()).await.unwrap();
 
         let client_key = SigningKey::generate(&mut rand::thread_rng());

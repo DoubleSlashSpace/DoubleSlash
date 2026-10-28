@@ -225,6 +225,10 @@ struct SupernodeState {
     /// Per-node counter behind the replication ids minted for game frames,
     /// which carry none of their own. See [`Self::replicate_game_datagram`].
     game_replication_seq: std::sync::atomic::AtomicU64,
+    /// Per-node counter behind the replication ids minted for room-video
+    /// fragments, which carry none the cluster can see without parsing them.
+    /// See [`Self::replicate_room_video`].
+    room_video_replication_seq: std::sync::atomic::AtomicU64,
     /// Highest verified Space root per `space_id` (authenticated room-set sync).
     /// Populated from client `SpaceRootAnnounce`, cluster `SpaceRoot` gossip, and
     /// client-carried roots on join. Used by proof-based admission.
@@ -415,6 +419,32 @@ impl SupernodeState {
         link.replicate(session_id, &message_id, &raw);
     }
 
+    /// Replicate a room-video datagram to cluster members that have someone in
+    /// the same room.
+    ///
+    /// Same `Replicate` transport as chat and audio, keyed on the real room id
+    /// so the existing subscription routing delivers it only where the room is
+    /// in use. `payload` is the opaque bytes after the datagram's target-index
+    /// byte. Wrapping them in base64 is the envelope, not an inspection: the
+    /// fragment is often not valid UTF-8, and a hash of it would collapse two
+    /// identical fragments into one delivery. The id is minted per origin.
+    /// Receivers deliver locally and never re-replicate. There is no WebSocket
+    /// form of this frame.
+    pub(crate) fn replicate_room_video(&self, room_id: &str, sender: &str, payload: &[u8]) {
+        if payload.is_empty() || room_id.is_empty() {
+            return;
+        }
+        let Some(link) = self.cluster_link.read().clone() else {
+            return;
+        };
+        let seq = self
+            .room_video_replication_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (message_id, raw) =
+            room_video_replication_message(&self.identity.public_id(), seq, sender, payload);
+        link.replicate(room_id, &message_id, &raw);
+    }
+
     /// Deliver a game frame replicated from another cluster member to this
     /// node's local members of that session. Deduped by `message_id`; never
     /// re-replicated.
@@ -573,8 +603,25 @@ impl SupernodeState {
         self.deliver_video_state(room_id, &sender, raw);
     }
 
-    /// Route an inbound cluster `Replicate` frame to chat, audio or video-state
-    /// delivery based on the wire `type` of the opaque client envelope.
+    /// Deliver a room-video datagram replicated from another cluster member.
+    /// Deduped by `message_id`; never re-replicated. The bytes stay a relay
+    /// datagram on `room.video.sfu`. A malformed envelope is dropped after the
+    /// id is recorded, so a broken replay cannot be retried into chat.
+    fn deliver_replicated_room_video(&self, room_id: &str, message_id: &str, raw: &str) {
+        if !self.replication_seen.write().insert_new(message_id) {
+            return;
+        }
+        let Some(ref relay) = self.relay else {
+            return;
+        };
+        let Some((sender, payload)) = room_video_payload_from_replication(raw) else {
+            return;
+        };
+        relay.forward_replicated_room_video(room_id, &sender, &payload);
+    }
+
+    /// Route an inbound cluster `Replicate` frame to chat, audio, video-state,
+    /// or room-video delivery based on the wire `type` of the opaque envelope.
     fn deliver_replicated_room_frame(&self, room_id: &str, message_id: &str, raw: &str) {
         // Game sessions share this channel under a `game:` prefix that a room
         // id can never carry, so the key alone says which delivery path a
@@ -587,6 +634,9 @@ impl SupernodeState {
             ReplicatedKind::Audio => self.deliver_replicated_audio(room_id, message_id, raw),
             ReplicatedKind::VideoState => {
                 self.deliver_replicated_video_state(room_id, message_id, raw);
+            }
+            ReplicatedKind::RoomVideo => {
+                self.deliver_replicated_room_video(room_id, message_id, raw);
             }
             ReplicatedKind::Chat => self.deliver_replicated_chat(room_id, message_id, raw),
         }
@@ -1897,12 +1947,16 @@ fn video_state_replication_id(msg: &SignalingMessage) -> String {
 }
 
 /// Which delivery path a cluster-replicated room frame takes, read off the
-/// opaque client envelope's wire `type`. Anything unrecognised is chat, which
-/// is what every replicated frame was before audio and video state joined it.
+/// opaque envelope's wire `type`. Anything unrecognised is chat, which is
+/// what every replicated frame was before audio and video state joined it.
+/// `room_video_datagram` has to match before that fallback: the envelope is
+/// JSON around an opaque fragment, and delivering it as chat would hand the
+/// base64 to room text.
 #[derive(Debug, PartialEq, Eq)]
 enum ReplicatedKind {
     Audio,
     VideoState,
+    RoomVideo,
     Chat,
 }
 
@@ -1914,9 +1968,47 @@ impl ReplicatedKind {
         match wire_type.as_deref() {
             Some("sfu_audio") => Self::Audio,
             Some("sfu_video_state") => Self::VideoState,
+            Some("room_video_datagram") => Self::RoomVideo,
             _ => Self::Chat,
         }
     }
+}
+
+/// JSON envelope for one replicated room-video datagram.
+///
+/// `payload` is copied as standard base64 and never parsed. Two calls with
+/// the same bytes and a different `seq` mint different ids, so a repeated
+/// fragment is delivered twice instead of being collapsed by the seen-cache.
+fn room_video_replication_message(
+    node_public_id: &str,
+    seq: u64,
+    sender: &str,
+    payload: &[u8],
+) -> (String, String) {
+    use base64::Engine as _;
+    let message_id = format!("rv:{node_public_id}:{seq}");
+    let raw = serde_json::json!({
+        "type": "room_video_datagram",
+        "sender": sender,
+        "message_id": message_id,
+        "payload_b64": base64::engine::general_purpose::STANDARD.encode(payload),
+    })
+    .to_string();
+    (message_id, raw)
+}
+
+/// Sender and opaque payload from a [`room_video_replication_message`] envelope.
+/// `None` when the JSON, the base64, or the payload is missing.
+fn room_video_payload_from_replication(raw: &str) -> Option<(String, Vec<u8>)> {
+    let env: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let sender = env.get("sender").and_then(|v| v.as_str())?.to_owned();
+    let b64 = env.get("payload_b64").and_then(|v| v.as_str())?;
+    use base64::Engine as _;
+    let payload = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    if payload.is_empty() || sender.is_empty() {
+        return None;
+    }
+    Some((sender, payload))
 }
 
 /// Payload byte count for `SfuChat` inbound quota accounting.
@@ -3651,7 +3743,8 @@ async fn main() -> anyhow::Result<()> {
 
     // QUIC relay server
     let relay = {
-        let relay = QUICRelayServer::new(identity.public_id(), Arc::clone(&features));
+        let relay = QUICRelayServer::new(identity.public_id(), Arc::clone(&features))
+            .with_signing_key(identity.signing_key.clone());
         let bind = SocketAddr::new(config.relay_bind_ip, config.relay_port);
         let port = relay.start(bind).await?;
         info!("QUIC relay on port {}", port);
@@ -3720,9 +3813,13 @@ async fn main() -> anyhow::Result<()> {
             sfu_room_policy: manifest::sfu_room_creation_policy(&features),
             cluster,
             cluster_link: RwLock::new(None),
-            // Sized for chat + multi-talker room audio (~50 Hz) dedup windows.
+            // Sized for chat, multi-talker room audio (~50 Hz), and room-video
+            // fragments. A screen share is a few hundred fragments a second;
+            // 16384 ids still covers about a minute, which is the duplicate
+            // window the cache exists for.
             replication_seen: RwLock::new(cluster_link::SeenCache::new(16_384)),
             game_replication_seq: std::sync::atomic::AtomicU64::new(0),
+            room_video_replication_seq: std::sync::atomic::AtomicU64::new(0),
             space_roots: RwLock::new(SpaceRootStore::default()),
             room_list_dirty: std::sync::atomic::AtomicBool::new(false),
             room_list_notify: tokio::sync::Notify::new(),
@@ -3954,6 +4051,24 @@ async fn main() -> anyhow::Result<()> {
             },
         );
         relay.set_game_relay_bridge(bridge);
+    }
+
+    // Install the room-video cluster bridge. Local fan-out only reaches relay
+    // endpoints joined to the sender's node. A member voiced on a sibling
+    // otherwise hears the room and never receives a fragment. The hook copies
+    // the opaque datagram; it does not parse it, and the sibling delivers it
+    // only as another relay datagram.
+    if let Some(ref relay) = state.relay {
+        let weak = std::sync::Arc::downgrade(&state);
+        let bridge: relay::RoomVideoBridgeHook = std::sync::Arc::new(
+            move |room_id: String, from_peer: String, payload: Vec<u8>| {
+                let Some(state) = weak.upgrade() else {
+                    return;
+                };
+                state.replicate_room_video(&room_id, &from_peer, &payload);
+            },
+        );
+        relay.set_room_video_bridge(bridge);
     }
 
     // Install the room-audio datagram bridge so `room.audio.sfu` frames a peer
@@ -4601,11 +4716,40 @@ mod cluster_audio_replication_tests {
     fn replicated_frame_type_detection() {
         let audio = r#"{"type":"sfu_audio","sender":"x","payload":{}}"#;
         let video = r#"{"type":"sfu_video_state","sender":"x","payload":{}}"#;
+        let room_video = r#"{"type":"room_video_datagram","sender":"x","payload_b64":"AQ=="}"#;
         let chat = r#"{"type":"sfu_chat","sender":"x","payload":{}}"#;
         assert_eq!(ReplicatedKind::of(audio), ReplicatedKind::Audio);
         assert_eq!(ReplicatedKind::of(video), ReplicatedKind::VideoState);
+        assert_eq!(ReplicatedKind::of(room_video), ReplicatedKind::RoomVideo);
         assert_eq!(ReplicatedKind::of(chat), ReplicatedKind::Chat);
         assert_eq!(ReplicatedKind::of("not-json"), ReplicatedKind::Chat);
+    }
+
+    /// A sealed fragment is not valid UTF-8. The cluster envelope has to
+    /// round-trip those bytes, classify as room video rather than chat, and
+    /// mint a fresh id when the same bytes are sent again.
+    #[test]
+    fn room_video_replication_round_trips_opaque_bytes() {
+        // Built at runtime so the non-UTF-8 check is a real decode, not a
+        // literal the compiler rejects before the assertion runs.
+        let mut fragment = vec![0x07u8, 0x01, 0x00, 0x00, 0x80, 0xFE];
+        fragment[2] = 0xFF;
+        assert!(std::str::from_utf8(&fragment).is_err());
+        let (id, raw) = room_video_replication_message("nodePub", 7, "sender==", &fragment);
+        assert_eq!(id, "rv:nodePub:7");
+        assert_eq!(ReplicatedKind::of(&raw), ReplicatedKind::RoomVideo);
+        let (sender, payload) = room_video_payload_from_replication(&raw).unwrap();
+        assert_eq!(sender, "sender==");
+        assert_eq!(payload, fragment);
+        let (id_again, raw_again) =
+            room_video_replication_message("nodePub", 8, "sender==", &fragment);
+        assert_ne!(id, id_again);
+        assert_eq!(ReplicatedKind::of(&raw_again), ReplicatedKind::RoomVideo);
+        assert_eq!(
+            ReplicatedKind::of(r#"{"sender":"x"}"#),
+            ReplicatedKind::Chat
+        );
+        assert!(room_video_payload_from_replication(r#"{"type":"room_video_datagram"}"#).is_none());
     }
 
     /// The wire name the router matches must be the one the type serializes

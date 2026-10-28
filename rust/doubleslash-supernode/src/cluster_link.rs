@@ -456,7 +456,7 @@ impl ClusterLink {
         *self.local_room_roster.write() = Some(Arc::clone(&local_room_roster));
         *self.local_peer_auth_roster.write() = Some(Arc::clone(&local_peer_auth_roster));
 
-        let (server_config, _cert) = build_quinn_server_config(&self.identity.public_id())?;
+        let (server_config, _cert) = build_quinn_server_config(&self.identity.signing_key)?;
         let endpoint = Endpoint::server(server_config, bind)?;
         let port = endpoint.local_addr()?.port();
         info!("Cluster link listening on {}", endpoint.local_addr()?);

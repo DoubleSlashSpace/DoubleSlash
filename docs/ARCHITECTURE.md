@@ -334,7 +334,7 @@ The result is `OwnDevicesOnline { count }`; it never reaches peer presence.
 | Peer message | QML → AppBridge → ConnectionManager → tagged QUIC peer stream, or supernode relay fallback → peer |
 | Direct voice audio | CPAL mic → AEC/noise/VAD → OpusEncoder → direct QUIC datagram → peer → JitterBuffer → OpusDecoder → CPAL speaker |
 | Room voice audio | CPAL mic → OpusEncoder → QuicRelayClient room datagram → supernode SFU/relay fan-out → peers |
-| Video | Camera/screen capture → composite (PiP drawn before encode) → H.264, VP9 or VP8 → fragments stamped with the session clock and signed → `VIDEO_TAG` direct datagram, or `ROOM_VIDEO_TAG` sealed under the room sender key → opaque relay fan-out → per-sender decode |
+| Video | Camera/screen capture → composite (PiP drawn before encode) → H.264, VP9 or VP8 → fragments stamped with the session clock and signed → `VIDEO_TAG` direct datagram, or `ROOM_VIDEO_TAG` sealed under the room sender key → opaque relay fan-out. A cluster sibling receives the same sealed bytes as a `room_video_datagram` and delivers them only as relay datagrams to members who want that sender. |
 | Audio shared with a video | WASAPI loopback (system or one application) → OpusEncoder in `audio` mode → PTS from the same session clock → `CONTENT_AUDIO_TAG` / `ROOM_CONTENT_AUDIO_TAG` → receiver jitter buffer → playout anchor |
 | A/V sync | Content-audio playout sets a per-sender anchor → `media_sync` extrapolates between anchors → video is held or dropped to meet it; with no anchor (camera-only call) video free-runs |
 | File transfer | FileTransfer module → FeatureRegistry quota gate → `core.file.v1` / `room.file.v1` reliable signaling path |
