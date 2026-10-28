@@ -5,6 +5,8 @@
 //! result value or an error string. Nothing here touches Qt, so the same
 //! service can back the Android client later.
 
+use std::collections::HashMap;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -13,10 +15,11 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use snm_core::{ClusterDef, Inventory, PrivilegeMode, ResolvedInstance, Selector};
 use snm_supernode::{
-    check_for_update, cluster_sync_report_with, guided_steps, lifecycle_report, logs_instance_text,
-    probe_host_os, run_guided_setup, run_update_now, set_update_mode, status_instance,
-    uninstall_instance_report, GuidedProgress, GuidedSetup, HardeningOptions, LifecycleAction,
-    OsSupport, SshAccessMode, StepState, UpdateMode,
+    cluster_sync_report_with, download_release_archive, guided_steps, installed_package,
+    lifecycle_report, logs_instance_text, probe_host_os, published_release_sha256, push_update,
+    run_guided_setup, set_update_mode, status_instance, uninstall_instance_report, GuidedProgress,
+    GuidedSetup, HardeningOptions, LifecycleAction, OsSupport, SshAccessMode, StepState,
+    UpdateMode,
 };
 use snm_transport::{
     fetch_host_key, host_key_fingerprint, parse_public_key, PrivateKey, PublicKey, SessionAuth,
@@ -179,11 +182,8 @@ struct CheckedServer {
 
 impl ServerRequest {
     fn check(&self) -> Result<CheckedServer, String> {
-        let host = self.host.trim();
+        let host = ssh_host(&self.host).ok_or(BAD_HOST)?;
         let user = self.user.trim();
-        if !is_plain_host(host) {
-            return Err("Enter the server's IPv4 address or host name".into());
-        }
         if user.is_empty()
             || !user
                 .chars()
@@ -191,18 +191,28 @@ impl ServerRequest {
         {
             return Err("Enter a plain login name, such as root".into());
         }
-        let public_host = match self.public_host.trim() {
-            "" => host,
-            other if is_plain_host(other) => other,
-            _ => return Err("The public address must be an IPv4 address or host name".into()),
+        // Relay tickets carry an address the client parses as a socket
+        // address, so the node must advertise an IP literal, not a name.
+        let public_ip: IpAddr = match unbracket(self.public_host.trim()) {
+            "" => host.parse().map_err(|_| {
+                "Enter the server's public IP address: clients reach a supernode by address, \
+                 not by name"
+                    .to_string()
+            })?,
+            other => other
+                .parse()
+                .map_err(|_| "The public address must be an IP address".to_string())?,
         };
         let host_key = parse_public_key(&self.host_key)
             .map_err(|_| "Confirm the server's host key before continuing".to_string())?;
         let access = SshAccessMode::parse(&self.access)
             .ok_or_else(|| format!("Unknown SSH access choice {:?}", self.access))?;
         Ok(CheckedServer {
-            ssh_target: format!("{user}@{host}:{}", self.port),
-            public_host: public_host.to_string(),
+            ssh_target: format!("{user}@{}:{}", bracket(host), self.port),
+            public_host: match public_ip {
+                IpAddr::V4(ip) => ip.to_string(),
+                IpAddr::V6(ip) => format!("[{ip}]"),
+            },
             host_key,
             access,
         })
@@ -219,15 +229,33 @@ impl ServerRequest {
     }
 }
 
-/// IPv4 or a DNS name. IPv6 literals are refused: `user@host:port` targets
-/// cannot carry them unbracketed.
-fn is_plain_host(host: &str) -> bool {
-    !host.is_empty()
+const BAD_HOST: &str = "Enter the server's IP address or host name";
+
+/// The SSH host as typed, without brackets: an IP literal or a DNS name.
+fn ssh_host(raw: &str) -> Option<&str> {
+    let host = unbracket(raw.trim());
+    let dns_name = !host.is_empty()
         && host.len() <= 253
         && host
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-        && !host.starts_with('-')
+        && !host.starts_with('-');
+    (dns_name || host.parse::<IpAddr>().is_ok()).then_some(host)
+}
+
+fn unbracket(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
+/// IPv6 literals in `host:port` strings need brackets.
+fn bracket(host: &str) -> String {
+    if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
 }
 
 pub struct AdminService {
@@ -270,10 +298,8 @@ impl AdminService {
                 Ok(self.state())
             }
             Request::FetchHostKey { host, port } => {
-                if !is_plain_host(host.trim()) {
-                    return Err("Enter the server's IPv4 address or host name".into());
-                }
-                let key = fetch_host_key(host.trim(), port)
+                let host = ssh_host(&host).ok_or(BAD_HOST)?;
+                let key = fetch_host_key(host, port)
                     .await
                     .map_err(|e| format!("Could not reach {host}:{port}: {e}"))?;
                 Ok(json!({
@@ -293,18 +319,8 @@ impl AdminService {
                 let lines = self.for_each_host(&node_id, HostAction::Restart).await?;
                 Ok(json!({ "lines": lines }))
             }
-            Request::CheckUpdate { node_id } => {
-                let lines = self
-                    .for_each_host(&node_id, HostAction::CheckUpdate)
-                    .await?;
-                Ok(json!({
-                    "update_available": lines.iter().any(|l| l.ends_with(UPDATE_AVAILABLE)),
-                }))
-            }
-            Request::UpdateNow { node_id } => {
-                let lines = self.for_each_host(&node_id, HostAction::UpdateNow).await?;
-                Ok(json!({ "lines": lines }))
-            }
+            Request::CheckUpdate { node_id } => self.check_update(&node_id).await,
+            Request::UpdateNow { node_id } => self.update_now(&node_id).await,
             Request::SetUpdateMode { node_id, mode } => {
                 let parsed = UpdateMode::parse(&mode)
                     .ok_or_else(|| format!("Unknown update mode {mode:?}"))?;
@@ -377,8 +393,18 @@ impl AdminService {
 
         let outcome = run_with_progress(&setup, &[], emit).await?;
         let host = managed_host(&setup, &outcome);
+        // Setting up a server this profile already manages again (to change
+        // its choices, or after fixing something) updates that entry rather
+        // than listing the server twice.
+        let existing = self
+            .store
+            .lock()
+            .nodes()
+            .iter()
+            .find(|n| n.hosts.len() == 1 && n.hosts[0].public_host == checked.public_host)
+            .map(|n| n.id.clone());
         let node = ManagedNode {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: existing.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             name,
             channel: CHANNEL.into(),
             update_mode: update_mode.as_str().into(),
@@ -587,6 +613,81 @@ impl AdminService {
         Ok(out)
     }
 
+    /// Compare each server's installed package with the published one. The
+    /// client reads the release itself, so this works for servers that cannot
+    /// reach GitHub.
+    async fn check_update(&self, node_id: &str) -> Result<Value, String> {
+        let node = self.node(node_id)?;
+        let key = self.store.lock().existing_client_key();
+        let mut published: HashMap<String, String> = HashMap::new();
+        let mut hosts = Vec::new();
+        for host in &node.hosts {
+            if !published.contains_key(&host.platform) {
+                let digest = published_release_sha256(&node.inventory.defaults, &host.platform)
+                    .await
+                    .map_err(|e| format!("read the published release: {e:#}"))?;
+                published.insert(host.platform.clone(), digest);
+            }
+            let transport = host_transport(host, key.as_ref())?;
+            let installed = installed_package(&transport, node.inventory.defaults.privilege)
+                .await
+                .map_err(|e| format!("{}: {e:#}", host.host_name))?;
+            let available =
+                installed.as_deref() != published.get(&host.platform).map(String::as_str);
+            hosts.push(json!({ "host_name": host.host_name, "update_available": available }));
+        }
+        let any = hosts.iter().any(|h| h["update_available"] == true);
+        Ok(json!({ "update_available": any, "hosts": hosts }))
+    }
+
+    /// Download and verify the release here, then push it to each server in
+    /// turn, which installs it and rolls back if the node fails to start. One
+    /// server at a time keeps a cluster reachable through the others.
+    async fn update_now(&self, node_id: &str) -> Result<Value, String> {
+        let node = self.node(node_id)?;
+        let key = self.store.lock().existing_client_key();
+        let privilege = node.inventory.defaults.privilege;
+        let mut packages: HashMap<String, (Vec<u8>, String)> = HashMap::new();
+        let mut lines = Vec::new();
+        for host in &node.hosts {
+            if !packages.contains_key(&host.platform) {
+                let package = download_release_archive(&node.inventory.defaults, &host.platform)
+                    .await
+                    .map_err(|e| format!("download the release: {e:#}"))?;
+                packages.insert(host.platform.clone(), package);
+            }
+            let (archive, digest) = &packages[&host.platform];
+            let transport = host_transport(host, key.as_ref())?;
+            let installed = installed_package(&transport, privilege)
+                .await
+                .map_err(|e| format!("{}: {e:#}", host.host_name))?;
+            if installed.as_deref() == Some(digest.as_str()) {
+                lines.push(format!(
+                    "{}: already running the latest build",
+                    host.host_name
+                ));
+                continue;
+            }
+            let outcome = push_update(&transport, privilege, archive, digest)
+                .await
+                .map_err(|e| format!("{}: {e:#}", host.host_name))?;
+            if !outcome.succeeded {
+                return Err(format!(
+                    "{}: update failed: {}",
+                    host.host_name,
+                    outcome.log.join("\n")
+                ));
+            }
+            lines.extend(
+                outcome
+                    .log
+                    .iter()
+                    .map(|l| format!("{}: {l}", host.host_name)),
+            );
+        }
+        Ok(json!({ "lines": lines }))
+    }
+
     fn node(&self, node_id: &str) -> Result<ManagedNode, String> {
         self.store
             .lock()
@@ -602,13 +703,9 @@ impl AdminService {
     }
 }
 
-const UPDATE_AVAILABLE: &str = "update available";
-
 #[derive(Clone, Copy)]
 enum HostAction {
     Restart,
-    CheckUpdate,
-    UpdateNow,
     SetUpdateMode(UpdateMode),
     Uninstall { purge: bool },
 }
@@ -624,27 +721,23 @@ async fn run_host_action(
         HostAction::Restart => lifecycle_report(transport, resolved, LifecycleAction::Restart)
             .await
             .map_err(detail),
-        HostAction::CheckUpdate => {
-            let available = check_for_update(transport, privilege)
-                .await
-                .map_err(detail)?;
-            Ok(vec![if available {
-                UPDATE_AVAILABLE.into()
-            } else {
-                "up to date".into()
-            }])
-        }
-        HostAction::UpdateNow => {
-            let outcome = run_update_now(transport, privilege).await.map_err(detail)?;
-            if outcome.succeeded {
-                Ok(outcome.log)
-            } else {
-                Err(format!("update failed: {}", outcome.log.join("\n")))
+        HostAction::SetUpdateMode(mode) => {
+            if mode == UpdateMode::ServerTimer
+                && !probe_host_os(transport)
+                    .await
+                    .map_err(detail)?
+                    .reaches_github
+            {
+                return Err(
+                    "this server cannot reach github.com to fetch its own updates; \
+                            keep updating from DoubleSlash"
+                        .into(),
+                );
             }
+            set_update_mode(transport, privilege, mode)
+                .await
+                .map_err(detail)
         }
-        HostAction::SetUpdateMode(mode) => set_update_mode(transport, privilege, mode)
-            .await
-            .map_err(detail),
         HostAction::Uninstall { purge } => {
             // Stop the timer first so it does not reinstall a binary for a
             // node that is gone. A host set up before the updater has none.
@@ -670,6 +763,11 @@ fn guided_setup(
 ) -> GuidedSetup {
     let mut instance = GuidedSetup::default_instance(&checked.public_host);
     instance.allow_public_rooms = Some(server.allow_public_rooms);
+    // The default bind is IPv4 only. `::` also accepts IPv4 on Linux, but
+    // fails where IPv6 is switched off, so only an IPv6 node gets it.
+    if checked.public_host.starts_with('[') {
+        instance.listen_bind = Some("::".into());
+    }
     GuidedSetup {
         host_name,
         ssh_target: checked.ssh_target.clone(),
@@ -907,8 +1005,21 @@ mod tests {
         assert_eq!(ok.ssh_target, "admin@198.51.100.7:2222");
         assert_eq!(ok.public_host, "198.51.100.7");
 
+        let mut v6 = parse("");
+        v6.host = "2001:db8::1".into();
+        let checked = v6.check().unwrap();
+        assert_eq!(checked.ssh_target, "root@[2001:db8::1]:22");
+        assert_eq!(checked.public_host, "[2001:db8::1]");
+        let mut named = parse("");
+        named.host = "node.example.com".into();
+        assert!(
+            named.check().is_err(),
+            "a name alone gives no IP to advertise"
+        );
+        named.public_host = "198.51.100.8".into();
+        assert_eq!(named.check().unwrap().public_host, "198.51.100.8");
         let mut bad_host = parse("");
-        bad_host.host = "2001:db8::1".into();
+        bad_host.host = "host;rm".into();
         assert!(bad_host.check().is_err());
         let mut injected = parse("");
         injected.user = "root; reboot".into();

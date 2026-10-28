@@ -28,7 +28,7 @@ These are implemented in the manager library (`snm-supernode`: `harden.rs`, `ssh
 
   The password is used for setup only and never stored. Every mode pins the host key the user confirmed by fingerprint.
 - **Hardening** (Debian 11+/Ubuntu 20.04+), each step shown and individually optional:
-  - a ufw default-deny firewall with SSH rate-limited on the port sshd actually uses;
+  - a ufw default-deny firewall that allows SSH on the port sshd actually uses;
   - unattended security upgrades, with an optional reboot at 04:00 server time;
   - fail2ban for SSH.
 

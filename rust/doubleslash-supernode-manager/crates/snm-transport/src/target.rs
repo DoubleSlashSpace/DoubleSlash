@@ -33,15 +33,7 @@ impl SshTarget {
         };
         let user = per_host_user_from_env(label).unwrap_or(user);
 
-        let (host, port) = match user_host.rsplit_once(':') {
-            Some((host, port_str)) if port_str.chars().all(|c| c.is_ascii_digit()) => {
-                match port_str.parse::<u16>() {
-                    Ok(port) => (host.to_string(), port),
-                    Err(_) => (user_host.to_string(), 22),
-                }
-            }
-            _ => (user_host.to_string(), 22),
-        };
+        let (host, port) = split_host_port(user_host);
 
         Self {
             user,
@@ -62,11 +54,40 @@ impl SshTarget {
     }
 
     pub fn display(&self) -> String {
-        if self.port == 22 {
-            format!("{}@{}", self.user, self.host)
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
         } else {
-            format!("{}@{}:{}", self.user, self.host, self.port)
+            self.host.clone()
+        };
+        if self.port == 22 {
+            format!("{}@{host}", self.user)
+        } else {
+            format!("{}@{host}:{}", self.user, self.port)
         }
+    }
+}
+
+/// `host`, `host:port`, `[v6]`, `[v6]:port`, or a bare IPv6 literal (which
+/// cannot carry a port). The returned host never has brackets.
+fn split_host_port(raw: &str) -> (String, u16) {
+    if let Some(rest) = raw.strip_prefix('[') {
+        if let Some((host, after)) = rest.split_once(']') {
+            let port = after
+                .strip_prefix(':')
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(22);
+            return (host.to_string(), port);
+        }
+    }
+    if raw.matches(':').count() > 1 {
+        return (raw.to_string(), 22);
+    }
+    match raw.rsplit_once(':') {
+        Some((host, port)) => match port.parse::<u16>() {
+            Ok(port) => (host.to_string(), port),
+            Err(_) => (raw.to_string(), 22),
+        },
+        None => (raw.to_string(), 22),
     }
 }
 
@@ -104,6 +125,18 @@ mod tests {
         assert_eq!(t.user, "deploy");
         assert_eq!(t.label(), Some("targettest"));
         env::remove_var("SNM_SSH_USER_TARGETTEST");
+    }
+
+    #[test]
+    fn parses_ipv6_targets() {
+        let t = SshTarget::parse("root@[2001:db8::7]:2222");
+        assert_eq!(t.host, "2001:db8::7");
+        assert_eq!(t.port, 2222);
+        assert_eq!(t.display(), "root@[2001:db8::7]:2222");
+        let t = SshTarget::parse("root@[2001:db8::7]");
+        assert_eq!((t.host.as_str(), t.port), ("2001:db8::7", 22));
+        let t = SshTarget::parse("root@2001:db8::7");
+        assert_eq!((t.host.as_str(), t.port), ("2001:db8::7", 22));
     }
 
     #[test]

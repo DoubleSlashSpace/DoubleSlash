@@ -839,7 +839,7 @@ pub async fn cluster_sync_report_with(
             .iter()
             .filter(|m| m.identity_pub != member_entry.identity_pub)
         {
-            let ip = m.relay_addr.split(':').next().unwrap_or("");
+            let ip = address_host(&m.relay_addr);
             if !ip.is_empty() && !peer_ips.iter().any(|p| p == ip) {
                 peer_ips.push(ip.to_string());
             }
@@ -878,9 +878,23 @@ pub async fn cluster_sync_report_with(
     Ok(report)
 }
 
+/// The host of a `host:port` roster address, without IPv6 brackets: ufw takes
+/// `2001:db8::7`, not `[2001:db8::7]`.
+fn address_host(address: &str) -> &str {
+    let host = address.rsplit_once(':').map_or(address, |(h, _)| h);
+    host.trim_start_matches('[').trim_end_matches(']')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roster_address_hosts_drop_port_and_brackets() {
+        assert_eq!(address_host("198.51.100.7:3478"), "198.51.100.7");
+        assert_eq!(address_host("[2001:db8::7]:3478"), "2001:db8::7");
+        assert_eq!(address_host("node.example:3478"), "node.example");
+    }
 
     fn output(exit_code: i32, stdout: &str) -> RemoteOutput {
         RemoteOutput {

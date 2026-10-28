@@ -33,6 +33,9 @@ pub struct HostOs {
     /// Sockets listening on a non-loopback address, as `proto address:port`.
     /// A default-deny firewall would cut these off.
     pub public_listeners: Vec<String>,
+    /// A TCP connection to github.com:443 succeeded. GitHub has no IPv6, so an
+    /// IPv6-only server cannot fetch its own updates.
+    pub reaches_github: bool,
 }
 
 /// Whether the guided flow can set this host up.
@@ -116,6 +119,7 @@ command -v apt-get >/dev/null 2>&1 && echo "apt=1"
 echo "uid=$(id -u)"
 command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null && echo "sudo=1"
 echo "ssh_connection=${SSH_CONNECTION:-}"
+if timeout 5 bash -c 'exec 3<>/dev/tcp/github.com/443' 2>/dev/null; then echo "github=1"; fi
 if command -v ss >/dev/null 2>&1; then ss -H -tuln 2>/dev/null | awk '{print "listen=" $1 " " $5}'; fi
 "#;
 
@@ -142,6 +146,7 @@ fn parse_probe(stdout: &str) -> HostOs {
             "apt" => os.apt = value == "1",
             "uid" => os.root = value == "0",
             "sudo" => os.passwordless_sudo = value == "1",
+            "github" => os.reaches_github = value == "1",
             "ssh_connection" => {
                 os.ssh_port = value.split_whitespace().nth(3).and_then(|p| p.parse().ok());
             }
@@ -175,7 +180,7 @@ fn public_listener(line: &str) -> Option<String> {
 /// user turn it off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HardeningOptions {
-    /// ufw: deny incoming by default, rate-limit SSH, then enable. The node's
+    /// ufw: deny incoming by default, allow SSH, then enable. The node's
     /// own ports are added by install.
     pub firewall: bool,
     /// unattended-upgrades for the distribution's security updates.
@@ -314,7 +319,7 @@ pub async fn apply_hardening_step(
                 .await
                 .context("enable firewall")?;
             let mut report = vec![format!(
-                "firewall on: incoming denied except SSH (port {ssh_port}, rate-limited)"
+                "firewall on: incoming denied except SSH (port {ssh_port})"
             )];
             report.extend(output.lines().map(str::to_string));
             Ok(report)
@@ -383,12 +388,19 @@ fn fail2ban_jail(ssh_port: u16) -> String {
 
 /// SSH is allowed before the firewall is enabled, so the session running this
 /// survives it.
+///
+/// A plain allow, not `ufw limit`: the manager opens a connection per
+/// command, and `limit` blocks a sixth connection inside 30 seconds, which
+/// locked the installer out of a live host mid-setup. fail2ban handles
+/// repeated failed logins instead. An earlier `limit` rule is removed, since
+/// ufw would still match it first.
 fn firewall_baseline_script(ssh_port: u16) -> String {
     format!(
         "set -e\n\
+         ufw --force delete limit {ssh_port}/tcp >/dev/null 2>&1 || true\n\
          ufw default deny incoming\n\
          ufw default allow outgoing\n\
-         ufw limit {ssh_port}/tcp comment 'snm:ssh'\n\
+         ufw allow {ssh_port}/tcp comment 'snm:ssh'\n\
          ufw --force enable\n\
          ufw status | head -n 1\n"
     )
@@ -399,7 +411,7 @@ mod tests {
     use super::*;
 
     const DEBIAN_PROBE: &str = "id=debian\nid_like=\nversion_id=12\npretty=Debian GNU/Linux 12 (bookworm)\n\
-systemd=1\napt=1\nuid=0\nssh_connection=203.0.113.5 50122 198.51.100.7 22\n\
+systemd=1\napt=1\nuid=0\ngithub=1\nssh_connection=203.0.113.5 50122 198.51.100.7 22\n\
 listen=udp 127.0.0.53%lo:53\nlisten=tcp 0.0.0.0:22\nlisten=tcp [::]:22\nlisten=tcp 127.0.0.1:631\nlisten=tcp [::1]:631\n";
 
     #[test]
@@ -412,6 +424,8 @@ listen=udp 127.0.0.53%lo:53\nlisten=tcp 0.0.0.0:22\nlisten=tcp [::]:22\nlisten=t
         assert_eq!(os.privilege(), Some(PrivilegeMode::Root));
         assert_eq!(os.support(), OsSupport::Supported);
         assert_eq!(os.public_listeners, vec!["tcp 0.0.0.0:22", "tcp [::]:22"]);
+        assert!(os.reaches_github);
+        assert!(!parse_probe("id=debian\n").reaches_github);
     }
 
     #[test]
@@ -465,7 +479,8 @@ listen=udp 127.0.0.53%lo:53\nlisten=tcp 0.0.0.0:22\nlisten=tcp [::]:22\nlisten=t
     #[test]
     fn firewall_allows_ssh_before_enabling() {
         let script = firewall_baseline_script(2222);
-        let allow = script.find("ufw limit 2222/tcp").unwrap();
+        let allow = script.find("ufw allow 2222/tcp").unwrap();
+        assert!(!script.contains("ufw limit"));
         let enable = script.find("ufw --force enable").unwrap();
         assert!(allow < enable);
         assert!(script.contains("default deny incoming"));

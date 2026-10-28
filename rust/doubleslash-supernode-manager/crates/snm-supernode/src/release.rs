@@ -256,6 +256,34 @@ pub fn resolve_release_artifact(defaults: &Defaults, platform: &str) -> Result<R
     })
 }
 
+/// The SHA-256 the release publishes for its package, from the sidecar alone.
+pub async fn published_release_sha256(defaults: &Defaults, platform: &str) -> Result<String> {
+    let artifact = resolve_release_artifact(defaults, platform)?;
+    let sidecar = download_text(&artifact.sha256_url)
+        .await
+        .with_context(|| format!("download {}", artifact.sha256_url))?;
+    sidecar_digest(&sidecar)
+}
+
+/// A release package as published, checked against its sidecar and its
+/// contents (binary and notices). Returns the archive and its SHA-256.
+pub async fn download_release_archive(
+    defaults: &Defaults,
+    platform: &str,
+) -> Result<(Vec<u8>, String)> {
+    let artifact = resolve_release_artifact(defaults, platform)?;
+    let archive = download_bytes(&artifact.asset_url)
+        .await
+        .with_context(|| format!("download {}", artifact.asset_url))?;
+    let sha_sidecar = download_text(&artifact.sha256_url)
+        .await
+        .with_context(|| format!("download {}", artifact.sha256_url))?;
+    verify_sha256(&archive, &sha_sidecar).context("verify release sha256")?;
+    extract_supernode_package(&archive, &artifact)?;
+    let digest = format!("{:x}", Sha256::digest(&archive));
+    Ok((archive, digest))
+}
+
 pub async fn download_supernode_artifact(
     defaults: &Defaults,
     platform: &str,
@@ -346,7 +374,7 @@ async fn download_text(url: &str) -> Result<String> {
     Ok(response.text().await?)
 }
 
-fn verify_sha256(bytes: &[u8], sidecar: &str) -> Result<()> {
+fn sidecar_digest(sidecar: &str) -> Result<String> {
     let expected = sidecar
         .split_whitespace()
         .next()
@@ -355,6 +383,11 @@ fn verify_sha256(bytes: &[u8], sidecar: &str) -> Result<()> {
     if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
         bail!("invalid sha256 sidecar");
     }
+    Ok(expected)
+}
+
+fn verify_sha256(bytes: &[u8], sidecar: &str) -> Result<()> {
+    let expected = sidecar_digest(sidecar)?;
 
     let actual = format!("{:x}", Sha256::digest(bytes));
     if actual != expected {

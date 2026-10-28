@@ -215,6 +215,14 @@ pub async fn run_guided_setup(
             if let OsSupport::Unsupported(reason) = os.support() {
                 bail!("{reason}");
             }
+            if setup.update_mode == UpdateMode::ServerTimer && !os.reaches_github {
+                bail!(
+                    "this server cannot reach github.com, so it cannot fetch its own updates \
+                     (GitHub has no IPv6 address, and the server seems to have no IPv4 \
+                     internet access). Choose to update only when you click Update: \
+                     DoubleSlash then downloads each update itself and uploads it"
+                );
+            }
             let mut lines = vec![format!("{} with systemd", os.display_name())];
             let others: Vec<_> = os
                 .public_listeners

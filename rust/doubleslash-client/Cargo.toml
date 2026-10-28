@@ -9,6 +9,11 @@ description = "Native Rust desktop client for the DoubleSlash (D://) peer-connec
 name = "doubleslash-client"
 path = "src/main.rs"
 
+# Live acceptance for hosting a supernode, against a real server.
+[[example]]
+name = "supernode_admin_live"
+required-features = ["supernode-admin"]
+
 [dependencies]
 # Internal crates (rlib, no PyO3 boundary)
 doubleslash-features = { path = "../doubleslash-features" }

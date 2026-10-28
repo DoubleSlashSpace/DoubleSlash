@@ -140,13 +140,21 @@ impl UpdaterConfig {
     }
 }
 
-/// `check` prints `update-available` or `up-to-date`; anything else installs.
+/// Usage: `update-supernode` fetches and installs the latest package;
+/// `update-supernode check` prints `update-available` or `up-to-date`;
+/// `update-supernode local <archive> <sha256>` installs an archive the client
+/// downloaded, verified and uploaded (for servers that cannot reach GitHub).
 pub const UPDATER_SCRIPT: &str = r#"#!/bin/sh
 # Written by DoubleSlash supernode setup. Updates the supernode binary and
-# rolls back if an instance does not stay up. Usage: update-supernode [check]
+# rolls back if an instance does not stay up.
+# Usage: update-supernode [check | local <archive> <sha256>]
 set -eu
 . /etc/doubleslash/update.env
 mode="${1:-install}"
+
+# A timer run and an update pushed from DoubleSlash must not overlap.
+exec 9>/run/doubleslash-update.lock
+flock -n 9 || { echo "another supernode update is already running" >&2; exit 6; }
 
 fetch() {
   curl -fsSL --proto '=https' --retry 3 --max-time 600 -o "$2" "$1"
@@ -154,8 +162,13 @@ fetch() {
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-fetch "$RELEASE_URL.sha256" "$work/package.sha256"
-expected=$(awk 'NR == 1 { print $1 }' "$work/package.sha256")
+if [ "$mode" = local ]; then
+  [ -f "${2:-}" ] || { echo "no package to install" >&2; exit 2; }
+  expected="${3:-}"
+else
+  fetch "$RELEASE_URL.sha256" "$work/package.sha256"
+  expected=$(awk 'NR == 1 { print $1 }' "$work/package.sha256")
+fi
 case "$expected" in
   *[!0-9a-f]*|"") echo "the published checksum is malformed" >&2; exit 2 ;;
 esac
@@ -172,7 +185,11 @@ if [ "$installed" = "$expected" ] && [ -x "$INSTALL_ROOT/bin/current" ]; then
   exit 0
 fi
 
-fetch "$RELEASE_URL" "$work/package.tar.gz"
+if [ "$mode" = local ]; then
+  cp "$2" "$work/package.tar.gz"
+else
+  fetch "$RELEASE_URL" "$work/package.tar.gz"
+fi
 actual=$(sha256sum "$work/package.tar.gz" | awk '{ print $1 }')
 if [ "$actual" != "$expected" ]; then
   echo "checksum mismatch: published $expected, downloaded $actual" >&2
@@ -227,6 +244,7 @@ if [ -n "$units" ] && ! healthy; then
   if [ -n "$previous" ]; then
     ln -sfn "$previous" "$INSTALL_ROOT/bin/current"
     restart_all
+    [ "$previous" != "$target" ] && rm -rf "$target" "$target.licenses"
   fi
   exit 5
 fi
@@ -372,6 +390,58 @@ pub async fn record_installed_package(
     .await
 }
 
+/// The SHA-256 of the package the updater (or setup) last installed, if any.
+pub async fn installed_package(
+    transport: &SshTransport,
+    privilege: snm_core::PrivilegeMode,
+) -> Result<Option<String>> {
+    let prefix = privilege_prefix(privilege);
+    let output = run_checked(
+        transport,
+        &format!("{prefix}cat {UPDATER_STATE_DIR}/package.sha256 2>/dev/null || true"),
+    )
+    .await?;
+    let digest = output.stdout.trim().to_ascii_lowercase();
+    Ok((digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit())).then_some(digest))
+}
+
+/// Install a package the caller downloaded and verified: upload it, then run
+/// the updater's `local` mode, which checks the digest again and rolls back
+/// like a timer run. Works on servers that cannot reach GitHub themselves.
+pub async fn push_update(
+    transport: &SshTransport,
+    privilege: snm_core::PrivilegeMode,
+    archive: &[u8],
+    archive_sha256: &str,
+) -> Result<UpdateOutcome> {
+    if archive_sha256.len() != 64 || !archive_sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("not a SHA-256 digest: {archive_sha256:?}");
+    }
+    let prefix = privilege_prefix(privilege);
+    let staged = format!("/tmp/doubleslash-update-{}.tar.gz", &archive_sha256[..12]);
+    transport
+        .upload_bytes(&staged, archive, 0o600)
+        .await
+        .context("upload the supernode package")?;
+    let run = transport
+        .run(&format!(
+            "{prefix}{UPDATER_SCRIPT_PATH} local {staged} {archive_sha256}"
+        ))
+        .await;
+    let _ = transport.run(&format!("rm -f {staged}")).await;
+    let output = run?;
+    let log = output
+        .stdout
+        .lines()
+        .chain(output.stderr.lines())
+        .map(str::to_string)
+        .collect();
+    Ok(UpdateOutcome {
+        succeeded: output.exit_code == 0,
+        log,
+    })
+}
+
 /// Whether a newer package than the one the updater last installed is out.
 /// A node installed without the updater reports available until its first
 /// update.
@@ -514,6 +584,10 @@ mod tests {
         assert!(s.contains("--proto '=https'"));
         assert!(s.contains("ln -sfn \"$previous\""));
         assert!(s.contains("rolling back"));
+        // A pushed package is checked against the digest the client passed,
+        // by the same comparison a fetched one is.
+        assert!(s.contains("expected=\"${3:-}\""));
+        assert!(s.contains("flock -n 9"));
     }
 
     #[test]
