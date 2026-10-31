@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Traced from the desktop client's rust/doubleslash-client/qml/icons/globe.svg
+  so both clients draw the same angular shape (square ends, mitred corners).
+  Stroked white; tint it (Compose Icon) to colour it from the active skin.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="20"
+    android:viewportHeight="20">
+    <path
+        android:pathData="M5,2.5 L15,2.5 L17.5,5 L17.5,15 L15,17.5 L5,17.5 L2.5,15 L2.5,5 Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.4"
+        android:strokeLineJoin="miter"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M10,2.5 L13,10 L10,17.5 L7,10 Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.2"
+        android:strokeLineJoin="miter"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M2.5,10 L17.5,10"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.2" />
+    <path
+        android:pathData="M3.5,6 L16.5,6"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1" />
+    <path
+        android:pathData="M3.5,14 L16.5,14"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1" />
+</vector>

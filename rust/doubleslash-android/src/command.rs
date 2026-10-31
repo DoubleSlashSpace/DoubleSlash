@@ -7,6 +7,7 @@
 //! declaration would mean regenerating and re-checking signatures on both
 //! sides of the boundary every time one changes.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -585,23 +586,48 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
             // routinely filed under several member ids after a failover.
             // `list_for_cluster_members` is the store's own answer to that: it
             // resolves ids through the peer store, normalises base64 padding,
-            // and dedupes by room_id. Using the raw `list()` shows one row per
-            // member instead of one per room.
-            let members = session.known_supernode_ids();
+            // and dedupes by room_id. It is asked once per logical node, not
+            // once for every node together: two unrelated nodes both host a
+            // `default` room, and a single call kept only one of them.
             let store = session.room_store.read();
             let peers = session.peer_store.read();
-
-            let entries: Vec<doubleslash_client::room_store::RoomEntry> = if members.is_empty() {
-                // Before any supernode has reported a roster there is nothing
-                // to resolve against, so fall back to the flat list.
-                store.list().into_iter().cloned().collect()
-            } else {
-                store.list_for_cluster_members(&peers, &members)
+            let nodes = {
+                let seeds: Vec<NodeSeed> = peers
+                    .supernodes()
+                    .into_iter()
+                    .map(|record| NodeSeed {
+                        identity_pub: record.identity_pub.clone(),
+                        peer_id: record.peer_id.clone(),
+                        display_name: record.display_name(),
+                        from_invite: record.supernode_from_invite,
+                    })
+                    .collect();
+                group_supernodes(&seeds, &session.cluster_members.read())
             };
+
+            // (entry, node it is listed under, ids it may be hidden under)
+            let mut entries: Vec<(doubleslash_client::room_store::RoomEntry, String, &[String])> =
+                Vec::new();
+            if nodes.is_empty() {
+                // Before any supernode is known there is nothing to resolve
+                // against, so fall back to the flat list.
+                for entry in store.list() {
+                    let node_id = peers
+                        .resolve_supernode_identity_pub(&entry.supernode_id)
+                        .unwrap_or_else(|| entry.supernode_id.clone());
+                    entries.push((entry.clone(), node_id, &[]));
+                }
+            } else {
+                for node in &nodes {
+                    for entry in store.list_for_cluster_members(&peers, &node.members) {
+                        entries.push((entry, node.node_id.clone(), &node.members));
+                    }
+                }
+            }
 
             let rooms: Vec<Value> = entries
                 .into_iter()
-                .map(|entry| {
+                .map(|(entry, node_id, members)| {
                     // Hide state is recorded against whichever member was
                     // hosting when the user hid it, so a single-key check
                     // misses it once the room moves.
@@ -613,8 +639,22 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                     let mut value = serde_json::to_value(&entry).unwrap_or_else(|_| json!({}));
                     if let Some(object) = value.as_object_mut() {
                         object.insert("hidden".into(), json!(hidden));
+                        // The Rooms list heads each node's rooms with that
+                        // node's row. Routing still uses `supernode_id`.
+                        object.insert("node_id".into(), json!(node_id));
                     }
                     value
+                })
+                .collect();
+            let node_rows: Vec<Value> = nodes
+                .iter()
+                .map(|node| {
+                    json!({
+                        "node_id": node.node_id,
+                        "peer_id": node.peer_id,
+                        "display_name": node.display_name,
+                        "members": node.members,
+                    })
                 })
                 .collect();
 
@@ -629,7 +669,7 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                 rooms.iter().filter(|r| r["hidden"] != json!(true)).count(),
             );
 
-            json!({ "ok": true, "rooms": rooms })
+            json!({ "ok": true, "rooms": rooms, "nodes": node_rows })
         }
         "room.hide" | "room.unhide" => {
             let (Some(supernode_id), Some(room_id)) = (
@@ -1975,9 +2015,119 @@ fn err(message: impl Into<String>) -> Value {
     json!({ "ok": false, "error": message.into() })
 }
 
+/// A known supernode, as [`group_supernodes`] reads it from the peer store.
+struct NodeSeed {
+    identity_pub: String,
+    peer_id: String,
+    display_name: String,
+    from_invite: bool,
+}
+
+/// One supernode as the Rooms list heads it: a cluster counts as one.
+#[derive(Debug, PartialEq)]
+struct LogicalNode {
+    /// The cluster's stable id: the invite node, else the smallest known one.
+    node_id: String,
+    /// The representative's hex `peer_id`, for its avatar.
+    peer_id: String,
+    display_name: String,
+    /// Every id its rooms may be filed or hidden under, as spelled.
+    members: Vec<String>,
+}
+
+/// Fold known supernodes into one row per cluster, as the desktop does.
+///
+/// A node's cluster is itself plus every roster that names it, as host or
+/// member (the desktop's `cluster_full_set`). The representative is the
+/// member the user joined through, so it stays stable and is always a known
+/// supernode; then the smallest known id. Padding is ignored throughout.
+fn group_supernodes(
+    seeds: &[NodeSeed],
+    rosters: &HashMap<String, Vec<String>>,
+) -> Vec<LogicalNode> {
+    let bare = |id: &str| id.trim_end_matches('=').to_owned();
+    let mut order: Vec<&NodeSeed> = seeds
+        .iter()
+        .filter(|s| !s.identity_pub.is_empty())
+        .collect();
+    order.sort_by(|a, b| {
+        b.from_invite
+            .cmp(&a.from_invite)
+            .then_with(|| a.identity_pub.cmp(&b.identity_pub))
+    });
+
+    let mut covered: HashSet<String> = HashSet::new();
+    let mut nodes = Vec::new();
+    for seed in order {
+        let me = bare(&seed.identity_pub);
+        if covered.contains(&me) {
+            continue;
+        }
+        let mut members = vec![seed.identity_pub.clone()];
+        if !seed.peer_id.is_empty() {
+            members.push(seed.peer_id.clone());
+        }
+        for (host, roster) in rosters {
+            let in_cluster = bare(host) == me || roster.iter().any(|m| bare(m) == me);
+            if in_cluster {
+                members.push(host.clone());
+                members.extend(roster.iter().cloned());
+            }
+        }
+        let mut seen: HashSet<String> = HashSet::new();
+        members.retain(|m| !m.is_empty() && seen.insert(m.clone()));
+        covered.extend(members.iter().map(|m| bare(m)));
+        nodes.push(LogicalNode {
+            node_id: seed.identity_pub.clone(),
+            peer_id: seed.peer_id.clone(),
+            display_name: seed.display_name.clone(),
+            members,
+        });
+    }
+    nodes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn seed(id: &str, name: &str, from_invite: bool) -> NodeSeed {
+        NodeSeed {
+            identity_pub: id.to_owned(),
+            peer_id: format!("hex-{id}"),
+            display_name: name.to_owned(),
+            from_invite,
+        }
+    }
+
+    #[test]
+    fn unrelated_supernodes_stay_separate_rows() {
+        let nodes = group_supernodes(
+            &[seed("bbb=", "Beta", true), seed("aaa=", "Alpha", true)],
+            &HashMap::new(),
+        );
+        let ids: Vec<&str> = nodes.iter().map(|n| n.node_id.as_str()).collect();
+        assert_eq!(ids, ["aaa=", "bbb="]);
+        assert_eq!(nodes[1].members, ["bbb=", "hex-bbb="]);
+    }
+
+    #[test]
+    fn a_cluster_is_one_row_under_the_invite_node() {
+        // Learned from the roster: "aaa" is a sibling, not the node we joined.
+        let mut rosters = HashMap::new();
+        rosters.insert("ccc".to_owned(), vec!["aaa".to_owned(), "ccc".to_owned()]);
+        let nodes = group_supernodes(
+            &[seed("aaa=", "Sibling", false), seed("ccc=", "Joined", true)],
+            &rosters,
+        );
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node_id, "ccc=");
+        assert_eq!(nodes[0].display_name, "Joined");
+        // Every spelling a room may be filed under, padded or not.
+        for id in ["ccc=", "hex-ccc=", "ccc", "aaa"] {
+            assert!(nodes[0].members.iter().any(|m| m == id), "missing {id}");
+        }
+    }
 
     /// Guards against a match arm being deleted while still advertised.
     ///

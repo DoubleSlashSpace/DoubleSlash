@@ -47,7 +47,8 @@ QtObject {
     // manual. `pinned` room keys (`nodeId:roomId`) stay first among their
     // siblings, in the order they were pinned. `manual` is that same key
     // order, used only while mode is manual. A pin does not pull a sub-room
-    // out from under its parent.
+    // out from under its parent. `collapsed` lists the supernode ids whose
+    // rooms are folded under their node row.
     function normalizeMode(mode) {
         if (mode === "name_desc" || mode === "peers_asc" || mode === "peers_desc" || mode === "manual")
             return mode
@@ -69,8 +70,23 @@ QtObject {
         return {
             mode: root.normalizeMode(src.mode),
             pinned: root.asKeyList(src.pinned),
-            manual: root.asKeyList(src.manual)
+            manual: root.asKeyList(src.manual),
+            collapsed: root.asKeyList(src.collapsed)
         }
+    }
+
+    /// `o` (normalized) with some fields replaced; the lists are copies.
+    function withFields(o, changes) {
+        var out = {
+            mode: o.mode,
+            pinned: o.pinned.slice(),
+            manual: o.manual.slice(),
+            collapsed: o.collapsed.slice()
+        }
+        for (var k in changes)
+            if (changes.hasOwnProperty(k))
+                out[k] = changes[k]
+        return out
     }
 
     function sortMode(order) {
@@ -79,6 +95,36 @@ QtObject {
 
     function isPinned(order, key) {
         return root.indexIn(root.normalizeOrder(order).pinned, key) !== -1
+    }
+
+    /// The node's rooms are folded under its row.
+    function isNodeCollapsed(order, nodeId) {
+        return root.indexIn(root.normalizeOrder(order).collapsed, nodeId) !== -1
+    }
+
+    function withNodeCollapsed(order, nodeId, collapsed) {
+        var o = root.normalizeOrder(order)
+        var list = []
+        for (var i = 0; i < o.collapsed.length; i++)
+            if (o.collapsed[i] !== nodeId)
+                list.push(o.collapsed[i])
+        if (collapsed === true && nodeId)
+            list.push(nodeId)
+        return root.withFields(o, { collapsed: list })
+    }
+
+    /// Voice members across a node's rooms, for its folded row. A roster the
+    /// bridge has not sent counts as nobody.
+    function nodeVoiceCount(rooms) {
+        if (!Array.isArray(rooms))
+            return 0
+        var n = 0
+        for (var i = 0; i < rooms.length; i++) {
+            var voice = root.memberList(rooms[i] && rooms[i].voice_members)
+            if (voice)
+                n += voice.length
+        }
+        return n
     }
 
     function indexIn(list, key) {
@@ -310,7 +356,7 @@ QtObject {
                     manual.push(keys[i])
             }
         }
-        return { mode: nextMode, pinned: o.pinned.slice(), manual: manual }
+        return root.withFields(o, { mode: nextMode, manual: manual })
     }
 
     function togglePin(order, key) {
@@ -321,7 +367,7 @@ QtObject {
             pinned.unshift(key)
         else
             pinned.splice(at, 1)
-        return { mode: o.mode, pinned: pinned, manual: o.manual.slice() }
+        return root.withFields(o, { pinned: pinned })
     }
 
     function relocate(list, key, neighborKey, after) {
@@ -384,36 +430,31 @@ QtObject {
         if (aPin !== bPin)
             return o
         if (aPin)
-            return {
-                mode: o.mode,
-                pinned: root.relocate(o.pinned, aKey, bKey, delta > 0),
-                manual: o.manual.slice()
-            }
+            return root.withFields(o, { pinned: root.relocate(o.pinned, aKey, bKey, delta > 0) })
         if (o.mode !== "manual")
             return o
         var manual = o.manual.slice()
         if (root.indexIn(manual, aKey) < 0 || root.indexIn(manual, bKey) < 0)
             manual = root.placeMissing(manual, rooms, nodeId, o)
-        return {
-            mode: o.mode,
-            pinned: o.pinned.slice(),
-            manual: root.relocate(manual, aKey, bKey, delta > 0)
-        }
+        return root.withFields(o, { manual: root.relocate(manual, aKey, bKey, delta > 0) })
+    }
+
+    function sameList(a, b) {
+        if (a.length !== b.length)
+            return false
+        for (var i = 0; i < a.length; i++)
+            if (a[i] !== b[i])
+                return false
+        return true
     }
 
     function sameOrder(a, b) {
         a = root.normalizeOrder(a)
         b = root.normalizeOrder(b)
-        if (a.mode !== b.mode || a.pinned.length !== b.pinned.length || a.manual.length !== b.manual.length)
-            return false
-        var i
-        for (i = 0; i < a.pinned.length; i++)
-            if (a.pinned[i] !== b.pinned[i])
-                return false
-        for (i = 0; i < a.manual.length; i++)
-            if (a.manual[i] !== b.manual[i])
-                return false
-        return true
+        return a.mode === b.mode
+            && root.sameList(a.pinned, b.pinned)
+            && root.sameList(a.manual, b.manual)
+            && root.sameList(a.collapsed, b.collapsed)
     }
 
     function canMove(rooms, nodeId, roomId, delta, order) {

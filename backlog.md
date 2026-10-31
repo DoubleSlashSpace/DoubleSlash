@@ -389,6 +389,11 @@ stay-unlocked, Legal reader, backups. Do not re-open those as missing.
 
 1. **Android room per-peer grants** (`generateRoomInviteForPeer`) are not wired;
    shareable links carry a Space inclusion proof and no grant. Desktop has it.
+2. **Supernode rows in the Rooms list: live check.** Both clients head each
+   node's rooms with a foldable avatar row; unit tests only. Run with two
+   unrelated supernodes on desktop and phone: two separate `default` rooms,
+   folds survive a restart, portal and Create room from the row's menu, and
+   a cluster still shows as one row after a failover.
 
 ### Host a supernode from the client
 

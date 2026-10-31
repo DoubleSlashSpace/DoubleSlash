@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.sp
 import com.doubleslash.client.AppState
 import com.doubleslash.client.R
 import com.doubleslash.client.Room
+import com.doubleslash.client.RoomNodeInfo
 import com.doubleslash.client.VoiceRoom
 import com.doubleslash.client.cameraOn
 import com.doubleslash.client.inviteContacts
@@ -246,20 +247,56 @@ internal val ROOM_SORT_OPTIONS = listOf(
  * [pinned] keys (`supernodeId:roomId`) stay first among their siblings.
  * [manual] is that same key order, used only while [mode] is [ROOM_SORT_MANUAL].
  * A pin does not pull a sub-room out from under its parent.
+ * [collapsed] lists the supernode ids whose rooms are folded under their
+ * node row.
  */
 data class RoomListOrder(
     val mode: String = ROOM_SORT_NAME_ASC,
     val pinned: List<String> = emptyList(),
     val manual: List<String> = emptyList(),
+    val collapsed: List<String> = emptyList(),
 ) {
     fun normalized(): RoomListOrder = copy(
         mode = normalizeRoomSortMode(mode),
         pinned = pinned.filter { it.isNotEmpty() },
         manual = manual.filter { it.isNotEmpty() },
+        collapsed = collapsed.filter { it.isNotEmpty() },
     )
 
     fun isPinned(room: Room): Boolean = room.listOrderKey() in pinned
+
+    fun isNodeCollapsed(nodeId: String): Boolean = nodeId in collapsed
 }
+
+internal fun withNodeCollapsed(order: RoomListOrder, nodeId: String, collapsed: Boolean): RoomListOrder {
+    val o = order.normalized()
+    val rest = o.collapsed.filter { it != nodeId }
+    return o.copy(collapsed = if (collapsed && nodeId.isNotEmpty()) rest + nodeId else rest)
+}
+
+/** A supernode row and the rooms listed under it. */
+internal data class RoomNodeGroup(val node: RoomNodeInfo, val rooms: List<Room>)
+
+/**
+ * The Rooms list's top level: one group per supernode, a cluster counting as
+ * one, named A–Z. A node with no rooms still gets its row. A room naming a
+ * node the core did not describe gets a row of its own.
+ */
+internal fun groupRoomsByNode(rooms: List<Room>, nodes: List<RoomNodeInfo>): List<RoomNodeGroup> {
+    val byNode = rooms.groupBy { it.listNodeId }
+    val described = nodes.filter { it.nodeId.isNotEmpty() }.distinctBy { it.nodeId }
+    val known = described.map { it.nodeId }.toSet()
+    val extra = byNode.keys.filter { it !in known }.map { RoomNodeInfo(nodeId = it) }
+    return (described + extra)
+        .sortedWith { a, b ->
+            compareAlphanumeric(a.label, b.label).takeIf { it != 0 } ?: a.nodeId.compareTo(b.nodeId)
+        }
+        .map { RoomNodeGroup(it, byNode[it.nodeId].orEmpty()) }
+}
+
+/** Voice members across a node's rooms, for its folded row. */
+internal fun nodeVoiceCount(rooms: List<Room>, voiceRosters: Map<String, List<String>>): Int =
+    rooms.sumOf { voiceRosters.roomMembersUnion(it.roomId).size }
 
 internal fun Room.listOrderKey(): String = "$supernodeId:$roomId"
 
@@ -280,6 +317,7 @@ internal fun parseRoomListOrder(raw: String?): RoomListOrder {
             mode = normalizeRoomSortMode(obj["mode"]?.jsonPrimitive?.contentOrNull ?: ROOM_SORT_NAME_ASC),
             pinned = strings("pinned"),
             manual = strings("manual"),
+            collapsed = strings("collapsed"),
         ).normalized()
     } catch (_: Exception) {
         RoomListOrder()
@@ -292,6 +330,7 @@ internal fun RoomListOrder.toJson(): String {
         put("mode", o.mode)
         put("pinned", JsonArray(o.pinned.map { JsonPrimitive(it) }))
         put("manual", JsonArray(o.manual.map { JsonPrimitive(it) }))
+        put("collapsed", JsonArray(o.collapsed.map { JsonPrimitive(it) }))
     }.toString()
 }
 
@@ -397,15 +436,18 @@ internal fun roomOrderWithMode(
     val current = order.normalized()
     val nextMode = normalizeRoomSortMode(mode)
     val manual = if (nextMode == ROOM_SORT_MANUAL && current.manual.isEmpty()) {
-        buildRoomTree(
-            rooms = rooms,
-            voiceRosters = voiceRosters,
-            textRosters = textRosters,
-            reading = null,
-            voiceRoom = null,
-            fold = TreeFold(),
-            order = current,
-        ).mapNotNull { (it as? TreeRow.RoomNode)?.room?.listOrderKey() }
+        // One node at a time: room ids repeat across nodes.
+        rooms.groupBy { it.listNodeId }.values.flatMap { nodeRooms ->
+            buildRoomTree(
+                rooms = nodeRooms,
+                voiceRosters = voiceRosters,
+                textRosters = textRosters,
+                reading = null,
+                voiceRoom = null,
+                fold = TreeFold(),
+                order = current,
+            ).mapNotNull { (it as? TreeRow.RoomNode)?.room?.listOrderKey() }
+        }
     } else {
         current.manual
     }
@@ -475,7 +517,7 @@ private fun placeMissing(
 /** Move a room one place among its siblings. See RoomTree.qml `moveRoom`. */
 internal fun moveRoomInOrder(
     order: RoomListOrder,
-    rooms: List<Room>,
+    allRooms: List<Room>,
     room: Room,
     delta: Int,
     voiceRosters: Map<String, List<String>>,
@@ -483,6 +525,9 @@ internal fun moveRoomInOrder(
 ): RoomListOrder {
     val o = order.normalized()
     if (delta != -1 && delta != 1) return o
+    // Siblings are under the same node: another node's room of the same id
+    // is not one of them.
+    val rooms = allRooms.filter { it.listNodeId == room.listNodeId }
     val sorted = orderedSiblings(rooms, room, o, voiceRosters, textRosters)
     val i = sorted.indexOfFirst { it.roomId == room.roomId && it.supernodeId == room.supernodeId }
     val j = i + delta
@@ -709,6 +754,7 @@ internal fun buildRoomLeaves(
 private val STEP = 16.dp
 private val EDGE = 8.dp
 private val ROOM_ROW = 48.dp
+private val NODE_ROW = 48.dp
 private val LEAF_ROW = 40.dp
 private val MEMBER_ROW = 44.dp
 /** The open-list box stops this far from the right, where row content ends. */
@@ -793,6 +839,135 @@ internal fun LazyListScope.roomTreeItems(
     }
 }
 
+/**
+ * A supernode's row, heading its rooms: a cluster is one node. Tapping it
+ * folds the rooms away; long-press has the rest. As on the desktop.
+ */
+internal fun LazyListScope.roomNodeItem(
+    group: RoomNodeGroup,
+    state: AppState,
+    collapsed: Boolean,
+    onToggle: () -> Unit,
+    onOpenPortal: () -> Unit,
+    onCreateRoom: () -> Unit,
+) {
+    item(key = "node:" + group.node.nodeId) {
+        NodeRow(group, state, collapsed, onToggle, onOpenPortal, onCreateRoom)
+    }
+    if (!collapsed && group.rooms.isEmpty()) {
+        item(key = "node-empty:" + group.node.nodeId) {
+            val ds = LocalDsColors.current
+            Text(
+                "No rooms",
+                color = ds.muted,
+                fontSize = 13.sp,
+                modifier = Modifier.fillMaxWidth().padding(start = EDGE + STEP, top = 10.dp, bottom = 10.dp),
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun NodeRow(
+    group: RoomNodeGroup,
+    state: AppState,
+    collapsed: Boolean,
+    onToggle: () -> Unit,
+    onOpenPortal: () -> Unit,
+    onCreateRoom: () -> Unit,
+) {
+    val ds = LocalDsColors.current
+    val node = group.node
+    val connected = node.isConnected(state.connectedSupernodes)
+    val art = state.avatars[node.peerId.ifBlank { node.nodeId }]
+    var menuOpen by remember(node.nodeId) { mutableStateOf(false) }
+    Box {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(NODE_ROW)
+                .background(ds.bg2)
+                .combinedClickable(onClick = onToggle, onLongClick = { menuOpen = true })
+                .semantics {
+                    contentDescription =
+                        (if (collapsed) "Show rooms on " else "Hide rooms on ") + node.label
+                }
+                .padding(start = EDGE, end = 12.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.width(STEP)) {
+                Chevron(!collapsed, 12.dp, ds.muted)
+            }
+            Spacer(Modifier.width(6.dp))
+            // Green ring while connected.
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(30.dp)
+                    .border(3.dp, if (connected) ds.online else ds.muted, RectangleShape)
+                    .alpha(if (connected) 1f else 0.6f),
+            ) {
+                if (art != null) {
+                    Avatar(art, Modifier.size(22.dp))
+                } else {
+                    Box(Modifier.size(22.dp).background(ds.bg3))
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                node.label,
+                color = if (connected) ds.text else ds.muted,
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            // Folded, the row still says what is going on under it.
+            if (collapsed) {
+                val unread = group.rooms.sumOf { state.roomUnread[it.roomId] ?: 0 }
+                if (unread > 0) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        if (unread > 99) "99+" else unread.toString(),
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .background(ds.danger, RectangleShape)
+                            .padding(horizontal = 6.dp, vertical = 1.dp)
+                            .semantics { contentDescription = "$unread unread" },
+                    )
+                }
+                val voice = nodeVoiceCount(group.rooms, state.roomVoiceRosters)
+                if (connected && voice > 0) {
+                    Spacer(Modifier.width(6.dp))
+                    CountBadge(R.drawable.ds_headphone, voice, ds.online, "in voice", onClick = onToggle)
+                }
+            }
+        }
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            TreeMenuItem(
+                if (collapsed) R.drawable.ds_eye else R.drawable.ds_eye_off,
+                if (collapsed) "Show rooms" else "Hide rooms",
+            ) {
+                menuOpen = false
+                onToggle()
+            }
+            TreeMenuItem(R.drawable.ds_globe, "Open Portal", enabled = connected) {
+                menuOpen = false
+                onOpenPortal()
+            }
+            HorizontalDivider()
+            TreeMenuItem(R.drawable.ds_plus, "Create room here...", enabled = connected) {
+                menuOpen = false
+                onCreateRoom()
+            }
+        }
+    }
+}
+
 @Composable
 private fun Chevron(open: Boolean, size: Dp, tint: Color) {
     Icon(
@@ -808,8 +983,9 @@ private fun Chevron(open: Boolean, size: Dp, tint: Color) {
 private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, actions: RoomTreeActions) {
     val ds = LocalDsColors.current
     val room = row.room
-    val reading = (state.screen as? com.doubleslash.client.Screen.RoomChat)?.room?.roomId == room.roomId
-    val voiceHere = state.voiceRoom?.roomId == room.roomId
+    // By host as well as id: two nodes each list a `default` room.
+    val reading = (state.screen as? com.doubleslash.client.Screen.RoomChat)?.room?.key == room.key
+    val voiceHere = row.inVoice
     val unread = state.roomUnread[room.roomId] ?: 0
     val alertsOn = room.roomId in state.prefs.roomMessageAlerts
     var menuOpen by remember(room.key) { mutableStateOf(false) }

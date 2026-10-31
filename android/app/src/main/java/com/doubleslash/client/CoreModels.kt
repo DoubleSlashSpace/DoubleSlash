@@ -116,9 +116,36 @@ data class Room(
      * that ignores it shows every room the user has ever seen.
      */
     val hidden: Boolean = false,
+    /**
+     * The supernode row this room is listed under: a cluster is one row.
+     * Grouping only; joins and invites still use [supernodeId].
+     */
+    @SerialName("node_id") val nodeId: String = "",
 ) {
     /** A stable key for list rendering: room ids repeat across supernodes. */
     val key: String get() = "$supernodeId/$roomId"
+
+    /** The row that heads it, falling back to its host when the core sent none. */
+    val listNodeId: String get() = nodeId.ifBlank { supernodeId }
+}
+
+/**
+ * A supernode as the Rooms list heads it, from `room.list`. A cluster is one
+ * node: [members] are every id its rooms may be filed under.
+ */
+@Serializable
+data class RoomNodeInfo(
+    @SerialName("node_id") val nodeId: String = "",
+    /** The representative's hex `peer_id`, for its avatar. */
+    @SerialName("peer_id") val peerId: String = "",
+    @SerialName("display_name") val displayName: String = "",
+    val members: List<String> = emptyList(),
+) {
+    val label: String get() = displayName.ifBlank { nodeId.take(12) }
+
+    /** Any member has a live session. [connected] holds unpadded ids. */
+    fun isConnected(connected: Set<String>): Boolean =
+        members.any { it.trimEnd('=') in connected } || nodeId.trimEnd('=') in connected
 }
 
 /**

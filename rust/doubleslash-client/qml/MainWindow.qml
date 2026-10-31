@@ -262,6 +262,7 @@ ApplicationWindow {
         if (nodeId === "" || roomId === "")
             return
         root.sidebarTab = 1
+        root.setNodeCollapsed(nodeId, false)
         root.setTreeFlag("leaf", nodeId + ":" + roomId + ":voice", true)
     }
 
@@ -371,9 +372,33 @@ ApplicationWindow {
         settingsModel.room_list_order_json = JSON.stringify({
             mode: o.mode,
             pinned: o.pinned,
-            manual: o.manual
+            manual: o.manual,
+            collapsed: o.collapsed
         })
         settingsModel.save()
+    }
+
+    function setNodeCollapsed(nodeId, collapsed) {
+        if (!nodeId || RoomTree.isNodeCollapsed(root.roomListOrder, nodeId) === collapsed)
+            return
+        root.commitRoomOrder(RoomTree.withNodeCollapsed(root.roomListOrder, nodeId, collapsed))
+    }
+
+    function supernodeAvatarTooltip(nodeId, title, connected) {
+        var lines = [title !== "" ? title : nodeId]
+        var stats = nodeConnectionStats[nodeId]
+        if (!connected) {
+            lines.push(qsTr("Offline"))
+        } else if (stats && stats.rtt_ms > 0) {
+            lines.push(qsTr("Ping: %1 ms").arg(Math.round(stats.rtt_ms)))
+            lines.push(qsTr("Packet loss: %1% · Jitter: %2 ms")
+                .arg((stats.packet_loss_pct || 0).toFixed(1))
+                .arg(Math.round(stats.jitter_ms || 0)))
+        }
+        lines.push("")
+        lines.push(qsTr("Click — show or hide its rooms"))
+        lines.push(qsTr("Right-click — portal and new rooms"))
+        return lines.join("\n")
     }
 
     function roomGroupsForOrder() {
@@ -2642,6 +2667,43 @@ ApplicationWindow {
                 ColumnLayout {
                     spacing: 0
 
+                    // A supernode row's menu. Removing a node stays in
+                    // Settings › Network.
+                    Menu {
+                        id: nodeContextMenu
+                        property string targetNodeId: ""
+                        property bool targetConnected: false
+                        property bool targetSfuEnabled: false
+                        property bool targetPublicRoomsEnabled: false
+                        property bool targetCollapsed: false
+
+                        MenuItem {
+                            text: nodeContextMenu.targetCollapsed ? qsTr("Show Rooms") : qsTr("Hide Rooms")
+                            onTriggered: root.setNodeCollapsed(
+                                nodeContextMenu.targetNodeId, !nodeContextMenu.targetCollapsed)
+                        }
+                        MenuItem {
+                            text: qsTr("Open Portal")
+                            enabled: nodeContextMenu.targetConnected
+                            onTriggered: backend.openNodePortal(nodeContextMenu.targetNodeId)
+                        }
+                        MenuSeparator {}
+                        MenuItem {
+                            text: qsTr("Create Public Room…")
+                            enabled: nodeContextMenu.targetConnected
+                                && nodeContextMenu.targetSfuEnabled
+                                && nodeContextMenu.targetPublicRoomsEnabled
+                            onTriggered: createRoomDialog.openForNode(
+                                nodeContextMenu.targetNodeId, "public")
+                        }
+                        MenuItem {
+                            text: qsTr("Create Private Room…")
+                            enabled: nodeContextMenu.targetConnected && nodeContextMenu.targetSfuEnabled
+                            onTriggered: createRoomDialog.openForNode(
+                                nodeContextMenu.targetNodeId, "private")
+                        }
+                    }
+
                     Menu {
                         id: roomContextMenu
                         property string targetSupernodeId: ""
@@ -2888,6 +2950,16 @@ ApplicationWindow {
                             required property bool connected
                             required property string title
                             required property string rooms_json
+                            required property bool sfu_enabled
+                            required property bool public_rooms_enabled
+
+                            // Rooms folded under the node row. Saved with the
+                            // list order, so a fold survives a restart.
+                            readonly property bool collapsed:
+                                RoomTree.isNodeCollapsed(root.roomListOrder, roomGroup.node_id)
+                            readonly property string displayName: roomGroup.title !== ""
+                                ? roomGroup.title
+                                : roomGroup.node_id.substring(0, 12)
 
                             readonly property var rooms: {
                                 var showHidden = root.showHiddenRooms
@@ -2909,33 +2981,162 @@ ApplicationWindow {
 
                             // Rooms with their Voice / Text-only leaves and
                             // members, flattened parent-first (RoomTree.rows).
-                            readonly property var roomsTree:
-                                RoomTree.rows(roomGroup.rooms, roomGroup.node_id,
-                                              roomGroup.connected, root.treeContext)
+                            readonly property var roomsTree: roomGroup.collapsed
+                                ? []
+                                : RoomTree.rows(roomGroup.rooms, roomGroup.node_id,
+                                                roomGroup.connected, root.treeContext)
 
                             visible: backend.isKnownSupernode(roomGroup.node_id)
                             width: roomsListView.width
                             height: visible ? roomColumn.implicitHeight + Theme.spacingXs * 2 : 0
 
-                            // One group per supernode is still how rooms arrive,
-                            // but nothing marks the boundary: the list reads as
-                            // one tree, and nodes are managed in Settings › Network.
+                            // Each supernode (a cluster counts as one) is the
+                            // root of its rooms: its avatar row, then its rooms.
                             Column {
                                 id: roomColumn
                                 y: Theme.spacingXs
                                 width: parent.width
                                 spacing: 0
 
+                                // ── Supernode ───────────────────────────
+                                ItemDelegate {
+                                    id: nodeRow
+                                    width: roomColumn.width
+                                    implicitHeight: Math.max(40, Theme.fontSizeBody + 14)
+                                    padding: 0
+                                    hoverEnabled: true
+                                    Accessible.name: roomGroup.collapsed
+                                        ? qsTr("Show rooms on %1").arg(roomGroup.displayName)
+                                        : qsTr("Hide rooms on %1").arg(roomGroup.displayName)
+
+                                    background: Rectangle {
+                                        color: nodeRow.hovered ? Theme.bg3 : Theme.bg2
+                                        Behavior on color {
+                                            ColorAnimation { duration: Theme.animNormal }
+                                        }
+                                    }
+
+                                    onClicked: root.setNodeCollapsed(roomGroup.node_id, !roomGroup.collapsed)
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        acceptedButtons: Qt.RightButton
+                                        onClicked: {
+                                            nodeContextMenu.targetNodeId = roomGroup.node_id
+                                            nodeContextMenu.targetConnected = roomGroup.connected
+                                            nodeContextMenu.targetSfuEnabled = roomGroup.sfu_enabled
+                                            nodeContextMenu.targetPublicRoomsEnabled = roomGroup.public_rooms_enabled
+                                            nodeContextMenu.targetCollapsed = roomGroup.collapsed
+                                            nodeContextMenu.popup()
+                                        }
+                                    }
+
+                                    ToolTip.text: root.supernodeAvatarTooltip(
+                                        roomGroup.node_id, roomGroup.displayName, roomGroup.connected)
+                                    ToolTip.visible: nodeRow.hovered
+                                    ToolTip.delay: 600
+                                    ToolTip.timeout: 5000
+
+                                    RowLayout {
+                                        anchors {
+                                            left: parent.left
+                                            right: parent.right
+                                            verticalCenter: parent.verticalCenter
+                                            leftMargin: Theme.spacingSm
+                                            rightMargin: Theme.spacingSm
+                                        }
+                                        spacing: Theme.spacingSm
+
+                                        // The same caret as a room's, so the node
+                                        // reads as the root of the tree below it.
+                                        Item {
+                                            Layout.preferredWidth: 18
+                                            Layout.preferredHeight: 18
+                                            Layout.alignment: Qt.AlignVCenter
+
+                                            Image {
+                                                anchors.centerIn: parent
+                                                width: 10
+                                                height: 10
+                                                sourceSize.width: 20
+                                                sourceSize.height: 20
+                                                fillMode: Image.PreserveAspectFit
+                                                smooth: true
+                                                source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
+                                                rotation: roomGroup.collapsed ? 0 : 90
+                                                opacity: roomGroup.collapsed ? 0.6 : 1.0
+                                                Behavior on rotation {
+                                                    NumberAnimation { duration: Theme.animNormal }
+                                                }
+                                            }
+                                        }
+
+                                        // Green ring while connected.
+                                        Avatar {
+                                            id: nodeAvatar
+                                            Layout.alignment: Qt.AlignVCenter
+                                            peerId: roomGroup.node_id
+                                            size: 28
+                                            showRing: true
+                                            ringColor: roomGroup.connected ? Theme.online : Theme.muted
+                                            opacity: roomGroup.connected ? 1.0 : 0.6
+                                        }
+
+                                        Label {
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+                                            text: roomGroup.displayName
+                                            color: roomGroup.connected ? Theme.text : Theme.muted
+                                            font.pixelSize: Theme.fontSizeBody
+                                            font.bold: true
+                                            elide: Text.ElideRight
+                                        }
+
+                                        // Folded, the row still says what is going on
+                                        // under it: people in voice and unread text.
+                                        Rectangle {
+                                            readonly property int unread: {
+                                                var n = 0
+                                                var rooms = roomGroup.rooms
+                                                for (var i = 0; i < rooms.length; i++)
+                                                    if (rooms[i])
+                                                        n += root.roomUnreadCount(rooms[i].room_id)
+                                                return n
+                                            }
+                                            visible: roomGroup.collapsed && unread > 0
+                                            width: Math.max(20, nodeUnreadText.implicitWidth + 8)
+                                            height: Math.max(20, nodeUnreadText.implicitHeight + 4)
+                                            color: Theme.danger
+                                            Layout.alignment: Qt.AlignVCenter
+
+                                            Text {
+                                                id: nodeUnreadText
+                                                anchors.centerIn: parent
+                                                text: parent.unread > 99 ? "99+" : String(parent.unread)
+                                                color: Theme.textInv
+                                                font.pixelSize: Theme.fontSizeCaption
+                                                font.bold: true
+                                            }
+                                        }
+
+                                        CountPill {
+                                            readonly property int voice: RoomTree.nodeVoiceCount(roomGroup.rooms)
+                                            visible: roomGroup.collapsed && roomGroup.connected && voice > 0
+                                            iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
+                                            text: String(voice)
+                                            tint: Theme.online
+                                            active: true
+                                            tip: qsTr("In voice on this supernode")
+                                        }
+                                    }
+                                }
+
                                 Label {
-                                    visible: roomGroup.rooms.length === 0
+                                    visible: !roomGroup.collapsed && roomGroup.rooms.length === 0
                                     width: roomColumn.width
                                     height: Math.max(40, Theme.fontSizeCaption + 16)
                                     verticalAlignment: Text.AlignVCenter
-                                    // Named: a bare "No rooms" would not say which
-                                    // supernode is the empty one.
-                                    text: roomGroup.title !== ""
-                                        ? qsTr("No rooms on %1").arg(roomGroup.title)
-                                        : qsTr("No rooms")
+                                    text: qsTr("No rooms")
                                     color: Theme.muted
                                     font.pixelSize: Theme.fontSizeCaption
                                     leftPadding: Theme.spacingMd
@@ -3847,6 +4048,7 @@ ApplicationWindow {
                     if (roomPanel.supernodeId === "" || roomPanel.roomId === "")
                         return
                     root.sidebarTab = 1
+                    root.setNodeCollapsed(roomPanel.supernodeId, false)
                     root.setTreeFlag(
                         "leaf",
                         roomPanel.supernodeId + ":" + roomPanel.roomId + ":text",

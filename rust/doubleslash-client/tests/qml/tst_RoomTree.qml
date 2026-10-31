@@ -472,6 +472,31 @@ TestCase {
         compare(swapped.pinned[0], "n:gaming")
     }
 
+    function test_node_fold_is_saved_with_the_order() {
+        compare(RoomTree.isNodeCollapsed({}, "n"), false)
+        var folded = RoomTree.withNodeCollapsed({ mode: "name_desc", pinned: ["n:lobby"] }, "n", true)
+        compare(folded.collapsed, ["n"])
+        compare(RoomTree.isNodeCollapsed(folded, "n"), true)
+        compare(RoomTree.isNodeCollapsed(folded, "m"), false)
+        // Folding leaves the sort alone, and folding twice lists the node once.
+        compare(folded.mode, "name_desc")
+        compare(folded.pinned, ["n:lobby"])
+        compare(RoomTree.withNodeCollapsed(folded, "n", true).collapsed, ["n"])
+        compare(RoomTree.withNodeCollapsed(folded, "n", false).collapsed, [])
+        // Sorting, pinning and moving keep the folds.
+        compare(RoomTree.withMode(folded, "manual", [{ nodeId: "n", rooms: sample() }]).collapsed, ["n"])
+        compare(RoomTree.togglePin(folded, "n:raid").collapsed, ["n"])
+        var manual = RoomTree.withMode(folded, "manual", [{ nodeId: "n", rooms: sample() }])
+        compare(RoomTree.moveRoom(sample(), "n", "lobby", -1, manual).collapsed, ["n"])
+        verify(!RoomTree.sameOrder(folded, RoomTree.withNodeCollapsed(folded, "n", false)))
+    }
+
+    function test_node_voice_count_sums_its_rooms() {
+        compare(RoomTree.nodeVoiceCount(sample()), 4)
+        compare(RoomTree.nodeVoiceCount([]), 0)
+        compare(RoomTree.nodeVoiceCount(null), 0)
+    }
+
     function test_voice_room_keeps_a_text_count_of_who_is_here() {
         // Raid's text list is empty. Being in its voice must not drop the
         // text count: that count is how the row opens onto who is here, and

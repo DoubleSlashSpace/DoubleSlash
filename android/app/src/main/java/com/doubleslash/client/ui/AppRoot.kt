@@ -131,6 +131,7 @@ import com.doubleslash.client.SupernodeInfo
 import com.doubleslash.client.ConnectionMode
 import com.doubleslash.client.HomeTab
 import com.doubleslash.client.Room
+import com.doubleslash.client.RoomNodeInfo
 import com.doubleslash.client.RoomMessage
 import com.doubleslash.client.Peer
 import com.doubleslash.client.roomSenderName
@@ -861,6 +862,8 @@ private fun HomeScreen(
     // A room long-pressed for "Create room inside": the dialog opens with it
     // already chosen as the parent.
     var subRoomParent by remember { mutableStateOf<Room?>(null) }
+    // A supernode row's "Create room here": the dialog opens on that host.
+    var createRoomOn by remember { mutableStateOf<RoomNodeInfo?>(null) }
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
@@ -1039,7 +1042,7 @@ private fun HomeScreen(
                     // Hidden is per-profile local state, so the desktop's
                     // choices arrive with the room list and are honoured here.
                     val visible = state.rooms.filter { state.showHiddenRooms || !it.hidden }
-                    if (visible.isEmpty()) {
+                    if (visible.isEmpty() && state.roomNodes.isEmpty()) {
                         Column(
                             modifier = Modifier.fillMaxSize().padding(32.dp),
                             verticalArrangement = Arrangement.Center,
@@ -1062,17 +1065,33 @@ private fun HomeScreen(
                         }
                     } else {
                         val treeActions = treeActionsFor { room -> subRoomParent = room }
-                        val rows = buildRoomTree(
-                            rooms = visible,
-                            voiceRosters = state.roomVoiceRosters,
-                            textRosters = state.roomTextRosters,
-                            reading = (state.screen as? Screen.RoomChat)?.room,
-                            voiceRoom = state.voiceRoom,
-                            fold = treeFold,
-                            order = state.prefs.roomListOrder,
-                        )
+                        val order = state.prefs.roomListOrder
+                        // Each supernode heads its own rooms, as on the desktop.
+                        val groups = groupRoomsByNode(visible, state.roomNodes)
                         LazyColumn(Modifier.fillMaxSize()) {
-                            roomTreeItems(rows, state, treeFold, treeActions)
+                            groups.forEach { group ->
+                                val collapsed = order.isNodeCollapsed(group.node.nodeId)
+                                roomNodeItem(
+                                    group = group,
+                                    state = state,
+                                    collapsed = collapsed,
+                                    onToggle = { viewModel.setNodeCollapsed(group.node.nodeId, !collapsed) },
+                                    onOpenPortal = { viewModel.openPortal(group.node) },
+                                    onCreateRoom = { createRoomOn = group.node },
+                                )
+                                if (!collapsed) {
+                                    val rows = buildRoomTree(
+                                        rooms = group.rooms,
+                                        voiceRosters = state.roomVoiceRosters,
+                                        textRosters = state.roomTextRosters,
+                                        reading = (state.screen as? Screen.RoomChat)?.room,
+                                        voiceRoom = state.voiceRoom,
+                                        fold = treeFold,
+                                        order = order,
+                                    )
+                                    roomTreeItems(rows, state, treeFold, treeActions)
+                                }
+                            }
                         }
                     }
                 }
@@ -1108,6 +1127,19 @@ private fun HomeScreen(
             targetLabel = peer.label,
             onBlock = { viewModel.setPeerBlocked(peer.peerId, true) },
             onDismiss = { reportPeer = null },
+        )
+    }
+
+    createRoomOn?.let { node ->
+        CreateRoomDialog(
+            supernodes = state.supernodes,
+            rooms = state.rooms.filter { state.showHiddenRooms || !it.hidden },
+            initialHost = node,
+            onDismiss = { createRoomOn = null },
+            onCreate = { supernodeId, name, isPrivate, parentRoomId ->
+                createRoomOn = null
+                viewModel.createRoom(supernodeId, name, isPrivate, parentRoomId)
+            },
         )
     }
 
@@ -1398,10 +1430,21 @@ private fun CreateRoomDialog(
      * host are already known and neither picker is shown.
      */
     fixedParent: Room? = null,
+    /** The host picked to start with: from a supernode row's menu. */
+    initialHost: RoomNodeInfo? = null,
 ) {
     var name by remember { mutableStateOf("") }
     var isPrivate by remember { mutableStateOf(false) }
-    var hostIndex by remember { mutableStateOf(0) }
+    var hostIndex by remember {
+        // The row names its node by identity; a cluster sibling may be the
+        // supernode we hold, so any member matches.
+        val ids = initialHost?.let { (it.members + it.nodeId + it.peerId).map { id -> id.trimEnd('=') }.toSet() }
+        mutableStateOf(
+            ids?.let { set ->
+                supernodes.indexOfFirst { it.peerId in set || it.identityPub.trimEnd('=') in set }
+            }?.takeIf { it >= 0 } ?: 0,
+        )
+    }
     var hostMenuOpen by remember { mutableStateOf(false) }
     var parent by remember { mutableStateOf<Room?>(null) }
     var parentMenuOpen by remember { mutableStateOf(false) }

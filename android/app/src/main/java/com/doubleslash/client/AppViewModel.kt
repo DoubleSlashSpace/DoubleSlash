@@ -25,6 +25,7 @@ import com.doubleslash.client.ui.parseAvatarSvg
 import com.doubleslash.client.ui.parseRoomListOrder
 import com.doubleslash.client.ui.roomOrderWithMode
 import com.doubleslash.client.ui.toJson
+import com.doubleslash.client.ui.withNodeCollapsed
 import com.doubleslash.client.ui.withRoomPinToggled
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -48,7 +49,12 @@ sealed interface Screen {
     data class RoomChat(val room: Room) : Screen
     data object Settings : Screen
     /** A supernode's in-app portal, rendered in a WebView. */
-    data class Portal(val supernodeId: String, val label: String) : Screen
+    data class Portal(
+        val supernodeId: String,
+        val label: String,
+        /** Where closing it goes: Settings, or the Rooms list it was opened from. */
+        val back: Screen = Settings,
+    ) : Screen
 }
 
 /** Which list the home screen is showing. */
@@ -95,6 +101,8 @@ data class AppState(
     /** Known supernodes — the hosts a new room can be created on. */
     val supernodes: List<Peer> = emptyList(),
     val rooms: List<Room> = emptyList(),
+    /** The supernodes heading [rooms] in the Rooms list, one per cluster. */
+    val roomNodes: List<RoomNodeInfo> = emptyList(),
     val messages: List<ChatMessage> = emptyList(),
     val connectionMode: ConnectionMode = ConnectionMode.OFFLINE,
     /**
@@ -615,6 +623,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         it.copy(screen = Screen.Portal(node.peerId, node.displayName))
     }
 
+    /** Open a supernode's portal from its row in the Rooms list. */
+    fun openPortal(node: RoomNodeInfo) = _state.update {
+        it.copy(screen = Screen.Portal(node.peerId.ifBlank { node.nodeId }, node.label, back = Screen.Home))
+    }
+
     /**
      * Leave the portal, closing any game channel it opened.
      *
@@ -624,7 +637,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun closePortal() {
         val portal = _state.value.screen as? Screen.Portal
-        _state.update { it.copy(screen = Screen.Settings) }
+        _state.update { it.copy(screen = portal?.back ?: Screen.Settings) }
         portal?.let { open ->
             viewModelScope.launch {
                 core.command("portal.close") { put("supernode_id", open.supernodeId) }
@@ -823,6 +836,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 current.roomTextRosters,
             ),
         )
+    }
+
+    /** Fold a supernode's rooms under its row, or unfold them. Saved with the order. */
+    fun setNodeCollapsed(nodeId: String, collapsed: Boolean) {
+        val order = _state.value.prefs.roomListOrder
+        if (nodeId.isBlank() || order.isNodeCollapsed(nodeId) == collapsed) return
+        storeRoomOrder(withNodeCollapsed(order, nodeId, collapsed))
     }
 
     private fun storeRoomOrder(order: RoomListOrder) {
@@ -1438,7 +1458,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshRooms() = viewModelScope.launch {
         val reply = core.command("room.list")
         if (!reply.ok) return@launch
-        _state.update { it.copy(rooms = reply.decodeList<Room>(core, "rooms")) }
+        val nodes = reply.decodeList<RoomNodeInfo>(core, "nodes")
+        _state.update { it.copy(rooms = reply.decodeList<Room>(core, "rooms"), roomNodes = nodes) }
+        // Each node row draws its avatar.
+        refreshAvatars(nodes.map { it.peerId.ifBlank { it.nodeId } })
         openPendingAlertRoom()
     }
 

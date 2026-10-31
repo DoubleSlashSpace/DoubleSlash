@@ -8,7 +8,10 @@ import com.doubleslash.client.ui.RoomListOrder
 import com.doubleslash.client.ui.buildRoomLeaves
 import com.doubleslash.client.ui.buildRoomTree
 import com.doubleslash.client.ui.canMoveRoom
+import com.doubleslash.client.ui.groupRoomsByNode
 import com.doubleslash.client.ui.moveRoomInOrder
+import com.doubleslash.client.ui.nodeVoiceCount
+import com.doubleslash.client.ui.withNodeCollapsed
 import com.doubleslash.client.ui.parseRoomListOrder
 import com.doubleslash.client.ui.toJson
 import com.doubleslash.client.ui.roomOrderWithMode
@@ -352,6 +355,63 @@ class RoomTreeTest {
         assertEquals("n:gaming", swapped.pinned.first())
         assertEquals("name_asc", parseRoomListOrder("nope").mode)
         assertEquals(listOf("n:lobby"), parseRoomListOrder(pinned.toJson()).pinned)
+        // The desktop's folded nodes survive a write from the phone.
+        val folded = parseRoomListOrder("""{"mode":"name_asc","collapsed":["n"]}""")
+        assertEquals(listOf("n"), parseRoomListOrder(withRoomPinToggled(folded, "n:raid").toJson()).collapsed)
+    }
+
+    // ── Supernode rows ──────────────────────────────────────────────────────
+
+    @Test
+    fun `each supernode heads its own rooms`() {
+        val other = Room(roomId = "default", roomName = "Public", supernodeId = "m", nodeId = "m")
+        val mine = Room(roomId = "default", roomName = "Public", supernodeId = "n", nodeId = "n")
+        val groups = groupRoomsByNode(
+            listOf(mine, other, room("lobby").copy(nodeId = "n")),
+            listOf(
+                RoomNodeInfo(nodeId = "n", displayName = "Beta"),
+                RoomNodeInfo(nodeId = "m", displayName = "Alpha"),
+                RoomNodeInfo(nodeId = "e", displayName = "Empty"),
+            ),
+        )
+        // Named A-Z, and a node with no rooms keeps its row.
+        assertEquals(listOf("Alpha", "Beta", "Empty"), groups.map { it.node.label })
+        assertEquals(listOf(other), groups[0].rooms)
+        assertEquals(listOf("default", "lobby"), groups[1].rooms.map { it.roomId })
+        assertTrue(groups[2].rooms.isEmpty())
+        // A room the core did not file under a described node still gets a row.
+        val orphan = groupRoomsByNode(listOf(room("lobby")), emptyList())
+        assertEquals("n", orphan.single().node.nodeId)
+    }
+
+    @Test
+    fun `the same room id on two nodes is not a sibling`() {
+        val a = Room(roomId = "default", roomName = "Public", supernodeId = "n", nodeId = "n")
+        val b = Room(roomId = "default", roomName = "Public", supernodeId = "m", nodeId = "m")
+        val manual = roomOrderWithMode(RoomListOrder(), "manual", listOf(a, b), voice, text)
+        assertEquals(listOf("n:default", "m:default"), manual.manual)
+        // Alone under its node, neither can move.
+        assertFalse(canMoveRoom(manual, listOf(a, b), a, 1, voice, text))
+    }
+
+    @Test
+    fun `a node fold is saved with the order`() {
+        val folded = withNodeCollapsed(RoomListOrder(mode = "name_desc"), "n", true)
+        assertTrue(folded.isNodeCollapsed("n"))
+        assertFalse(folded.isNodeCollapsed("m"))
+        assertEquals("name_desc", folded.mode)
+        assertEquals(listOf("n"), withNodeCollapsed(folded, "n", true).collapsed)
+        assertFalse(withNodeCollapsed(folded, "n", false).isNodeCollapsed("n"))
+        assertEquals(listOf("n"), parseRoomListOrder(folded.toJson()).collapsed)
+        assertEquals(4, nodeVoiceCount(rooms, voice))
+    }
+
+    @Test
+    fun `a node is connected through any member`() {
+        val node = RoomNodeInfo(nodeId = "aaa=", members = listOf("aaa=", "hex-aaa", "bbb"))
+        assertTrue(node.isConnected(setOf("bbb")))
+        assertTrue(node.isConnected(setOf("aaa")))
+        assertFalse(node.isConnected(setOf("ccc")))
     }
 
     // ── Skins ───────────────────────────────────────────────────────────────
