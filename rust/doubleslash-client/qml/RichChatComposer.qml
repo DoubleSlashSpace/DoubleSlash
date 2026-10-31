@@ -177,12 +177,36 @@ Rectangle {
                     // edge; Material's own inset left a wide gap after it.
                     leftPadding: Theme.spacingXs
                     rightPadding: Theme.spacingXs
+                    // Material derives its top padding from the background's
+                    // height, which is zero here, so it went negative and put
+                    // the text over the formatting row. Centre one line in the
+                    // action-button height instead.
+                    topPadding: Math.max(Theme.spacingXs, (Theme.barActionSize - lineMetrics.height) / 2)
+                    bottomPadding: topPadding
                     color: Theme.text
                     wrapMode: TextEdit.Wrap
                     selectByMouse: true
-                    placeholderText: root.enabledForTarget ? "Message..." : "Select a chat"
-                    placeholderTextColor: Theme.muted
+                    Accessible.description: placeholder.text
                     onTextChanged: root.composing(text.length > 0)
+
+                    FontMetrics {
+                        id: lineMetrics
+                        font: composer.font
+                    }
+
+                    // Not placeholderText: Material floats that label above
+                    // the field's top edge on focus, into the row above.
+                    Text {
+                        id: placeholder
+                        x: composer.leftPadding
+                        y: composer.topPadding
+                        width: composer.width - composer.leftPadding - composer.rightPadding
+                        text: root.enabledForTarget ? "Message..." : "Select a chat"
+                        color: Theme.muted
+                        font: composer.font
+                        elide: Text.ElideRight
+                        visible: composer.length === 0 && composer.preeditText.length === 0
+                    }
                     Keys.onPressed: function(event) {
                         if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
                                 && !(event.modifiers & Qt.ShiftModifier)) {
