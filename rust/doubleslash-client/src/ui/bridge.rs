@@ -222,7 +222,7 @@ pub mod ffi {
         fn supernodeRemoved(self: Pin<&mut AppBridge>, node_id: QString);
 
         /// Full Rooms sidebar rebuild from the trusted peer store. `nodes_json`
-        /// is a JSON array of `{node_id, connected, homepage_url, title, sfu_enabled}`.
+        /// is a JSON array of `{node_id, connected, homepage_url, title, local_name, sfu_enabled}`.
         #[qsignal]
         #[rust_name = "rooms_sidebar_sync"]
         fn roomsSidebarSync(self: Pin<&mut AppBridge>, nodes_json: QString);
@@ -573,6 +573,12 @@ pub mod ffi {
         #[qinvokable]
         #[rust_name = "remove_supernode"]
         fn removeSupernode(self: Pin<&mut AppBridge>, node_id: &QString);
+
+        /// Name a supernode on this device only. Empty goes back to the
+        /// operator's title. A cluster is renamed as one node.
+        #[qinvokable]
+        #[rust_name = "rename_supernode"]
+        fn renameSupernode(self: Pin<&mut AppBridge>, node_id: &QString, name: &QString);
 
         /// Block a peer — prevents further inbound messages.
         #[qinvokable]
@@ -5422,6 +5428,38 @@ impl ffi::AppBridge {
         info!("PTT disabled");
     }
 
+    fn rename_supernode(self: Pin<&mut Self>, node_id: &QString, name: &QString) {
+        let id = node_id.to_string();
+        let Some(canon) = self.rust().resolve_supernode_node_id_str(&id) else {
+            warn!("rename_supernode: unknown node {id}");
+            return;
+        };
+        let Some(ps) = self.rust().peer_store.clone() else {
+            warn!("rename_supernode: peer store unavailable");
+            return;
+        };
+        // The cluster's row is named from its representative. Clear any name
+        // an older representative was given, so a later change of
+        // representative does not bring a stale one back.
+        let cluster = cluster_full_set(&self.rust().cluster_siblings, &canon);
+        {
+            let mut store = ps.write();
+            if !store.set_local_name(&canon, &name.to_string()) {
+                warn!("rename_supernode: no record for {canon}");
+                return;
+            }
+            let own = canon.trim_end_matches('=');
+            for member in cluster.iter().filter(|m| m.trim_end_matches('=') != own) {
+                // A roster-learned sibling may have no record; nothing to clear.
+                store.set_local_name(member, "");
+            }
+            if let Err(e) = store.save() {
+                warn!("rename_supernode: failed to persist peer store: {e}");
+            }
+        }
+        emit_rooms_sidebar_sync(self);
+    }
+
     fn block_peer(self: Pin<&mut Self>, peer_id: &QString) {
         let pid = peer_id.to_string();
         if let Some(ref tx) = self.rust().conn_cmd_tx {
@@ -8840,6 +8878,8 @@ fn rooms_sidebar_json(store: &crate::peer_store::PeerStore) -> String {
                     "connected": false,
                     "homepage_url": "",
                     "title": p.handle,
+                    // This device's name for it, ahead of any title.
+                    "local_name": p.local_name,
                     "sfu_enabled": false,
                 })
             })

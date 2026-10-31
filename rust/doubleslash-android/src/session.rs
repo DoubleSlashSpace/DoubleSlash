@@ -94,6 +94,10 @@ pub struct Session {
     /// row per member instead of one per room, and misses hide state recorded
     /// against a sibling.
     pub cluster_members: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    /// Operator titles from `SupernodeInfo`, keyed by pad-normalized node id.
+    /// The Rooms list names a node row with these, as the desktop does; the
+    /// peer record of a node rarely has a handle.
+    pub supernode_titles: Arc<RwLock<HashMap<String, String>>>,
     /// Supernodes with a live session, pad-normalized, kept from the
     /// connect and disconnect events. A screen that attaches to a session
     /// already running missed those events, so `supernode.list` reports this
@@ -186,6 +190,7 @@ impl Session {
         runtime.spawn(sfu_fut);
 
         let cluster_members = Arc::new(RwLock::new(HashMap::new()));
+        let supernode_titles = Arc::new(RwLock::new(HashMap::new()));
         let connected_supernodes = Arc::new(RwLock::new(HashSet::new()));
         let peer_video_codecs = PeerVideoCodecs::default();
         // The call controller has its own event channel, separate from the
@@ -210,6 +215,7 @@ impl Session {
             cmd_tx.clone(),
             call_tx.clone(),
             Arc::clone(&cluster_members),
+            Arc::clone(&supernode_titles),
             Arc::clone(&connected_supernodes),
             Arc::clone(&peer_video_codecs),
             my_public_id.clone(),
@@ -232,6 +238,7 @@ impl Session {
             video_in,
             sink: sink_for_session,
             cluster_members,
+            supernode_titles,
             connected_supernodes,
             peer_video_codecs,
             pump: Some(pump),
@@ -381,6 +388,7 @@ fn spawn_event_pump(
     cmd_tx: mpsc::Sender<ConnectionCommand>,
     call_tx: mpsc::Sender<CallCommand>,
     cluster_members: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    supernode_titles: Arc<RwLock<HashMap<String, String>>>,
     connected_supernodes: Arc<RwLock<HashSet<String>>>,
     peer_video_codecs: PeerVideoCodecs,
     my_public_id: String,
@@ -431,6 +439,20 @@ fn spawn_event_pump(
                     cluster_members
                         .write()
                         .insert(supernode_id.clone(), members.clone());
+                }
+                if let ConnectionEvent::SupernodeInfoReceived {
+                    supernode_id,
+                    title,
+                    ..
+                } = &ev
+                {
+                    let title = title.trim();
+                    if !title.is_empty() {
+                        supernode_titles.write().insert(
+                            supernode_id.trim_end_matches('=').to_owned(),
+                            title.to_owned(),
+                        );
+                    }
                 }
 
                 // Remember which supernodes are up, for a screen that attaches

@@ -157,4 +157,16 @@ class CoreModelsTest {
         assertTrue(event.stringList("members").isEmpty())
         assertEquals(2, event.stringList("chat_members").size)
     }
+
+    @Test
+    fun `a cluster counts the node as well as its siblings`() {
+        // The roster names the siblings only; padding does not make a new node.
+        val node = SupernodeInfo(identityPub = "aaa=", clusterMembers = listOf("bbb", "ccc=", "ddd", "aaa"))
+        assertEquals(4, node.clusterSize)
+        assertEquals(1, SupernodeInfo(identityPub = "aaa=").clusterSize)
+        // Green while any member is up; connected ids arrive unpadded.
+        assertTrue(node.isConnected(setOf("ccc")))
+        assertTrue(node.isConnected(setOf("aaa")))
+        assertFalse(node.isConnected(setOf("zzz")))
+    }
 }

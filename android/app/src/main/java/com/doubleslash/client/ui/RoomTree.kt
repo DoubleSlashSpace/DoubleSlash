@@ -850,9 +850,10 @@ internal fun LazyListScope.roomNodeItem(
     onToggle: () -> Unit,
     onOpenPortal: () -> Unit,
     onCreateRoom: () -> Unit,
+    onRename: () -> Unit,
 ) {
     item(key = "node:" + group.node.nodeId) {
-        NodeRow(group, state, collapsed, onToggle, onOpenPortal, onCreateRoom)
+        NodeRow(group, state, collapsed, onToggle, onOpenPortal, onCreateRoom, onRename)
     }
     if (!collapsed && group.rooms.isEmpty()) {
         item(key = "node-empty:" + group.node.nodeId) {
@@ -876,6 +877,7 @@ private fun NodeRow(
     onToggle: () -> Unit,
     onOpenPortal: () -> Unit,
     onCreateRoom: () -> Unit,
+    onRename: () -> Unit,
 ) {
     val ds = LocalDsColors.current
     val node = group.node
@@ -900,20 +902,7 @@ private fun NodeRow(
                 Chevron(!collapsed, 12.dp, ds.muted)
             }
             Spacer(Modifier.width(6.dp))
-            // Green ring while connected.
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(30.dp)
-                    .border(3.dp, if (connected) ds.online else ds.muted, RectangleShape)
-                    .alpha(if (connected) 1f else 0.6f),
-            ) {
-                if (art != null) {
-                    Avatar(art, Modifier.size(22.dp))
-                } else {
-                    Box(Modifier.size(22.dp).background(ds.bg3))
-                }
-            }
+            SupernodeAvatar(art, connected)
             Spacer(Modifier.width(10.dp))
             Text(
                 node.label,
@@ -955,6 +944,10 @@ private fun NodeRow(
                 menuOpen = false
                 onToggle()
             }
+            TreeMenuItem(R.drawable.ds_pencil, "Rename...") {
+                menuOpen = false
+                onRename()
+            }
             TreeMenuItem(R.drawable.ds_globe, "Open Portal", enabled = connected) {
                 menuOpen = false
                 onOpenPortal()
@@ -965,6 +958,26 @@ private fun NodeRow(
                 onCreateRoom()
             }
         }
+    }
+}
+
+/**
+ * A supernode's avatar, ringed green while connected and dimmed when not, as
+ * the desktop draws it. The Rooms list and Settings both use it.
+ */
+@Composable
+internal fun SupernodeAvatar(art: AvatarArt?, connected: Boolean, size: Dp = 30.dp) {
+    val ds = LocalDsColors.current
+    val ring = 3.dp
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(size)
+            .border(ring, if (connected) ds.online else ds.muted, RectangleShape)
+            .alpha(if (connected) 1f else 0.6f),
+    ) {
+        val inner = Modifier.size(size - ring * 2 - 2.dp)
+        if (art != null) Avatar(art, inner) else Box(inner.background(ds.bg3))
     }
 }
 

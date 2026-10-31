@@ -138,7 +138,12 @@ data class RoomNodeInfo(
     @SerialName("node_id") val nodeId: String = "",
     /** The representative's hex `peer_id`, for its avatar. */
     @SerialName("peer_id") val peerId: String = "",
+    /** What the row shows: [localName], else [title]. */
     @SerialName("display_name") val displayName: String = "",
+    /** This phone's name for the node, or empty. Never sent anywhere. */
+    @SerialName("local_name") val localName: String = "",
+    /** The operator's title, what an empty [localName] goes back to. */
+    val title: String = "",
     val members: List<String> = emptyList(),
 ) {
     val label: String get() = displayName.ifBlank { nodeId.take(12) }
@@ -180,7 +185,22 @@ data class SupernodeInfo(
     @SerialName("identity_pub") val identityPub: String = "",
     @SerialName("display_name") val displayName: String = "",
     @SerialName("cluster_members") val clusterMembers: List<String> = emptyList(),
-)
+) {
+    /**
+     * Nodes in its cluster, itself included. The roster names the node's
+     * siblings; a padded and an unpadded id are the same node.
+     */
+    val clusterSize: Int
+        get() = (clusterMembers + identityPub)
+            .map { it.trimEnd('=') }
+            .filter { it.isNotEmpty() }
+            .toSet()
+            .size
+
+    /** It, or any member of its cluster, has a live session. [connected] holds unpadded ids. */
+    fun isConnected(connected: Set<String>): Boolean =
+        (clusterMembers + identityPub).any { it.isNotEmpty() && it.trimEnd('=') in connected }
+}
 
 /** Who we are, from `identity.info`. */
 @Serializable

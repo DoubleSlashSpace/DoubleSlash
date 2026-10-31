@@ -23,6 +23,15 @@ use crate::identity::Identity;
 pub const PEER_STORE_FILE: &str = "peers.dat";
 pub const PEER_STORE_LABEL: &str = "doubleslash-store/peers/v1";
 
+/// Longest name [`PeerStore::set_local_name`] keeps.
+pub const LOCAL_NAME_MAX_CHARS: usize = 64;
+
+/// Directional marks and overrides. They are format characters rather than
+/// control ones, and in a list they can make one name read as another.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
 // ---------------------------------------------------------------------------
 // PeerRecord
 // ---------------------------------------------------------------------------
@@ -37,6 +46,11 @@ pub struct PeerRecord {
     pub relay_hints: Vec<String>,
     #[serde(default)]
     pub handle: String,
+    /// What this device calls the peer, set here and never sent. Empty means
+    /// use the name the peer itself gives: for a supernode, its operator
+    /// title. Survives re-accepting the peer's invite.
+    #[serde(default)]
+    pub local_name: String,
     #[serde(default)]
     pub blocked: bool,
     #[serde(default)]
@@ -255,13 +269,57 @@ impl PeerStore {
         self.records.get_mut(peer_id)
     }
 
-    pub fn upsert(&mut self, record: PeerRecord) {
+    pub fn upsert(&mut self, mut record: PeerRecord) {
+        self.keep_local_name(&mut record);
         self.records.insert(record.peer_id.clone(), record);
+    }
+
+    /// A replacement record built from the wire knows nothing of the name
+    /// this device chose. Carry it over from the record it replaces.
+    fn keep_local_name(&self, record: &mut PeerRecord) {
+        if !record.local_name.is_empty() || record.identity_pub.is_empty() {
+            return;
+        }
+        if let Some(name) = self
+            .records
+            .values()
+            .find(|r| r.identity_pub == record.identity_pub && !r.local_name.is_empty())
+            .map(|r| r.local_name.clone())
+        {
+            record.local_name = name;
+        }
+    }
+
+    /// Name a peer on this device only, by hex `peer_id` or `identity_pub`.
+    ///
+    /// Control and bidi-override characters are dropped, and the name is
+    /// trimmed and capped at [`LOCAL_NAME_MAX_CHARS`]. An empty name goes back
+    /// to the peer's own. Returns false when no record matches. The caller
+    /// saves.
+    pub fn set_local_name(&mut self, id: &str, name: &str) -> bool {
+        let clean: String = name
+            .chars()
+            .filter(|c| !c.is_control() && !is_bidi_control(*c))
+            .collect::<String>()
+            .trim()
+            .chars()
+            .take(LOCAL_NAME_MAX_CHARS)
+            .collect();
+        // Cutting at the cap can leave a trailing space.
+        let bare = id.trim_end_matches('=');
+        let Some(record) = self.records.values_mut().find(|r| {
+            r.peer_id == id || (!bare.is_empty() && r.identity_pub.trim_end_matches('=') == bare)
+        }) else {
+            return false;
+        };
+        record.local_name = clean.trim_end().to_owned();
+        true
     }
 
     /// Insert or replace a peer accepted via invite without clobbering an
     /// unrelated record that happens to share the same `peer_id` HashMap key.
     pub fn upsert_from_invite(&mut self, mut record: PeerRecord) {
+        self.keep_local_name(&mut record);
         let stale_keys: Vec<String> = self
             .records
             .iter()
@@ -723,6 +781,7 @@ mod tests {
             identity_pub: "pub_b64".into(),
             relay_hints: vec!["ws://relay:34935/ws".into()],
             handle: "Alice".into(),
+            local_name: "Al".into(),
             blocked: true,
             revoked: false,
             auto_connect: true,
@@ -752,6 +811,7 @@ mod tests {
             "identity_pub",
             "relay_hints",
             "handle",
+            "local_name",
             "blocked",
             "revoked",
             "auto_connect",
@@ -782,5 +842,54 @@ mod tests {
             !obj.contains_key("avatar_config"),
             "avatar_config should be absent when None"
         );
+    }
+
+    fn supernode(peer_id: &str, identity_pub: &str) -> PeerRecord {
+        PeerRecord {
+            peer_id: peer_id.into(),
+            identity_pub: identity_pub.into(),
+            is_supernode: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_local_name_is_cleaned_and_can_be_cleared() {
+        let dir = tempdir().unwrap();
+        let id = make_identity();
+        let mut store = PeerStore::open(&id, Some(&dir.path().join(PEER_STORE_FILE))).unwrap();
+        store.upsert(supernode("hex", "b64="));
+
+        // Found by either id, padded or not; bidi overrides and controls go.
+        assert!(store.set_local_name("b64", "  Home\u{202e}lab\n  "));
+        assert_eq!(store.get("hex").unwrap().local_name, "Homelab");
+        let long = "x".repeat(LOCAL_NAME_MAX_CHARS + 10);
+        assert!(store.set_local_name("hex", &long));
+        assert_eq!(
+            store.get("hex").unwrap().local_name.chars().count(),
+            LOCAL_NAME_MAX_CHARS
+        );
+        assert!(store.set_local_name("hex", "   "));
+        assert_eq!(store.get("hex").unwrap().local_name, "");
+        assert!(!store.set_local_name("nobody", "x"));
+    }
+
+    #[test]
+    fn a_local_name_survives_reaccepting_the_invite_and_a_reload() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(PEER_STORE_FILE);
+        let id = make_identity();
+        let mut store = PeerStore::open(&id, Some(&path)).unwrap();
+        store.upsert(supernode("hex", "b64="));
+        store.set_local_name("hex", "Homelab");
+        // A fresh record from the invite carries no local name.
+        store.upsert_from_invite(supernode("hex", "b64="));
+        assert_eq!(store.get("hex").unwrap().local_name, "Homelab");
+        store.upsert(supernode("hex", "b64="));
+        assert_eq!(store.get("hex").unwrap().local_name, "Homelab");
+        store.save().unwrap();
+
+        let reloaded = PeerStore::open(&id, Some(&path)).unwrap();
+        assert_eq!(reloaded.get("hex").unwrap().local_name, "Homelab");
     }
 }

@@ -38,6 +38,7 @@
         <file alias="icons/chevron.svg">qml/icons/chevron.svg</file>
         <file alias="icons/globe.svg">qml/icons/globe.svg</file>
         <file alias="icons/chain.svg">qml/icons/chain.svg</file>
+        <file alias="icons/pencil.svg">qml/icons/pencil.svg</file>
         <file alias="icons/send.svg">qml/icons/send.svg</file>
         <file alias="icons/check.svg">qml/icons/check.svg</file>
         <file alias="icons/speaker-off.svg">qml/icons/speaker-off.svg</file>

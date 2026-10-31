@@ -32,6 +32,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "avatar.svg",
     "avatar.set_config",
     "supernode.list",
+    "supernode.rename",
     "supernode.remove",
     "net.changed",
     "peer.list",
@@ -297,6 +298,7 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
         "supernode.list" => {
             let store = session.peer_store.read();
             let rosters = session.cluster_members.read();
+            let titles = session.supernode_titles.read();
 
             let nodes: Vec<Value> = store
                 .list_peers()
@@ -313,10 +315,21 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                         })
                         .map(|(_, members)| members.clone())
                         .unwrap_or_default();
+                    // This device's name for it, then the operator's title
+                    // when the node has sent one, as the Rooms list names it;
+                    // a node record rarely has a handle.
+                    let display_name = if p.local_name.is_empty() {
+                        titles
+                            .get(p.identity_pub.trim_end_matches('='))
+                            .cloned()
+                            .unwrap_or_else(|| p.display_name())
+                    } else {
+                        p.local_name.clone()
+                    };
                     json!({
                         "peer_id": p.peer_id,
                         "identity_pub": p.identity_pub,
-                        "display_name": p.display_name(),
+                        "display_name": display_name,
                         "cluster_members": members,
                     })
                 })
@@ -334,6 +347,42 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
             connected.sort();
 
             json!({ "ok": true, "supernodes": nodes, "connected": connected })
+        }
+        // Name a node on this phone only; empty goes back to the operator's
+        // title. A cluster is one row, named from its representative, so any
+        // name a sibling's record still holds is cleared.
+        "supernode.rename" => {
+            let Some(node_id) = arg_str(&parsed, "node_id") else {
+                return err("supernode.rename requires \"node_id\"");
+            };
+            let name = arg_str(&parsed, "name").unwrap_or_default();
+            let mut store = session.peer_store.write();
+            let nodes = group_supernodes(
+                &node_seeds(&store),
+                &session.cluster_members.read(),
+                &session.supernode_titles.read(),
+            );
+            let bare = node_id.trim_end_matches('=');
+            let Some(node) = nodes.into_iter().find(|n| {
+                n.node_id.trim_end_matches('=') == bare || n.members.iter().any(|m| m == node_id)
+            }) else {
+                return err("no such supernode");
+            };
+            if !store.set_local_name(&node.node_id, name) {
+                return err("no such supernode");
+            }
+            let own = node.node_id.trim_end_matches('=');
+            for member in node
+                .members
+                .iter()
+                .filter(|m| m.trim_end_matches('=') != own)
+            {
+                store.set_local_name(member, "");
+            }
+            if let Err(e) = store.save() {
+                return err(format!("could not save the name: {e}"));
+            }
+            json!({ "ok": true })
         }
         "supernode.remove" => {
             let Some(node_id) = arg_str(&parsed, "node_id") else {
@@ -591,19 +640,11 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
             // `default` room, and a single call kept only one of them.
             let store = session.room_store.read();
             let peers = session.peer_store.read();
-            let nodes = {
-                let seeds: Vec<NodeSeed> = peers
-                    .supernodes()
-                    .into_iter()
-                    .map(|record| NodeSeed {
-                        identity_pub: record.identity_pub.clone(),
-                        peer_id: record.peer_id.clone(),
-                        display_name: record.display_name(),
-                        from_invite: record.supernode_from_invite,
-                    })
-                    .collect();
-                group_supernodes(&seeds, &session.cluster_members.read())
-            };
+            let nodes = group_supernodes(
+                &node_seeds(&peers),
+                &session.cluster_members.read(),
+                &session.supernode_titles.read(),
+            );
 
             // (entry, node it is listed under, ids it may be hidden under)
             let mut entries: Vec<(doubleslash_client::room_store::RoomEntry, String, &[String])> =
@@ -653,6 +694,8 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                         "node_id": node.node_id,
                         "peer_id": node.peer_id,
                         "display_name": node.display_name,
+                        "local_name": node.local_name,
+                        "title": node.title,
                         "members": node.members,
                     })
                 })
@@ -2015,11 +2058,28 @@ fn err(message: impl Into<String>) -> Value {
     json!({ "ok": false, "error": message.into() })
 }
 
+/// Every trusted supernode, as [`group_supernodes`] reads them.
+fn node_seeds(peers: &doubleslash_client::peer_store::PeerStore) -> Vec<NodeSeed> {
+    peers
+        .supernodes()
+        .into_iter()
+        .map(|record| NodeSeed {
+            identity_pub: record.identity_pub.clone(),
+            peer_id: record.peer_id.clone(),
+            display_name: record.display_name(),
+            local_name: record.local_name.clone(),
+            from_invite: record.supernode_from_invite,
+        })
+        .collect()
+}
+
 /// A known supernode, as [`group_supernodes`] reads it from the peer store.
 struct NodeSeed {
     identity_pub: String,
     peer_id: String,
     display_name: String,
+    /// This device's name for the node (`PeerRecord::local_name`).
+    local_name: String,
     from_invite: bool,
 }
 
@@ -2030,7 +2090,12 @@ struct LogicalNode {
     node_id: String,
     /// The representative's hex `peer_id`, for its avatar.
     peer_id: String,
+    /// What the row shows: [`Self::local_name`], else [`Self::title`].
     display_name: String,
+    /// This device's name for the node, or empty.
+    local_name: String,
+    /// The operator's title, else the peer record's name.
+    title: String,
     /// Every id its rooms may be filed or hidden under, as spelled.
     members: Vec<String>,
 }
@@ -2041,9 +2106,15 @@ struct LogicalNode {
 /// member (the desktop's `cluster_full_set`). The representative is the
 /// member the user joined through, so it stays stable and is always a known
 /// supernode; then the smallest known id. Padding is ignored throughout.
+///
+/// `titles` are operator titles by unpadded node id. A row takes this
+/// device's name for its representative, then the representative's title,
+/// then any member's (a cluster shares one operator), then the peer record's
+/// name.
 fn group_supernodes(
     seeds: &[NodeSeed],
     rosters: &HashMap<String, Vec<String>>,
+    titles: &HashMap<String, String>,
 ) -> Vec<LogicalNode> {
     let bare = |id: &str| id.trim_end_matches('=').to_owned();
     let mut order: Vec<&NodeSeed> = seeds
@@ -2077,10 +2148,22 @@ fn group_supernodes(
         let mut seen: HashSet<String> = HashSet::new();
         members.retain(|m| !m.is_empty() && seen.insert(m.clone()));
         covered.extend(members.iter().map(|m| bare(m)));
+        let title = titles
+            .get(&me)
+            .or_else(|| members.iter().find_map(|m| titles.get(&bare(m))))
+            .cloned()
+            .unwrap_or_else(|| seed.display_name.clone());
+        let display_name = if seed.local_name.is_empty() {
+            title.clone()
+        } else {
+            seed.local_name.clone()
+        };
         nodes.push(LogicalNode {
             node_id: seed.identity_pub.clone(),
             peer_id: seed.peer_id.clone(),
-            display_name: seed.display_name.clone(),
+            display_name,
+            local_name: seed.local_name.clone(),
+            title,
             members,
         });
     }
@@ -2096,14 +2179,32 @@ mod tests {
             identity_pub: id.to_owned(),
             peer_id: format!("hex-{id}"),
             display_name: name.to_owned(),
+            local_name: String::new(),
             from_invite,
         }
+    }
+
+    #[test]
+    fn this_devices_name_for_a_node_comes_first() {
+        let mut titles = HashMap::new();
+        titles.insert("ccc".to_owned(), "Relay Node".to_owned());
+        let mut named = seed("ccc=", "hex-ccc…", true);
+        named.local_name = "Home".to_owned();
+        let nodes = group_supernodes(&[named], &HashMap::new(), &titles);
+        assert_eq!(nodes[0].display_name, "Home");
+        assert_eq!(nodes[0].local_name, "Home");
+        // The operator's title stays known, for going back to it.
+        assert_eq!(nodes[0].title, "Relay Node");
+        let plain = group_supernodes(&[seed("ccc=", "hex-ccc…", true)], &HashMap::new(), &titles);
+        assert_eq!(plain[0].display_name, "Relay Node");
+        assert_eq!(plain[0].local_name, "");
     }
 
     #[test]
     fn unrelated_supernodes_stay_separate_rows() {
         let nodes = group_supernodes(
             &[seed("bbb=", "Beta", true), seed("aaa=", "Alpha", true)],
+            &HashMap::new(),
             &HashMap::new(),
         );
         let ids: Vec<&str> = nodes.iter().map(|n| n.node_id.as_str()).collect();
@@ -2119,6 +2220,7 @@ mod tests {
         let nodes = group_supernodes(
             &[seed("aaa=", "Sibling", false), seed("ccc=", "Joined", true)],
             &rosters,
+            &HashMap::new(),
         );
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].node_id, "ccc=");
@@ -2127,6 +2229,29 @@ mod tests {
         for id in ["ccc=", "hex-ccc=", "ccc", "aaa"] {
             assert!(nodes[0].members.iter().any(|m| m == id), "missing {id}");
         }
+    }
+
+    #[test]
+    fn a_node_row_takes_the_operator_title() {
+        let mut rosters = HashMap::new();
+        rosters.insert("ccc".to_owned(), vec!["aaa".to_owned(), "ccc".to_owned()]);
+        let seeds = [
+            seed("ccc=", "hex-ccc…", true),
+            seed("ddd=", "hex-ddd…", true),
+        ];
+        // Only a sibling has reported its title so far.
+        let mut titles = HashMap::new();
+        titles.insert("aaa".to_owned(), "Cluster One".to_owned());
+        let nodes = group_supernodes(&seeds, &rosters, &titles);
+        assert_eq!(nodes[0].display_name, "Cluster One");
+        // A node with no title keeps its record's name.
+        assert_eq!(nodes[1].display_name, "hex-ddd…");
+        // Its own title wins over a sibling's.
+        titles.insert("ccc".to_owned(), "Node C".to_owned());
+        assert_eq!(
+            group_supernodes(&seeds, &rosters, &titles)[0].display_name,
+            "Node C"
+        );
     }
 
     /// Guards against a match arm being deleted while still advertised.

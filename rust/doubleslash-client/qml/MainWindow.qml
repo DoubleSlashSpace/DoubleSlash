@@ -129,8 +129,16 @@ ApplicationWindow {
     function supernodeHandleFor(nodeId) {
         var idx = findNodeIndex(nodeId)
         if (idx < 0) return ""
-        var handle = nodeListModel.get(idx).title || ""
-        return handle
+        var node = nodeListModel.get(idx)
+        return root.supernodeName(node.local_name, node.title, "")
+    }
+
+    /// What a supernode is called here: this device's name for it, then the
+    /// operator's title, then the start of its id.
+    function supernodeName(localName, title, nodeId) {
+        if (localName) return localName
+        if (title) return title
+        return (nodeId || "").substring(0, 12)
     }
 
     // Per-supernode transport stats keyed by canonical node id (from connectionStats).
@@ -640,12 +648,16 @@ ApplicationWindow {
                         nodeListModel.setProperty(idx, "title", node.title)
                     if (node.homepage_url !== undefined && node.homepage_url !== "")
                         nodeListModel.setProperty(idx, "homepage_url", node.homepage_url)
+                    // Cleared too: an empty name goes back to the title.
+                    if (node.local_name !== undefined)
+                        nodeListModel.setProperty(idx, "local_name", node.local_name || "")
                 } else {
                     nodeListModel.append({
                         node_id: nid,
                         connected: node.connected || false,
                         homepage_url: node.homepage_url || "",
                         title: node.title || "",
+                        local_name: node.local_name || "",
                         sfu_enabled: node.sfu_enabled || false,
                         public_rooms_enabled: node.public_rooms_enabled || false,
                         rooms_json: "[]"
@@ -751,6 +763,8 @@ ApplicationWindow {
                     nodeListModel.setProperty(keep, "public_rooms_enabled", true)
                 if (!keepEntry.title && entry.title)
                     nodeListModel.setProperty(keep, "title", entry.title)
+                if (!keepEntry.local_name && entry.local_name)
+                    nodeListModel.setProperty(keep, "local_name", entry.local_name)
                 if (!keepEntry.homepage_url && entry.homepage_url)
                     nodeListModel.setProperty(keep, "homepage_url", entry.homepage_url)
                 nodeListModel.setProperty(keep, "node_id", canon)
@@ -825,6 +839,7 @@ ApplicationWindow {
                 connected: false,
                 homepage_url: "",
                 title: "",
+                local_name: "",
                 sfu_enabled: false,
                 public_rooms_enabled: false,
                 rooms_json: roomsJson
@@ -1884,6 +1899,7 @@ ApplicationWindow {
                             connected:            p.connected || false,
                             homepage_url:         p.homepage_url || "",
                             title:                p.title || "",
+                            local_name:           "",
                             sfu_enabled:          p.sfu_enabled || false,
                             public_rooms_enabled: p.public_rooms_enabled || false,
                             rooms_json:           "[]"
@@ -2119,6 +2135,79 @@ ApplicationWindow {
         anchors.fill: parent
         z: 99
         onAccepted: (inviteUrl) => backend.pasteInvite(inviteUrl)
+    }
+
+    // Name a supernode on this device only. Nothing is sent; Reset goes back
+    // to the name the operator set. A cluster is renamed as one node.
+    Dialog {
+        id: renameNodeDialog
+        title: qsTr("Rename supernode")
+        modal: true
+        anchors.centerIn: parent
+        standardButtons: Dialog.Save | Dialog.Reset | Dialog.Cancel
+        closePolicy: Dialog.CloseOnEscape
+        width: 420
+        padding: Theme.spacingXl
+        z: 100
+
+        property string nodeId: ""
+        property string operatorTitle: ""
+
+        function openFor(id, localName, title) {
+            nodeId = id || ""
+            operatorTitle = title || ""
+            renameNodeField.text = localName || ""
+            open()
+        }
+
+        onAboutToShow: renameNodeField.forceActiveFocus()
+        onAccepted: backend.renameSupernode(nodeId, renameNodeField.text)
+        onReset: {
+            backend.renameSupernode(nodeId, "")
+            close()
+        }
+
+        background: Rectangle {
+            color: Theme.bg1
+            radius: 0
+            border.color: Theme.bg3
+            border.width: 1
+        }
+
+        header: Rectangle {
+            color: Theme.bg0
+            height: 48
+            Text {
+                anchors.centerIn: parent
+                text: renameNodeDialog.title
+                color: Theme.text
+                font.pixelSize: Theme.fontSizeBody
+                font.bold: true
+            }
+        }
+
+        contentItem: ColumnLayout {
+            spacing: Theme.spacingSm
+
+            StyledTextField {
+                id: renameNodeField
+                Layout.fillWidth: true
+                maximumLength: 64
+                Keys.onReturnPressed: renameNodeDialog.accept()
+                Keys.onEnterPressed: renameNodeDialog.accept()
+            }
+
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: renameNodeDialog.operatorTitle !== ""
+                    ? qsTr("Only on this device. Leave empty or Reset to use “%1”, the name its operator set.")
+                        .arg(renameNodeDialog.operatorTitle)
+                    : qsTr("Only on this device. Leave empty or Reset to use the name its operator sets.")
+                color: Theme.muted
+                font.pixelSize: Theme.fontSizeCaption
+            }
+        }
     }
 
     // Paste a peer or room invite. The phone's + opens this same box.
@@ -2676,11 +2765,21 @@ ApplicationWindow {
                         property bool targetSfuEnabled: false
                         property bool targetPublicRoomsEnabled: false
                         property bool targetCollapsed: false
+                        property string targetLocalName: ""
+                        property string targetTitle: ""
 
                         MenuItem {
                             text: nodeContextMenu.targetCollapsed ? qsTr("Show Rooms") : qsTr("Hide Rooms")
                             onTriggered: root.setNodeCollapsed(
                                 nodeContextMenu.targetNodeId, !nodeContextMenu.targetCollapsed)
+                        }
+                        MenuItem {
+                            text: qsTr("Rename…")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/pencil.svg"
+                            onTriggered: renameNodeDialog.openFor(
+                                nodeContextMenu.targetNodeId,
+                                nodeContextMenu.targetLocalName,
+                                nodeContextMenu.targetTitle)
                         }
                         MenuItem {
                             text: qsTr("Open Portal")
@@ -2952,14 +3051,14 @@ ApplicationWindow {
                             required property string rooms_json
                             required property bool sfu_enabled
                             required property bool public_rooms_enabled
+                            required property string local_name
 
                             // Rooms folded under the node row. Saved with the
                             // list order, so a fold survives a restart.
                             readonly property bool collapsed:
                                 RoomTree.isNodeCollapsed(root.roomListOrder, roomGroup.node_id)
-                            readonly property string displayName: roomGroup.title !== ""
-                                ? roomGroup.title
-                                : roomGroup.node_id.substring(0, 12)
+                            readonly property string displayName: root.supernodeName(
+                                roomGroup.local_name, roomGroup.title, roomGroup.node_id)
 
                             readonly property var rooms: {
                                 var showHidden = root.showHiddenRooms
@@ -3027,6 +3126,8 @@ ApplicationWindow {
                                             nodeContextMenu.targetSfuEnabled = roomGroup.sfu_enabled
                                             nodeContextMenu.targetPublicRoomsEnabled = roomGroup.public_rooms_enabled
                                             nodeContextMenu.targetCollapsed = roomGroup.collapsed
+                                            nodeContextMenu.targetLocalName = roomGroup.local_name
+                                            nodeContextMenu.targetTitle = roomGroup.title
                                             nodeContextMenu.popup()
                                         }
                                     }

@@ -730,10 +730,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshSupernodes() = viewModelScope.launch {
         val reply = core.command("supernode.list")
         if (!reply.ok) return@launch
-        _state.update {
-            it.copy(supernodeInfo = reply.decodeList<SupernodeInfo>(core, "supernodes"))
-        }
+        val nodes = reply.decodeList<SupernodeInfo>(core, "supernodes")
+        _state.update { it.copy(supernodeInfo = nodes) }
         applyConnected(reply.stringList("connected"))
+        // Settings draws each node's avatar.
+        refreshAvatars(nodes.map { it.peerId })
     }
 
     /**
@@ -836,6 +837,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 current.roomTextRosters,
             ),
         )
+    }
+
+    /**
+     * Name a supernode on this phone only. Blank goes back to the operator's
+     * title. Kept in the peer store, so it travels in backups.
+     */
+    fun renameSupernode(nodeId: String, name: String) = viewModelScope.launch {
+        val reply = core.command("supernode.rename") {
+            put("node_id", nodeId)
+            put("name", name.trim())
+        }
+        if (!reply.ok) {
+            _state.update { it.copy(error = reply.errorText) }
+            return@launch
+        }
+        refreshRooms()
+        refreshSupernodes()
     }
 
     /** Fold a supernode's rooms under its row, or unfold them. Saved with the order. */
@@ -2380,6 +2398,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             }
+
+            // The node's operator title names its row in the Rooms list, and
+            // it can arrive after the list was first drawn.
+            "supernode_info" -> if (event.stringOrEmpty("title").isNotBlank()) refreshRooms()
 
             "supernode_disconnected" -> {
                 val id = event.stringOrEmpty("supernode_id").trimEnd('=')

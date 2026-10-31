@@ -864,6 +864,8 @@ private fun HomeScreen(
     var subRoomParent by remember { mutableStateOf<Room?>(null) }
     // A supernode row's "Create room here": the dialog opens on that host.
     var createRoomOn by remember { mutableStateOf<RoomNodeInfo?>(null) }
+    // A supernode row's "Rename...": this phone's own name for it.
+    var renameNode by remember { mutableStateOf<RoomNodeInfo?>(null) }
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
@@ -1078,6 +1080,7 @@ private fun HomeScreen(
                                     onToggle = { viewModel.setNodeCollapsed(group.node.nodeId, !collapsed) },
                                     onOpenPortal = { viewModel.openPortal(group.node) },
                                     onCreateRoom = { createRoomOn = group.node },
+                                    onRename = { renameNode = group.node },
                                 )
                                 if (!collapsed) {
                                     val rows = buildRoomTree(
@@ -1127,6 +1130,17 @@ private fun HomeScreen(
             targetLabel = peer.label,
             onBlock = { viewModel.setPeerBlocked(peer.peerId, true) },
             onDismiss = { reportPeer = null },
+        )
+    }
+
+    renameNode?.let { node ->
+        RenameNodeDialog(
+            node = node,
+            onDismiss = { renameNode = null },
+            onRename = { name ->
+                renameNode = null
+                viewModel.renameSupernode(node.nodeId, name)
+            },
         )
     }
 
@@ -3006,14 +3020,23 @@ private fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    // As on the desktop: the node's avatar, green while any
+                    // member of its cluster is connected.
+                    SupernodeAvatar(
+                        art = state.avatars[node.peerId],
+                        connected = node.isConnected(state.connectedSupernodes),
+                        size = 32.dp,
+                    )
+                    Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(node.displayName, style = MaterialTheme.typography.bodyLarge)
                         Text(
                             // A cluster presents as one node; saying how many
                             // members it has is what distinguishes "one server"
                             // from "three that fail over".
-                            if (node.clusterMembers.size > 1) {
-                                "cluster of ${node.clusterMembers.size}"
+                            // The roster lists its siblings, not the node itself.
+                            if (node.clusterSize > 1) {
+                                "cluster of ${node.clusterSize}"
                             } else {
                                 node.peerId.take(16)
                             },
@@ -3457,6 +3480,51 @@ private fun InviteDialog(url: String, qrRows: List<String>?, onDismiss: () -> Un
             }) { Text("Copy") }
         },
         dismissButton = { SquareTextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+/**
+ * Name a supernode on this phone only. Nothing is sent. Reset, or an empty
+ * name, goes back to the operator's title.
+ */
+@Composable
+private fun RenameNodeDialog(node: RoomNodeInfo, onDismiss: () -> Unit, onRename: (String) -> Unit) {
+    var name by remember(node.nodeId) { mutableStateOf(node.localName) }
+
+    DsDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename supernode") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.take(64) },
+                    label = { Text("Name on this phone") },
+                    singleLine = true,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (node.title.isNotBlank()) {
+                        "Leave empty or Reset to use “${node.title}”, the name its operator set."
+                    } else {
+                        "Leave empty or Reset to use the name its operator sets."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            SquareTextButton(onClick = { onRename(name) }) { Text("Save") }
+        },
+        dismissButton = {
+            Row {
+                SquareTextButton(onClick = { onRename("") }, enabled = node.localName.isNotEmpty()) {
+                    Text("Reset")
+                }
+                SquareTextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
     )
 }
 
