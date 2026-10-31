@@ -83,7 +83,7 @@ export function verifyArtifact(artifact, products) {
             directory = join(temporary, 'squashfs-root');
         } else if (/\.tar\.gz$/i.test(artifact)) {
             run('tar', ['-xzf', artifact, '-C', temporary]);
-        } else if (/\.(?:7z|zip|apk|aab)$/i.test(artifact)) {
+        } else if (/\.(?:7z|zip|apk|aab|msix)$/i.test(artifact)) {
             const sevenZip = process.env.SEVENZIP ?? (process.platform === 'win32' && existsSync('C:/Program Files/7-Zip/7z.exe') ? 'C:/Program Files/7-Zip/7z.exe' : '7z');
             run(sevenZip, ['x', '-y', `-o${temporary}`, artifact]);
         } else throw new Error('Unsupported release archive');

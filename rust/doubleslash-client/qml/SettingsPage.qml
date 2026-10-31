@@ -1888,7 +1888,14 @@ Item {
                     SettingSwitch { title: "Auto-connect to known peers"; checked: root.settings ? root.settings.auto_connect : false; onChanged: if (root.settings) root.settings.auto_connect = checked }
                     SettingSwitch { title: "Start minimized"; checked: root.settings ? root.settings.start_minimized : false; onChanged: if (root.settings) root.settings.start_minimized = checked }
                     SettingSwitch { title: "Minimize to tray on close"; description: "Keep DoubleSlash running in the system tray instead of quitting when the window is closed or minimized"; checked: root.settings ? root.settings.minimize_to_tray : false; onChanged: if (root.settings) root.settings.minimize_to_tray = checked }
-                    SettingSwitch { title: "Check for updates automatically"; description: "Check when DoubleSlash starts and once per hour while it is running"; checked: root.settings ? root.settings.update_check_enabled : true; onChanged: if (root.settings) root.settings.update_check_enabled = checked }
+                    SettingSwitch { visible: !(backend && backend.windows_package); title: "Check for updates automatically"; description: "Check when DoubleSlash starts and once per hour while it is running"; checked: root.settings ? root.settings.update_check_enabled : true; onChanged: if (root.settings) root.settings.update_check_enabled = checked }
+                    Label {
+                        visible: !!(backend && backend.windows_package)
+                        text: qsTr("Updates are managed by Microsoft Store.")
+                        color: Theme.muted
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                    }
                     SettingSwitch { title: "Enable UPnP port mapping"; checked: root.settings ? root.settings.upnp_enabled : true; onChanged: if (root.settings) root.settings.upnp_enabled = checked }
                     SettingSwitch { title: "Verbose debug logging"; description: "Write detailed diagnostic logs for troubleshooting. Applies immediately; a RUST_LOG environment variable overrides this."; checked: root.settings ? root.settings.debug_logging : false; onChanged: if (root.settings) root.settings.debug_logging = checked }
 
@@ -3236,6 +3243,7 @@ Item {
                         spacing: Theme.spacingSm
                         StyledButton {
                             text: "Create Shortcuts"
+                            visible: !(backend && backend.windows_package)
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
                             onClicked: {
                                 if (!backend) return
@@ -3245,6 +3253,7 @@ Item {
                         }
                         StyledButton {
                             text: "Remove Shortcuts"
+                            visible: !(backend && backend.windows_package)
                             onClicked: {
                                 if (!backend) return
                                 backend.removeDesktopShortcuts()
@@ -3255,6 +3264,7 @@ Item {
 
                     Label {
                         id: shortcutStatus
+                        visible: !(backend && backend.windows_package)
                         property bool hasShortcuts: backend ? backend.hasDesktopShortcuts() : false
                         text: hasShortcuts ? "Status: Shortcuts exist" : "Status: No shortcuts found"
                         color: hasShortcuts ? Theme.online : Theme.muted

@@ -23,6 +23,25 @@ in [`README.md`](README.md) and on the website must have a home here.
 
 ## Phase 1 — Prove what already ships
 
+### Microsoft Store MSIX acceptance
+
+The Windows packaging path is `build_msix.ps1`; see
+[Microsoft Store packaging](docs/MICROSOFT_STORE.md). Before publication:
+
+- Run Windows App Certification Kit and resolve package-specific failures.
+- Validate install/update on Windows 10/11 and an alternate drive; test
+  uninstall/reinstall with the existing identity and selected profile preserved.
+- Test invite links from a browser with the app closed and already running,
+  including an unpackaged installation also present. Preserve the profile lock.
+- Exercise first launch, unlock/keyring, backup/restore, Qt WebEngine portals,
+  notifications/tray and camera/screen/shared audio, direct/room calls and files
+  from an actually installed package. Confirm updates stay managed by Windows.
+- Address the Windows in-app abuse-reporting gap and review the Store UGC and
+  optional generative-AI requirements. The Android share-sheet report is not a
+  Windows reporting feature. Do not answer declarations based on planned work.
+- Supply working invite-based certification instructions and verify Store
+  publication/signing separately from a successful local build.
+
 Fixes and live acceptance of paths the product already advertises. Do not start
 new capture backends or pairing protocols until these have a written result.
 

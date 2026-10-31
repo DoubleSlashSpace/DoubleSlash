@@ -136,6 +136,9 @@ pub struct Updater {
     installer_path: Option<PathBuf>,
     automatic_checks_enabled: bool,
 
+    /// MSIX is serviced by Windows; no GitHub checks or installer handoff.
+    package_managed: bool,
+
     event_tx: mpsc::Sender<UpdateEvent>,
     cmd_rx: mpsc::Receiver<UpdaterCommand>,
 }
@@ -169,6 +172,7 @@ impl Updater {
             repo: repo.into(),
             installer_path,
             automatic_checks_enabled,
+            package_managed: crate::platform::is_windows_package(),
             event_tx,
             cmd_rx,
         };
@@ -202,6 +206,9 @@ impl Updater {
     }
 
     async fn check_and_publish(&self) {
+        if self.package_managed {
+            return;
+        }
         let event = match self.check_github().await {
             Ok(Some(release)) if is_newer(&self.current_version, release.version()) => {
                 UpdateEvent::UpdateAvailable(release)
@@ -213,6 +220,10 @@ impl Updater {
     }
 
     async fn run(mut self) {
+        if self.package_managed {
+            self.automatic_checks_enabled = false;
+            info!("Updates are managed by Windows package deployment");
+        }
         info!("Updater started (current: {})", self.current_version);
         let check_interval = Duration::from_secs(CHECK_INTERVAL_SECS);
         let first_check = if self.automatic_checks_enabled {
@@ -236,6 +247,7 @@ impl Updater {
                             self.check_and_publish().await;
                         }
                         UpdaterCommand::SetAutomaticChecks(enabled) => {
+                            let enabled = enabled && !self.package_managed;
                             let newly_enabled = enabled && !self.automatic_checks_enabled;
                             self.automatic_checks_enabled = enabled;
                             if newly_enabled {
@@ -244,6 +256,12 @@ impl Updater {
                             }
                         }
                         UpdaterCommand::ApplyUpdate(_rel) => {
+                            if self.package_managed {
+                                let _ = self.event_tx.send(UpdateEvent::InstallerError(
+                                    "Updates are managed by Windows. Check Microsoft Store for updates.".to_string()
+                                )).await;
+                                continue;
+                            }
                             if let Some(path) = &self.installer_path {
                                 match std::process::Command::new(path)
                                     .args(installer_arguments(&self.repo))
@@ -278,6 +296,49 @@ impl Updater {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn packaged_install_never_checks_github_or_launches_installer() {
+        let (event_tx, mut events) = mpsc::channel(16);
+        let (commands, cmd_rx) = mpsc::channel(8);
+        let updater = Updater {
+            current_version: "1.0.0".to_string(),
+            repo: "invalid/repository".to_string(),
+            installer_path: Some(PathBuf::from("must-not-run.exe")),
+            automatic_checks_enabled: true,
+            package_managed: true,
+            event_tx,
+            cmd_rx,
+        };
+        let task = tokio::spawn(updater.run());
+        commands.send(UpdaterCommand::Check).await.unwrap();
+        commands
+            .send(UpdaterCommand::SetAutomaticChecks(true))
+            .await
+            .unwrap();
+        commands
+            .send(UpdaterCommand::ApplyUpdate(ReleaseInfo {
+                tag_name: "v2.0.0".to_string(),
+                name: None,
+                body: None,
+                html_url: String::new(),
+            }))
+            .await
+            .unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(1), events.recv())
+            .await
+            .expect("package commands must not wait on GitHub")
+            .unwrap();
+        assert!(
+            matches!(event, UpdateEvent::InstallerError(message) if message.contains("managed by Windows"))
+        );
+        commands.send(UpdaterCommand::Shutdown).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(events.recv().await.is_none());
+    }
 
     #[test]
     fn version_comparison() {

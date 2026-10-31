@@ -2,6 +2,38 @@
 
 use tracing::{info, warn};
 
+/// Package deployment owns updates and protocol associations for MSIX installs.
+/// Use Windows' process identity, never an executable path or environment flag.
+pub fn is_windows_package() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::core::PWSTR;
+        use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
+
+        static PACKAGED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *PACKAGED.get_or_init(|| {
+            let mut length = 0;
+            // SAFETY: Windows accepts a null buffer to query its required size;
+            // length points to a live writable u32 for the duration of the call.
+            let status = unsafe { GetCurrentPackageFullName(&mut length, PWSTR::null()) };
+            match status {
+                windows::Win32::Foundation::APPMODEL_ERROR_NO_PACKAGE => false,
+                windows::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER => true,
+                other => {
+                    // Do not overwrite package-managed resources if querying
+                    // deployment state failed for an unexpected reason.
+                    warn!("Cannot query Windows package identity: {other:?}; deferring updates and protocol registration to Windows");
+                    true
+                }
+            }
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
 // Ringtone playback state (one global OutputStream keeps the audio device open)
 use std::sync::Mutex;
 
@@ -342,6 +374,10 @@ pub fn parse_uri(uri: &str) -> Option<(String, String)> {
 ///
 /// Returns `true` if successful. Failures are non-fatal (logged only).
 pub fn register_uri_scheme() -> bool {
+    if is_windows_package() {
+        info!("URI associations are managed by the Windows package manifest");
+        return true;
+    }
     #[cfg(target_os = "windows")]
     {
         register_uri_scheme_windows()
@@ -983,6 +1019,10 @@ pub async fn release_upnp_mapping(external_port: u16) {
 /// `%APPDATA%\Microsoft\Windows\Start Menu\Programs`; no elevation is
 /// required.
 pub fn create_desktop_shortcuts() {
+    if is_windows_package() {
+        info!("Shortcuts are managed by Windows package deployment");
+        return;
+    }
     #[cfg(target_os = "windows")]
     create_shortcuts_windows();
     #[cfg(not(target_os = "windows"))]
@@ -992,6 +1032,9 @@ pub fn create_desktop_shortcuts() {
 /// Remove the Start Menu and Desktop shortcuts created by
 /// [`create_desktop_shortcuts`].
 pub fn remove_desktop_shortcuts() {
+    if is_windows_package() {
+        return;
+    }
     #[cfg(target_os = "windows")]
     remove_shortcuts_windows();
     #[cfg(not(target_os = "windows"))]

@@ -1,5 +1,11 @@
 # DoubleSlash Architecture
 
+Windows also supports an x64 MSIX package through `build_msix.ps1`.
+`platform::is_windows_package` detects process package identity so Windows
+deployment owns updates, shortcuts and protocol registration; unpackaged
+clients retain the GitHub installer path. Both resolve the existing desktop
+profile and share its process lock. See [Microsoft Store packaging](MICROSOFT_STORE.md).
+
 ```mermaid
 graph TD
 

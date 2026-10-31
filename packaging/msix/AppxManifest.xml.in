@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+         xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+         xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+         IgnorableNamespaces="uap uap3 rescap">
+  <Identity Name="DoubleSlash.DoubleSlash"
+            Publisher="CN=500F9E8C-187C-408B-8700-5C8A6D6C7B1C"
+            Version="@VERSION@" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>DoubleSlash</DisplayName>
+    <PublisherDisplayName>Double Slash</PublisherDisplayName>
+    <Description>Invite-only peer-to-peer chat, calls, and file sharing.</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+  <Applications>
+    <Application Id="App" Executable="DoubleSlash.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="DoubleSlash"
+                          Description="Invite-only peer-to-peer chat, calls, and file sharing."
+                          BackgroundColor="transparent"
+                          Square44x44Logo="Assets\Square44x44Logo.png"
+                          Square150x150Logo="Assets\Square150x150Logo.png" />
+      <Extensions>
+        <uap3:Extension Category="windows.protocol">
+          <uap3:Protocol Name="doubleslash" Parameters="&quot;%1&quot;" />
+        </uap3:Extension>
+        <!-- MSIX protocol names require at least two characters. d:// remains
+             an in-app alias; external invites use doubleslash://. -->
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <Capability Name="internetClient" />
+    <Capability Name="internetClientServer" />
+    <Capability Name="privateNetworkClientServer" />
+    <rescap:Capability Name="runFullTrust" />
+    <DeviceCapability Name="microphone" />
+    <DeviceCapability Name="webcam" />
+  </Capabilities>
+</Package>

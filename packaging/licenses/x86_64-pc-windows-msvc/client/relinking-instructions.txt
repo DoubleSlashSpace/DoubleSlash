@@ -13,6 +13,19 @@ a library is therefore a file substitution, not a rebuild.
 
 Procedure
 ---------
+For a Microsoft Store installation, Windows protects the installed MSIX
+directory. First quit DoubleSlash and extract the corresponding MSIX package
+into a separate, user-writable directory using Windows SDK MakeAppx:
+
+    makeappx unpack /p DoubleSlash-1.0.0.0-x64.msix /d DoubleSlash-modified
+
+Use the package for the version you are modifying (adjust the filename), or
+the matching portable Windows bundle from the project release. Perform the
+steps below in that extracted directory and run its DoubleSlash.exe directly.
+No Store re-signing, certificate purchase, or privileged modification of
+WindowsApps is required. The extracted application is an ordinary desktop
+process; keep the Store instance closed because both use the same profile.
+
 1. Obtain the corresponding source for the library you want to change:
 
      Qt 6.8.3   https://download.qt.io/archive/qt/6.8/6.8.3/single/
@@ -40,6 +53,9 @@ Notes
 * DoubleSlash.exe may carry an Authenticode signature. That signature covers
   the DoubleSlash executable only. It does not cover the Qt or FFmpeg DLLs and
   does not prevent you from replacing them.
+* A Store MSIX signature protects all files inside the installed package.
+  It does not prevent running an extracted copy with replaced LGPL libraries
+  using the procedure above.
 * If you change a library's exported ABI, DoubleSlash may fail to start. That
   is a consequence of the change, not a restriction imposed by DoubleSlash.
 * These instructions cover the Windows bundle. The macOS .app and the Linux

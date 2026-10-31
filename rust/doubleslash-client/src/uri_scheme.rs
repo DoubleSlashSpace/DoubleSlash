@@ -19,6 +19,9 @@ use tracing::debug;
 ///
 /// Returns `Ok(true)` if registered, `Ok(false)` on non-Windows platforms.
 pub fn register() -> std::io::Result<bool> {
+    if crate::platform::is_windows_package() {
+        return Ok(true);
+    }
     #[cfg(target_os = "windows")]
     {
         windows::register()
@@ -34,6 +37,9 @@ pub fn register() -> std::io::Result<bool> {
 ///
 /// Returns `Ok(true)` if the key was removed, `Ok(false)` on non-Windows.
 pub fn unregister() -> std::io::Result<bool> {
+    if crate::platform::is_windows_package() {
+        return Ok(false);
+    }
     #[cfg(target_os = "windows")]
     {
         windows::unregister()
@@ -46,6 +52,9 @@ pub fn unregister() -> std::io::Result<bool> {
 
 /// Returns `true` if the scheme is already registered for this install.
 pub fn is_registered() -> bool {
+    if crate::platform::is_windows_package() {
+        return true;
+    }
     #[cfg(target_os = "windows")]
     {
         windows::is_registered()

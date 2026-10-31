@@ -9,6 +9,11 @@ windeployqt deploys three Microsoft-supplied files into the bundle:
   dxcompiler.dll       DirectX Shader Compiler
   vc_redist.x64.exe    Microsoft Visual C++ Runtime redistributable installer
 
+The MSIX build excludes vc_redist.x64.exe and deploys the x64 runtime DLLs
+from Visual Studio's VC/Redist/MSVC/<version>/x64/Microsoft.VC*.CRT directory
+beside the application instead. Their redistribution terms are the same
+Microsoft Visual Studio redistributable terms linked below.
+
 
 Terms
 -----

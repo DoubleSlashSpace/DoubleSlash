@@ -17,7 +17,8 @@ Dialog {
 
     property int step: 0
     readonly property bool isWindows: Qt.platform.os === "windows"
-    readonly property int stepCount: isWindows ? 3 : 2
+    readonly property bool packageManaged: !!(root.appBackend && root.appBackend.windows_package)
+    readonly property int stepCount: isWindows && !packageManaged ? 3 : 2
     property string generatedInvite: ""
     property bool copiedInvite: false
     property bool inviteSent: false
@@ -48,7 +49,7 @@ Dialog {
         root.saveHandle()
         root.acceptInvite()
 
-        if (root.isWindows && root.appBackend) {
+        if (root.isWindows && !root.packageManaged && root.appBackend) {
             if (uriOption.checked) root.appBackend.registerUriScheme()
             if (shortcutOption.checked) root.appBackend.createDesktopShortcuts()
         }

@@ -133,6 +133,7 @@ windows = { version = "0.58", features = [
     "Win32_Media_Audio",
     "Win32_Media_KernelStreaming",
     "Win32_System_Threading",
+    "Win32_Storage_Packaging_Appx",
     "Win32_Security",
     # Media Foundation: hardware-accelerated H.264 encode/decode. The hardware
     # MFT enumeration path picks up NVENC / QuickSync / AMF automatically, and

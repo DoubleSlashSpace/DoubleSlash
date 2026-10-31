@@ -64,6 +64,8 @@ pub mod ffi {
         #[qproperty(i32, own_devices_online)]
         /// Our embedded build ID (for reproducible build attestation).
         #[qproperty(QString, build_id)]
+        /// Windows owns updates and protocol registration for an MSIX install.
+        #[qproperty(bool, windows_package)]
         #[qproperty(QString, invite_url)]
         /// One of "direct", "relay", "offline", "error" — drives SessionBanner colour.
         #[qproperty(QString, connection_mode)]
@@ -1362,6 +1364,7 @@ pub struct AppBridgeRust {
     public_id: QString,
     /// Build ID exposed as qproperty for QML (e.g. Settings or status display).
     build_id: QString,
+    windows_package: bool,
     invite_url: QString,
     connection_mode: QString,
     call_duration_secs: i32,
@@ -1845,6 +1848,7 @@ impl Default for AppBridgeRust {
             call_state: QString::from("idle"),
             public_id: QString::default(),
             build_id: QString::from(env!("DOUBLESLASH_BUILD_ID")),
+            windows_package: crate::platform::is_windows_package(),
             invite_url: QString::default(),
             connection_mode: QString::from("offline"),
             call_duration_secs: 0,

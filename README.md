@@ -77,7 +77,7 @@ The repository contains these packaging targets. Consult the [release assets](ht
 
 | Platform | Package / build path |
 |---|---|
-| Windows | Installer or portable `DoubleSlash` folder (`build_win64.ps1`) |
+| Windows | Installer or portable `DoubleSlash` folder (`build_win64.ps1`); Store MSIX (`build_msix.ps1`) |
 | Linux | AppImage (`build_linux.sh`) |
 | macOS | `.app` / `.dmg` (`build_macos.sh`) |
 | Android | APK / AAB; Android 8.0+ (API 26), ARM64 by default |
@@ -88,6 +88,7 @@ On Windows, run `doubleslash-installer.exe` or extract the portable archive and 
 
 - **Windows installer:** use Installed apps or `doubleslash-installer.exe --uninstall`.
 - **Windows portable:** delete the extracted application directory. The client can register URI handlers on launch, so portable use is not guaranteed to leave the registry untouched.
+- **Windows MSIX:** uninstall through Windows Installed apps. The profile remains separate from the application package; export a backup before deleting it manually.
 - **macOS:** move the application to Trash.
 - **Linux:** delete the AppImage. If installed separately, remove `~/.local/share/applications/doubleslash.desktop` and refresh the desktop database.
 - **Android:** uninstall through system settings; this removes app-private identity and history data.
@@ -207,6 +208,8 @@ See the [threat model](docs/THREAT_MODEL.md) for trust boundaries and limitation
 ## Updates
 
 The desktop client checks GitHub Releases at startup and hourly when `update_check_enabled` is on (the default). Turning it off prevents automatic checks. Applying an update runs the bundled installer; application binaries are not distributed peer-to-peer. Android does not use this desktop update checker.
+
+When the Windows process has MSIX package identity, Windows manages updates and invite protocol associations. The client does not check GitHub or launch the standalone updater, and Settings directs users to Microsoft Store for updates. The package uses the existing desktop profile location. See [Microsoft Store packaging](docs/MICROSOFT_STORE.md) for building the upload and remaining acceptance checks; this packaging support does not establish Store publication or certification.
 
 Installer verification is channel-dependent:
 
