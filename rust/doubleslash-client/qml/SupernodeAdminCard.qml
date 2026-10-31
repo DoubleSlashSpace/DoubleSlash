@@ -18,6 +18,29 @@ SettingsCard {
     // Opens the wizard: empty ids for a new node, or a node to add a server to.
     signal hostRequested(string nodeId, string nodeName)
 
+    // Icon-only server action. The old label is the tooltip.
+    component ServerButton: IconButton {
+        property string tip: ""
+        property bool danger: false
+        property bool accent: false
+        icon.width: 18
+        icon.height: 18
+        icon.color: !enabled ? Theme.muted
+            : danger ? Theme.danger
+            : accent ? Theme.accent
+            : Theme.text
+        tileColor: danger ? Theme.semanticTint(Theme.danger, 0.18)
+            : accent ? Theme.semanticTint(Theme.accent, 0.18)
+            : "transparent"
+        tileBorder: danger ? Theme.danger : accent ? Theme.accent : "transparent"
+        display: AbstractButton.IconOnly
+        Layout.alignment: Qt.AlignVCenter
+        Accessible.name: tip
+        ToolTip.text: tip
+        ToolTip.visible: hovered || visualFocus
+        ToolTip.delay: 300
+    }
+
     title: "Your servers"
     subtitle: "Supernodes you set up on your own servers from this device."
 
@@ -88,12 +111,24 @@ SettingsCard {
             delete p[event.request_id]
             card.pending = p
             if (!event.ok) {
-                card.patch(nodeId, { working: "", output: event.error, failed: true })
+                var failed = event.error || "Request failed"
+                if (event.op === "invite" && card.info(nodeId).usedSaved)
+                    failed += " The saved link is still on the clipboard."
+                card.patch(nodeId, { working: "", output: failed, failed: true, usedSaved: false })
                 return
             }
             var v = event.value || {}
-            var fields = { working: "", failed: false }
+            var fields = { working: "", failed: false, usedSaved: false }
             if (event.op === "status") fields.status = v.hosts
+            else if (event.op === "invite") {
+                fields.inviteUrl = v.invite_url || ""
+                if (fields.inviteUrl !== "")
+                    card.appBackend.copyToClipboard(fields.inviteUrl)
+                fields.output = fields.inviteUrl !== ""
+                    ? "Invite copied. Anyone who accepts it adds this supernode."
+                    : "The server did not return an invite."
+                fields.failed = fields.inviteUrl === ""
+            }
             else if (event.op === "check_update") {
                 fields.updateAvailable = v.update_available
                 fields.output = v.update_available ? "A newer nightly build is available."
@@ -104,12 +139,29 @@ SettingsCard {
         }
     }
 
-    StyledButton {
-        primary: true
-        text: "Host a supernode"
-        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
-        enabled: !card.busy
-        onClicked: card.hostRequested("", "")
+    RowLayout {
+        Layout.fillWidth: true
+        spacing: Theme.spacingMd
+
+        ServerButton {
+            tip: "Host a supernode"
+            accent: true
+            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
+            enabled: !card.busy
+            onClicked: card.hostRequested("", "")
+        }
+
+        Label {
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            textFormat: Text.RichText
+            font.pixelSize: Theme.fontSizeCaption
+            color: Theme.accent
+            text: "<a href=\"https://doubleslash.space/support.html\"><font color=\""
+                + Theme.accent + "\">https://doubleslash.space/support.html</font></a>"
+            onLinkActivated: (link) => Qt.openUrlExternally(link)
+            HoverHandler { cursorShape: Qt.PointingHandCursor }
+        }
     }
 
     Label {
@@ -132,6 +184,8 @@ SettingsCard {
             readonly property var info: card.info(node.id)
             readonly property bool working: (info.working || "") !== ""
             readonly property bool confirming: card.pendingRemoveId === node.id
+            // The link just read from the server, or the one saved at setup.
+            readonly property string shownInvite: info.inviteUrl || node.invite_url || ""
             Layout.fillWidth: true
             spacing: Theme.spacingSm
 
@@ -202,47 +256,90 @@ SettingsCard {
                 spacing: Theme.spacingSm
                 visible: !nodeColumn.confirming
 
-                StyledButton {
-                    text: "Check status"
+                ServerButton {
+                    tip: "Copy invite"
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
+                    enabled: !nodeColumn.working
+                    onClicked: {
+                        var saved = nodeColumn.node.invite_url || ""
+                        if (saved !== "")
+                            card.appBackend.copyToClipboard(saved)
+                        card.patch(nodeColumn.node.id, { usedSaved: saved !== "" })
+                        card.send(nodeColumn.node.id, { op: "invite" })
+                    }
+                }
+                ServerButton {
+                    tip: "Check status"
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
                     enabled: !nodeColumn.working
                     onClicked: card.send(nodeColumn.node.id, { op: "status" })
                 }
-                StyledButton {
-                    text: "Check for update"
+                ServerButton {
+                    tip: "Check for update"
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/download.svg"
                     enabled: !nodeColumn.working
                     onClicked: card.send(nodeColumn.node.id, { op: "check_update" })
                 }
-                StyledButton {
-                    text: "Update now"
-                    primary: nodeColumn.info.updateAvailable === true
+                ServerButton {
+                    tip: "Update now"
+                    accent: nodeColumn.info.updateAvailable === true
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/update.svg"
                     enabled: !nodeColumn.working && !card.busy
                     onClicked: card.send(nodeColumn.node.id, { op: "update_now" })
                 }
-                StyledButton {
-                    text: "Restart"
+                ServerButton {
+                    tip: "Restart"
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/restart.svg"
                     enabled: !nodeColumn.working && !card.busy
                     onClicked: card.send(nodeColumn.node.id, { op: "restart" })
                 }
-                StyledButton {
-                    text: "Logs"
+                ServerButton {
+                    tip: "Logs"
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/logs.svg"
                     enabled: !nodeColumn.working
                     onClicked: card.send(nodeColumn.node.id, { op: "logs", lines: 200 })
                 }
-                StyledButton {
-                    text: "Add a server"
+                ServerButton {
+                    tip: "Add a server"
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
                     enabled: !card.busy
                     onClicked: card.hostRequested(nodeColumn.node.id, nodeColumn.node.name)
                 }
-                StyledButton {
-                    text: "Remove"
+                ServerButton {
+                    tip: "Remove"
                     danger: true
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                     enabled: !nodeColumn.working
                     onClicked: card.pendingRemoveId = nodeColumn.node.id
+                }
+            }
+
+            Label {
+                Layout.fillWidth: true
+                visible: !nodeColumn.confirming
+                wrapMode: Text.WordWrap
+                color: Theme.muted
+                font.pixelSize: Theme.fontSizeCaption
+                text: "People who accept this link add the supernode, with the same rooms, "
+                    + "relay, and portal. A room invite only opens that room. Copy invite "
+                    + "reads the current link from the server."
+            }
+
+            TextArea {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 72
+                visible: !nodeColumn.confirming && nodeColumn.shownInvite !== ""
+                readOnly: true
+                selectByMouse: true
+                text: nodeColumn.shownInvite
+                wrapMode: TextEdit.WrapAnywhere
+                font.family: "monospace"
+                font.pixelSize: Theme.fontSizeCaption
+                color: Theme.text
+                background: Rectangle {
+                    color: Theme.bg1
+                    border.color: Theme.divider
+                    border.width: 1
                 }
             }
 
@@ -287,24 +384,27 @@ SettingsCard {
                 Flow {
                     Layout.fillWidth: true
                     spacing: Theme.spacingSm
-                    StyledButton {
-                        text: "Uninstall"
+                    ServerButton {
+                        tip: "Uninstall"
                         danger: true
+                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                         enabled: !card.busy
                         onClicked: {
                             card.pendingRemoveId = ""
                             card.send(nodeColumn.node.id, { op: "uninstall", purge: purgeSwitch.checked })
                         }
                     }
-                    StyledButton {
-                        text: "Forget"
+                    ServerButton {
+                        tip: "Forget"
+                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/forget.svg"
                         onClicked: {
                             card.pendingRemoveId = ""
                             card.send(nodeColumn.node.id, { op: "forget" })
                         }
                     }
-                    StyledButton {
-                        text: "Cancel"
+                    ServerButton {
+                        tip: "Cancel"
+                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                         onClicked: card.pendingRemoveId = ""
                     }
                 }
@@ -352,8 +452,11 @@ SettingsCard {
             ? (card.adminState.notice || "")
             : "Your servers are your responsibility. DoubleSlash automates setup, not ongoing administration."
     }
-    StyledButton {
-        text: card.showNotice ? "Hide the notice" : "Read the full notice"
+    ServerButton {
+        tip: card.showNotice ? "Hide the notice" : "Read the full notice"
+        icon.source: card.showNotice
+            ? "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
+            : "qrc:/qt/qml/DoubleSlash/Client/icons/info.svg"
         onClicked: card.showNotice = !card.showNotice
     }
 }

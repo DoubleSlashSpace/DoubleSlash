@@ -402,8 +402,8 @@ The manager library has the guided flow, host hardening, SSH key install and
 lockdown, the unit sandbox, and the on-server updater with rollback. The
 desktop has the encrypted managed-node store, the wizard with the
 responsibility notice, the Your servers card (status, logs, restart, updates,
-update mode, add a server as a cluster member, uninstall, forget), and accepts
-the node's invite after setup. The QML is only rendered against a mock backend.
+update mode, add a server as a cluster member, copy the node's invite,
+uninstall, forget), and accepts the node's invite after setup. The QML is only rendered against a mock backend.
 
 **Live result, 2026-10-27, IPv6-only Debian 12 (Vultr),** driven through
 `AdminService` by `examples/supernode_admin_live.rs`.

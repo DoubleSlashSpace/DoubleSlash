@@ -16,10 +16,10 @@ use serde_json::{json, Value};
 use snm_core::{ClusterDef, Inventory, PrivilegeMode, ResolvedInstance, Selector};
 use snm_supernode::{
     cluster_sync_report_with, download_release_archive, guided_steps, installed_package,
-    lifecycle_report, logs_instance_text, probe_host_os, published_release_sha256, push_update,
-    run_guided_setup, set_update_mode, status_instance, uninstall_instance_report, GuidedProgress,
-    GuidedSetup, HardeningOptions, LifecycleAction, OsSupport, SshAccessMode, StepState,
-    UpdateMode,
+    invite_instance, lifecycle_report, logs_instance_text, probe_host_os, published_release_sha256,
+    push_update, run_guided_setup, set_update_mode, status_instance, uninstall_instance_report,
+    GuidedProgress, GuidedSetup, HardeningOptions, LifecycleAction, OsSupport, SshAccessMode,
+    StepState, UpdateMode,
 };
 use snm_transport::{
     fetch_host_key, host_key_fingerprint, parse_public_key, PrivateKey, PublicKey, SessionAuth,
@@ -69,6 +69,11 @@ pub enum Request {
         host_name: Option<String>,
         #[serde(default)]
         lines: Option<u32>,
+    },
+    /// Read the node's current reusable invite from a server. This is the
+    /// link other people accept to add the supernode. A room invite is not.
+    Invite {
+        node_id: String,
     },
     Restart {
         node_id: String,
@@ -315,6 +320,7 @@ impl AdminService {
                 host_name,
                 lines,
             } => self.logs(&node_id, host_name.as_deref(), lines).await,
+            Request::Invite { node_id } => self.invite(&node_id).await,
             Request::Restart { node_id } => {
                 let lines = self.for_each_host(&node_id, HostAction::Restart).await?;
                 Ok(json!({ "lines": lines }))
@@ -584,6 +590,55 @@ impl AdminService {
             .await
             .map_err(|e| format!("{e:#}"))?;
         Ok(json!({ "host_name": host.host_name, "text": text }))
+    }
+
+    /// The link a person accepts to add this supernode. Read from the server,
+    /// not from the copy saved at setup: a public-address change remints it.
+    /// The first server that answers supplies it, and that answer replaces
+    /// the saved copy.
+    async fn invite(&self, node_id: &str) -> Result<Value, String> {
+        let node = self.node(node_id)?;
+        if node.hosts.is_empty() {
+            return Err("This node has no servers".into());
+        }
+        let key = self.store.lock().existing_client_key();
+        let mut last_error = String::new();
+        for host in &node.hosts {
+            let transport = match host_transport(host, key.as_ref()) {
+                Ok(transport) => transport,
+                Err(e) => {
+                    last_error = format!("{}: {e}", host.host_name);
+                    continue;
+                }
+            };
+            let resolved = match resolve_host(&node.inventory, &host.host_name) {
+                Ok(resolved) => resolved,
+                Err(e) => {
+                    last_error = format!("{}: {e}", host.host_name);
+                    continue;
+                }
+            };
+            match invite_instance(&transport, &resolved).await {
+                Ok(info) => {
+                    let url = info.invite_url;
+                    // The panel can still hand the link out if remembering it
+                    // fails. The server file remains the source.
+                    if let Err(e) = self.edit_node(node_id, |n| n.invite_url = url.clone()) {
+                        tracing::warn!("[supernode-admin] could not store the invite: {e}");
+                    }
+                    return Ok(json!({
+                        "invite_url": url,
+                        "host_name": host.host_name,
+                    }));
+                }
+                Err(e) => last_error = format!("{}: {e:#}", host.host_name),
+            }
+        }
+        Err(if last_error.is_empty() {
+            "Could not read the invite".into()
+        } else {
+            last_error
+        })
     }
 
     /// Run `action` on each server of a node in turn, collecting its lines
@@ -1065,8 +1120,19 @@ mod tests {
     fn mutating_operations_are_flagged() {
         let restart: Request = serde_json::from_str(r#"{"op":"restart","node_id":"x"}"#).unwrap();
         let status: Request = serde_json::from_str(r#"{"op":"status","node_id":"x"}"#).unwrap();
+        let invite: Request = serde_json::from_str(r#"{"op":"invite","node_id":"x"}"#).unwrap();
         assert!(restart.is_mutating());
         assert!(!status.is_mutating());
+        assert!(!invite.is_mutating());
+    }
+
+    #[tokio::test]
+    async fn invite_for_an_unknown_node_does_not_connect() {
+        let service = service();
+        let request: Request =
+            serde_json::from_str(r#"{"op":"invite","node_id":"missing"}"#).unwrap();
+        let error = service.handle(request, &ignore).await.unwrap_err();
+        assert!(error.contains("no longer managed"), "{error}");
     }
 
     #[test]

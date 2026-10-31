@@ -160,7 +160,7 @@ Supernodes may use peer/device IDs, room/session IDs, membership, indices, signa
   - Deploying is refused until the responsibility notice is accepted.
   - Every connection pins the host key the user confirmed by fingerprint.
   - The server password is used once and never stored. `managed_supernodes.dat` holds the profile's SSH key, encrypted under an identity-derived store key, and stays out of backups.
-  - A deployed node joins only through `AcceptInvite` with its own signed invite: setup grants it no trust.
+  - A deployed node joins only through `AcceptInvite` with its own signed invite: setup grants it no trust. Your servers shows that reusable invite and Copy invite reads the current one over SSH, because an address change remints it. Accepting it adds the supernode. A room invite does not.
   - Password login is turned off last, and only after a fresh key-only login succeeds.
   - Adding a server to a node requires the same root/sudo mode as its first server, because the node's inventory shares one privilege setting.
   - Updates are downloaded and verified by the client and pushed over SSH (`push_update`), so they work on servers that cannot reach GitHub. Only the optional daily timer pulls from the server, and setup refuses that mode when the probe cannot reach github.com. An IPv6 public address binds `::` and is advertised bracketed, because relay tickets must be IP literals.

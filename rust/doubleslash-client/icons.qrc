@@ -62,5 +62,13 @@
         <file alias="icons/handshake.svg">qml/icons/handshake.svg</file>
         <file alias="icons/eye.svg">qml/icons/eye.svg</file>
         <file alias="icons/sort.svg">qml/icons/sort.svg</file>
+        <file alias="icons/restore.svg">qml/icons/restore.svg</file>
+        <file alias="icons/restart.svg">qml/icons/restart.svg</file>
+        <file alias="icons/update.svg">qml/icons/update.svg</file>
+        <file alias="icons/forget.svg">qml/icons/forget.svg</file>
+        <file alias="icons/ptt.svg">qml/icons/ptt.svg</file>
+        <file alias="icons/vad.svg">qml/icons/vad.svg</file>
+        <file alias="icons/trim-age.svg">qml/icons/trim-age.svg</file>
+        <file alias="icons/trim-count.svg">qml/icons/trim-count.svg</file>
     </qresource>
 </RCC>

@@ -152,28 +152,29 @@ Rectangle {
 
         Rectangle {
             Layout.fillWidth: true
-            height: 72
+            height: Theme.touchTarget
             color: Theme.bg0
 
-            StyledButton {
-                anchors.fill: parent
-                anchors.margins: Theme.spacingMd
+            IconButton {
+                anchors.centerIn: parent
                 // Red only while there is something to save, and unclickable
-                // once there is not — the state is the point of the button, so
-                // it says which of the two it is rather than looking the same
-                // either way.
-                danger: root.dirty
-                enabled: root.dirty
-                compact: false
-                font.pixelSize: Theme.fontSizeTitle
-                font.bold: root.dirty
-                text: root.dirty ? "Save Settings" : "Settings Saved"
+                // once there is not. The tooltip says which of the two it is.
                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/save.svg"
-                onClicked: root.saveRequested()
-
+                icon.width: 18
+                icon.height: 18
+                icon.color: !enabled ? Theme.muted : Theme.danger
+                tileColor: root.dirty ? Theme.semanticTint(Theme.danger, 0.18) : "transparent"
+                tileBorder: root.dirty ? Theme.danger : "transparent"
+                enabled: root.dirty
+                display: AbstractButton.IconOnly
+                Accessible.name: root.dirty ? "Save Settings" : "Settings Saved"
                 Accessible.description: root.dirty
                     ? "There are unsaved settings"
                     : "All settings are saved"
+                ToolTip.text: Accessible.name
+                ToolTip.visible: hovered || visualFocus
+                ToolTip.delay: 300
+                onClicked: root.saveRequested()
             }
         }
     }

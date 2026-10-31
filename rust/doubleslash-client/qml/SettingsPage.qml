@@ -43,6 +43,29 @@ Item {
     readonly property int tabDiagnostics: 8
     readonly property int tabAbout: 9
 
+    // Settings actions are icons. The old label is the tooltip.
+    component SettingsIcon: IconButton {
+        property string tip: ""
+        property bool danger: false
+        property bool accent: false
+        icon.width: 18
+        icon.height: 18
+        icon.color: !enabled ? Theme.muted
+            : danger ? Theme.danger
+            : accent ? Theme.accent
+            : Theme.text
+        tileColor: danger ? Theme.semanticTint(Theme.danger, 0.18)
+            : accent ? Theme.semanticTint(Theme.accent, 0.18)
+            : "transparent"
+        tileBorder: danger ? Theme.danger : accent ? Theme.accent : "transparent"
+        display: AbstractButton.IconOnly
+        Layout.alignment: Qt.AlignVCenter
+        Accessible.name: tip
+        ToolTip.text: tip
+        ToolTip.visible: hovered || visualFocus
+        ToolTip.delay: 300
+    }
+
     readonly property var avatarGridSizes: [8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32]
     readonly property var avatarDualHueModes: ["topbot", "checker", "quad"]
 
@@ -291,9 +314,10 @@ Item {
                         Layout.fillWidth: true
                         spacing: Theme.spacingSm
 
-                        StyledButton {
-                            text: "Push to Talk"
-                            primary: root.settings ? root.settings.push_to_talk : false
+                        SettingsIcon {
+                            tip: "Push to Talk"
+                            accent: root.settings ? root.settings.push_to_talk : false
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/ptt.svg"
                             onClicked: {
                                 if (!root.settings) return
                                 root.settings.push_to_talk = true
@@ -301,9 +325,10 @@ Item {
                             }
                         }
 
-                        StyledButton {
-                            text: "Voice Activation"
-                            primary: root.settings ? root.settings.voice_activation : false
+                        SettingsIcon {
+                            tip: "Voice Activation"
+                            accent: root.settings ? root.settings.voice_activation : false
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/vad.svg"
                             onClicked: {
                                 if (!root.settings) return
                                 root.settings.push_to_talk = false
@@ -581,15 +606,19 @@ Item {
                                 Behavior on width { NumberAnimation { duration: 60 } }
                             }
                         }
-                        StyledButton {
-                            text: backend && backend.mic_test_active ? "Stop" : "Test Mic"
+                        SettingsIcon {
+                            tip: backend && backend.mic_test_active ? "Stop" : "Test Mic"
+                            icon.source: backend && backend.mic_test_active
+                                ? "qrc:/qt/qml/DoubleSlash/Client/icons/stop.svg"
+                                : "qrc:/qt/qml/DoubleSlash/Client/icons/mic.svg"
                             onClicked: {
                                 if (backend && backend.mic_test_active) backend.stopMicTest()
                                 else if (backend) backend.startMicTest()
                             }
                         }
-                        StyledButton {
-                            text: "Test Speaker"
+                        SettingsIcon {
+                            tip: "Test Speaker"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/speaker.svg"
                             onClicked: if (backend) backend.testSpeaker()
                         }
                         Item { Layout.fillWidth: true }
@@ -868,7 +897,7 @@ Item {
                             font.pixelSize: Theme.fontSizeCaption
                         }
 
-                        StyledButton {
+                        SettingsIcon {
                             // Hidden while a call is sending: the preview is
                             // that stream, so stopping it here would mean
                             // stopping the call's camera from the settings page.
@@ -879,20 +908,25 @@ Item {
                             enabled: previewLoader.status !== Loader.Error
                                      && (cameraCard.previewLive
                                          || cameraCard.previewBlockedReason === "")
-                            text: cameraCard.previewLive ? "Stop preview" : "Preview"
+                            tip: cameraCard.previewLive ? "Stop preview" : "Preview"
+                            icon.source: cameraCard.previewLive
+                                ? "qrc:/qt/qml/DoubleSlash/Client/icons/stop.svg"
+                                : "qrc:/qt/qml/DoubleSlash/Client/icons/eye.svg"
                             onClicked: cameraCard.previewLive
                                 ? cameraCard.stopPreview()
                                 : cameraCard.startPreview()
 
-                            ToolTip.text: cameraCard.previewBlockedReason
-                            ToolTip.visible: hovered && cameraCard.previewBlockedReason !== ""
+                            ToolTip.text: cameraCard.previewBlockedReason !== ""
+                                ? cameraCard.previewBlockedReason : tip
+                            ToolTip.visible: hovered || visualFocus
                         }
 
-                        StyledButton {
+                        SettingsIcon {
                             // Windows come and go constantly, so the list is a
                             // snapshot rather than live — this is how the user
                             // picks up an app opened since the page loaded.
-                            text: "Rescan"
+                            tip: "Rescan"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
                             onClicked: cameraCard.reloadCameras()
                         }
 
@@ -1529,8 +1563,9 @@ Item {
                                 }
                             }
 
-                            StyledButton {
-                                text: "Remove"
+                            SettingsIcon {
+                                tip: "Remove"
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                                 onClicked: {
                                     overlayModel.remove(overlayRow.index)
                                     pipCard.persist()
@@ -1543,8 +1578,9 @@ Item {
                         Layout.fillWidth: true
                         spacing: Theme.spacingMd
 
-                        StyledButton {
-                            text: "Add overlay"
+                        SettingsIcon {
+                            tip: "Add overlay"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
                             // `revision` is what makes this re-evaluate — a
                             // binding cannot see the model reads inside the
                             // function call.
@@ -1614,7 +1650,11 @@ Item {
                 SettingsCard {
                     title: "Devices & Backups"
                     subtitle: "Save a complete encrypted backup or move your identity to another device."
-                    StyledButton { text: "Open backup wizard"; onClicked: root.backupsRequested() }
+                    SettingsIcon {
+                        tip: "Open backup wizard"
+                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/restore.svg"
+                        onClicked: root.backupsRequested()
+                    }
                 }
 
                 SettingsCard {
@@ -1663,9 +1703,9 @@ Item {
                         wrapMode: Text.WrapAnywhere
                     }
 
-                    StyledButton {
-                        text: "Copy Invite Link"
-                        primary: true
+                    SettingsIcon {
+                        tip: "Copy Invite Link"
+                        accent: true
                         icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
                         onClicked: if (backend) backend.copyInvite()
                     }
@@ -1692,8 +1732,8 @@ Item {
                             Layout.fillWidth: true
                             spacing: Theme.spacingSm
 
-                            StyledButton {
-                                text: "Reset Avatar"
+                            SettingsIcon {
+                                tip: "Reset Avatar"
                                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/undo.svg"
                                 onClicked: {
                                     if (!root.settings || !backend) return
@@ -2078,13 +2118,15 @@ Item {
                         Layout.fillWidth: true
                         spacing: Theme.spacingSm
 
-                        StyledButton {
-                            text: qsTr("Reset colours")
+                        SettingsIcon {
+                            tip: qsTr("Reset colours")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/undo.svg"
                             enabled: root.settings !== null && root.settings.skin_json !== ""
                             onClicked: root.settings.skin_json = ""
                         }
-                        StyledButton {
-                            text: qsTr("Copy skin")
+                        SettingsIcon {
+                            tip: qsTr("Copy skin")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
                             onClicked: {
                                 backend.copyToClipboard(root.exportSkin())
                                 skinNotice.text = qsTr("Skin copied. Paste it into another DoubleSlash to use it there.")
@@ -2104,8 +2146,9 @@ Item {
                             placeholderText: qsTr("Paste a skin…")
                             Accessible.name: qsTr("Skin to apply")
                         }
-                        StyledButton {
-                            text: qsTr("Apply")
+                        SettingsIcon {
+                            tip: qsTr("Apply")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg"
                             enabled: skinPasteField.text.trim() !== ""
                             onClicked: {
                                 var why = root.importSkin(skinPasteField.text)
@@ -2642,12 +2685,14 @@ Item {
                                         font.pixelSize: Theme.fontSizeCaption
                                         elide: Text.ElideMiddle
                                     }
-                                    StyledButton {
-                                        text: "Choose…"
+                                    SettingsIcon {
+                                        tip: "Choose folder"
+                                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/folder.svg"
                                         onClicked: shareFolderDialog.open()
                                     }
-                                    StyledButton {
-                                        text: "Clear"
+                                    SettingsIcon {
+                                        tip: "Clear"
+                                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                                         visible: shareFolderRow.folder !== ""
                                         onClicked: if (root.settings) root.settings.ollama_share_folder = ""
                                     }
@@ -2758,11 +2803,15 @@ Item {
                             id: nodeRow
                             required property string node_id
                             required property string title
+                            required property string local_name
                             required property bool connected
 
-                            readonly property string displayName: nodeRow.title !== ""
-                                ? nodeRow.title
-                                : root.shortNodeId(nodeRow.node_id)
+                            // This device's name for it first, as in the Rooms list.
+                            readonly property string displayName: nodeRow.local_name !== ""
+                                ? nodeRow.local_name
+                                : nodeRow.title !== ""
+                                    ? nodeRow.title
+                                    : root.shortNodeId(nodeRow.node_id)
                             readonly property bool confirming:
                                 supernodesCard.pendingRemoveId === nodeRow.node_id
 
@@ -2803,21 +2852,21 @@ Item {
                                     }
                                 }
 
-                                StyledButton {
-                                    text: "Open Portal"
+                                SettingsIcon {
+                                    tip: "Open Portal"
                                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
                                     onClicked: if (backend) backend.openNodePortal(nodeRow.node_id)
                                 }
 
-                                StyledButton {
-                                    text: "Copy ID"
+                                SettingsIcon {
+                                    tip: "Copy ID"
                                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
                                     onClicked: if (backend) backend.copyToClipboard(nodeRow.node_id)
                                 }
 
-                                StyledButton {
+                                SettingsIcon {
                                     visible: !nodeRow.confirming
-                                    text: "Remove"
+                                    tip: "Remove"
                                     danger: true
                                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                                     onClicked: supernodesCard.pendingRemoveId = nodeRow.node_id
@@ -2842,16 +2891,18 @@ Item {
                                 RowLayout {
                                     spacing: Theme.spacingSm
 
-                                    StyledButton {
-                                        text: "Remove Supernode"
+                                    SettingsIcon {
+                                        tip: "Remove Supernode"
                                         danger: true
+                                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                                         onClicked: {
                                             supernodesCard.pendingRemoveId = ""
                                             if (backend) backend.removeSupernode(nodeRow.node_id)
                                         }
                                     }
-                                    StyledButton {
-                                        text: "Cancel"
+                                    SettingsIcon {
+                                        tip: "Cancel"
+                                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
                                         onClicked: supernodesCard.pendingRemoveId = ""
                                     }
                                     Item { Layout.fillWidth: true }
@@ -3044,8 +3095,9 @@ Item {
 
                         Label { text: "Trim messages older than"; color: Theme.muted }
                         SpinBox { id: trimAgeSpin; from: 1; to: 3650; value: 30; textFromValue: function(v) { return v + " days" }; valueFromText: function(t) { return parseInt(t) || 30 } }
-                        StyledButton {
-                            text: "Trim by Age"
+                        SettingsIcon {
+                            tip: "Trim by Age"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trim-age.svg"
                             onClicked: {
                                 if (backend) backend.trimMessagesByAge(trimAgeSpin.value)
                                 privacyBox.storedCount = backend ? backend.getStoredMessageCount() : 0
@@ -3061,8 +3113,9 @@ Item {
                         Label { text: "Keep most recent"; color: Theme.muted }
                         SpinBox { id: trimCountSpin; from: 1; to: 100000; value: 500; textFromValue: function(v) { return v + " msgs" }; valueFromText: function(t) { return parseInt(t) || 500 } }
                         Label { text: "per conversation"; color: Theme.muted }
-                        StyledButton {
-                            text: "Trim to Limit"
+                        SettingsIcon {
+                            tip: "Trim to Limit"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trim-count.svg"
                             onClicked: {
                                 if (backend) backend.trimMessagesByCount(trimCountSpin.value)
                                 privacyBox.storedCount = backend ? backend.getStoredMessageCount() : 0
@@ -3083,22 +3136,27 @@ Item {
 
                         Label { Layout.fillWidth: true; text: "This permanently deletes all chat history."; color: Theme.danger; wrapMode: Text.WordWrap }
                         RowLayout {
-                            StyledButton {
-                                text: "Delete Everything"
+                            SettingsIcon {
+                                tip: "Delete Everything"
                                 danger: true
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                                 onClicked: {
                                     if (backend) backend.purgeAllChatHistory()
                                     privacyBox.storedCount = backend ? backend.getStoredMessageCount() : 0
                                     privacyBox.confirmPurge = false
                                 }
                             }
-                            StyledButton { text: "Cancel"; onClicked: privacyBox.confirmPurge = false }
+                            SettingsIcon {
+                                tip: "Cancel"
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
+                                onClicked: privacyBox.confirmPurge = false
+                            }
                         }
                     }
 
-                    StyledButton {
+                    SettingsIcon {
                         visible: !privacyBox.confirmPurge
-                        text: "Purge All Chat History"
+                        tip: "Purge All Chat History"
                         danger: true
                         icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                         onClicked: privacyBox.confirmPurge = true
@@ -3121,14 +3179,23 @@ Item {
 
                         Label { text: "Lock identity and quit now?"; color: Theme.danger }
                         RowLayout {
-                            StyledButton { text: "Lock and Quit"; danger: true; onClicked: if (backend) backend.lockIdentityAndQuit() }
-                            StyledButton { text: "Cancel"; onClicked: privacyBox.confirmLock = false }
+                            SettingsIcon {
+                                tip: "Lock and Quit"
+                                danger: true
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg"
+                                onClicked: if (backend) backend.lockIdentityAndQuit()
+                            }
+                            SettingsIcon {
+                                tip: "Cancel"
+                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
+                                onClicked: privacyBox.confirmLock = false
+                            }
                         }
                     }
 
-                    StyledButton {
+                    SettingsIcon {
                         visible: !privacyBox.confirmLock
-                        text: "Lock Identity and Quit"
+                        tip: "Lock Identity and Quit"
                         danger: true
                         icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg"
                         onClicked: privacyBox.confirmLock = true
@@ -3183,13 +3250,13 @@ Item {
 
                     RowLayout {
                         spacing: Theme.spacingSm
-                        StyledButton {
-                            text: "Refresh"
+                        SettingsIcon {
+                            tip: "Refresh"
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
                             onClicked: diagnosticsBox.logText = backend ? backend.getEventLogs() : ""
                         }
-                        StyledButton {
-                            text: "Clear"
+                        SettingsIcon {
+                            tip: "Clear"
                             danger: true
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                             onClicked: {
@@ -3241,8 +3308,8 @@ Item {
 
                     RowLayout {
                         spacing: Theme.spacingSm
-                        StyledButton {
-                            text: "Create Shortcuts"
+                        SettingsIcon {
+                            tip: "Create Shortcuts"
                             visible: !(backend && backend.windows_package)
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
                             onClicked: {
@@ -3251,9 +3318,10 @@ Item {
                                 shortcutStatus.hasShortcuts = backend.hasDesktopShortcuts()
                             }
                         }
-                        StyledButton {
-                            text: "Remove Shortcuts"
+                        SettingsIcon {
+                            tip: "Remove Shortcuts"
                             visible: !(backend && backend.windows_package)
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                             onClicked: {
                                 if (!backend) return
                                 backend.removeDesktopShortcuts()
@@ -3303,8 +3371,9 @@ Item {
                     RowLayout {
                         spacing: Theme.spacingSm
 
-                        StyledButton {
-                            text: "Open Licence Notices"
+                        SettingsIcon {
+                            tip: "Open Licence Notices"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/logs.svg"
                             enabled: noticesStatus.noticesPath !== ""
                             onClicked: {
                                 if (noticesStatus.noticesPath === "") return
@@ -3312,8 +3381,9 @@ Item {
                             }
                         }
 
-                        StyledButton {
-                            text: "Qt LGPL Terms"
+                        SettingsIcon {
+                            tip: "Qt LGPL Terms"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
                             onClicked: Qt.openUrlExternally("https://www.qt.io/development/open-source-lgpl-obligations")
                         }
                     }
