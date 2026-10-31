@@ -48,8 +48,10 @@ export PATH="$QT_DIR/bin:$PATH"
 export CMAKE_PREFIX_PATH="$QT_DIR"
 export QMAKE="$QT_DIR/bin/qmake"
 
-# ── Read version ─────────────────────────────────────────────────────────────
-VERSION=$(grep -m1 '^version' "$RUST_DIR/doubleslash-client/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
+# ── Version: {major}.{minor}.{build}.0, shared with the binary and the MSIX ─
+VERSION="$(bash "$ROOT/scripts/app_version.sh")"
+export DOUBLESLASH_VERSION="$VERSION"
+export DOUBLESLASH_BUILD_NUMBER="$(printf '%s' "$VERSION" | cut -d. -f3)"
 echo "==> Building DoubleSlash v${VERSION} for macOS"
 
 PROFILE="debug"

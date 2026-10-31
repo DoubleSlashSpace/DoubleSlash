@@ -597,7 +597,7 @@ fn run_silent(
 
     // Try to detect version from archive filename (DoubleSlash-1.2.3-win64.7z)
     let version = detect_version_from_archive(archive)
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        .unwrap_or_else(|| env!("DOUBLESLASH_VERSION").to_string());
 
     let ver_dir = state::version_dir(base_dir, &version);
     log!("Installing v{version} to {}", ver_dir.display());
@@ -748,6 +748,15 @@ fn detect_version_from_archive(archive: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detect_version_from_archive_reads_the_product_stamp() {
+        assert_eq!(
+            detect_version_from_archive(std::path::Path::new("DoubleSlash-1.0.467.0-win64.7z"))
+                .as_deref(),
+            Some("1.0.467.0")
+        );
+    }
 
     #[test]
     fn is_client_archive_accepts_release_and_nightly_names() {

@@ -11,8 +11,8 @@
     Reuse dist/DoubleSlash after building the current sources with build_win64.ps1.
     Intended for packaging iteration, not producing a release from stale binaries.
 .PARAMETER Version
-    Four-part Store version. Defaults to the client's Cargo version plus .0.
-    The first three components must match the client; the last must be 0 for Store.
+    Product version, major.minor.build.0. Defaults to scripts/app_version.ps1.
+    The last component must be 0. That is the Microsoft Store package identity.
 #>
 [CmdletBinding()]
 param(
@@ -28,13 +28,11 @@ $distRoot = Join-Path $repoRoot 'dist'
 $bundle = Join-Path $distRoot 'DoubleSlash'
 $outputRoot = Join-Path $distRoot 'msix'
 $template = Join-Path $repoRoot 'packaging/msix/AppxManifest.xml.in'
-$clientToml = Get-Content -LiteralPath (Join-Path $repoRoot 'rust/doubleslash-client/Cargo.toml') -Raw
-$versionMatch = [regex]::Match($clientToml, '(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"')
-if (-not $versionMatch.Success) { throw 'Cannot read the client release version.' }
-$clientVersion = $versionMatch.Groups[1].Value
-if (-not $Version) { $Version = "$clientVersion.0" }
-if ($Version -notmatch '^\d+\.\d+\.\d+\.0$' -or -not $Version.StartsWith("$clientVersion.")) {
-    throw "Store version must match client $clientVersion and have a final component of 0."
+if (-not $Version) {
+    $Version = (& (Join-Path $repoRoot 'scripts\app_version.ps1')).Trim()
+}
+if ($Version -notmatch '^\d+\.\d+\.\d+\.0$') {
+    throw "Product version must be major.minor.build.0 (got $Version)."
 }
 if (@($Version.Split('.') | Where-Object { [int]$_ -gt 65535 }).Count -gt 0 -or [int]($Version.Split('.')[0]) -lt 1) {
     throw 'Store version components must be 0-65535 and the major component must be positive.'
@@ -77,8 +75,8 @@ if (-not $SkipBuild) {
 $clientExe = Join-Path $bundle 'DoubleSlash.exe'
 if (-not (Test-Path -LiteralPath $clientExe)) { throw 'Build dist/DoubleSlash first.' }
 $fileVersion = (Get-Item -LiteralPath $clientExe).VersionInfo.ProductVersion
-if ($fileVersion -notmatch ('^' + [regex]::Escape($clientVersion) + '(?:\D|$)')) {
-    throw "Bundle version '$fileVersion' does not match client $clientVersion. Rebuild it."
+if ($fileVersion.Trim() -ne $Version) {
+    throw "Bundle version '$fileVersion' is not $Version. Rebuild it."
 }
 foreach ($required in @('Qt6WebEngineCore.dll', 'QtWebEngineProcess.exe', 'resources/qtwebengine_resources.pak', 'licenses/client/inventory.json')) {
     if (-not (Test-Path -LiteralPath (Join-Path $bundle $required))) { throw "Incomplete bundle: $required" }
@@ -86,6 +84,7 @@ foreach ($required in @('Qt6WebEngineCore.dll', 'QtWebEngineProcess.exe', 'resou
 
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 $stage = Join-Path $outputRoot ('.staging-' + [guid]::NewGuid().ToString('N'))
+$priWork = "$stage.pri"
 New-Item -ItemType Directory -Path $stage | Out-Null
 try {
     # Preserve the deployed layout. Exclude the standalone updater, its notices,
@@ -149,8 +148,39 @@ try {
         }
     } finally { $source.Dispose(); $iconStream.Dispose() }
 
+    # The taskbar and Start list draw the 44px logo from target-size variants.
+    # Without an unplated one, Windows sets the icon on a plate of the tile
+    # colour, and BackgroundColor "transparent" makes that the accent colour.
+    # Light mode looks for lightunplated before falling back to the plate.
+    # Copy the ICO's own frames at those sizes rather than resampling.
+    foreach ($targetSize in @(16, 24, 32, 48, 256)) {
+        $exact = $frames | Where-Object { $_.Width -eq $targetSize } | Select-Object -First 1
+        if (-not $exact -or $exact.Offset + $exact.Length -gt $iconBytes.Length -or $iconBytes[$exact.Offset] -ne 0x89) {
+            throw "The project icon has no PNG ${targetSize}px frame."
+        }
+        $pngBytes = [byte[]]::new($exact.Length)
+        [Array]::Copy($iconBytes, $exact.Offset, $pngBytes, 0, $exact.Length)
+        foreach ($altForm in @('unplated', 'lightunplated')) {
+            [System.IO.File]::WriteAllBytes((Join-Path $assets "Square44x44Logo.targetsize-${targetSize}_altform-$altForm.png"), $pngBytes)
+        }
+    }
+
     $manifest = (Get-Content -LiteralPath $template -Raw).Replace('@VERSION@', $Version)
     [System.IO.File]::WriteAllText((Join-Path $stage 'AppxManifest.xml'), $manifest, (New-Object System.Text.UTF8Encoding($false)))
+
+    # Qualified asset names resolve only through resources.pri. Index the
+    # Assets folder alone: the folder indexer would otherwise treat the whole
+    # Qt bundle as resources. Paths stay relative to the package root.
+    $makePriPath = Join-Path (Split-Path -Parent $MakeAppxPath) 'makepri.exe'
+    if (-not (Test-Path -LiteralPath $makePriPath -PathType Leaf)) { throw "MakePri.exe was not found beside $MakeAppxPath." }
+    $priRoot = Join-Path $priWork 'root'
+    New-Item -ItemType Directory -Path $priRoot -Force | Out-Null
+    Copy-Item -LiteralPath $assets -Destination $priRoot -Recurse
+    $priConfig = Join-Path $priWork 'priconfig.xml'
+    & $makePriPath createconfig /cf $priConfig /dq en-US /pv 10.0.0 /o
+    if ($LASTEXITCODE -ne 0) { throw "MakePri createconfig failed (exit $LASTEXITCODE)." }
+    & $makePriPath new /pr $priRoot /cf $priConfig /mn (Join-Path $stage 'AppxManifest.xml') /of (Join-Path $stage 'resources.pri') /o
+    if ($LASTEXITCODE -ne 0) { throw "MakePri failed (exit $LASTEXITCODE)." }
     $package = Join-Path $outputRoot "DoubleSlash-$Version-x64.msix"
     $candidate = Join-Path $outputRoot ('.candidate-' + [guid]::NewGuid().ToString('N') + '.msix')
     & $MakeAppxPath pack /d $stage /p $candidate /o
@@ -164,10 +194,12 @@ try {
     Write-Host 'Unsigned for Store submission; local installation requires separate test signing.'
 } finally {
     # Only remove the fresh, resolved staging directory under this build's output.
-    $resolvedStage = [System.IO.Path]::GetFullPath($stage)
     $outputPrefix = [System.IO.Path]::GetFullPath($outputRoot).TrimEnd('\') + '\'
-    if (-not $resolvedStage.StartsWith($outputPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to clean staging outside $outputRoot"
+    foreach ($scratch in @($stage, $priWork)) {
+        $resolvedScratch = [System.IO.Path]::GetFullPath($scratch)
+        if (-not $resolvedScratch.StartsWith($outputPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to clean staging outside $outputRoot"
+        }
+        if (Test-Path -LiteralPath $resolvedScratch) { Remove-Item -LiteralPath $resolvedScratch -Recurse -Force }
     }
-    Remove-Item -LiteralPath $resolvedStage -Recurse -Force
 }

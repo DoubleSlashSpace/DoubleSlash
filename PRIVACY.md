@@ -109,7 +109,7 @@ client does not do this.
 
 **What is disclosed:** Your IP address is visible to GitHub (Microsoft Corp.) as
 part of the HTTPS request. The client sends `User-Agent:
-doubleslash-client/{version}` (for example `doubleslash-client/1.0.0`) and accepts
+doubleslash-client/{version}` (for example `doubleslash-client/1.0.467.0`) and accepts
 `application/vnd.github+json`. GitHub may log this alongside your IP. No
 personal information beyond what any HTTPS request carries is sent.
 

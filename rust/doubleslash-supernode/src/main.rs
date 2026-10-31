@@ -44,8 +44,8 @@ use doubleslash_features::wellknown;
 use doubleslash_features::FeatureRegistry;
 use doubleslash_features::{NativeModuleLoader, TrustedKeyStore};
 
-/// Application version (match client APP_VERSION).
-const APP_VERSION: &str = "1.0.0";
+/// Product version. The same `{major}.{minor}.{build}.0` stamp as the client.
+const APP_VERSION: &str = env!("DOUBLESLASH_VERSION");
 /// Ticket renewal check interval.
 const RENEWAL_CHECK_INTERVAL_S: u64 = 60;
 /// Endpoint mailbox TTL (24 h).

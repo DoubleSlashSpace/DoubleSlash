@@ -5,6 +5,12 @@ x64 MSIX. It is a full-trust desktop app, not an AppContainer or a PWA. The
 manifest targets Windows Desktop, Windows 10 build 19041 or later. This target
 is not evidence of acceptance on every supported OS or processor.
 
+The Store listing, product `9N09Q23FW92M`, is the official Windows release.
+Microsoft signs that package and delivers its updates. SignPath signing of the
+GitHub Windows artifacts waits until SignPath accepts the project. That program
+requires proof of an existing trusted distribution, and this Store release is
+that proof. Until then, GitHub Windows builds stay unsigned.
+
 ## Build the upload
 
 Run from the repository root:
@@ -19,15 +25,19 @@ The script builds/deploys the current client through the portable build, skips
 the unrelated `.7z`, and creates:
 
 ```text
-dist/msix/DoubleSlash-1.0.0.0-x64.msix
-dist/msix/DoubleSlash-1.0.0.0-x64.msix.sha256
+dist/msix/DoubleSlash-1.0.<build>.0-x64.msix
+dist/msix/DoubleSlash-1.0.<build>.0-x64.msix.sha256
 ```
 
-The version defaults to the client Cargo version plus `.0`; Store packages must
-keep their fourth version component at zero. Bump the synchronized release
-versions for later submissions. `-SkipBuild` reuses `dist/DoubleSlash` and is for
-packaging iteration after building these sources, not stale release binaries.
-`-MakeAppxPath` overrides SDK discovery.
+The package version is the product version from `scripts/app_version.ps1`:
+`{major}.{minor}.{build}.0`. Major and minor come from the client Cargo version.
+The build is the git commit count, shared with the desktop binary, the installer,
+and Android `versionName`. The fourth component stays 0 because the Store
+reserves it. `-SkipBuild` reuses `dist/DoubleSlash` and is for packaging
+iteration after building these sources, not stale release binaries.
+`-MakeAppxPath` overrides SDK discovery. The release workflow packs this MSIX
+after `build_win64.ps1` and uploads it unsigned. Microsoft signs it after
+certification. The workflow does not submit it to Partner Center.
 
 The manifest uses the values assigned in Partner Center:
 
@@ -40,7 +50,9 @@ The manifest uses the values assigned in Partner Center:
 MakeAppx validates the manifest. The final MSIX is independently extracted by
 the distribution-notice verifier. It contains client notices, Qt/WebEngine and
 FFmpeg, app-local Visual C++ runtime DLLs, and logos derived from the existing
-project icon. It excludes the standalone updater and runtime setup executables.
+project icon. The icon's own 16–256 px frames ship as unplated `targetsize`
+variants, indexed in `resources.pri`, so the taskbar draws the icon without
+an accent-coloured plate. It excludes the standalone updater and runtime setup executables.
 The LGPL replacement instructions explain running an extracted, writable copy
 with substituted dynamic libraries; users do not need to modify WindowsApps.
 

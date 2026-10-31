@@ -25,7 +25,9 @@ $Root = Split-Path -Parent $PSScriptRoot
 $RustDir = Join-Path $Root 'rust'
 $Dist = Join-Path $Root 'dist'
 
-$Version = (Select-String -Path (Join-Path $RustDir 'doubleslash-supernode\Cargo.toml') -Pattern '^version\s*=' | Select-Object -First 1).Line -replace '.*"(.*)".*', '$1'
+$Version = (& (Join-Path $Root 'scripts\app_version.ps1')).Trim()
+$env:DOUBLESLASH_VERSION = $Version
+$env:DOUBLESLASH_BUILD_NUMBER = $Version.Split('.')[2]
 $Platform = 'win64'
 
 $Profile = 'debug'

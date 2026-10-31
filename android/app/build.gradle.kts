@@ -58,16 +58,43 @@ val signingKeyAlias: String =
 val signingKeyPassword: String =
     firstEnv("DOUBLESLASH_KEY_PASSWORD") ?: "android"
 
-/// Build stamp appended to the version name, so a side-loaded APK can be
-/// identified from the device Settings screen.
+/// Product version `{major}.{minor}.{build}.0`, the same string as desktop and the MSIX.
 ///
-/// Deliberately not `versionCode`: Android refuses to install an APK whose
-/// versionCode is below the installed one, so bumping it per CI run would mean
-/// a later local build could only be installed by uninstalling first - which
-/// costs the identity key and the message store. versionName carries no such
-/// rule, so it is the safe place to put a build number.
-val doubleslashBuildStamp: String =
-    firstEnv("DOUBLESLASH_BUILD_ID")?.let { "-$it" } ?: ""
+/// `versionCode` stays 1. Android refuses to install an APK whose versionCode is
+/// below the installed one, so bumping it per CI run would mean a later local
+/// build could only be installed by uninstalling first, which costs the identity
+/// key and the message store. versionName carries no such rule.
+fun resolveDoubleslashProductVersion(): String {
+    firstEnv("DOUBLESLASH_VERSION")?.let { return it }
+    val cargo = rootProject.layout.projectDirectory
+        .file("../rust/doubleslash-client/Cargo.toml").asFile.readText()
+    val match = Regex("""(?m)^version\s*=\s*"(\d+)\.(\d+)\.\d+"""").find(cargo)
+        ?: error("Cannot read the client release version")
+    val major = match.groupValues[1]
+    val minor = match.groupValues[2]
+    val root = rootProject.projectDir.parentFile
+    fun git(vararg args: String): String? {
+        val proc = ProcessBuilder(listOf("git") + args.toList())
+            .directory(root)
+            .redirectErrorStream(true)
+            .start()
+        val text = proc.inputStream.bufferedReader().readText().trim()
+        return if (proc.waitFor() == 0) text else null
+    }
+    val build = firstEnv("DOUBLESLASH_BUILD_NUMBER")
+        ?: if (git("rev-parse", "--is-shallow-repository") == "true") {
+            "0"
+        } else {
+            git("rev-list", "--count", "HEAD") ?: "0"
+        }
+    val buildNumber = build.toIntOrNull()
+        ?: error("Build number must be an integer, got $build")
+    if (buildNumber !in 0..65535) error("Build number $buildNumber exceeds 65535")
+    return "$major.$minor.$buildNumber.0"
+}
+
+val doubleslashProductVersion: String = resolveDoubleslashProductVersion()
+val doubleslashBuildNumber: String = doubleslashProductVersion.split('.')[2]
 
 val rustCrateDir = rootProject.layout.projectDirectory.dir("../rust/doubleslash-android")
 val jniLibsDir = layout.projectDirectory.dir("src/main/jniLibs")
@@ -105,6 +132,8 @@ fun registerCargoBuild(taskName: String, releaseProfile: Boolean) =
         // SDK path, so don't make the developer set them a second time.
         environment("ANDROID_HOME", android.sdkDirectory.absolutePath)
         environment("ANDROID_NDK_HOME", android.ndkDirectory.absolutePath)
+        environment("DOUBLESLASH_VERSION", doubleslashProductVersion)
+        environment("DOUBLESLASH_BUILD_NUMBER", doubleslashBuildNumber)
 
         // Keep Android object files out of the desktop target/ tree, so a
         // native `cargo build` afterwards doesn't rebuild the world.
@@ -137,7 +166,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "1.0.0$doubleslashBuildStamp"
+        versionName = doubleslashProductVersion
 
         ndk {
             abiFilters += doubleslashAbis

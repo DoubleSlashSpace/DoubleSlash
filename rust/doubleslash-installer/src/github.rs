@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 const GITHUB_API: &str = "https://api.github.com";
-const USER_AGENT: &str = concat!("DoubleSlash-Installer/", env!("CARGO_PKG_VERSION"));
+const USER_AGENT: &str = concat!("DoubleSlash-Installer/", env!("DOUBLESLASH_VERSION"));
 const NIGHTLY_TAG: &str = "nightly";
 const NIGHTLY_DOWNLOAD_BASE: &str =
     "https://github.com/DoubleSlashSpace/DoubleSlash/releases/download/nightly";
@@ -175,7 +175,7 @@ pub fn nightly_update_details(release: &ReleaseInfo) -> anyhow::Result<UpdateDet
 
     Ok(UpdateDetails {
         // Installer package version is the product version; channel is separate.
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: env!("DOUBLESLASH_VERSION").to_string(),
         channel: "nightly".to_string(),
         datetime: format_release_datetime(entry.published_at, &entry.version, &entry.build_id),
         hash: entry.build_hash.to_lowercase(),
@@ -243,7 +243,7 @@ pub fn update_details_for_release(
             String::new()
         };
         return Ok(UpdateDetails {
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: env!("DOUBLESLASH_VERSION").to_string(),
             channel: "nightly".to_string(),
             datetime: String::new(),
             hash,

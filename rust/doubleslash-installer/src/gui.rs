@@ -412,7 +412,7 @@ impl InstallerApp {
             let st = self.state.lock().unwrap();
             let details = github::UpdateDetails {
                 version: if st.target_version.is_empty() {
-                    env!("CARGO_PKG_VERSION").to_string()
+                    env!("DOUBLESLASH_VERSION").to_string()
                 } else {
                     st.target_version.clone()
                 },
@@ -1524,7 +1524,7 @@ fn run_local_install(app_state: &Arc<Mutex<AppState>>, ctx: &egui::Context) -> a
 
     // Detect version from archive filename
     let version = crate::detect_version_from_archive(&archive)
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        .unwrap_or_else(|| env!("DOUBLESLASH_VERSION").to_string());
 
     {
         let mut st = app_state.lock().unwrap();

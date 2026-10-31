@@ -1,3 +1,5 @@
+include!("../build_version.rs");
+
 // build.rs — doubleslash-client build script.
 //
 // When the `qt-ui` feature is enabled, this script invokes the cxx-qt
@@ -154,10 +156,13 @@ fn main() {
         }
     }
 
+    // One product version for the file metadata and the string the app reports.
+    let product_version = stamped_version();
+
     // Windows PE version / signing metadata.
-    // Keep ProductVersion in sync with doubleslash-client/Cargo.toml version.
     #[cfg(windows)]
     {
+        let packed = file_version_u64(&product_version);
         let mut res = winresource::WindowsResource::new();
         res.set("ProductName", "DoubleSlash");
         res.set(
@@ -165,8 +170,10 @@ fn main() {
             "DoubleSlash — Privacy-First Peer Connectivity",
         );
         res.set("LegalCopyright", "DoubleSlash Project");
-        res.set("ProductVersion", env!("CARGO_PKG_VERSION"));
-        res.set("FileVersion", env!("CARGO_PKG_VERSION"));
+        res.set("ProductVersion", &product_version);
+        res.set("FileVersion", &product_version);
+        res.set_version_info(winresource::VersionInfo::PRODUCTVERSION, packed);
+        res.set_version_info(winresource::VersionInfo::FILEVERSION, packed);
         res.set_icon("../../assets/doubleslash.ico");
         if let Err(e) = res.compile() {
             eprintln!("cargo:warning=Failed to set Windows resource: {e}");
@@ -220,10 +227,7 @@ fn main() {
             }
         });
         println!("cargo:rustc-env=DOUBLESLASH_BUILD_ID={build_id}");
-        println!(
-            "cargo:rustc-env=DOUBLESLASH_VERSION={}",
-            env!("CARGO_PKG_VERSION")
-        );
+        println!("cargo:rustc-env=DOUBLESLASH_VERSION={product_version}");
 
         // Optional: a base64 signature from the release private key over the
         // build claim. Only present for official CI releases. Used to prove

@@ -24,10 +24,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUST_DIR="$ROOT/rust"
 DIST="$ROOT/dist"
 
-VERSION="$(
-    grep -m1 '^version' "$RUST_DIR/doubleslash-supernode/Cargo.toml" \
-        | sed 's/.*"\(.*\)".*/\1/'
-)"
+VERSION="$(bash "$ROOT/scripts/app_version.sh")"
+export DOUBLESLASH_VERSION="$VERSION"
+export DOUBLESLASH_BUILD_NUMBER="$(printf '%s' "$VERSION" | cut -d. -f3)"
 
 ARCH="$(uname -m)"
 OS="$(uname -s)"

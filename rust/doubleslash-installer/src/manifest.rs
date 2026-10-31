@@ -30,7 +30,7 @@ pub fn write_manifest(
     manifest_path: &Path,
 ) -> Result<()> {
     let m = InstallManifest {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: env!("DOUBLESLASH_VERSION").to_string(),
         files: files.clone(),
     };
     let json = serde_json::to_string_pretty(&m)?;
@@ -83,7 +83,7 @@ mod tests {
         );
         assert!(
             !loaded.version.is_empty(),
-            "version should be set from CARGO_PKG_VERSION"
+            "version should be set from DOUBLESLASH_VERSION"
         );
 
         let _ = fs::remove_file(&manifest_path);

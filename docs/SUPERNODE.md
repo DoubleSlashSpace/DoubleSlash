@@ -25,25 +25,27 @@ Official tagged releases and the rolling `nightly` prerelease ship standalone su
 | Linux ARM64 (`aarch64`) | `doubleslash-supernode-<version>-linux-aarch64.tar.gz` | `doubleslash-supernode-nightly-linux-aarch64.tar.gz` |
 | Windows x86_64 | `doubleslash-supernode-<version>-win64.zip` | `doubleslash-supernode-nightly-win64.zip` |
 
+`<version>` is the product stamp `{major}.{minor}.{build}.0`, the same string the binary reports.
+
 **Linux x86_64** (typical VPS / cloud VM):
 
 ```bash
-tar -xzf doubleslash-supernode-1.0.0-linux-x86_64.tar.gz
-sudo install -m 755 doubleslash-supernode-1.0.0-linux-x86_64/doubleslash-supernode /usr/local/bin/
+tar -xzf doubleslash-supernode-<version>-linux-x86_64.tar.gz
+sudo install -m 755 doubleslash-supernode-<version>-linux-x86_64/doubleslash-supernode /usr/local/bin/
 ```
 
 **Linux ARM64** (Raspberry Pi, ARM VPS):
 
 ```bash
-tar -xzf doubleslash-supernode-1.0.0-linux-aarch64.tar.gz
-sudo install -m 755 doubleslash-supernode-1.0.0-linux-aarch64/doubleslash-supernode /usr/local/bin/
+tar -xzf doubleslash-supernode-<version>-linux-aarch64.tar.gz
+sudo install -m 755 doubleslash-supernode-<version>-linux-aarch64/doubleslash-supernode /usr/local/bin/
 ```
 
 **Windows x86_64**:
 
 ```powershell
-Expand-Archive doubleslash-supernode-1.0.0-win64.zip -DestinationPath .
-# Run: .\doubleslash-supernode-1.0.0-win64\doubleslash-supernode.exe
+Expand-Archive doubleslash-supernode-<version>-win64.zip -DestinationPath .
+# Run: .\doubleslash-supernode-<version>-win64\doubleslash-supernode.exe
 ```
 
 ### Build and package locally
@@ -52,7 +54,7 @@ On Linux or macOS, `scripts/build_supernode.sh` detects the host platform and em
 
 ```bash
 DOUBLESLASH_RELEASE=1 ./scripts/build_supernode.sh
-# e.g. dist/doubleslash-supernode-1.0.0-linux-x86_64.tar.gz
+# e.g. dist/doubleslash-supernode-1.0.467.0-linux-x86_64.tar.gz
 ```
 
 On Windows, use the companion script (`.zip` output):
@@ -60,7 +62,7 @@ On Windows, use the companion script (`.zip` output):
 ```powershell
 $env:DOUBLESLASH_RELEASE = '1'
 .\scripts\build_supernode.ps1
-# e.g. dist\doubleslash-supernode-1.0.0-win64.zip
+# e.g. dist\doubleslash-supernode-1.0.467.0-win64.zip
 ```
 
 Supported local package suffixes: `linux-x86_64`, `linux-aarch64`, `macos-arm64`, `macos-x86_64` (shell script), and `win64` (PowerShell script).

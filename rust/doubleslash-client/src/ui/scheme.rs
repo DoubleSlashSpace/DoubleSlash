@@ -188,7 +188,7 @@ pub unsafe extern "C" fn doubleslash_fetch_sync(
         let json = format!(
             "{{\"myPeerId\":\"{}\",\"version\":\"{}\",\"nativeTransport\":true}}",
             peer_id.replace('"', "\\\""),
-            env!("CARGO_PKG_VERSION"),
+            env!("DOUBLESLASH_VERSION"),
         );
         let ct = b"application/json; charset=utf-8";
         unsafe {

@@ -93,7 +93,7 @@ fn maybe_apply_hidpi_scale() {}
 
 #[cfg(feature = "qt-ui")]
 fn run_qt_ui() {
-    use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
+    use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 
     extern "C" {
         fn doubleslash_install_qt_message_handler();
@@ -134,6 +134,12 @@ fn run_qt_ui() {
     }
 
     let mut app = QGuiApplication::new();
+    if let Some(app) = app.as_mut() {
+        // Settings › About reads Qt.application.version. Windows file metadata
+        // and the macOS plist carry the same stamp; Linux has neither until this
+        // is set.
+        app.set_application_version(&QString::from(env!("DOUBLESLASH_VERSION")));
+    }
     unsafe {
         doubleslash_set_app_identity();
     }
@@ -183,7 +189,10 @@ fn main() {
     // reloadable via the Settings toggle; an explicit RUST_LOG always wins.
     logging::init(logging::load_debug_logging_setting());
 
-    info!("doubleslash-client {} starting", env!("CARGO_PKG_VERSION"));
+    info!(
+        "doubleslash-client {} starting",
+        env!("DOUBLESLASH_VERSION")
+    );
 
     // Qt UI path: AppBridge handles identity unlock and tokio startup.
     // After exec() returns (last window closed), terminate the process.
@@ -336,7 +345,7 @@ async fn headless_main() {
         &Identity::default_key_dir().join("settings.json"),
     );
     let (updater_cmd_tx, _updater_event_rx, updater_fut) = github_updater::Updater::split(
-        env!("CARGO_PKG_VERSION"),
+        env!("DOUBLESLASH_VERSION"),
         github_updater::DEFAULT_REPO,
         installer_path,
         update_checks_enabled,

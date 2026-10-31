@@ -666,7 +666,7 @@ impl ClusterLink {
         // Advertise our software version so peers can display it in the portal.
         let version_info = ClusterMsg::signed(
             ClusterMsgKind::VersionInfo {
-                version: env!("CARGO_PKG_VERSION").to_string(),
+                version: env!("DOUBLESLASH_VERSION").to_string(),
                 build_id: env!("DOUBLESLASH_BUILD_ID").to_string(),
                 source_hash: env!("DOUBLESLASH_SOURCE_HASH").to_string(),
             },

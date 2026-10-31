@@ -75,9 +75,14 @@ fn compute_source_hash() -> String {
     format!("{digest:x}")[..12].to_string()
 }
 
+include!("../build_version.rs");
+
 fn main() {
+    let product_version = stamped_version();
+
     #[cfg(windows)]
     {
+        let packed = file_version_u64(&product_version);
         let mut res = winresource::WindowsResource::new();
         res.set("ProductName", "DoubleSlash");
         res.set(
@@ -85,9 +90,10 @@ fn main() {
             "DoubleSlash Supernode (QUIC Relay + SFU)",
         );
         res.set("LegalCopyright", "DoubleSlash Project");
-        // Keep ProductVersion in sync with doubleslash-client/Cargo.toml version.
-        res.set("ProductVersion", env!("CARGO_PKG_VERSION"));
-        res.set("FileVersion", env!("CARGO_PKG_VERSION"));
+        res.set("ProductVersion", &product_version);
+        res.set("FileVersion", &product_version);
+        res.set_version_info(winresource::VersionInfo::PRODUCTVERSION, packed);
+        res.set_version_info(winresource::VersionInfo::FILEVERSION, packed);
         if let Err(e) = res.compile() {
             eprintln!("cargo:warning=Failed to set Windows resource: {e}");
         }
@@ -134,10 +140,7 @@ fn main() {
             }
         });
         println!("cargo:rustc-env=DOUBLESLASH_BUILD_ID={build_id}");
-        println!(
-            "cargo:rustc-env=DOUBLESLASH_VERSION={}",
-            env!("CARGO_PKG_VERSION")
-        );
+        println!("cargo:rustc-env=DOUBLESLASH_VERSION={product_version}");
 
         if let Ok(proof) = std::env::var("DOUBLESLASH_RELEASE_PROOF") {
             if !proof.trim().is_empty() {

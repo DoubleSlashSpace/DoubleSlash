@@ -209,7 +209,7 @@ See the [threat model](docs/THREAT_MODEL.md) for trust boundaries and limitation
 
 The desktop client checks GitHub Releases at startup and hourly when `update_check_enabled` is on (the default). Turning it off prevents automatic checks. Applying an update runs the bundled installer; application binaries are not distributed peer-to-peer. Android does not use this desktop update checker.
 
-When the Windows process has MSIX package identity, Windows manages updates and invite protocol associations. The client does not check GitHub or launch the standalone updater, and Settings directs users to Microsoft Store for updates. The package uses the existing desktop profile location. See [Microsoft Store packaging](docs/MICROSOFT_STORE.md) for building the upload and remaining acceptance checks; this packaging support does not establish Store publication or certification.
+The official Windows release is the Microsoft Store app, product `9N09Q23FW92M`. Microsoft signs that package and delivers its updates. When the Windows process has MSIX package identity, Windows manages updates and invite protocol associations. The client does not check GitHub or launch the standalone updater, and Settings directs users to Microsoft Store for updates. The package uses the existing desktop profile location. See [Microsoft Store packaging](docs/MICROSOFT_STORE.md). GitHub Windows builds stay unsigned. SignPath signing waits until SignPath accepts the project on the strength of this Store distribution.
 
 Installer verification is channel-dependent:
 
@@ -392,9 +392,9 @@ Run `cargo fmt --all -- --check` and targeted `cargo clippy … -- -D warnings` 
 
 ## Code Signing Policy
 
-The [release workflow](.github/workflows/release.yml) supports Windows SignPath signing, macOS Developer ID signing/notarization, and GitHub artifact attestations when configured. Platform signatures depend on the release configuration; their presence should not be inferred from the version number.
+The official Windows release is the Microsoft Store package. Microsoft signs it. The [release workflow](.github/workflows/release.yml) can submit GitHub Windows artifacts to SignPath after that program accepts the project. SignPath requires proof of an existing trusted distribution, and the Store release is that proof. Until then, a GitHub Windows build is unsigned and is not the official release. macOS Developer ID signing and notarization, and GitHub artifact attestations, run for pushed `v*` tags only when those credentials are configured. A version number does not show whether any of those signatures are present.
 
-Platform signing and the Windows build-attestation signing key are used only for pushes of `v*` release tags. Develop pushes, scheduled nightlies, and manual workflow runs do not request SignPath signing or Apple signing/notarization, even when credentials are configured. Tagged release publication uses the GitHub `release` environment and its configured approval rules; branch protection and SignPath signing approvals are separate controls.
+Develop pushes, scheduled nightlies, and manual workflow runs do not request SignPath, Apple signing, or notarization. Tagged release publication uses the GitHub `release` environment and its configured approval rules. Branch protection and any later SignPath approval are separate controls.
 
 The project Ed25519 release-manifest key is separate from platform code-signing certificates. Its public key is in [keys/release-signer-public.pem](keys/release-signer-public.pem) and [installer release_manifest.rs](rust/doubleslash-installer/src/release_manifest.rs). Verification behavior, including nightly exceptions, is described under [Updates](#updates).
 

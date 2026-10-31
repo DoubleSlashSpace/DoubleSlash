@@ -1,7 +1,11 @@
-//! Link configuration for the Android JNI cdylib.
+include!("../build_version.rs");
+
+// Link configuration for the Android JNI cdylib.
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    let product_version = stamped_version();
+    println!("cargo:rustc-env=DOUBLESLASH_VERSION={product_version}");
 
     // Build scripts run on the host, so ask cargo what is actually being
     // built for rather than trusting `cfg!(target_os = ...)`.

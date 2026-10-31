@@ -435,6 +435,13 @@ mod tests {
         assert!(!is_newer("1.0.0", "1.0.0"));
     }
 
+    #[test]
+    fn is_newer_detects_newer_build() {
+        assert!(is_newer("1.0.467.0", "1.0.466.0"));
+        assert!(!is_newer("1.0.466.0", "1.0.467.0"));
+        assert!(!is_newer("1.0.467.0", "1.0.467.0"));
+    }
+
     // ── needs_installer_update ──────────────────────────────────────────────
 
     #[test]

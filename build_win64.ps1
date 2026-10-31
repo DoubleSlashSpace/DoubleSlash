@@ -70,11 +70,10 @@ if ($env:DOUBLESLASH_DEBUG_CONSOLE -eq "1") {
     Write-Host "    [debug] Console window enabled (DOUBLESLASH_DEBUG_CONSOLE=1)"
 }
 # ── Version ──────────────────────────────────────────────────────────────────
-$_cargoToml = Join-Path $RUST_DIR "doubleslash-client\Cargo.toml"
-$_vLine = Select-String -Path $_cargoToml -Pattern '^version\s*=\s*"([^"]+)"' |
-    Select-Object -First 1
-if (-not $_vLine) { Write-Error "Could not parse version from $_cargoToml" }
-$VERSION = $_vLine.Matches.Groups[1].Value
+# {major}.{minor}.{build}.0 — the same string the binary, the installer, and the MSIX use.
+$VERSION = (& (Join-Path $ROOT 'scripts\app_version.ps1')).Trim()
+$env:DOUBLESLASH_VERSION = $VERSION
+$env:DOUBLESLASH_BUILD_NUMBER = $VERSION.Split('.')[2]
 Write-Host "==> DoubleSlash v$VERSION  (profile: $PROFILE_NAME)"
 
 # ── Dev build ────────────────────────────────────────────────────────────────

@@ -56,6 +56,8 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           # libopus and libvpx are submodules; the NDK build compiles both.
+          # Full history so the APK version uses the same commit count as desktop.
+          fetch-depth: 0
           submodules: recursive
 
       - name: Use JDK 17
@@ -134,7 +136,13 @@ jobs:
           echo "::warning title=Unsigned by the shared key::ANDROID_KEYSTORE_B64 is not set, so this APK is signed with a throwaway keystore. Android will refuse to install it over an existing DoubleSlash, and uninstalling first destroys the on-device identity key and message store."
 
       - name: Derive the build stamp
-        run: echo "BUILD_STAMP=${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+        run: |
+          set -euo pipefail
+          # Filename stamp stays run-sha so the downloads page can keep finding the APK.
+          echo "BUILD_STAMP=${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+          VERSION="$(bash scripts/app_version.sh)"
+          echo "DOUBLESLASH_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "DOUBLESLASH_BUILD_NUMBER=$(printf '%s' "$VERSION" | cut -d. -f3)" >> "$GITHUB_ENV"
 
       - name: Install license tooling
         run: cargo install cargo-about --version 0.8.4 --locked
@@ -142,8 +150,8 @@ jobs:
       - name: Build the APK
         working-directory: android
         env:
-          # Stamped into versionName only. See build.gradle.kts for why
-          # versionCode deliberately stays put.
+          # versionName is DOUBLESLASH_VERSION. versionCode stays 1.
+          # BUILD_ID remains available to the native build id, separate from the version.
           DOUBLESLASH_BUILD_ID: ${{ env.BUILD_STAMP }}
         run: ./gradlew assembleDebug --console=plain --no-daemon
 
@@ -180,7 +188,7 @@ jobs:
 
             - APK: `${{ steps.stage.outputs.apk_name }}`
             - Commit: ${{ github.sha }}
-            - Shows in Settings as version `1.0.0-${{ env.BUILD_STAMP }}`
+            - Shows in Settings as version `${{ env.DOUBLESLASH_VERSION }}`
 
             Open this page on the device and tap the APK to install over the
             existing app. The browser needs "Install unknown apps" once, under

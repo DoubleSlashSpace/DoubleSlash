@@ -1,10 +1,13 @@
 # DoubleSlash Architecture
 
-Windows also supports an x64 MSIX package through `build_msix.ps1`.
+The official Windows release is the x64 MSIX from `build_msix.ps1`, published
+on the Microsoft Store. Microsoft signs that package.
 `platform::is_windows_package` detects process package identity so Windows
-deployment owns updates, shortcuts and protocol registration; unpackaged
-clients retain the GitHub installer path. Both resolve the existing desktop
-profile and share its process lock. See [Microsoft Store packaging](MICROSOFT_STORE.md).
+deployment owns updates, shortcuts and protocol registration. Unpackaged
+clients retain the GitHub installer path. Those GitHub Windows builds stay
+unsigned while SignPath acceptance is still outstanding. Both resolve the
+existing desktop profile and share its process lock. See
+[Microsoft Store packaging](MICROSOFT_STORE.md).
 
 ```mermaid
 graph TD

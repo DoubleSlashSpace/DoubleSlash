@@ -2654,7 +2654,7 @@ impl ConnectionManager {
         );
         msg.payload.insert(
             "version".to_owned(),
-            Value::String(env!("CARGO_PKG_VERSION").to_owned()),
+            Value::String(env!("DOUBLESLASH_VERSION").to_owned()),
         );
         msg.payload.insert(
             "source_hash".to_owned(),

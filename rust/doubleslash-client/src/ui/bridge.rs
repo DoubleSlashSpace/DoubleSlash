@@ -2654,7 +2654,7 @@ impl ffi::AppBridge {
             crate::sfu_client::SfuClient::split(Some(conn_cmd_tx.clone()));
         let installer_path = crate::github_updater::installed_installer_path();
         let (updater_cmd_tx, updater_event_rx, updater_fut) = crate::github_updater::Updater::split(
-            env!("CARGO_PKG_VERSION"),
+            env!("DOUBLESLASH_VERSION"),
             crate::github_updater::DEFAULT_REPO,
             installer_path,
             self.rust().automatic_update_checks_enabled,

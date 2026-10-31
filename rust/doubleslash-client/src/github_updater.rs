@@ -183,7 +183,7 @@ impl Updater {
         let url = format!("{}/repos/{}/releases/latest", GITHUB_API, self.repo);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
-            .user_agent(concat!("doubleslash-client/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("doubleslash-client/", env!("DOUBLESLASH_VERSION")))
             .build()
             .map_err(|e| format!("HTTP client build: {e}"))?;
 
@@ -347,6 +347,10 @@ mod tests {
         assert!(is_newer("1.9.9", "2.0.0"));
         assert!(!is_newer("1.0.1", "1.0.0"));
         assert!(!is_newer("1.0.0", "1.0.0"));
+        // The product version is major.minor.build.0. The third component is the build.
+        assert!(is_newer("1.0.466.0", "1.0.467.0"));
+        assert!(!is_newer("1.0.467.0", "1.0.466.0"));
+        assert!(!is_newer("1.0.467.0", "1.0.467.0"));
     }
 
     #[test]

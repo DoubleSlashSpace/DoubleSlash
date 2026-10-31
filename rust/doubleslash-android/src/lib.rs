@@ -136,7 +136,7 @@ pub extern "system" fn Java_com_doubleslash_client_NativeCore_nativeVersion<'loc
     _class: JClass<'local>,
 ) -> jstring {
     init_logging();
-    match env.new_string(env!("CARGO_PKG_VERSION")) {
+    match env.new_string(env!("DOUBLESLASH_VERSION")) {
         Ok(s) => s.into_raw(),
         Err(_) => JObject::null().into_raw(),
     }

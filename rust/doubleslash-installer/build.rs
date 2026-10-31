@@ -1,4 +1,9 @@
+include!("../build_version.rs");
+
 fn main() {
+    let product_version = stamped_version();
+    println!("cargo:rustc-env=DOUBLESLASH_VERSION={product_version}");
+
     #[cfg(windows)]
     {
         // Embed an explicit "asInvoker" execution-level manifest so that Windows
@@ -23,14 +28,16 @@ fn main() {
   </compatibility>
 </assembly>"#;
 
+        let packed = file_version_u64(&product_version);
         let mut res = winresource::WindowsResource::new();
         res.set_icon("../../assets/doubleslash.ico");
         res.set("ProductName", "DoubleSlash");
         res.set("FileDescription", "DoubleSlash Installer / Updater");
         res.set("LegalCopyright", "DoubleSlash Project");
-        // Keep ProductVersion in sync with doubleslash-client/Cargo.toml version.
-        res.set("ProductVersion", env!("CARGO_PKG_VERSION"));
-        res.set("FileVersion", env!("CARGO_PKG_VERSION"));
+        res.set("ProductVersion", &product_version);
+        res.set("FileVersion", &product_version);
+        res.set_version_info(winresource::VersionInfo::PRODUCTVERSION, packed);
+        res.set_version_info(winresource::VersionInfo::FILEVERSION, packed);
         res.set_manifest(MANIFEST);
         if let Err(e) = res.compile() {
             eprintln!("cargo:warning=Failed to set Windows resource: {e}");

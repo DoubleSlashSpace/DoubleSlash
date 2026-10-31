@@ -4,7 +4,7 @@
 <!--
   DoubleSlash macOS application bundle Info.plist template.
   ========================================================
-  The build script substitutes @VERSION@ with the current APP_VERSION_STRING.
+  The build script substitutes @VERSION@ with the product version stamp.
 
   CFBundleURLTypes registers doubleslash:// and d:// so clicking an invite
   link in a browser launches DoubleSlash with

@@ -25,8 +25,12 @@ in [`README.md`](README.md) and on the website must have a home here.
 
 ### Microsoft Store MSIX acceptance
 
+The Microsoft Store listing is the official Windows release. Microsoft signs
+that package. SignPath signing of GitHub Windows builds waits until SignPath
+accepts the project on the strength of this existing distribution.
+
 The Windows packaging path is `build_msix.ps1`; see
-[Microsoft Store packaging](docs/MICROSOFT_STORE.md). Before publication:
+[Microsoft Store packaging](docs/MICROSOFT_STORE.md). These checks are still open:
 
 - Run Windows App Certification Kit and resolve package-specific failures.
 - Validate install/update on Windows 10/11 and an alternate drive; test

@@ -12,8 +12,9 @@
         0  all versions match.
         1  one or more mismatches (printed to stderr).
 
-    Invoked from CI so a forgotten Cargo.toml bump fails the build instead of
-    producing inconsistent ProductVersion metadata in signed PE files.
+    Invoked from CI so a forgotten Cargo.toml bump fails the build. The product
+    stamp's major and minor come from the compiling crate, so a drift here makes
+    the client, installer, supernode, and Android versionName disagree.
 #>
 
 [CmdletBinding()]
@@ -31,7 +32,8 @@ $clientCargo = Join-Path (Join-Path $rustDir 'doubleslash-client') 'Cargo.toml'
 $trackedCrates = @(
     'doubleslash-features',
     'doubleslash-installer',
-    'doubleslash-supernode'
+    'doubleslash-supernode',
+    'doubleslash-android'
 )
 
 function Get-CrateVersion {
