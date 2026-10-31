@@ -202,7 +202,7 @@ For module authors, [examples.rs](rust/doubleslash-features/src/examples.rs) con
 - Direct application signaling is session-encrypted. Room chat, file chunks, and media are sealed before reaching the supernode; group-key installation checks the elected keyer. Room names, membership, traffic volumes, and file-offer metadata remain visible to the relay.
 - Peer build-attestation messages carry signed claims and release metadata. They are not proof that a remote process is executing unmodified code.
 
-See the [threat model](docs/THREAT_MODEL.md) for trust boundaries and limitations.
+See the [threat model](docs/THREAT_MODEL.md) for trust boundaries and limitations. Report a vulnerability through [SECURITY.md](SECURITY.md).
 
 ## Updates
 
