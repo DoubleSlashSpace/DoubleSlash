@@ -429,7 +429,7 @@ impl RoomStore {
                 m.invite_token = existing.invite_token.clone();
             }
             // Preserve client-only Space-tree fields: the supernode room list
-            // (synced via `sync_saved_rooms_from_list`) carries none of these, so
+            // (synced via `sync_from_room_list`) carries none of these, so
             // without this a sub-room's parent linkage would be wiped on the next
             // room-list update and the sidebar tree would flatten.
             if m.space_id.is_empty() {
@@ -492,6 +492,85 @@ impl RoomStore {
             self.save()?;
         }
         Ok(())
+    }
+
+    /// Save the rooms a supernode lists, under `supernode_id`.
+    ///
+    /// Both clients call this when a node's room list arrives, so a node shows
+    /// its rooms, `default` included, before this device has joined any of
+    /// them. A remote name or type only replaces the stored one when present,
+    /// and a hidden room stays hidden (see [`upsert_many_from_remote`]).
+    pub fn sync_from_room_list(
+        &mut self,
+        supernode_id: &str,
+        rooms: &serde_json::Value,
+    ) -> Result<()> {
+        let Some(arr) = rooms.as_array() else {
+            return Ok(());
+        };
+        let mut pending: Vec<RoomEntry> = Vec::with_capacity(arr.len());
+        for room in arr {
+            let room_id = room
+                .get("room_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if room_id.is_empty() {
+                continue;
+            }
+            let existing = self.get(supernode_id, room_id);
+            let room_name = room
+                .get("name")
+                .or_else(|| room.get("room_name"))
+                .and_then(|v| v.as_str())
+                .filter(|n| !n.is_empty() && *n != room_id)
+                .map(str::to_owned)
+                .or_else(|| {
+                    existing
+                        .filter(|e| !e.room_name.is_empty() && e.room_name != room_id)
+                        .map(|e| e.room_name.clone())
+                })
+                .unwrap_or_else(|| room_id.to_owned());
+            // Only take the remote room_type when it is explicitly present and
+            // non-empty; otherwise keep the stored type. Defaulting an absent value
+            // to "public" here would downgrade a stored *private* room (via upsert's
+            // non-empty-wins merge), flipping join_room off the token/invite path so
+            // the supernode silently denies entry to the private room.
+            let room_type = room
+                .get("room_type")
+                .and_then(|v| v.as_str())
+                .filter(|t| !t.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    existing
+                        .map(|e| e.room_type.clone())
+                        .filter(|t| !t.is_empty())
+                })
+                .unwrap_or_else(|| "public".to_owned());
+            let creator_id = room
+                .get("creator_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let is_creator = existing.map(|e| e.is_creator).unwrap_or(false);
+            let invite_token = existing.map(|e| e.invite_token.as_str()).unwrap_or("");
+            let entry = RoomEntry::new(room_id, room_name)
+                .with_type(&room_type)
+                .with_supernode(supernode_id)
+                .with_creator(
+                    if creator_id.is_empty() {
+                        existing.map(|e| e.creator_id.as_str()).unwrap_or("")
+                    } else {
+                        creator_id
+                    },
+                    is_creator,
+                )
+                .with_invite_token(invite_token);
+            pending.push(entry);
+        }
+
+        // Persist once for the whole list rather than once per room. A room the
+        // user hid locally is not resurrected: a plain upsert would clear the
+        // hide tombstone and un-hide every listed room each time a list arrives.
+        self.upsert_many_from_remote(pending)
     }
 
     /// Passive-sync variant of [`upsert`] for the supernode's room list.
@@ -977,7 +1056,7 @@ mod tests {
         nested.invite_policy = "members".to_owned();
         store.add(nested).unwrap();
 
-        // Simulates `sync_saved_rooms_from_list`: a fresh entry from the remote
+        // Simulates `sync_from_room_list`: a fresh entry from the remote
         // room list with no Space fields.
         store
             .upsert(RoomEntry::new("child", "Closet").with_supernode("sn-a"))
@@ -987,6 +1066,50 @@ mod tests {
         assert_eq!(e.parent_id, "parent-room", "parent_id must survive re-sync");
         assert_eq!(e.space_id, "space-1");
         assert_eq!(e.invite_policy, "members");
+    }
+
+    #[test]
+    fn a_room_list_saves_a_new_nodes_rooms_without_unhiding_or_downgrading() {
+        let dir = tempdir().unwrap();
+        let id = make_identity();
+        let path = dir.path().join(ROOM_STORE_FILE);
+        let mut store = RoomStore::open(&id, Some(&path)).unwrap();
+        store
+            .add(
+                RoomEntry::new("vault", "Vault")
+                    .with_type("private")
+                    .with_supernode("sn-a")
+                    .with_invite_token("tok"),
+            )
+            .unwrap();
+        store
+            .add(RoomEntry::new("old", "Old").with_supernode("sn-a"))
+            .unwrap();
+        store.hide_from_sidebar("sn-a", "old").unwrap();
+
+        let list = serde_json::json!([
+            { "room_id": "default", "name": "Lobby" },
+            { "room_id": "vault" },
+            { "room_id": "old", "name": "Old" },
+            { "room_id": "" },
+        ]);
+        store.sync_from_room_list("sn-a", &list).unwrap();
+
+        // A node seen for the first time shows its built-in room.
+        let lobby = store.get("sn-a", "default").unwrap();
+        assert_eq!(lobby.room_name, "Lobby");
+        assert_eq!(lobby.room_type, "public");
+        // A list without a type keeps a private room private, and its token.
+        let vault = store.get("sn-a", "vault").unwrap();
+        assert_eq!(vault.room_type, "private");
+        assert_eq!(vault.invite_token, "tok");
+        assert_eq!(vault.room_name, "Vault");
+        assert!(store.is_hidden_from_sidebar("sn-a", "old"));
+        assert_eq!(store.len(), 3);
+
+        // It is saved, not only held in memory.
+        let reopened = RoomStore::open(&id, Some(&path)).unwrap();
+        assert!(reopened.get("sn-a", "default").is_some());
     }
 
     #[test]
@@ -1236,7 +1359,7 @@ mod tests {
         store.hide_from_sidebar("sn-a", "r1").unwrap();
         assert!(store.is_hidden_from_sidebar("sn-a", "r1"));
 
-        // Supernode re-lists the room (as `sync_saved_rooms_from_list` does).
+        // Supernode re-lists the room (as `sync_from_room_list` does).
         store
             .upsert_from_remote(RoomEntry::new("r1", "r1").with_supernode("sn-a"))
             .unwrap();

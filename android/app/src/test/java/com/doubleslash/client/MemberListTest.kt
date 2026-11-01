@@ -112,6 +112,36 @@ class MemberListTest {
     }
 
     @Test
+    fun `a padded voice snapshot does not keep someone in voice after a text-only update`() {
+        // The same node, once with padding and once without. The later snapshot
+        // is text only. The union must not keep the stale voice list.
+        val voice = mapOf("nodeA=:room" to listOf("TWU="))
+            .withNodeRoster("nodeA", "room", emptyList())
+        val text = emptyMap<String, List<String>>()
+            .withNodeRoster("nodeA=", "room", listOf("TWU"))
+        assertEquals(emptyList<String>(), voice.roomMembersUnion("room"))
+        val rows = buildRoomTree(
+            rooms = listOf(room),
+            voiceRosters = voice,
+            textRosters = text,
+            reading = room,
+            voiceRoom = null,
+            fold = TreeFold(leaves = mapOf("${room.key}:voice" to true, "${room.key}:text" to true)),
+        ).filterIsInstance<TreeRow.Member>()
+        assertEquals(listOf(false), rows.map { it.voice })
+        assertEquals("TWU", rows.single().id)
+    }
+
+    @Test
+    fun `replacing one node's roster keeps the other node's members`() {
+        val voice = mapOf(
+            "nodeA=:room" to listOf("TWU="),
+            "nodeB:room" to listOf("RnJpZW5k"),
+        ).withNodeRoster("nodeA", "room", emptyList())
+        assertEquals(listOf("RnJpZW5k"), voice.roomMembersUnion("room"))
+    }
+
+    @Test
     fun `a room's members are unioned across every node that reported them`() {
         // A cluster: the phone joined via node A, the streaming desktop via B.
         val rosters = mapOf(

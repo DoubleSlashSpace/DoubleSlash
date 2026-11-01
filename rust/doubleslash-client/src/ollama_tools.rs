@@ -435,7 +435,7 @@ impl OllamaToolHost {
             .unwrap_or(20)
             .clamp(1, 50) as usize;
         let key = if let Ok(room) = self.resolve_room(args) {
-            chat_store::room_conversation_id(&room.room_id)
+            chat_store::room_history_id(&room.supernode_id, &room.room_id)
         } else if let Some(peer) = arg_str(args, &["peer", "peer_id", "handle"]) {
             self.peer_id_for(&peer)?
         } else {
@@ -947,7 +947,7 @@ impl OllamaToolHost {
             let sn = arg_str(args, &["supernode_id", "supernode"]);
             resolve_room(&store, &q, sn.as_deref())
                 .ok()
-                .map(|room| chat_store::room_conversation_id(&room.room_id))
+                .map(|room| chat_store::room_history_id(&room.supernode_id, &room.room_id))
         });
         let key = room_key
             .or_else(|| {
@@ -1053,7 +1053,7 @@ impl OllamaToolHost {
                 supernode_id,
                 room_id,
             } => (
-                chat_store::room_conversation_id(&room_id),
+                chat_store::room_history_id(&supernode_id, &room_id),
                 self.identity.public_id(),
                 room_id.clone(),
                 ConnectionCommand::SendSfuFile {

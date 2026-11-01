@@ -133,9 +133,10 @@ pub mod ffi {
         /// Not part of the skin. The phone stores the same id.
         #[qproperty(QString, time_format)]
         /// Rooms list order, shared in shape with the phone:
-        /// `{"mode":"name_asc"|"name_desc"|"peers_asc"|"peers_desc"|"manual","pinned":["node:room"],"manual":["node:room"]}`.
+        /// `{"mode":"name_asc"|"name_desc"|"peers_asc"|"peers_desc"|"manual","pinned":["node:room"],"manual":["node:room"],"collapsed":["node"],"nodes":["node"]}`.
         /// Pinned rooms stay first among their siblings. Manual is used only
-        /// while `mode` is `manual`.
+        /// while `mode` is `manual`. `collapsed` folds a supernode's rooms.
+        /// `nodes` is that row's order; missing or empty means name A–Z.
         #[qproperty(QString, room_list_order_json)]
         /// Room ids whose text messages alert, as a JSON array. Empty means
         /// every room is muted. Keyed by room id alone, same as room history.

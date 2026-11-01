@@ -58,10 +58,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.doubleslash.client.AppState
+import com.doubleslash.client.LinkQuality
+import com.doubleslash.client.NodeConnectionStats
 import com.doubleslash.client.R
 import com.doubleslash.client.Room
 import com.doubleslash.client.RoomNodeInfo
 import com.doubleslash.client.VoiceRoom
+import com.doubleslash.client.statsForNode
 import com.doubleslash.client.cameraOn
 import com.doubleslash.client.inviteContacts
 import com.doubleslash.client.roomMembersUnion
@@ -69,6 +72,7 @@ import com.doubleslash.client.roomSenderName
 import com.doubleslash.client.trustedPeer
 import com.doubleslash.client.videoKey
 import com.doubleslash.client.watching
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -249,19 +253,29 @@ internal val ROOM_SORT_OPTIONS = listOf(
  * A pin does not pull a sub-room out from under its parent.
  * [collapsed] lists the supernode ids whose rooms are folded under their
  * node row.
+ * [nodes] is the supernode row order. Empty means those rows are name A–Z.
+ * A padded id matches the same node without the padding.
  */
 data class RoomListOrder(
     val mode: String = ROOM_SORT_NAME_ASC,
     val pinned: List<String> = emptyList(),
     val manual: List<String> = emptyList(),
     val collapsed: List<String> = emptyList(),
+    val nodes: List<String> = emptyList(),
 ) {
-    fun normalized(): RoomListOrder = copy(
-        mode = normalizeRoomSortMode(mode),
-        pinned = pinned.filter { it.isNotEmpty() },
-        manual = manual.filter { it.isNotEmpty() },
-        collapsed = collapsed.filter { it.isNotEmpty() },
-    )
+    fun normalized(): RoomListOrder {
+        val seenNodes = mutableSetOf<String>()
+        return copy(
+            mode = normalizeRoomSortMode(mode),
+            pinned = pinned.filter { it.isNotEmpty() },
+            manual = manual.filter { it.isNotEmpty() },
+            collapsed = collapsed.filter { it.isNotEmpty() },
+            nodes = nodes.filter { id ->
+                val bare = id.trimEnd('=')
+                id.isNotEmpty() && bare.isNotEmpty() && seenNodes.add(bare)
+            },
+        )
+    }
 
     fun isPinned(room: Room): Boolean = room.listOrderKey() in pinned
 
@@ -279,20 +293,102 @@ internal data class RoomNodeGroup(val node: RoomNodeInfo, val rooms: List<Room>)
 
 /**
  * The Rooms list's top level: one group per supernode, a cluster counting as
- * one, named A–Z. A node with no rooms still gets its row. A room naming a
- * node the core did not describe gets a row of its own.
+ * one. With no saved [RoomListOrder.nodes], the rows are name A–Z. A node
+ * with no rooms still gets its row. A room naming a node the core did not
+ * describe gets a row of its own.
  */
-internal fun groupRoomsByNode(rooms: List<Room>, nodes: List<RoomNodeInfo>): List<RoomNodeGroup> {
+internal fun groupRoomsByNode(
+    rooms: List<Room>,
+    nodes: List<RoomNodeInfo>,
+    order: RoomListOrder = RoomListOrder(),
+): List<RoomNodeGroup> {
     val byNode = rooms.groupBy { it.listNodeId }
     val described = nodes.filter { it.nodeId.isNotEmpty() }.distinctBy { it.nodeId }
     val known = described.map { it.nodeId }.toSet()
-    val extra = byNode.keys.filter { it !in known }.map { RoomNodeInfo(nodeId = it) }
-    return (described + extra)
-        .sortedWith { a, b ->
-            compareAlphanumeric(a.label, b.label).takeIf { it != 0 } ?: a.nodeId.compareTo(b.nodeId)
-        }
-        .map { RoomNodeGroup(it, byNode[it.nodeId].orEmpty()) }
+    val extra = byNode.keys.filter { it.isNotEmpty() && it !in known }.map { RoomNodeInfo(nodeId = it) }
+    val groups = (described + extra).map { RoomNodeGroup(it, byNode[it.nodeId].orEmpty()) }
+    val ids = orderedNodeIds(groups.map { it.node.nodeId to it.node.label }, order)
+    return ids.mapNotNull { id -> groups.firstOrNull { group -> group.node.nodeId == id } }
 }
+
+/**
+ * Supernode row ids in list order.
+ *
+ * Ids in [RoomListOrder.nodes] come first. Anything not listed yet follows,
+ * by name. An id that names no row is ignored here and kept in the saved list.
+ */
+internal fun orderedNodeIds(entries: List<Pair<String, String>>, order: RoomListOrder): List<String> {
+    val saved = order.normalized().nodes
+    val used = BooleanArray(entries.size)
+    val listed = mutableListOf<String>()
+    for (id in saved) {
+        val want = id.trimEnd('=')
+        if (want.isEmpty()) continue
+        val index = entries.indices.firstOrNull { i ->
+            !used[i] && entries[i].first.trimEnd('=') == want
+        } ?: continue
+        used[index] = true
+        listed += entries[index].first
+    }
+    val rest = entries.indices
+        .filter { !used[it] && entries[it].first.isNotEmpty() }
+        .map { entries[it] }
+        .sortedWith { a, b ->
+            compareAlphanumeric(a.second, b.second).takeIf { it != 0 }
+                ?: compareAlphanumeric(a.first.trimEnd('='), b.first.trimEnd('='))
+        }
+    return listed + rest.map { it.first }
+}
+
+/** Saved ids, with every row on screen written in at the place it shows. */
+private fun placeNodeIds(saved: List<String>, displayIds: List<String>): List<String> {
+    val next = mutableListOf<String>()
+    for (id in saved) {
+        if (id.trimEnd('=').isNotEmpty() && next.indexOfFirst { it.trimEnd('=') == id.trimEnd('=') } < 0) {
+            next += id
+        }
+    }
+    var cursor = -1
+    for (id in displayIds) {
+        val at = next.indexOfFirst { it.trimEnd('=') == id.trimEnd('=') }
+        if (at < 0) {
+            next.add(cursor + 1, id)
+            cursor += 1
+        } else {
+            next[at] = id
+            cursor = at
+        }
+    }
+    return next
+}
+
+/**
+ * Move a supernode row one place. The first move freezes the name order that
+ * was on screen. Room sort, pins and folds are left as they are.
+ */
+internal fun moveNodeInOrder(
+    order: RoomListOrder,
+    nodes: List<RoomNodeInfo>,
+    nodeId: String,
+    delta: Int,
+): RoomListOrder {
+    val o = order.normalized()
+    if ((delta != -1 && delta != 1) || nodeId.trimEnd('=').isEmpty()) return o
+    val entries = nodes.filter { it.nodeId.isNotEmpty() }.distinctBy { it.nodeId }
+    val display = orderedNodeIds(entries.map { it.nodeId to it.label }, o)
+    val i = display.indexOfFirst { it.trimEnd('=') == nodeId.trimEnd('=') }
+    val j = i + delta
+    if (i < 0 || j !in display.indices) return o
+    val placed = placeNodeIds(o.nodes, display)
+    return o.copy(nodes = relocate(placed, display[i], display[j], delta > 0))
+}
+
+internal fun canMoveNode(
+    order: RoomListOrder,
+    nodes: List<RoomNodeInfo>,
+    nodeId: String,
+    delta: Int,
+): Boolean = moveNodeInOrder(order, nodes, nodeId, delta) != order.normalized()
 
 /** Voice members across a node's rooms, for its folded row. */
 internal fun nodeVoiceCount(rooms: List<Room>, voiceRosters: Map<String, List<String>>): Int =
@@ -318,6 +414,7 @@ internal fun parseRoomListOrder(raw: String?): RoomListOrder {
             pinned = strings("pinned"),
             manual = strings("manual"),
             collapsed = strings("collapsed"),
+            nodes = strings("nodes"),
         ).normalized()
     } catch (_: Exception) {
         RoomListOrder()
@@ -331,6 +428,7 @@ internal fun RoomListOrder.toJson(): String {
         put("pinned", JsonArray(o.pinned.map { JsonPrimitive(it) }))
         put("manual", JsonArray(o.manual.map { JsonPrimitive(it) }))
         put("collapsed", JsonArray(o.collapsed.map { JsonPrimitive(it) }))
+        put("nodes", JsonArray(o.nodes.map { JsonPrimitive(it) }))
     }.toString()
 }
 
@@ -851,9 +949,10 @@ internal fun LazyListScope.roomNodeItem(
     onOpenPortal: () -> Unit,
     onCreateRoom: () -> Unit,
     onRename: () -> Unit,
+    onMove: (Int) -> Unit,
 ) {
     item(key = "node:" + group.node.nodeId) {
-        NodeRow(group, state, collapsed, onToggle, onOpenPortal, onCreateRoom, onRename)
+        NodeRow(group, state, collapsed, onToggle, onOpenPortal, onCreateRoom, onRename, onMove)
     }
     if (!collapsed && group.rooms.isEmpty()) {
         item(key = "node-empty:" + group.node.nodeId) {
@@ -878,12 +977,15 @@ private fun NodeRow(
     onOpenPortal: () -> Unit,
     onCreateRoom: () -> Unit,
     onRename: () -> Unit,
+    onMove: (Int) -> Unit,
 ) {
     val ds = LocalDsColors.current
     val node = group.node
     val connected = node.isConnected(state.connectedSupernodes)
     val art = state.avatars[node.peerId.ifBlank { node.nodeId }]
+    val ping = state.statsForNode(node)
     var menuOpen by remember(node.nodeId) { mutableStateOf(false) }
+    var statsOpen by remember(node.nodeId) { mutableStateOf(false) }
     Box {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -893,8 +995,14 @@ private fun NodeRow(
                 .background(ds.bg2)
                 .combinedClickable(onClick = onToggle, onLongClick = { menuOpen = true })
                 .semantics {
-                    contentDescription =
-                        (if (collapsed) "Show rooms on " else "Hide rooms on ") + node.label
+                    contentDescription = buildString {
+                        append(if (collapsed) "Show rooms on " else "Hide rooms on ")
+                        append(node.label)
+                        if (ping != null) {
+                            append(". ")
+                            append(ping.tooltip().replace('\n', ' '))
+                        }
+                    }
                 }
                 .padding(start = EDGE, end = 12.dp),
         ) {
@@ -913,6 +1021,9 @@ private fun NodeRow(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            if (ping != null) {
+                PingReadout(ping, onClick = { statsOpen = true })
+            }
             // Folded, the row still says what is going on under it.
             if (collapsed) {
                 val unread = group.rooms.sumOf { state.roomUnread[it.roomId] ?: 0 }
@@ -944,6 +1055,28 @@ private fun NodeRow(
                 menuOpen = false
                 onToggle()
             }
+            val order = state.prefs.roomListOrder
+            val nodeEntries = groupRoomsByNode(
+                state.rooms.filter { state.showHiddenRooms || !it.hidden },
+                state.roomNodes,
+                order,
+            ).map { it.node }
+            TreeMenuItem(
+                R.drawable.ds_arrow_up,
+                "Move up",
+                enabled = canMoveNode(order, nodeEntries, node.nodeId, -1),
+            ) {
+                menuOpen = false
+                onMove(-1)
+            }
+            TreeMenuItem(
+                R.drawable.ds_arrow_down,
+                "Move down",
+                enabled = canMoveNode(order, nodeEntries, node.nodeId, 1),
+            ) {
+                menuOpen = false
+                onMove(1)
+            }
             TreeMenuItem(R.drawable.ds_pencil, "Rename...") {
                 menuOpen = false
                 onRename()
@@ -958,6 +1091,129 @@ private fun NodeRow(
                 onCreateRoom()
             }
         }
+        if (statsOpen && ping != null) {
+            ConnectionStatsDialog(node.label, ping) { statsOpen = false }
+        }
+    }
+}
+
+/**
+ * The desktop connection chip: a quality mark, the round trip, and "relay"
+ * when a supernode is carrying this chat. A tap opens the rest of the sample.
+ * Hidden by the caller until a ping has been measured.
+ */
+@Composable
+internal fun ConnectionStatsChip(
+    stats: NodeConnectionStats,
+    relay: Boolean,
+    onClick: () -> Unit,
+) {
+    val ds = LocalDsColors.current
+    val color = stats.qualityColor()
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier
+            .border(1.dp, color.copy(alpha = 0.35f), RectangleShape)
+            .background(color.copy(alpha = 0.14f), RectangleShape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .semantics { contentDescription = "Connection stats. ${stats.tooltip()}" },
+    ) {
+        Box(Modifier.size(6.dp).background(color, RectangleShape))
+        Text(
+            stats.pingLabel,
+            color = ds.text,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+        if (relay) {
+            Text("relay", color = ds.warn, fontSize = 10.sp, maxLines = 1)
+        }
+    }
+}
+
+/**
+ * The desktop's ping chip: the round trip, colored the same way, and a tap
+ * opens the rest of the sample. Hidden until a ping has been measured.
+ */
+@Composable
+internal fun PingReadout(stats: NodeConnectionStats, onClick: () -> Unit) {
+    val color = stats.qualityColor()
+    Text(
+        stats.pingLabel,
+        color = color,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 4.dp)
+            .semantics { contentDescription = stats.tooltip() },
+    )
+}
+
+@Composable
+private fun NodeConnectionStats.qualityTierColor(): Color {
+    val ds = LocalDsColors.current
+    return when (qualityTierLabel) {
+        "Excellent", "Good" -> ds.online
+        "Fair" -> ds.warn
+        else -> ds.danger
+    }
+}
+
+@Composable
+private fun NodeConnectionStats.qualityColor(): Color {
+    val ds = LocalDsColors.current
+    return when (quality) {
+        LinkQuality.BAD -> ds.danger
+        LinkQuality.FAIR -> ds.warn
+        LinkQuality.GOOD -> ds.online
+        LinkQuality.NONE -> ds.muted
+    }
+}
+
+/** Ping, loss, jitter, bandwidth, and path. The desktop calls this Room Connection. */
+@Composable
+internal fun ConnectionStatsDialog(
+    title: String,
+    stats: NodeConnectionStats,
+    path: String = stats.pathLabel,
+    onDismiss: () -> Unit,
+) {
+    val loss = String.format(java.util.Locale.US, "%.1f%%", stats.packetLossPct)
+    DsDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title.ifBlank { "Connection" }) },
+        confirmButton = {
+            SquareTextButton(onClick = onDismiss) { Text("Close") }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatsLine("Ping", stats.pingLabel, stats.qualityColor())
+                StatsLine("Packet loss", loss)
+                StatsLine("Jitter", "${stats.jitterMs.roundToInt()} ms")
+                StatsLine("Bandwidth", "${stats.bandwidthKbps.roundToInt()} kbps")
+                StatsLine("Quality", stats.qualityTierLabel, stats.qualityTierColor())
+                StatsLine("Path", path)
+            }
+        },
+    )
+}
+
+@Composable
+private fun StatsLine(label: String, value: String, valueColor: Color? = null) {
+    val ds = LocalDsColors.current
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = ds.muted, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Text(
+            value,
+            color = valueColor ?: ds.text,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 

@@ -7,8 +7,10 @@ import com.doubleslash.client.ui.TreeRow
 import com.doubleslash.client.ui.RoomListOrder
 import com.doubleslash.client.ui.buildRoomLeaves
 import com.doubleslash.client.ui.buildRoomTree
+import com.doubleslash.client.ui.canMoveNode
 import com.doubleslash.client.ui.canMoveRoom
 import com.doubleslash.client.ui.groupRoomsByNode
+import com.doubleslash.client.ui.moveNodeInOrder
 import com.doubleslash.client.ui.moveRoomInOrder
 import com.doubleslash.client.ui.nodeVoiceCount
 import com.doubleslash.client.ui.withNodeCollapsed
@@ -404,6 +406,61 @@ class RoomTreeTest {
         assertFalse(withNodeCollapsed(folded, "n", false).isNodeCollapsed("n"))
         assertEquals(listOf("n"), parseRoomListOrder(folded.toJson()).collapsed)
         assertEquals(4, nodeVoiceCount(rooms, voice))
+    }
+
+    @Test
+    fun `node rows move and otherwise stay in name order`() {
+        val alpha = RoomNodeInfo(nodeId = "a", displayName = "Alpha")
+        val beta = RoomNodeInfo(nodeId = "b=", displayName = "Beta")
+        val gamma = RoomNodeInfo(nodeId = "g", displayName = "Gamma")
+        val nodes = listOf(gamma, alpha, beta)
+        assertEquals(
+            listOf("Alpha", "Beta", "Gamma"),
+            groupRoomsByNode(emptyList(), nodes).map { it.node.label },
+        )
+        assertEquals(
+            listOf("Node 2", "Node 10"),
+            groupRoomsByNode(
+                emptyList(),
+                listOf(
+                    RoomNodeInfo(nodeId = "10", displayName = "Node 10"),
+                    RoomNodeInfo(nodeId = "2", displayName = "Node 2"),
+                ),
+            ).map { it.node.label },
+        )
+        // A saved id matches with or without padding. A node not listed yet
+        // stays in name order after the saved rows.
+        val saved = RoomListOrder(
+            mode = "manual",
+            manual = listOf("a:lobby"),
+            collapsed = listOf("g"),
+            nodes = listOf("b", "missing"),
+        )
+        assertEquals(
+            listOf("Beta", "Alpha", "Gamma"),
+            groupRoomsByNode(emptyList(), nodes, saved).map { it.node.label },
+        )
+        assertFalse(canMoveNode(saved, nodes, "b=", -1))
+        assertTrue(canMoveNode(saved, nodes, "a", 1))
+        val moved = moveNodeInOrder(saved, nodes, "g", -1)
+        assertEquals(listOf("b=", "g", "a", "missing"), moved.nodes)
+        // Moving a node leaves the room sort, pins and folds alone.
+        assertEquals("manual", moved.mode)
+        assertEquals(listOf("a:lobby"), moved.manual)
+        assertEquals(listOf("g"), moved.collapsed)
+        assertTrue(moved.pinned.isEmpty())
+        assertEquals(listOf("b=", "g", "a", "missing"), parseRoomListOrder(moved.toJson()).nodes)
+        // Sorting rooms does not drop the node order, and a padded duplicate is one row.
+        val kept = roomOrderWithMode(
+            RoomListOrder(nodes = listOf("ccc=", "ccc", "aaa")),
+            "name_desc",
+            emptyList(),
+            emptyMap(),
+            emptyMap(),
+        )
+        assertEquals(listOf("ccc=", "aaa"), kept.nodes)
+        assertEquals("name_desc", kept.mode)
+        assertEquals(listOf("ccc=", "aaa"), withNodeCollapsed(kept, "n", true).nodes)
     }
 
     @Test

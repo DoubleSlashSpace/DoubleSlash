@@ -110,6 +110,8 @@ import androidx.compose.ui.unit.dp
 import com.doubleslash.client.AppViewModel
 import com.doubleslash.client.roomHeadcount
 import com.doubleslash.client.roomMembersUnion
+import com.doubleslash.client.statsForRoom
+import com.doubleslash.client.supernodeStatusLine
 import com.doubleslash.client.ownStatusLabel
 import com.doubleslash.client.R
 import com.doubleslash.client.ChatMessage
@@ -128,8 +130,10 @@ import com.doubleslash.client.LiveTransfer
 import com.doubleslash.client.progressCaption
 import com.doubleslash.client.SavedFile
 import com.doubleslash.client.SupernodeInfo
-import com.doubleslash.client.ConnectionMode
 import com.doubleslash.client.HomeTab
+import com.doubleslash.client.PeerLink
+import com.doubleslash.client.PeerRoute
+import com.doubleslash.client.peerLink
 import com.doubleslash.client.Room
 import com.doubleslash.client.RoomNodeInfo
 import com.doubleslash.client.RoomMessage
@@ -289,6 +293,7 @@ fun AppRoot(viewModel: AppViewModel) {
                 is Screen.Chat -> ChatScreen(
                     peer = screen.peer,
                     selfChat = screen.peer.peerId == state.identity.peerId,
+                    link = state.peerLink(screen.peer.peerId),
                     messages = state.messages,
                     onBack = viewModel::closeChat,
                     onSend = viewModel::sendChat,
@@ -968,7 +973,6 @@ private fun HomeScreen(
             }
         }
 
-        ConnectionBanner(state.connectionMode)
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -1069,7 +1073,7 @@ private fun HomeScreen(
                         val treeActions = treeActionsFor { room -> subRoomParent = room }
                         val order = state.prefs.roomListOrder
                         // Each supernode heads its own rooms, as on the desktop.
-                        val groups = groupRoomsByNode(visible, state.roomNodes)
+                        val groups = groupRoomsByNode(visible, state.roomNodes, order)
                         LazyColumn(Modifier.fillMaxSize()) {
                             groups.forEach { group ->
                                 val collapsed = order.isNodeCollapsed(group.node.nodeId)
@@ -1081,6 +1085,7 @@ private fun HomeScreen(
                                     onOpenPortal = { viewModel.openPortal(group.node) },
                                     onCreateRoom = { createRoomOn = group.node },
                                     onRename = { renameNode = group.node },
+                                    onMove = { delta -> viewModel.moveNode(group.node.nodeId, delta) },
                                 )
                                 if (!collapsed) {
                                     val rows = buildRoomTree(
@@ -1232,6 +1237,7 @@ private fun PeersList(
             PeerRow(
                 peer = peer,
                 online = peer.peerId in state.onlinePeers,
+                link = state.peerLink(peer.peerId),
                 avatar = state.avatars[peer.peerId],
                 onClick = { onOpenPeer(peer) },
                 onSetBlocked = { blocked -> onSetBlocked(peer, blocked) },
@@ -1299,29 +1305,12 @@ private fun OwnPeerRow(state: AppState, onClick: () -> Unit) {
     }
 }
 
-@Composable
-private fun ConnectionBanner(mode: ConnectionMode) {
-    val (label, color) = when (mode) {
-        ConnectionMode.DIRECT -> "Direct" to Color(0xFF16A34A)
-        ConnectionMode.RELAY -> "Relayed" to Color(0xFFCA8A04)
-        ConnectionMode.OFFLINE -> "Offline" to MaterialTheme.colorScheme.onSurfaceVariant
-    }
-
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(8.dp).clip(RectangleShape).background(color))
-        Spacer(Modifier.width(8.dp))
-        Text(label, style = MaterialTheme.typography.labelMedium, color = color)
-    }
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PeerRow(
     peer: Peer,
     online: Boolean,
+    link: PeerLink?,
     avatar: AvatarArt?,
     onClick: () -> Unit,
     onSetBlocked: (Boolean) -> Unit,
@@ -1329,7 +1318,9 @@ private fun PeerRow(
     onReport: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    var statsOpen by remember { mutableStateOf(false) }
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val sample = link?.stats
 
     Box {
     ListItem(
@@ -1348,13 +1339,29 @@ private fun PeerRow(
                 }
             }
         },
-        supportingContent = {
-            Text(
-                peer.peerId,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodySmall,
-            )
+        // Avatar and name are the row. The id stays on long-press. An online
+        // peer adds Direct, or Relayed plus the supernode carrying them.
+        supportingContent = if (link == null) {
+            null
+        } else {
+            {
+                Text(
+                    link.routeLabel,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (link.route == PeerRoute.DIRECT) {
+                        LocalDsColors.current.online
+                    } else {
+                        LocalDsColors.current.warn
+                    },
+                )
+            }
+        },
+        trailingContent = if (sample == null) {
+            null
+        } else {
+            { PingReadout(sample, onClick = { statsOpen = true }) }
         },
         leadingContent = {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1423,6 +1430,9 @@ private fun PeerRow(
                 menuOpen = false
             },
         )
+    }
+    if (statsOpen && sample != null) {
+        ConnectionStatsDialog(peer.label, sample, path = link.routeLabel) { statsOpen = false }
     }
     }
 }
@@ -1649,6 +1659,7 @@ private fun EmptyPeers(onCreateInvite: () -> Unit, onAcceptInvite: () -> Unit) {
 private fun ChatScreen(
     peer: Peer,
     selfChat: Boolean,
+    link: PeerLink?,
     messages: List<ChatMessage>,
     onBack: () -> Unit,
     onSend: (String) -> Unit,
@@ -1665,6 +1676,7 @@ private fun ChatScreen(
     timeFormat: String,
 ) {
     var draft by remember { mutableStateOf("") }
+    var statsOpen by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val pinned = rememberPinnedToLatest(
         listState = listState,
@@ -1703,18 +1715,49 @@ private fun ChatScreen(
             // space above the title. These bars live inside the Scaffold body
             // rather than its topBar slot, so the inset is not theirs to add.
             windowInsets = WindowInsets(0, 0, 0, 0),
-            title = { Text(peer.label) },
+            title = {
+                Column {
+                    Text(peer.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (link != null) {
+                        Text(
+                            link.routeLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (link.route == PeerRoute.DIRECT) {
+                                LocalDsColors.current.online
+                            } else {
+                                LocalDsColors.current.warn
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            },
             navigationIcon = {
                 SquareIconButton(onClick = onBack) {
                     Icon(painterResource(R.drawable.ds_arrow_back), contentDescription = "Back", modifier = Modifier.size(22.dp))
                 }
             },
             actions = {
+                val sample = link?.stats
+                if (sample != null) {
+                    ConnectionStatsChip(
+                        stats = sample,
+                        relay = link.route == PeerRoute.RELAYED,
+                        onClick = { statsOpen = true },
+                    )
+                }
                 if (!selfChat) SquareIconButton(onClick = { requestMic() }) {
                     Icon(painterResource(R.drawable.ds_phone), contentDescription = "Call", tint = LocalDsColors.current.online, modifier = Modifier.size(20.dp))
                 }
             },
         )
+        val sample = link?.stats
+        if (statsOpen && sample != null) {
+            ConnectionStatsDialog("Connection Stats", sample, path = link.routeLabel) {
+                statsOpen = false
+            }
+        }
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
             LazyColumn(
@@ -1934,6 +1977,7 @@ private fun RoomChatScreen(
 ) {
     var draft by remember { mutableStateOf("") }
     var membersOpen by remember { mutableStateOf(false) }
+    var connectionStatsOpen by remember(room.key) { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val pinned = rememberPinnedToLatest(
         listState = listState,
@@ -2029,6 +2073,10 @@ private fun RoomChatScreen(
             },
             actions = {
                 val ds = LocalDsColors.current
+                val nodeStats = state.statsForRoom(room)
+                if (nodeStats != null) {
+                    PingReadout(nodeStats, onClick = { connectionStatsOpen = true })
+                }
                 // The same green call icon as the room row. Leave stays on
                 // the dock and on that row once this room's voice is live.
                 if (joined && state.voiceRoom == null && !room.hidden) {
@@ -2077,6 +2125,13 @@ private fun RoomChatScreen(
                 }
             },
         )
+
+        val nodeStats = state.statsForRoom(room)
+        if (connectionStatsOpen && nodeStats != null) {
+            ConnectionStatsDialog(room.roomName.ifBlank { "Room connection" }, nodeStats) {
+                connectionStatsOpen = false
+            }
+        }
 
         // Watched video, full width at the top of the room it comes from.
         // Elsewhere it floats (FloatingVideo), so it never quietly goes away.
@@ -3031,15 +3086,9 @@ private fun SettingsScreen(
                     Column(Modifier.weight(1f)) {
                         Text(node.displayName, style = MaterialTheme.typography.bodyLarge)
                         Text(
-                            // A cluster presents as one node; saying how many
-                            // members it has is what distinguishes "one server"
-                            // from "three that fail over".
+                            // Connected · 24 ms · cluster of N, as on the desktop.
                             // The roster lists its siblings, not the node itself.
-                            if (node.clusterSize > 1) {
-                                "cluster of ${node.clusterSize}"
-                            } else {
-                                node.peerId.take(16)
-                            },
+                            supernodeStatusLine(node, state),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

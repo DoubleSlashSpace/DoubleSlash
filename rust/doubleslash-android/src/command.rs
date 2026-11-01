@@ -65,6 +65,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     "room.voice.join",
     "room.voice.leave",
     "room.history",
+    "room.mark_read",
     "room.request_list",
     "room.invite",
     "call.start",
@@ -576,6 +577,23 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                 Err(e) => err(format!("could not mark read: {e}")),
             }
         }
+        // Read a room's text. With the node, that node's conversation; with the
+        // room id alone, the room on every node, as its alert setting is keyed.
+        "room.mark_read" => {
+            let Some(room_id) = arg_str(&parsed, "room_id") else {
+                return err("room.mark_read requires \"room_id\"");
+            };
+            let marked = match arg_str(&parsed, "supernode_id").filter(|id| !id.is_empty()) {
+                Some(supernode_id) => session
+                    .chat_store
+                    .mark_peer_read(&session.room_history_key(supernode_id, room_id)),
+                None => session.chat_store.mark_room_read(room_id),
+            };
+            match marked {
+                Ok(count) => json!({ "ok": true, "marked": count }),
+                Err(e) => err(format!("could not mark read: {e}")),
+            }
+        }
         "chat.unread_total" => match session.chat_store.total_unread_count() {
             Ok(count) => json!({ "ok": true, "unread": count }),
             Err(e) => err(format!("could not count unread: {e}")),
@@ -774,7 +792,7 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                 return err(format!("could not remove the room: {e}"));
             }
             if clear_history {
-                let key = doubleslash_client::chat_store::room_conversation_id(room_id);
+                let key = session.room_history_key(supernode_id, room_id);
                 if let Err(e) = session.chat_store.clear_history(&key) {
                     return err(format!("could not clear the room's chat history: {e}"));
                 }
@@ -919,9 +937,10 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
             };
             let page = parsed.get("page").and_then(Value::as_u64).unwrap_or(0) as usize;
             // Same conversation key the desktop writes, so a room's history is
-            // one thread across both clients. No supernode in it: the room id
-            // already identifies the room independently of its host.
-            let key = doubleslash_client::chat_store::room_conversation_id(room_id);
+            // one thread across both clients. Only the built-in room needs the
+            // node; without one it reads the unqualified key.
+            let supernode_id = arg_str(&parsed, "supernode_id").unwrap_or("");
+            let key = session.room_history_key(supernode_id, room_id);
             match session.chat_store.get_history(&key, page) {
                 Ok(messages) => json!({
                     "ok": true,
@@ -1627,7 +1646,7 @@ fn send_room_file(session: &Session, parsed: &Value) -> Value {
         // The room conversation key, as `room.history` reads it and room chat
         // writes it. The bare room id put our own attachment in a
         // conversation nothing ever loads, so it never got a bubble.
-        peer_id: doubleslash_client::chat_store::room_conversation_id(room_id),
+        peer_id: session.room_history_key(supernode_id, room_id),
         sender: session.my_public_id.clone(),
         recipient: room_id.to_owned(),
         body: attachment_label(&kind, &rel_path),
@@ -1964,9 +1983,9 @@ fn send_room_chat(session: &Session, parsed: &Value) -> Value {
 
     let record = ChatMessage {
         id: message_id.clone(),
-        // Keyed on the room alone, matching the inbound path and the desktop:
-        // a room_id already identifies the room on whichever supernode hosts it.
-        peer_id: doubleslash_client::chat_store::room_conversation_id(room_id),
+        // The same key as the inbound path and the desktop: the room alone,
+        // or for the built-in room, its node.
+        peer_id: session.room_history_key(supernode_id, room_id),
         sender: session.my_public_id.clone(),
         recipient: String::new(),
         body: body.to_owned(),
@@ -2168,6 +2187,42 @@ fn group_supernodes(
         });
     }
     nodes
+}
+
+/// The Rooms-list node `id` belongs to, as [`group_supernodes`] picks its
+/// cluster's representative, with every id of that cluster. `None` for a node
+/// this phone does not know.
+pub(crate) fn room_node(
+    peers: &doubleslash_client::peer_store::PeerStore,
+    rosters: &HashMap<String, Vec<String>>,
+    id: &str,
+) -> Option<(String, Vec<String>)> {
+    let bare = id.trim_end_matches('=');
+    group_supernodes(&node_seeds(peers), rosters, &HashMap::new())
+        .into_iter()
+        .find(|node| node.members.iter().any(|m| m.trim_end_matches('=') == bare))
+        .map(|node| (node.node_id, node.members))
+}
+
+/// The history key for `room_id` as reached through `supernode_id`.
+///
+/// Only the built-in room is keyed by node (see
+/// [`doubleslash_client::chat_store::room_history_id`]), so only it pays for
+/// resolving the cluster.
+pub(crate) fn room_history_key(
+    peers: &doubleslash_client::peer_store::PeerStore,
+    rosters: &HashMap<String, Vec<String>>,
+    supernode_id: &str,
+    room_id: &str,
+) -> String {
+    use doubleslash_client::chat_store::{room_history_id, DEFAULT_ROOM_ID};
+    if room_id != DEFAULT_ROOM_ID {
+        return room_history_id("", room_id);
+    }
+    let node = room_node(peers, rosters, supernode_id)
+        .map(|(node, _)| node)
+        .unwrap_or_else(|| supernode_id.to_owned());
+    room_history_id(&node, room_id)
 }
 
 #[cfg(test)]
@@ -2409,6 +2464,49 @@ mod tests {
             )
             .is_empty(),
             "a node whose Space we do not own stays a shareable link"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_built_in_room_is_filed_under_its_clusters_node() {
+        use doubleslash_client::chat_store::{room_conversation_id, room_history_id};
+        use doubleslash_client::identity::Identity;
+        use doubleslash_client::peer_store::{PeerRecord, PeerStore};
+
+        let dir = std::env::temp_dir().join(format!(
+            "doubleslash-android-history-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let identity = Identity::generate();
+        let mut peers = PeerStore::open(&identity, Some(&dir.join("peers.dat"))).unwrap();
+        for (peer, node) in [("hex-a", "nodeA="), ("hex-z", "nodeZ")] {
+            peers.upsert(PeerRecord {
+                peer_id: peer.to_owned(),
+                identity_pub: node.to_owned(),
+                is_supernode: true,
+                supernode_from_invite: true,
+                ..Default::default()
+            });
+        }
+        // nodeA's cluster also has a sibling this phone never joined.
+        let mut rosters = HashMap::new();
+        rosters.insert("nodeA".to_owned(), vec!["sibling".to_owned()]);
+
+        let a = room_history_id("nodeA", "default");
+        assert_eq!(room_history_key(&peers, &rosters, "nodeA", "default"), a);
+        assert_eq!(room_history_key(&peers, &rosters, "hex-a", "default"), a);
+        assert_eq!(room_history_key(&peers, &rosters, "sibling=", "default"), a);
+        // An unrelated node's public room is a different conversation.
+        assert_eq!(
+            room_history_key(&peers, &rosters, "nodeZ", "default"),
+            room_history_id("nodeZ", "default")
+        );
+        // Rooms people create stay keyed by the room alone.
+        assert_eq!(
+            room_history_key(&peers, &rosters, "sibling", "r1"),
+            room_conversation_id("r1")
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

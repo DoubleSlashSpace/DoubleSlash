@@ -283,6 +283,8 @@ ApplicationWindow {
             return {}
         }
     }
+    property bool arrangingNodes: false
+    onRoomListOrderChanged: root.scheduleNodeOrder()
 
     // Room ids whose text alerts. Empty until the user enables a room.
     // Same JSON array the phone stores. Keyed by room id, not the host.
@@ -381,7 +383,8 @@ ApplicationWindow {
             mode: o.mode,
             pinned: o.pinned,
             manual: o.manual,
-            collapsed: o.collapsed
+            collapsed: o.collapsed,
+            nodes: o.nodes
         })
         settingsModel.save()
     }
@@ -405,8 +408,65 @@ ApplicationWindow {
         }
         lines.push("")
         lines.push(qsTr("Click — show or hide its rooms"))
-        lines.push(qsTr("Right-click — portal and new rooms"))
+        lines.push(qsTr("Right-click — reorder, portal, and new rooms"))
         return lines.join("\n")
+    }
+
+    /// The supernode rows Move up and Move down reorder, known nodes only.
+    function nodeEntriesForOrder() {
+        var entries = []
+        if (!backend || !nodeListModel)
+            return entries
+        for (var i = 0; i < nodeListModel.count; i++) {
+            var node = nodeListModel.get(i)
+            if (!node || !node.node_id)
+                continue
+            if (!backend.isKnownSupernode(node.node_id))
+                continue
+            entries.push({
+                nodeId: node.node_id,
+                label: root.supernodeName(node.local_name || "", node.title || "", node.node_id)
+            })
+        }
+        return entries
+    }
+
+    /// Put the model into the shared node order once this turn's edits settle.
+    function scheduleNodeOrder() {
+        Qt.callLater(root.applyNodeOrder)
+    }
+
+    function applyNodeOrder() {
+        if (root.arrangingNodes || !nodeListModel)
+            return
+        root.arrangingNodes = true
+        var wanted = RoomTree.orderedNodeIds(root.nodeEntriesForOrder(), root.roomListOrder)
+        var seen = {}
+        var order = []
+        var i
+        for (i = 0; i < wanted.length; i++) {
+            order.push(wanted[i])
+            seen[wanted[i]] = true
+        }
+        for (i = 0; i < nodeListModel.count; i++) {
+            var id = nodeListModel.get(i).node_id
+            if (!seen[id]) {
+                order.push(id)
+                seen[id] = true
+            }
+        }
+        for (var n = 0; n < order.length; n++) {
+            var from = -1
+            for (var j = n; j < nodeListModel.count; j++) {
+                if (nodeListModel.get(j).node_id === order[n]) {
+                    from = j
+                    break
+                }
+            }
+            if (from > n)
+                nodeListModel.move(from, n, 1)
+        }
+        root.arrangingNodes = false
     }
 
     function roomGroupsForOrder() {
@@ -664,6 +724,7 @@ ApplicationWindow {
                     })
                 }
             }
+            root.scheduleNodeOrder()
         } catch (e) {
             console.warn("syncRoomsSidebar parse error:", e)
         }
@@ -779,6 +840,7 @@ ApplicationWindow {
         for (var k = 0; k < toRemove.length; k++)
             nodeListModel.remove(toRemove[k])
         pruneNonSupernodeEntries()
+        root.scheduleNodeOrder()
     }
 
     function upsertSfuRoomGroup(supernodeId, rooms, replaceRooms) {
@@ -2772,6 +2834,34 @@ ApplicationWindow {
                             text: nodeContextMenu.targetCollapsed ? qsTr("Show Rooms") : qsTr("Hide Rooms")
                             onTriggered: root.setNodeCollapsed(
                                 nodeContextMenu.targetNodeId, !nodeContextMenu.targetCollapsed)
+                        }
+                        MenuItem {
+                            text: qsTr("Move up")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/arrow-up.svg"
+                            enabled: RoomTree.canMoveNode(
+                                root.nodeEntriesForOrder(),
+                                nodeContextMenu.targetNodeId,
+                                -1,
+                                root.roomListOrder)
+                            onTriggered: root.commitRoomOrder(RoomTree.moveNode(
+                                root.nodeEntriesForOrder(),
+                                nodeContextMenu.targetNodeId,
+                                -1,
+                                root.roomListOrder))
+                        }
+                        MenuItem {
+                            text: qsTr("Move down")
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/arrow-down.svg"
+                            enabled: RoomTree.canMoveNode(
+                                root.nodeEntriesForOrder(),
+                                nodeContextMenu.targetNodeId,
+                                1,
+                                root.roomListOrder)
+                            onTriggered: root.commitRoomOrder(RoomTree.moveNode(
+                                root.nodeEntriesForOrder(),
+                                nodeContextMenu.targetNodeId,
+                                1,
+                                root.roomListOrder))
                         }
                         MenuItem {
                             text: qsTr("Rename…")

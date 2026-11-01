@@ -491,6 +491,42 @@ TestCase {
         verify(!RoomTree.sameOrder(folded, RoomTree.withNodeCollapsed(folded, "n", false)))
     }
 
+    function nodeEntries() {
+        return [
+            { nodeId: "g", label: "Gamma" },
+            { nodeId: "a", label: "Alpha" },
+            { nodeId: "b=", label: "Beta" }
+        ]
+    }
+
+    function test_node_rows_move_and_otherwise_stay_in_name_order() {
+        // No saved order: name A–Z, and "Node 2" before "Node 10".
+        compare(RoomTree.orderedNodeIds(nodeEntries(), {}), ["a", "b=", "g"])
+        compare(RoomTree.orderedNodeIds([
+            { nodeId: "10", label: "Node 10" },
+            { nodeId: "2", label: "Node 2" }
+        ], {}), ["2", "10"])
+        // A saved id matches with or without padding. A node not listed yet
+        // stays in name order after the saved rows.
+        var saved = { nodes: ["b", "missing"], mode: "manual", manual: ["a:lobby"], collapsed: ["g"] }
+        compare(RoomTree.orderedNodeIds(nodeEntries(), saved), ["b=", "a", "g"])
+        compare(RoomTree.canMoveNode(nodeEntries(), "b=", -1, saved), false)
+        compare(RoomTree.canMoveNode(nodeEntries(), "a", 1, saved), true)
+        var moved = RoomTree.moveNode(nodeEntries(), "g", -1, saved)
+        compare(moved.nodes, ["b=", "g", "a", "missing"])
+        // Moving a node leaves the room sort, pins and folds alone.
+        compare(moved.mode, "manual")
+        compare(moved.manual, ["a:lobby"])
+        compare(moved.collapsed, ["g"])
+        compare(moved.pinned, [])
+        // Sorting rooms does not drop the node order, padding duplicates included.
+        var kept = RoomTree.withMode(
+            { nodes: ["ccc=", "ccc", "aaa"] }, "name_desc", [{ nodeId: "n", rooms: sample() }])
+        compare(kept.nodes, ["ccc=", "aaa"])
+        compare(kept.mode, "name_desc")
+        compare(RoomTree.withNodeCollapsed(kept, "n", true).nodes, ["ccc=", "aaa"])
+    }
+
     function test_node_voice_count_sums_its_rooms() {
         compare(RoomTree.nodeVoiceCount(sample()), 4)
         compare(RoomTree.nodeVoiceCount([]), 0)

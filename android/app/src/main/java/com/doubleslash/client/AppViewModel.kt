@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.update
 import com.doubleslash.client.ui.AvatarArt
 import com.doubleslash.client.ui.RoomListOrder
 import com.doubleslash.client.ui.listOrderKey
+import com.doubleslash.client.ui.groupRoomsByNode
+import com.doubleslash.client.ui.moveNodeInOrder
 import com.doubleslash.client.ui.moveRoomInOrder
 import com.doubleslash.client.ui.parseAvatarSvg
 import com.doubleslash.client.ui.parseRoomListOrder
@@ -84,7 +86,7 @@ data class VoiceRoom(
     val roomName: String,
 ) {
     /** Key into [AppState.roomVoiceRosters] / [AppState.roomTextRosters]. */
-    val rosterKey: String get() = "$supernodeId:$roomId"
+    val rosterKey: String get() = rosterMapKey(supernodeId, roomId)
 }
 
 data class AppState(
@@ -165,10 +167,27 @@ data class AppState(
      *
      * Kept per node and unioned for display: a cluster hosts one logical room
      * on several members, so each node knows only the peers attached to it.
+     * The supernode id is stored without base64 padding, and a new snapshot
+     * drops the other spelling of that same node.
      */
     val roomVoiceRosters: Map<String, List<String>> = emptyMap(),
     /** Chat rosters (participants + text subscribers), keyed the same way. */
     val roomTextRosters: Map<String, List<String>> = emptyMap(),
+    /**
+     * Live transport stats per supernode, keyed by [videoKey] of the session id.
+     *
+     * The desktop draws the same sample as a ping on the node and in the open
+     * room. A direct peer's sample is [peerStats], so a person cannot occupy
+     * a supernode's ping.
+     */
+    val nodeStats: Map<String, NodeConnectionStats> = emptyMap(),
+    /**
+     * Live transport stats for a direct QUIC session, keyed by [videoKey].
+     *
+     * A relayed peer has no sample of their own: the core only measures the
+     * supernode carrying them. Their ping is that node's [nodeStats].
+     */
+    val peerStats: Map<String, NodeConnectionStats> = emptyMap(),
     /** The one direct call in progress, if any. */
     val call: CallState? = null,
     /** Show rooms the user hid. Off by default, matching the desktop sidebar. */
@@ -373,6 +392,307 @@ internal fun Map<String, List<String>>.roomMembersUnion(roomId: String): List<St
         .flatMap { it.value.asSequence() }
         .distinctBy { it.videoKey() }
         .toList()
+
+/**
+ * Key for one node's roster of [roomId].
+ *
+ * A padded and an unpadded supernode id are the same node. Room ids are hex
+ * and supernode ids are base64url, so the first `:` splits them.
+ */
+internal fun rosterMapKey(supernodeId: String, roomId: String): String =
+    "${supernodeId.trimEnd('=')}:$roomId"
+
+/**
+ * Store [members] for one node, replacing either padding spelling of that node.
+ *
+ * A later snapshot that arrives under the other spelling must not leave the
+ * previous list in the union. Two different nodes that both host the room
+ * stay, because a cluster reports each attachment separately.
+ */
+internal fun Map<String, List<String>>.withNodeRoster(
+    supernodeId: String,
+    roomId: String,
+    members: List<String>,
+): Map<String, List<String>> {
+    val key = rosterMapKey(supernodeId, roomId)
+    val bare = supernodeId.trimEnd('=')
+    val kept = filterKeys { existing ->
+        val node = existing.substringBefore(':')
+        val room = existing.substringAfter(':', "")
+        room != roomId || node.trimEnd('=') != bare
+    }
+    return kept + (key to members)
+}
+
+/**
+ * One supernode's latest transport sample.
+ *
+ * Thresholds match the desktop connection chip: no sample is [LinkQuality.NONE],
+ * loss above 4% or ping above 300 ms is bad, loss above 1.5% or ping above
+ * 150 ms is fair, and anything measured under that is good.
+ */
+data class NodeConnectionStats(
+    val rttMs: Double = 0.0,
+    val packetLossPct: Double = 0.0,
+    val jitterMs: Double = 0.0,
+    val relay: Boolean = false,
+    val bandwidthKbps: Double = 0.0,
+) {
+    val quality: LinkQuality
+        get() = when {
+            rttMs <= 0 -> LinkQuality.NONE
+            packetLossPct > 4 || rttMs > 300 -> LinkQuality.BAD
+            packetLossPct > 1.5 || rttMs > 150 -> LinkQuality.FAIR
+            else -> LinkQuality.GOOD
+        }
+
+    val pingLabel: String get() = "${rttMs.roundToInt()} ms"
+
+    /** The desktop node tooltip, for the row's spoken description. */
+    fun tooltip(): String {
+        val loss = String.format(Locale.US, "%.1f", packetLossPct)
+        return "Ping: ${rttMs.roundToInt()} ms\nPacket loss: $loss% · Jitter: ${jitterMs.roundToInt()} ms"
+    }
+
+    /** Path the desktop room panel names: QUIC when the relay session is up. */
+    val pathLabel: String get() = if (relay) "QUIC" else "WS only"
+
+    /**
+     * The desktop stats panel's quality word.
+     *
+     * Excellent is under 80 ms, 0.5% loss, and 15 ms of jitter. Good is under
+     * 150 ms, 1.5%, and 25 ms. Fair is under 300 ms, 4%, and 50 ms. Anything
+     * past that is poor. These cuts are separate from [quality], which only
+     * colors the ping.
+     */
+    val qualityTierLabel: String
+        get() = when {
+            rttMs < 80 && packetLossPct < 0.5 && jitterMs < 15 -> "Excellent"
+            rttMs < 150 && packetLossPct < 1.5 && jitterMs < 25 -> "Good"
+            rttMs < 300 && packetLossPct < 4.0 && jitterMs < 50 -> "Fair"
+            else -> "Poor"
+        }
+}
+
+enum class LinkQuality { NONE, GOOD, FAIR, BAD }
+
+/**
+ * How this phone reaches one peer.
+ *
+ * Direct is a live QUIC session with that peer. Relayed means no such
+ * session, and a supernode is what is carrying them. Direct wins when both
+ * are true, matching the core's path choice.
+ */
+internal enum class PeerRoute { DIRECT, RELAYED }
+
+/**
+ * The path line and the sample behind its ping.
+ *
+ * [stats] is omitted until a round trip has been measured, so a quiet sample
+ * cannot draw a fake `0 ms`. For [PeerRoute.RELAYED], [stats] is the
+ * supporting supernode's sample and [via] is that node's name.
+ */
+internal data class PeerLink(
+    val route: PeerRoute,
+    val stats: NodeConnectionStats? = null,
+    val via: String = "",
+) {
+    val routeLabel: String
+        get() = when (route) {
+            PeerRoute.DIRECT -> "Direct"
+            PeerRoute.RELAYED -> if (via.isBlank()) "Relayed" else "Relayed · $via"
+        }
+}
+
+/**
+ * The `connection_stats` event: `peer_id` plus a `stats` object.
+ *
+ * Direct peers and supernodes emit the same event. The caller files a
+ * supernode under [AppState.nodeStats] and a known peer under [AppState.peerStats].
+ */
+internal fun JsonObject.connectionStats(): Pair<String, NodeConnectionStats>? {
+    val body = this["stats"] as? JsonObject ?: return null
+    val peerId = stringOrEmpty("peer_id").ifEmpty { body.stringOrEmpty("peer_id") }
+    if (peerId.isEmpty()) return null
+    return peerId to NodeConnectionStats(
+        rttMs = body.number("rtt_ms"),
+        packetLossPct = body.number("packet_loss_pct"),
+        jitterMs = body.number("jitter_ms"),
+        relay = body.boolean("relay", false),
+        bandwidthKbps = body.number("bandwidth_kbps"),
+    )
+}
+
+/** Lowest measured ping among [ids], once [connected]. A silent sample is omitted. */
+internal fun AppState.statsAmong(ids: Iterable<String>, connected: Boolean): NodeConnectionStats? {
+    if (!connected) return null
+    return ids.asSequence()
+        .map { it.videoKey() }
+        .filter { it.isNotEmpty() }
+        .mapNotNull { nodeStats[it] }
+        .filter { it.rttMs > 0 }
+        .minByOrNull { it.rttMs }
+}
+
+internal fun AppState.statsForNode(node: RoomNodeInfo): NodeConnectionStats? =
+    statsAmong(node.members + node.nodeId, node.isConnected(connectedSupernodes))
+
+internal fun AppState.statsForRoom(room: Room): NodeConnectionStats? {
+    val node = roomNodes.firstOrNull { candidate ->
+        val ids = (candidate.members + candidate.nodeId).map { it.videoKey() }
+        room.listNodeId.videoKey() in ids || room.supernodeId.videoKey() in ids
+    }
+    if (node != null) return statsForNode(node)
+    return statsAmong(listOf(room.supernodeId), room.supernodeId.videoKey() in connectedSupernodes)
+}
+
+internal fun AppState.statsForSupernode(node: SupernodeInfo): NodeConnectionStats? =
+    statsAmong(
+        node.clusterMembers + listOf(node.identityPub, node.peerId),
+        node.isConnected(connectedSupernodes),
+    )
+
+/**
+ * "Connected · 24 ms · cluster of 3", the desktop supernode status line.
+ *
+ * Ping is included only after a sample with a measured round trip. A cluster
+ * still says how many members it has; a single node keeps a short id.
+ */
+internal fun supernodeStatusLine(node: SupernodeInfo, state: AppState): String {
+    val up = node.isConnected(state.connectedSupernodes)
+    val parts = mutableListOf(if (up) "Connected" else "Offline")
+    state.statsForSupernode(node)?.let { parts += it.pingLabel }
+    parts += if (node.clusterSize > 1) {
+        "cluster of ${node.clusterSize}"
+    } else {
+        node.peerId.take(16)
+    }
+    return parts.joinToString(" · ")
+}
+
+/** True when [id] is a supernode this profile already knows or is connected to. */
+internal fun AppState.knowsSupernode(id: String): Boolean {
+    val key = id.videoKey()
+    if (key.isEmpty()) return false
+    if (key in connectedSupernodes) return true
+    if (roomNodes.any { node ->
+            node.nodeId.videoKey() == key || node.members.any { it.videoKey() == key }
+        }
+    ) {
+        return true
+    }
+    if (supernodeInfo.any { node ->
+            node.identityPub.videoKey() == key ||
+                node.peerId == id ||
+                node.clusterMembers.any { it.videoKey() == key }
+        }
+    ) {
+        return true
+    }
+    return supernodes.any { peer ->
+        peer.isSupernode && (peer.identityPub.videoKey() == key || peer.peerId == id)
+    }
+}
+
+/** True when [id] is a person in the peer list, under either spelling. */
+internal fun AppState.knowsPeer(id: String): Boolean {
+    val key = id.videoKey()
+    if (key.isEmpty()) return false
+    return peers.any { peer ->
+        !peer.isSupernode && (
+            peer.peerId == id ||
+                peer.peerId.videoKey() == key ||
+                (peer.identityPub.isNotEmpty() && peer.identityPub.videoKey() == key)
+            )
+    }
+}
+
+private fun Set<String>.containsPeer(id: String): Boolean {
+    if (id.isEmpty()) return false
+    val key = id.videoKey()
+    return any { it == id || (key.isNotEmpty() && it.videoKey() == key) }
+}
+
+/** This peer's own measured sample. A non-positive round trip is not a ping. */
+private fun AppState.peerSample(peerId: String): NodeConnectionStats? {
+    val peer = peers.firstOrNull { it.peerId == peerId || it.peerId.videoKey() == peerId.videoKey() }
+    val keys = listOfNotNull(
+        peerId.videoKey().takeIf { it.isNotEmpty() },
+        peer?.identityPub?.videoKey()?.takeIf { it.isNotEmpty() },
+    )
+    return keys.firstNotNullOfOrNull { key -> peerStats[key]?.takeIf { it.rttMs > 0 } }
+}
+
+/**
+ * The supernode carrying relayed peers.
+ *
+ * A node whose QUIC relay is up (`stats.relay`) is the one actually
+ * supporting relay. A node that is only on its WebSocket is used when no
+ * relay session is up, and the path is still Relayed. Among the nodes that
+ * qualify, the lowest measured ping wins. A disconnected node is not a
+ * candidate, and a sample with no round trip is not shown as a ping.
+ */
+private data class SupportingNode(
+    val name: String,
+    val ids: Set<String>,
+    val stats: NodeConnectionStats?,
+    val relay: Boolean,
+)
+
+private fun AppState.supportingSupernode(): SupportingNode? {
+    if (connectedSupernodes.isEmpty()) return null
+    val found = mutableListOf<SupportingNode>()
+    fun add(name: String, rawIds: Iterable<String>) {
+        val ids = rawIds.map { it.videoKey() }.filter { it.isNotEmpty() }.toSet()
+        if (ids.none { it in connectedSupernodes }) return
+        if (found.any { candidate -> candidate.ids.any { it in ids } }) return
+        val relay = ids.any { nodeStats[it]?.relay == true }
+        found += SupportingNode(
+            name = name.ifBlank { ids.first().take(12) },
+            ids = ids,
+            stats = statsAmong(ids, connected = true),
+            relay = relay,
+        )
+    }
+    for (node in roomNodes) {
+        if (node.isConnected(connectedSupernodes)) add(node.label, node.members + node.nodeId)
+    }
+    for (node in supernodeInfo) {
+        if (!node.isConnected(connectedSupernodes)) continue
+        val name = node.displayName.ifBlank {
+            node.peerId.take(12).ifBlank { node.identityPub.take(12) }
+        }
+        add(name, node.clusterMembers + listOf(node.identityPub, node.peerId))
+    }
+    for (peer in supernodes) {
+        if (!peer.isSupernode) continue
+        add(
+            peer.displayName.ifBlank { peer.handle }.ifBlank { peer.peerId.take(12) },
+            listOf(peer.identityPub, peer.peerId),
+        )
+    }
+    for (id in connectedSupernodes) add(id.take(12), listOf(id))
+    val carrying = found.filter { it.relay }.ifEmpty { found }
+    if (carrying.isEmpty()) return null
+    val measured = carrying.filter { (it.stats?.rttMs ?: 0.0) > 0.0 }
+    return (measured.ifEmpty { carrying }).minBy { it.stats?.rttMs ?: Double.MAX_VALUE }
+}
+
+/**
+ * Direct when [peerId] has a live QUIC session, Relayed when a supernode is
+ * what is keeping them up, and null when they are offline.
+ *
+ * The relayed ping is the supporting supernode's, never a leftover direct
+ * sample. Offline stays null even if a sample is still stored.
+ */
+internal fun AppState.peerLink(peerId: String): PeerLink? {
+    if (peerId.isEmpty()) return null
+    val direct = directPeers.containsPeer(peerId)
+    if (!direct && !relayPresentPeers.containsPeer(peerId)) return null
+    if (direct) return PeerLink(PeerRoute.DIRECT, peerSample(peerId))
+    val via = supportingSupernode()
+    return PeerLink(route = PeerRoute.RELAYED, stats = via?.stats, via = via?.name.orEmpty())
+}
 
 /**
  * [AppState.streamingPeers] minus anyone we no longer share a room or call with.
@@ -759,6 +1079,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     maxOf(it.connectionMode, ConnectionMode.RELAY)
                 },
+                // A node that dropped out must not keep showing its last ping.
+                // The sample is keyed by the same session id this set holds.
+                nodeStats = it.nodeStats.filterKeys { key -> key in connected },
             )
         }
     }
@@ -821,6 +1144,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Keep [room] first among its siblings, or stop doing that. */
     fun toggleRoomPin(room: Room) {
         storeRoomOrder(withRoomPinToggled(_state.value.prefs.roomListOrder, room.listOrderKey()))
+    }
+
+    /** Move a supernode row one place. [delta] is -1 or 1. */
+    fun moveNode(nodeId: String, delta: Int) {
+        val current = _state.value
+        val visible = current.rooms.filter { current.showHiddenRooms || !it.hidden }
+        val nodes = groupRoomsByNode(visible, current.roomNodes, current.prefs.roomListOrder)
+            .map { it.node }
+        storeRoomOrder(moveNodeInOrder(current.prefs.roomListOrder, nodes, nodeId, delta))
     }
 
     /** Move [room] one place among its siblings. [delta] is -1 or 1. */
@@ -1826,7 +2158,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
         viewModelScope.launch {
-            core.command("chat.mark_read") { put("peer_id", "room:${room.roomId}") }
+            core.command("room.mark_read") { put("room_id", room.roomId) }
         }
     }
 
@@ -1867,7 +2199,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             else state.copy(roomUnread = state.roomUnread - roomId)
         }
         viewModelScope.launch {
-            core.command("chat.mark_read") { put("peer_id", "room:$roomId") }
+            core.command("room.mark_read") { put("room_id", roomId) }
         }
     }
 
@@ -1905,19 +2237,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // leaving the room blank until the supernode admits us.
             loadRoomHistory(room)
 
-            val join = core.command("room.join") {
+            // Opening a room is text, as on the desktop. `room.join` is an SFU
+            // voice join, which listed a reader under Voice here while the
+            // desktop showed them under Text. Voice still joins from
+            // [joinRoomVoice]. Subscribe does not clear a voice flag, and a
+            // leave here would also drop the room key when this device is not
+            // the one that joined, so a stuck flag clears on the next real
+            // leave or when this connection drops.
+            val subscribed = core.command("room.chat.subscribe") {
                 put("supernode_id", room.supernodeId)
                 put("room_id", room.roomId)
-                // Empty means "public join"; the core picks the command.
-                put("invite_token", room.inviteToken)
             }
-            if (!join.ok) {
-                _state.update { it.copy(error = join.errorText) }
-                return@launch
-            }
-            core.command("room.chat.subscribe") {
-                put("supernode_id", room.supernodeId)
-                put("room_id", room.roomId)
+            if (!subscribed.ok) {
+                _state.update { it.copy(error = subscribed.errorText) }
             }
         }
     }
@@ -1925,14 +2257,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Load a room's stored history.
      *
-     * Room chat *is* persisted — under the same `room:<supernode>:<room>`
-     * conversation key the desktop writes — so a room opened on the phone
-     * shows what was said on the desktop and vice versa.
+     * Room chat *is* persisted — under the same conversation key the desktop
+     * writes — so a room opened on the phone shows what was said on the
+     * desktop and vice versa.
      */
     private suspend fun loadRoomHistory(room: Room) {
-        // Room id only: it is a hash over the creator's key and the room name,
-        // so it identifies the room on whichever supernode is hosting it.
-        val reply = core.command("room.history") { put("room_id", room.roomId) }
+        // The room id identifies a room on whichever supernode hosts it, except
+        // the built-in one every node hosts, whose history the core keys by node.
+        val reply = core.command("room.history") {
+            put("room_id", room.roomId)
+            put("supernode_id", room.supernodeId)
+        }
         if (!reply.ok) return
 
         val history = reply.decodeList<ChatMessage>(core, "messages").map {
@@ -2363,8 +2698,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             "peer_disconnected" -> {
                 val id = event.stringOrEmpty("peer_id")
                 // Only the direct session ended. A fresh relayed announce still
-                // means the peer is up, so the dot is left to the union.
-                _state.update { it.withPresence(direct = it.directPeers - id) }
+                // means the peer is up, so the dot is left to the union. The
+                // direct sample must go with the session, or a relayed row
+                // would keep showing that peer's old round trip.
+                _state.update {
+                    it.withPresence(direct = it.directPeers - id)
+                        .copy(peerStats = it.peerStats - id.videoKey())
+                }
             }
 
             "session_state" -> {
@@ -2409,7 +2749,43 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(
                         connectionMode = ConnectionMode.OFFLINE,
                         connectedSupernodes = it.connectedSupernodes - id,
+                        nodeStats = it.nodeStats - id,
                     )
+                }
+            }
+
+            "connection_stats" -> {
+                val (peerId, stats) = event.connectionStats() ?: return@onCoreEvent
+                val key = peerId.videoKey()
+                if (key.isEmpty()) return@onCoreEvent
+                _state.update { state ->
+                    when {
+                        // A supernode check comes first: its id must not land
+                        // in the peer map, where a chat row would read it as
+                        // that person's own direct ping.
+                        state.knowsSupernode(peerId) ->
+                            state.copy(nodeStats = state.nodeStats + (key to stats))
+                        state.knowsPeer(peerId) || state.directPeers.containsPeer(peerId) -> {
+                            // File the sample under every spelling of this
+                            // person. The chat is opened by the list's hex
+                            // id, and a stats tick can arrive under the
+                            // public id.
+                            val keys = buildSet {
+                                add(key)
+                                for (peer in state.peers) {
+                                    if (peer.isSupernode) continue
+                                    val same = peer.peerId == peerId ||
+                                        peer.peerId.videoKey() == key ||
+                                        (peer.identityPub.isNotEmpty() && peer.identityPub.videoKey() == key)
+                                    if (!same) continue
+                                    add(peer.peerId.videoKey())
+                                    peer.identityPub.videoKey().takeIf { it.isNotEmpty() }?.let { add(it) }
+                                }
+                            }.filter { it.isNotEmpty() }
+                            state.copy(peerStats = state.peerStats + keys.associateWith { stats })
+                        }
+                        else -> state
+                    }
                 }
             }
 
@@ -2620,7 +2996,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             "handle_updated" -> refreshPeers()
 
             // `rooms_synced`: another of our devices sent rooms this one lacked.
-            "room_created", "room_invite_ready", "rooms_synced" -> refreshRooms()
+            // `room_list`: a supernode listed its rooms, now saved by the core.
+            "room_created", "room_invite_ready", "rooms_synced", "room_list" -> refreshRooms()
 
             // Our own offers echo back as events too; only an inbound one is
             // a question for the user.
@@ -2756,7 +3133,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // user is reading should not stay unread for a later enable.
                 if (looking && roomId.isNotEmpty()) {
                     viewModelScope.launch {
-                        core.command("chat.mark_read") { put("peer_id", "room:$roomId") }
+                        core.command("room.mark_read") {
+                            put("room_id", roomId)
+                            put("supernode_id", event.stringOrEmpty("supernode_id"))
+                        }
                     }
                 }
                 if (!open) return@onCoreEvent
@@ -2787,13 +3167,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // Record every room's roster, not just the open one. Rosters
                 // arrive for everything we subscribe to, and discarding the
                 // rest is why the room list could only show a count after you
-                // opened the room.
-                val key = event.stringOrEmpty("supernode_id") +
-                    ":" + event.stringOrEmpty("room_id")
+                // opened the room. Padding spellings of one node collapse, so
+                // a stale voice snapshot cannot outlive the text-only update.
+                val supernodeId = event.stringOrEmpty("supernode_id")
+                val roomId = event.stringOrEmpty("room_id")
                 _state.update {
                     val next = it.copy(
-                        roomVoiceRosters = it.roomVoiceRosters + (key to members),
-                        roomTextRosters = it.roomTextRosters + (key to chatMembers),
+                        roomVoiceRosters = it.roomVoiceRosters.withNodeRoster(supernodeId, roomId, members),
+                        roomTextRosters = it.roomTextRosters.withNodeRoster(supernodeId, roomId, chatMembers),
                     )
                     next.copy(streamingPeers = next.streamingStillPresent())
                 }

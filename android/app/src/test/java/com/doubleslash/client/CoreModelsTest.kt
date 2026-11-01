@@ -159,6 +159,158 @@ class CoreModelsTest {
     }
 
     @Test
+    fun `connection stats read the nested sample and match the desktop chip`() {
+        val parsed = obj(
+            """{"event":"connection_stats","peer_id":"nodeA=",
+                "stats":{"rtt_ms":24,"packet_loss_pct":0.4,"jitter_ms":3,"relay":true,"bandwidth_kbps":120}}""",
+        ).connectionStats()
+        assertEquals("nodeA=", parsed?.first)
+        val stats = parsed!!.second
+        assertEquals(24.0, stats.rttMs, 0.01)
+        assertEquals(LinkQuality.GOOD, stats.quality)
+        assertEquals("24 ms", stats.pingLabel)
+        assertEquals("QUIC", stats.pathLabel)
+        assertEquals(
+            "Ping: 24 ms\nPacket loss: 0.4% · Jitter: 3 ms",
+            stats.tooltip(),
+        )
+        assertNull(obj("""{"event":"connection_stats","peer_id":"n"}""").connectionStats())
+        assertEquals(LinkQuality.FAIR, NodeConnectionStats(rttMs = 160.0).quality)
+        assertEquals(LinkQuality.BAD, NodeConnectionStats(rttMs = 301.0).quality)
+        assertEquals(LinkQuality.BAD, NodeConnectionStats(rttMs = 20.0, packetLossPct = 4.1).quality)
+        assertEquals(LinkQuality.FAIR, NodeConnectionStats(rttMs = 20.0, packetLossPct = 1.6).quality)
+        assertEquals(LinkQuality.NONE, NodeConnectionStats().quality)
+        assertEquals("Excellent", NodeConnectionStats(rttMs = 24.0, packetLossPct = 0.4, jitterMs = 3.0).qualityTierLabel)
+        assertEquals("Good", NodeConnectionStats(rttMs = 100.0, jitterMs = 20.0).qualityTierLabel)
+        assertEquals("Fair", NodeConnectionStats(rttMs = 160.0).qualityTierLabel)
+        assertEquals("Poor", NodeConnectionStats(rttMs = 301.0).qualityTierLabel)
+    }
+
+    @Test
+    fun `a supernode row shows ping only while that node is up`() {
+        val fast = NodeConnectionStats(rttMs = 24.0)
+        val node = RoomNodeInfo(nodeId = "nodeA=", members = listOf("nodeA", "nodeB"))
+        val state = AppState(
+            connectedSupernodes = setOf("nodeA", "nodeB"),
+            roomNodes = listOf(node),
+            nodeStats = mapOf("nodeA" to fast, "nodeB" to NodeConnectionStats(rttMs = 80.0)),
+        )
+        assertEquals(fast, state.statsForNode(node))
+        assertNull(state.copy(connectedSupernodes = emptySet()).statsForNode(node))
+        assertFalse(state.knowsSupernode("bob"))
+        assertTrue(state.knowsSupernode("nodeA="))
+    }
+
+    @Test
+    fun `supernode status line includes ping when connected`() {
+        val node = SupernodeInfo(peerId = "peer", identityPub = "nodeA=", clusterMembers = listOf("nodeB"))
+        val state = AppState(
+            connectedSupernodes = setOf("nodeA"),
+            nodeStats = mapOf("nodeA" to NodeConnectionStats(rttMs = 24.0)),
+        )
+        assertEquals("Connected · 24 ms · cluster of 2", supernodeStatusLine(node, state))
+        assertEquals(
+            "Offline · cluster of 2",
+            supernodeStatusLine(node, state.copy(connectedSupernodes = emptySet())),
+        )
+    }
+
+    @Test
+    fun `a direct peer uses its own ping and is not labeled relayed`() {
+        val own = NodeConnectionStats(rttMs = 18.0)
+        val node = NodeConnectionStats(rttMs = 40.0, relay = true)
+        val state = AppState(
+            peers = listOf(Peer(peerId = "bob", identityPub = "pub=", displayName = "Bob")),
+            directPeers = setOf("bob"),
+            relayPresentPeers = setOf("bob"),
+            onlinePeers = setOf("bob"),
+            connectedSupernodes = setOf("nodeA"),
+            roomNodes = listOf(RoomNodeInfo(nodeId = "nodeA", displayName = "acdc")),
+            nodeStats = mapOf("nodeA" to node),
+            peerStats = mapOf("pub" to own),
+        )
+        val link = state.peerLink("bob")
+        assertEquals(PeerRoute.DIRECT, link?.route)
+        assertEquals("Direct", link?.routeLabel)
+        assertEquals(own, link?.stats)
+        // The session id may arrive padded. It is still this peer.
+        assertEquals(PeerRoute.DIRECT, state.copy(directPeers = setOf("bob=")).peerLink("bob")?.route)
+    }
+
+    @Test
+    fun `a relayed peer names the supernode whose relay is up`() {
+        val websocket = NodeConnectionStats(rttMs = 10.0, relay = false)
+        val quic = NodeConnectionStats(rttMs = 40.0, relay = true)
+        val state = AppState(
+            peers = listOf(Peer(peerId = "bob", displayName = "Bob")),
+            relayPresentPeers = setOf("bob"),
+            onlinePeers = setOf("bob"),
+            connectedSupernodes = setOf("plain", "acdc"),
+            roomNodes = listOf(
+                RoomNodeInfo(nodeId = "plain", displayName = "plain"),
+                RoomNodeInfo(nodeId = "acdc", displayName = "acdc"),
+            ),
+            nodeStats = mapOf("plain" to websocket, "acdc" to quic),
+            // A leftover direct sample must not become this peer's ping.
+            peerStats = mapOf("bob" to NodeConnectionStats(rttMs = 5.0)),
+        )
+        val link = state.peerLink("bob")
+        assertEquals(PeerRoute.RELAYED, link?.route)
+        assertEquals("Relayed · acdc", link?.routeLabel)
+        assertEquals(quic, link?.stats)
+        assertNull(state.peerLink("offline"))
+    }
+
+    @Test
+    fun `a relayed peer with no quic relay still names a connected supernode`() {
+        val websocket = NodeConnectionStats(rttMs = 55.0, relay = false)
+        val state = AppState(
+            relayPresentPeers = setOf("bob"),
+            onlinePeers = setOf("bob"),
+            connectedSupernodes = setOf("nodeA"),
+            roomNodes = listOf(RoomNodeInfo(nodeId = "nodeA", displayName = "acdc")),
+            nodeStats = mapOf("nodeA" to websocket),
+        )
+        val link = state.peerLink("bob")
+        assertEquals(PeerRoute.RELAYED, link?.route)
+        assertEquals("Relayed · acdc", link?.routeLabel)
+        assertEquals(websocket, link?.stats)
+    }
+
+    @Test
+    fun `a quiet or offline peer shows no ping`() {
+        val quiet = AppState(
+            directPeers = setOf("bob"),
+            onlinePeers = setOf("bob"),
+            peerStats = mapOf("bob" to NodeConnectionStats(rttMs = 0.0)),
+        )
+        val link = quiet.peerLink("bob")
+        assertEquals(PeerRoute.DIRECT, link?.route)
+        assertEquals("Direct", link?.routeLabel)
+        assertNull(link?.stats)
+
+        val stored = NodeConnectionStats(rttMs = 12.0)
+        val offline = AppState(peerStats = mapOf("bob" to stored))
+        assertNull(offline.peerLink("bob"))
+
+        val unnamed = AppState(
+            relayPresentPeers = setOf("bob"),
+            onlinePeers = setOf("bob"),
+        )
+        assertEquals("Relayed", unnamed.peerLink("bob")?.routeLabel)
+    }
+
+    @Test
+    fun `an unknown id is not stored as a peer`() {
+        val people = AppState(peers = listOf(Peer(peerId = "bob", displayName = "Bob")))
+        assertTrue(people.knowsPeer("bob"))
+        assertTrue(people.knowsPeer("bob="))
+        assertFalse(people.knowsPeer("stranger"))
+        assertFalse(people.copy(peers = listOf(Peer(peerId = "bob", isSupernode = true))).knowsPeer("bob"))
+        assertFalse(people.knowsSupernode("bob"))
+    }
+
+    @Test
     fun `a cluster counts the node as well as its siblings`() {
         // The roster names the siblings only; padding does not make a new node.
         val node = SupernodeInfo(identityPub = "aaa=", clusterMembers = listOf("bbb", "ccc=", "ddd", "aaa"))

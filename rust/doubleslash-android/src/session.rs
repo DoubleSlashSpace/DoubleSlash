@@ -157,6 +157,7 @@ impl Session {
         let peer_store = Arc::new(RwLock::new(PeerStore::open(&identity, None)?));
         let chat_store = Arc::new(ChatStore::open(&identity, None)?);
         let room_store = Arc::new(RwLock::new(RoomStore::open(&identity, None)?));
+        adopt_shared_default_room_history(&chat_store, &peer_store.read());
         info!(
             "stores opened: {} peer(s), {} room definition(s)",
             peer_store.read().len(),
@@ -268,6 +269,16 @@ impl Session {
         ids.sort();
         ids.dedup();
         ids
+    }
+
+    /// The history key for `room_id` as reached through `supernode_id`.
+    pub fn room_history_key(&self, supernode_id: &str, room_id: &str) -> String {
+        crate::command::room_history_key(
+            &self.peer_store.read(),
+            &self.cluster_members.read(),
+            supernode_id,
+            room_id,
+        )
     }
 
     /// Queue a command for the connection manager.
@@ -409,8 +420,17 @@ fn spawn_event_pump(
                 route_video(&video_in, &ev);
                 record_peer_codecs(&peer_video_codecs, &ev);
                 persist_if_chat(&chat_store, &ev);
-                persist_if_room_chat(&chat_store, &ev);
-                persist_if_room_file_offer(&chat_store, &my_public_id, &ev);
+                // The built-in room's history is keyed by the node heading it.
+                let history_key = |supernode_id: &str, room_id: &str| {
+                    crate::command::room_history_key(
+                        &peer_store.read(),
+                        &cluster_members.read(),
+                        supernode_id,
+                        room_id,
+                    )
+                };
+                persist_if_room_chat(&chat_store, &history_key, &ev);
+                persist_if_room_file_offer(&chat_store, &history_key, &my_public_id, &ev);
                 persist_if_room_created(
                     &room_store,
                     &pending_sub_room_parent,
@@ -420,6 +440,7 @@ fn spawn_event_pump(
                     &ev,
                 );
                 persist_if_room_invite_ready(&room_store, &ev);
+                persist_if_room_list(&room_store, &peer_store, &cluster_members, &ev);
                 if let ConnectionEvent::RoomInviteReady { supernode_id, .. } = &ev {
                     // Joining doesn't reliably push a fresh roster back to the
                     // joiner on its own; ask so the accepted room's voice/text
@@ -439,6 +460,12 @@ fn spawn_event_pump(
                     cluster_members
                         .write()
                         .insert(supernode_id.clone(), members.clone());
+                    fold_default_room_history(
+                        &chat_store,
+                        &peer_store.read(),
+                        &cluster_members.read(),
+                        supernode_id,
+                    );
                 }
                 if let ConnectionEvent::SupernodeInfoReceived {
                     supernode_id,
@@ -490,8 +517,13 @@ fn spawn_event_pump(
 
                 queue_portal_datagram(&portal_datagrams, &ev);
 
-                let saved_file =
-                    persist_if_file_complete(&chat_store, &home_dir, &my_public_id, &ev);
+                let saved_file = persist_if_file_complete(
+                    &chat_store,
+                    &history_key,
+                    &home_dir,
+                    &my_public_id,
+                    &ev,
+                );
 
                 let Some(mut payload) = event::to_json(&ev) else {
                     continue;
@@ -632,12 +664,49 @@ fn route_media(call_tx: &mpsc::Sender<CallCommand>, event: &ConnectionEvent) {
     let _ = call_tx.try_send(command);
 }
 
+/// File the built-in room's shared history from before it was keyed per node
+/// under the node this phone joined first. Does nothing once it has run.
+fn adopt_shared_default_room_history(chat_store: &ChatStore, peers: &PeerStore) {
+    let Some(first) = peers.first_joined_supernode_id() else {
+        return;
+    };
+    let rosters = HashMap::new();
+    let node = crate::command::room_node(peers, &rosters, &first).map_or(first, |(node, _)| node);
+    if let Err(e) = chat_store.adopt_shared_default_room_history(&node) {
+        warn!("could not file the public room's history under a node: {e}");
+    }
+}
+
+/// Move built-in room history filed under a sibling onto the node heading
+/// `supernode_id`'s cluster, now that its roster says which that is.
+fn fold_default_room_history(
+    chat_store: &ChatStore,
+    peers: &PeerStore,
+    rosters: &HashMap<String, Vec<String>>,
+    supernode_id: &str,
+) {
+    let Some((node, members)) = crate::command::room_node(peers, rosters, supernode_id) else {
+        return;
+    };
+    if let Err(e) = chat_store.fold_default_room_history(&node, &members) {
+        warn!("could not fold the public room's history onto its node: {e}");
+    }
+}
+
+/// The history key for a room as reached through a supernode
+/// ([`crate::command::room_history_key`]).
+type HistoryKey<'a> = dyn Fn(&str, &str) -> String + 'a;
+
 /// Persist inbound room chat, so history survives leaving the room.
-fn persist_if_room_chat(chat_store: &ChatStore, event: &ConnectionEvent) {
+fn persist_if_room_chat(
+    chat_store: &ChatStore,
+    history_key: &HistoryKey<'_>,
+    event: &ConnectionEvent,
+) {
     use doubleslash_client::chat_store::{ChatMessage, MessageKind, MessageStatus};
 
     let ConnectionEvent::RoomChatMessage {
-        supernode_id: _,
+        supernode_id,
         room_id,
         sender_id,
         sender_handle,
@@ -668,10 +737,10 @@ fn persist_if_room_chat(chat_store: &ChatStore, event: &ConnectionEvent) {
 
     let msg = ChatMessage {
         id: message_id,
-        // Keyed on the room alone: a room_id is already a hash over the
-        // creator's public id and the room name, so it is the room's identity
-        // on every supernode that ever hosts it.
-        peer_id: doubleslash_client::chat_store::room_conversation_id(room_id),
+        // Keyed on the room alone, as a room_id is already a hash over the
+        // creator's public id and the room name; the built-in room, which
+        // every node hosts as `default`, also by its node.
+        peer_id: history_key(supernode_id, room_id),
         sender: sender_id.clone(),
         recipient: String::new(),
         body: body.clone(),
@@ -733,6 +802,7 @@ pub(crate) fn attachment_label(
 /// is rather than copied a second time.
 fn persist_if_file_complete(
     chat_store: &ChatStore,
+    history_key: &HistoryKey<'_>,
     home_dir: &Path,
     my_public_id: &str,
     event: &ConnectionEvent,
@@ -744,6 +814,7 @@ fn persist_if_file_complete(
         transfer_id,
         peer_id,
         room_id,
+        supernode_id,
         rel_path,
         payload,
         ..
@@ -776,12 +847,12 @@ fn persist_if_file_complete(
     let kind = doubleslash_client::chat_store::message_kind_for_path(rel_path);
 
     // Room files belong to the room conversation, 1:1 files to the peer's.
-    // The room key is `room_conversation_id`, the one `room.history` reads;
-    // the bare room id filed downloads where no screen ever looks.
+    // The room key is the one `room.history` reads; the bare room id filed
+    // downloads where no screen ever looks.
     let conversation = if room_id.is_empty() {
         peer_id.clone()
     } else {
-        doubleslash_client::chat_store::room_conversation_id(room_id)
+        history_key(supernode_id, room_id)
     };
 
     let message_id = format!("xfer-{transfer_id}");
@@ -840,7 +911,12 @@ fn same_identity(a: &str, b: &str) -> bool {
 /// posted from the desktop — even by this identity — only ever showed as the
 /// accept prompt. The row has no path yet; [`persist_if_file_complete`] fills
 /// it in when the download lands.
-fn persist_if_room_file_offer(chat_store: &ChatStore, my_public_id: &str, event: &ConnectionEvent) {
+fn persist_if_room_file_offer(
+    chat_store: &ChatStore,
+    history_key: &HistoryKey<'_>,
+    my_public_id: &str,
+    event: &ConnectionEvent,
+) {
     use doubleslash_client::chat_store::{ChatMessage, MessageStatus};
 
     let ConnectionEvent::FileOffered {
@@ -864,7 +940,7 @@ fn persist_if_room_file_offer(chat_store: &ChatStore, my_public_id: &str, event:
     let kind = doubleslash_client::chat_store::message_kind_for_path(rel_path);
     let record = ChatMessage {
         id: format!("xfer-{transfer_id}"),
-        peer_id: doubleslash_client::chat_store::room_conversation_id(room_id),
+        peer_id: history_key(supernode_id, room_id),
         sender: origin_id.clone(),
         recipient: room_id.clone(),
         body: attachment_label(&kind, rel_path),
@@ -1113,6 +1189,38 @@ fn merge_if_own_rooms(
     merged.changed
 }
 
+/// Save the rooms a supernode lists, as the desktop does, so a node shows its
+/// rooms before this phone has created or joined any of them. A list from a
+/// node this phone does not know is ignored.
+fn persist_if_room_list(
+    room_store: &Arc<RwLock<RoomStore>>,
+    peer_store: &Arc<RwLock<PeerStore>>,
+    cluster_members: &Arc<RwLock<HashMap<String, Vec<String>>>>,
+    event: &ConnectionEvent,
+) {
+    let ConnectionEvent::RoomListReceived {
+        supernode_id,
+        rooms_json,
+    } = event
+    else {
+        return;
+    };
+    let Some(host) = own_room_host(&peer_store.read(), &cluster_members.read(), supernode_id)
+    else {
+        return;
+    };
+    let rooms = match serde_json::from_str::<serde_json::Value>(rooms_json) {
+        Ok(rooms) => rooms,
+        Err(e) => {
+            warn!("could not read a room list: {e}");
+            return;
+        }
+    };
+    if let Err(e) = room_store.write().sync_from_room_list(&host, &rooms) {
+        warn!("could not save a room list: {e}");
+    }
+}
+
 /// The id to file a synced room under, or `None` for a supernode this phone
 /// does not know and so could not list the room for.
 ///
@@ -1291,7 +1399,14 @@ mod tests {
             rel_path: "a.txt".to_owned(),
         };
 
-        let saved = persist_if_file_complete(&store, &dir, "me", &event).expect("saved");
+        let saved = persist_if_file_complete(
+            &store,
+            &|_, room| doubleslash_client::chat_store::room_history_id("", room),
+            &dir,
+            "me",
+            &event,
+        )
+        .expect("saved");
         let history = store
             .get_history(
                 &doubleslash_client::chat_store::room_conversation_id("r1"),
@@ -1319,9 +1434,12 @@ mod tests {
         let store = ChatStore::open(&identity, Some(&dir.join("chat.db"))).unwrap();
         let me = "our-id=";
         let key = doubleslash_client::chat_store::room_conversation_id("r1");
+        let plain_key =
+            |_: &str, room: &str| doubleslash_client::chat_store::room_history_id("", room);
 
         persist_if_room_file_offer(
             &store,
+            &plain_key,
             me,
             &ConnectionEvent::FileOffered {
                 transfer_id: "t2".to_owned(),
@@ -1341,6 +1459,7 @@ mod tests {
 
         let saved = persist_if_file_complete(
             &store,
+            &plain_key,
             &dir,
             me,
             &ConnectionEvent::FileComplete {

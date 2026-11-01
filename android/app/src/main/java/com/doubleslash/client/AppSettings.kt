@@ -160,8 +160,9 @@ class AppSettings(context: Context) {
 
     /**
      * Rooms list order, the same JSON the desktop stores as `room_list_order_json`:
-     * name or people count in either direction, a manual order, and rooms kept
-     * at the top of their group.
+     * name or people count in either direction, a manual order, rooms kept
+     * at the top of their group, which supernodes are folded, and the supernode
+     * row order (`nodes`, name A–Z until moved).
      */
     var roomListOrderJson: String
         get() = prefs.getString(KEY_ROOM_LIST_ORDER, DEFAULT_ROOM_LIST_ORDER_JSON)

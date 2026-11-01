@@ -144,6 +144,39 @@ pub fn room_conversation_id(room_id: &str) -> String {
     format!("room:{room_id}")
 }
 
+/// The built-in room every supernode hosts under the same id.
+pub const DEFAULT_ROOM_ID: &str = "default";
+
+/// The conversation key for `room_id` as hosted by `node_id`, the cluster's
+/// representative node (the one its Rooms row is headed by).
+///
+/// Only the built-in room needs the node. Its id is the literal `default` on
+/// every supernode, not a hash over a creator, so two unrelated nodes' public
+/// rooms would otherwise share one history. It is keyed per cluster, not per
+/// member, so a failover between siblings keeps one conversation. The key has
+/// a single colon, so [`ChatStore`]'s legacy `room:{host}:{room}` fold leaves
+/// it alone. Every other room keeps [`room_conversation_id`].
+pub fn room_history_id(node_id: &str, room_id: &str) -> String {
+    let node = node_id.trim_end_matches('=');
+    if room_id == DEFAULT_ROOM_ID && !node.is_empty() {
+        format!("room:{DEFAULT_ROOM_ID}@{node}")
+    } else {
+        room_conversation_id(room_id)
+    }
+}
+
+/// The room id in a room conversation key, or `None` for another kind of key.
+///
+/// Reads the node-qualified built-in room key and the legacy
+/// `room:{host}:{room}` form as well as `room:{room}`.
+pub fn room_id_from_history_id(key: &str) -> Option<&str> {
+    let rest = key.strip_prefix("room:")?;
+    let room = rest
+        .rsplit_once(':')
+        .map_or(rest, |(_legacy_host, room)| room);
+    Some(room.split_once('@').map_or(room, |(room, _node)| room))
+}
+
 /// Room ids whose text should alert, from the device setting.
 ///
 /// `raw` is a JSON array of room ids. Missing, malformed, or non-array input
@@ -853,6 +886,96 @@ impl ChatStore {
         Ok(n)
     }
 
+    /// Every conversation holding `room_id`'s text: its one key, or for the
+    /// built-in room, each node's (see [`room_history_id`]).
+    ///
+    /// For callers that know a room only by id, such as the alert setting.
+    pub fn room_conversations(&self, room_id: &str) -> Result<Vec<String>> {
+        let key = room_conversation_id(room_id);
+        if room_id != DEFAULT_ROOM_ID {
+            return Ok(vec![key]);
+        }
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT peer_id FROM messages WHERE peer_id = ?1 OR peer_id LIKE ?2",
+        )?;
+        let pattern = format!("{key}@%");
+        let rows = stmt.query_map(params![key, pattern], |row| row.get::<_, String>(0))?;
+        Ok(rows.filter_map(std::result::Result::ok).collect())
+    }
+
+    /// Unread inbound messages in every conversation of `room_id`.
+    pub fn room_unread_count(&self, room_id: &str) -> Result<usize> {
+        let mut total = 0;
+        for key in self.room_conversations(room_id)? {
+            total += self.unread_count(&key)?;
+        }
+        Ok(total)
+    }
+
+    /// Mark every conversation of `room_id` read.
+    pub fn mark_room_read(&self, room_id: &str) -> Result<usize> {
+        let mut total = 0;
+        for key in self.room_conversations(room_id)? {
+            total += self.mark_peer_read(&key)?;
+        }
+        Ok(total)
+    }
+
+    /// File the built-in room's history from before it was keyed per node
+    /// under `node_id`. Returns how many messages moved.
+    ///
+    /// Stored messages do not record their node, so the old shared history is
+    /// given to one: the caller passes the node this device joined first.
+    /// Idempotent, because nothing writes the unqualified key any more.
+    pub fn adopt_shared_default_room_history(&self, node_id: &str) -> Result<usize> {
+        let old_key = room_conversation_id(DEFAULT_ROOM_ID);
+        let new_key = room_history_id(node_id, DEFAULT_ROOM_ID);
+        if new_key == old_key {
+            return Ok(0);
+        }
+        let conn = self.conn.lock();
+        let moved = conn.execute(
+            "UPDATE messages SET peer_id = ?1 WHERE peer_id = ?2",
+            params![new_key, old_key],
+        )?;
+        if moved > 0 {
+            tracing::info!(
+                "chat store: filed {moved} built-in room message(s) under node {}",
+                &node_id[..node_id.len().min(12)]
+            );
+        }
+        Ok(moved)
+    }
+
+    /// Move the built-in room's history filed under another member of a
+    /// cluster onto `node_id`, its representative. Returns how many moved.
+    ///
+    /// Which member represents a cluster is only certain once its roster is
+    /// known, so history filed before then, or by
+    /// [`Self::adopt_shared_default_room_history`], may sit under a sibling.
+    /// Call this when a roster arrives.
+    pub fn fold_default_room_history(&self, node_id: &str, members: &[String]) -> Result<usize> {
+        let target = room_history_id(node_id, DEFAULT_ROOM_ID);
+        let conn = self.conn.lock();
+        let mut moved = 0;
+        let mut seen = HashSet::new();
+        for member in members {
+            let key = room_history_id(member, DEFAULT_ROOM_ID);
+            if key == target
+                || key == room_conversation_id(DEFAULT_ROOM_ID)
+                || !seen.insert(key.clone())
+            {
+                continue;
+            }
+            moved += conn.execute(
+                "UPDATE messages SET peer_id = ?1 WHERE peer_id = ?2",
+                params![target, key],
+            )?;
+        }
+        Ok(moved)
+    }
+
     /// Delete a single message by its ID.
     pub fn delete_message(&self, msg_id: &str) -> Result<()> {
         let conn = self.conn.lock();
@@ -1044,6 +1167,78 @@ mod tests {
                 .expect("history")
                 .len(),
             2,
+        );
+    }
+
+    #[test]
+    fn the_built_in_room_is_one_history_per_node() {
+        // Every node hosts `default`, so it is qualified by node; padding does
+        // not split it, and other rooms keep their node-free key.
+        assert_eq!(room_history_id("nodeA=", "default"), "room:default@nodeA");
+        assert_eq!(
+            room_history_id("nodeA", "default"),
+            room_history_id("nodeA=", "default")
+        );
+        assert_ne!(
+            room_history_id("nodeA", "default"),
+            room_history_id("nodeB", "default")
+        );
+        assert_eq!(room_history_id("nodeA", "r1"), room_conversation_id("r1"));
+        assert_eq!(room_history_id("", "default"), "room:default");
+        assert_eq!(
+            room_id_from_history_id("room:default@nodeA"),
+            Some("default")
+        );
+        assert_eq!(room_id_from_history_id("room:r1"), Some("r1"));
+        assert_eq!(room_id_from_history_id("room:host:r1"), Some("r1"));
+        assert_eq!(room_id_from_history_id("peer-direct"), None);
+    }
+
+    #[test]
+    fn shared_built_in_history_goes_to_one_node_and_follows_its_cluster() {
+        let dir = tempdir().expect("temp dir");
+        let identity = Identity::generate();
+        let db = dir.path().join("chat.db");
+        let a = room_history_id("nodeA", "default");
+        let c = room_history_id("nodeC", "default");
+        {
+            let store = ChatStore::open(&identity, Some(&db)).expect("open");
+            store
+                .insert(&make_msg("room:default", "before per-node keys", false))
+                .expect("insert old");
+            store
+                .insert(&make_msg(&c, "unrelated node", false))
+                .expect("insert c");
+
+            assert_eq!(store.adopt_shared_default_room_history("nodeB").unwrap(), 1);
+            assert_eq!(store.adopt_shared_default_room_history("nodeB").unwrap(), 0);
+        }
+
+        // The legacy host-key fold on reopen must leave per-node keys alone.
+        let store = ChatStore::open(&identity, Some(&db)).expect("reopen");
+        let b = room_history_id("nodeB", "default");
+        assert_eq!(store.get_history(&b, 0).unwrap().len(), 1);
+
+        // B turns out to be a sibling of A, which represents the cluster.
+        let members = vec!["nodeA=".to_owned(), "nodeB".to_owned()];
+        assert_eq!(
+            store.fold_default_room_history("nodeA", &members).unwrap(),
+            1
+        );
+        assert_eq!(store.get_history(&a, 0).unwrap().len(), 1);
+        assert!(store.get_history(&b, 0).unwrap().is_empty());
+        assert_eq!(store.get_history(&c, 0).unwrap().len(), 1);
+
+        // By room id alone, every node's built-in room counts.
+        let mut keys = store.room_conversations("default").unwrap();
+        keys.sort();
+        assert_eq!(keys, vec![a.clone(), c.clone()]);
+        assert_eq!(store.room_unread_count("default").unwrap(), 2);
+        assert_eq!(store.mark_room_read("default").unwrap(), 2);
+        assert_eq!(store.room_unread_count("default").unwrap(), 0);
+        assert_eq!(
+            store.room_conversations("r1").unwrap(),
+            vec![room_conversation_id("r1")]
         );
     }
 

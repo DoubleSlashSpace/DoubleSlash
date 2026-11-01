@@ -41,14 +41,16 @@ QtObject {
         return out
     }
 
-    // How sibling rooms are ordered. The phone stores the same JSON.
+    // How the Rooms list is ordered. The phone stores the same JSON.
     //
     // `mode` is name_asc (default), name_desc, peers_asc, peers_desc, or
     // manual. `pinned` room keys (`nodeId:roomId`) stay first among their
     // siblings, in the order they were pinned. `manual` is that same key
     // order, used only while mode is manual. A pin does not pull a sub-room
     // out from under its parent. `collapsed` lists the supernode ids whose
-    // rooms are folded under their node row.
+    // rooms are folded under their node row. `nodes` is the supernode row
+    // order. Empty means those rows are name A–Z. A padded id matches the
+    // same node without the padding.
     function normalizeMode(mode) {
         if (mode === "name_desc" || mode === "peers_asc" || mode === "peers_desc" || mode === "manual")
             return mode
@@ -65,13 +67,25 @@ QtObject {
         return out
     }
 
+    /// Drop a repeated supernode, padding included, keeping the first spelling.
+    function nodeIds(value) {
+        var list = root.asKeyList(value)
+        var out = []
+        for (var i = 0; i < list.length; i++) {
+            if (root.indexBare(out, list[i]) < 0)
+                out.push(list[i])
+        }
+        return out
+    }
+
     function normalizeOrder(order) {
         var src = order || {}
         return {
             mode: root.normalizeMode(src.mode),
             pinned: root.asKeyList(src.pinned),
             manual: root.asKeyList(src.manual),
-            collapsed: root.asKeyList(src.collapsed)
+            collapsed: root.asKeyList(src.collapsed),
+            nodes: root.nodeIds(src.nodes)
         }
     }
 
@@ -81,7 +95,8 @@ QtObject {
             mode: o.mode,
             pinned: o.pinned.slice(),
             manual: o.manual.slice(),
-            collapsed: o.collapsed.slice()
+            collapsed: o.collapsed.slice(),
+            nodes: (o.nodes || []).slice()
         }
         for (var k in changes)
             if (changes.hasOwnProperty(k))
@@ -111,6 +126,111 @@ QtObject {
         if (collapsed === true && nodeId)
             list.push(nodeId)
         return root.withFields(o, { collapsed: list })
+    }
+
+    /// The id without trailing padding, so `ccc` and `ccc=` are one node.
+    function bareNodeId(id) {
+        var s = String(id || "")
+        var end = s.length
+        while (end > 0 && s.charAt(end - 1) === "=")
+            end--
+        return s.substring(0, end)
+    }
+
+    function indexBare(list, id) {
+        var bare = root.bareNodeId(id)
+        if (bare === "")
+            return -1
+        for (var i = 0; i < list.length; i++)
+            if (root.bareNodeId(list[i]) === bare)
+                return i
+        return -1
+    }
+
+    /// Supernode row ids in list order.
+    ///
+    /// `entries` is `[{nodeId, label}]`, the rows on screen. Ids in `nodes`
+    /// come first, in that order. Anything not listed yet follows, by name.
+    /// An id that names no row is ignored here and kept in the saved list.
+    function orderedNodeIds(entries, order) {
+        var o = root.normalizeOrder(order)
+        var list = entries || []
+        var used = []
+        var i
+        var e
+        for (i = 0; i < list.length; i++)
+            used.push(false)
+        var listed = []
+        for (i = 0; i < o.nodes.length; i++) {
+            var want = root.bareNodeId(o.nodes[i])
+            if (want === "")
+                continue
+            for (e = 0; e < list.length; e++) {
+                if (used[e])
+                    continue
+                if (root.bareNodeId(list[e] && list[e].nodeId) === want) {
+                    listed.push(list[e].nodeId)
+                    used[e] = true
+                    break
+                }
+            }
+        }
+        var rest = []
+        for (e = 0; e < list.length; e++) {
+            if (!used[e] && list[e] && list[e].nodeId)
+                rest.push(list[e])
+        }
+        rest.sort(function (a, b) {
+            var byName = root.compareAlphanumeric(a.label, b.label)
+            if (byName !== 0)
+                return byName
+            return root.compareAlphanumeric(root.bareNodeId(a.nodeId), root.bareNodeId(b.nodeId))
+        })
+        var out = listed.slice()
+        for (i = 0; i < rest.length; i++)
+            out.push(rest[i].nodeId)
+        return out
+    }
+
+    /// Saved ids, with every row on screen written in at the place it shows.
+    function placeNodeIds(saved, displayIds) {
+        var next = []
+        var i
+        for (i = 0; i < saved.length; i++) {
+            if (root.bareNodeId(saved[i]) !== "" && root.indexBare(next, saved[i]) < 0)
+                next.push(saved[i])
+        }
+        var cursor = -1
+        for (i = 0; i < displayIds.length; i++) {
+            var at = root.indexBare(next, displayIds[i])
+            if (at < 0) {
+                next.splice(cursor + 1, 0, displayIds[i])
+                cursor = cursor + 1
+            } else {
+                next[at] = displayIds[i]
+                cursor = at
+            }
+        }
+        return next
+    }
+
+    /// Move a supernode row one place. The first move freezes the name order
+    /// that was on screen. Room sort, pins and folds are left as they are.
+    function moveNode(entries, nodeId, delta, order) {
+        var o = root.normalizeOrder(order)
+        if ((delta !== -1 && delta !== 1) || root.bareNodeId(nodeId) === "")
+            return o
+        var display = root.orderedNodeIds(entries, o)
+        var i = root.indexBare(display, nodeId)
+        var j = i + delta
+        if (i < 0 || j < 0 || j >= display.length)
+            return o
+        var nodes = root.placeNodeIds(o.nodes, display)
+        return root.withFields(o, { nodes: root.relocate(nodes, display[i], display[j], delta > 0) })
+    }
+
+    function canMoveNode(entries, nodeId, delta, order) {
+        return !root.sameOrder(order, root.moveNode(entries, nodeId, delta, order))
     }
 
     /// Voice members across a node's rooms, for its folded row. A roster the
@@ -455,6 +575,7 @@ QtObject {
             && root.sameList(a.pinned, b.pinned)
             && root.sameList(a.manual, b.manual)
             && root.sameList(a.collapsed, b.collapsed)
+            && root.sameList(a.nodes, b.nodes)
     }
 
     function canMove(rooms, nodeId, roomId, delta, order) {

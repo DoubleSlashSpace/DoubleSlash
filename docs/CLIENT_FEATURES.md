@@ -184,7 +184,8 @@ read.
 * **Android** — `room.list`, `room.create`, `room.join`, `room.leave`,
   `room.hide`, `room.unhide`, `room.delete`, `room.chat.subscribe`, `room.chat.unsubscribe`,
   `room.chat.send`, `room.history`, `room.request_list`, `room.voice.join`,
-  `room.voice.leave`, `room.invite`. `room.create` takes an optional
+  `room.voice.leave`, `room.invite`. Opening a room sends `room.chat.subscribe`
+  only. `room.join` is the voice join, sent when voice starts. `room.create` takes an optional
   `parent_room_id`. A shareable link carries a Space inclusion proof and no
   grant. `room.invite` with `peer_id` adds an owner-signed SpaceGrant for that
   contact, the same link the desktop's `generateRoomInviteForPeer` copies.
@@ -271,7 +272,9 @@ peer-to-peer, sealed under the room sender key.
   reveals that list in the tree. On the rooms list the green join handset is
   drawn while the pointer is over that room or while that room is the open
   one; the hang-up on the live voice room stays visible and is the marker
-  that this room is the one we are voicing. The live session's
+  that this room is the one we are voicing. Supernode rows start in name
+  order. Move up and Move down on a node's menu save that order in the shared
+  room-list JSON (`nodes`); the rooms under a node keep their own sort. The live session's
   leaf is drawn from `roomModel`, so it
   carries levels and per-member mute and volume.
 * **Android** — `room.voice.join`, `room.voice.leave`, the same tree
@@ -282,7 +285,9 @@ peer-to-peer, sealed under the room sender key.
   shows the same two counts; each count opens the Members sheet on that list.
   The rooms list draws the green join handset only for the open room and keeps
   the hang-up on the live voice room. That hang-up is the marker that this
-  room is the one we are voicing. Long-press still offers Join Voice Room.
+  room is the one we are voicing. A supernode row's long-press moves that
+  node up or down, saved as `nodes` in the same room-list JSON the desktop
+  uses. Long-press still offers Join Voice Room.
   The sheet shows that room's two leaves
   with the same rows.
   Speaking rings come from `remote_speaking` / `local_speaking`; per-member
@@ -365,8 +370,17 @@ member must resolve to the same place, and sessions fail over between members.
 * **Core** — `session_state.rs`, `connection_fallback.rs`. Direct-versus-relay
   decisions, per-peer session scalars, online presence.
 * **Desktop** — `ConnectionStatsChip`, `StatsPanel`, `SessionBanner`.
-* **Android** — a `ConnectionBanner` showing DIRECT / RELAYED / OFFLINE, and an
-  online dot per peer. No stats.
+* **Android** — an online dot per peer. An online row and the open chat say
+  Direct when that peer has a live QUIC session, with that peer's own ping, or
+  Relayed plus the name of the supernode carrying them, with that node's ping.
+  The open chat draws that ping as the desktop connection chip, with "relay"
+  when a supernode is carrying the chat. Tapping it opens ping, loss, jitter,
+  bandwidth, quality, and path.
+  A node whose QUIC relay is up is preferred over one that is only on its
+  WebSocket. The peer id is not on the row; long-press still copies it.
+  Supernode rows and the open room keep their own ping. The voice dock still
+  shows Direct, Relayed, or Offline during a call. There is no list-wide
+  connection strip.
 
 ### 14. Portal and web apps
 

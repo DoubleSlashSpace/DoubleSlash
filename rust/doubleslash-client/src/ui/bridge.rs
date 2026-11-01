@@ -1960,9 +1960,7 @@ impl AppBridgeRust {
         let mut updates = Vec::new();
         if first {
             for room_id in &self.room_message_alerts {
-                let count = cs
-                    .unread_count(&room_chat_store_peer_id(room_id))
-                    .unwrap_or(0);
+                let count = cs.room_unread_count(room_id).unwrap_or(0);
                 updates.push((room_id.clone(), count as i32));
             }
         }
@@ -1972,8 +1970,8 @@ impl AppBridgeRust {
                 .filter(|_| !first),
         );
         for room_id in clear_ids {
-            if let Err(e) = cs.mark_peer_read(&room_chat_store_peer_id(room_id)) {
-                warn!("chat_store mark_peer_read (room alerts) error: {e}");
+            if let Err(e) = cs.mark_room_read(room_id) {
+                warn!("chat_store mark_room_read (room alerts) error: {e}");
             }
             updates.push((room_id.clone(), 0));
         }
@@ -2189,26 +2187,31 @@ fn room_chat_history_key(supernode_id: &str, room_id: &str) -> String {
     format!("{supernode_id}:{room_id}")
 }
 
-/// Conversation key for a room's chat history.
+/// Conversation key for a room's chat history, as reached through
+/// `supernode_id`.
 ///
 /// Delegates to the core so the Qt bridge and the Android JNI layer cannot
-/// drift apart — two clients sharing a profile must agree byte-for-byte.
-/// Deliberately takes no supernode: see [`crate::chat_store::room_conversation_id`].
-fn room_chat_store_peer_id(room_id: &str) -> String {
-    crate::chat_store::room_conversation_id(room_id)
+/// drift apart — two clients sharing a profile must agree byte-for-byte. Only
+/// the built-in room uses the node, folded onto its sidebar row so a cluster
+/// keeps one history: see [`crate::chat_store::room_history_id`].
+fn room_chat_store_peer_id(bridge: &AppBridgeRust, supernode_id: &str, room_id: &str) -> String {
+    if room_id != crate::chat_store::DEFAULT_ROOM_ID {
+        return crate::chat_store::room_conversation_id(room_id);
+    }
+    let node =
+        sidebar_supernode_id(bridge, supernode_id).unwrap_or_else(|| supernode_id.to_owned());
+    crate::chat_store::room_history_id(&node, room_id)
 }
 
-/// Taskbar badge: direct unread, plus unread in rooms the user enabled.
+/// Taskbar badge: direct unread, plus unread in rooms the user enabled. An
+/// alert is keyed by room id, so the built-in room counts on every node.
 fn notification_badge_total(
     cs: &crate::chat_store::ChatStore,
     alert_rooms: &HashSet<String>,
 ) -> u32 {
     let mut total = cs.total_direct_unread_count().unwrap_or(0);
     for room_id in alert_rooms {
-        total = total.saturating_add(
-            cs.unread_count(&crate::chat_store::room_conversation_id(room_id))
-                .unwrap_or(0),
-        );
+        total = total.saturating_add(cs.room_unread_count(room_id).unwrap_or(0));
     }
     u32::try_from(total).unwrap_or(u32::MAX)
 }
@@ -2237,10 +2240,12 @@ fn publish_notification_badge(bridge: &mut Pin<&mut ffi::AppBridge>) {
     }
 }
 
+/// Mark `room_id` read on every node. Unread badges and alerts are keyed by
+/// room id, so the built-in room is read everywhere at once.
 fn mark_room_read(bridge: &ffi::AppBridge, room_id: &str) {
     if let Some(cs) = bridge.rust().chat_store.as_ref() {
-        if let Err(e) = cs.mark_peer_read(&room_chat_store_peer_id(room_id)) {
-            warn!("chat_store mark_peer_read (room) error: {e}");
+        if let Err(e) = cs.mark_room_read(room_id) {
+            warn!("chat_store mark_room_read error: {e}");
         }
     }
 }
@@ -2250,7 +2255,7 @@ fn room_unread_count(bridge: &ffi::AppBridge, room_id: &str) -> i32 {
         .rust()
         .chat_store
         .as_ref()
-        .and_then(|cs| cs.unread_count(&room_chat_store_peer_id(room_id)).ok())
+        .and_then(|cs| cs.room_unread_count(room_id).ok())
         .unwrap_or(0) as i32
 }
 
@@ -2728,6 +2733,14 @@ impl ffi::AppBridge {
             r.room_store = Some(Arc::clone(&room_store));
             r.ollama_cmd_tx = maybe_ollama_cmd;
             r.ollama_available = ollama_is_available;
+        }
+        // The built-in room's history from before it was keyed per node goes
+        // to the node this profile joined first. Does nothing once it has run.
+        if let Some(first) = peer_store.read().first_joined_supernode_id() {
+            let node = sidebar_supernode_id(self.rust(), &first).unwrap_or(first);
+            if let Err(e) = chat_store.adopt_shared_default_room_history(&node) {
+                warn!("could not file the public room's history under a node: {e}");
+            }
         }
         // Manual unlock completes after QML's startup calls have returned.
         // Restore badges at the point the store becomes available on every path.
@@ -4036,10 +4049,10 @@ impl ffi::AppBridge {
                 .room_unread_changed(QString::from(rid.as_str()), 0);
             publish_notification_badge(&mut self);
         }
-        // Stored history is keyed by room alone, so it needs no host lookup.
-        // Only the in-memory fallback below does.
+        // Stored history is keyed by room alone, except the built-in room,
+        // which is keyed by the node heading it.
         if let Some(ref cs) = self.rust().chat_store {
-            let store_key = room_chat_store_peer_id(&rid);
+            let store_key = room_chat_store_peer_id(self.rust(), &requested, &rid);
             let json_msgs: Vec<String> = {
                 let r = self.rust();
                 cs.get_history(&store_key, 0)
@@ -5609,7 +5622,7 @@ impl ffi::AppBridge {
 
         // Persist outbound message so loadRoomChatHistory can replay it after restart.
         if let Some(ref cs) = chat_store_opt {
-            let store_key = room_chat_store_peer_id(&rid);
+            let store_key = room_chat_store_peer_id(self.rust(), &sn, &rid);
             let chat_msg = crate::chat_store::ChatMessage {
                 id: message_id.clone(),
                 peer_id: store_key,
@@ -5883,7 +5896,7 @@ impl ffi::AppBridge {
         })
         .to_string();
         if let Some(ref cs) = chat_store_opt {
-            let store_key = room_chat_store_peer_id(&rid);
+            let store_key = room_chat_store_peer_id(self.rust(), &sn, &rid);
             let chat_msg = crate::chat_store::ChatMessage {
                 id: message_id.clone(),
                 peer_id: store_key,
@@ -6369,7 +6382,7 @@ fn send_room_chat_to(
     })
     .to_string();
     if let Some(ref cs) = chat_store_opt {
-        let store_key = room_chat_store_peer_id(&rid);
+        let store_key = room_chat_store_peer_id(bridge.rust(), &sn, &rid);
         let chat_msg = crate::chat_store::ChatMessage {
             id: message_id,
             peer_id: store_key,
@@ -6732,13 +6745,9 @@ fn room_chat_message_to_json(
 /// store is only folded to the canonical key when it is next opened and a
 /// long-running session can still be holding rows read before that.
 fn parse_room_chat_store_key(store_key: &str) -> String {
-    let Some(rest) = store_key.strip_prefix("room:") else {
-        return String::new();
-    };
-    match rest.rsplit_once(':') {
-        Some((_legacy_host, room_id)) => room_id.to_owned(),
-        None => rest.to_owned(),
-    }
+    crate::chat_store::room_id_from_history_id(store_key)
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// Put an inbound file offer into the chat stream so progress lives in the
@@ -6837,7 +6846,7 @@ fn insert_inbound_file_offer(mut bridge: Pin<&mut ffi::AppBridge>, offer: Inboun
         })
         .to_string();
         if let Some(ref cs) = bridge.rust().chat_store {
-            let store_key = room_chat_store_peer_id(&rid);
+            let store_key = room_chat_store_peer_id(bridge.rust(), &sn, &rid);
             let chat_msg = crate::chat_store::ChatMessage {
                 id: message_id.clone(),
                 peer_id: store_key,
@@ -7403,6 +7412,20 @@ fn sidebar_supernode_id(bridge: &AppBridgeRust, event_supernode_id: &str) -> Opt
     let rep = bridge.cluster_representative(&key);
     // Prefer a known-supernode form of the representative when present.
     Some(bridge.resolve_supernode_node_id_str(&rep).unwrap_or(rep))
+}
+
+/// Move built-in room history filed under another member of `member`'s
+/// cluster onto the cluster's sidebar node, now that a roster says which that
+/// is. History filed before the roster arrived may sit under a sibling.
+fn fold_default_room_history(bridge: &AppBridgeRust, member: &str) {
+    let Some(cs) = bridge.chat_store.as_ref() else {
+        return;
+    };
+    let node = sidebar_supernode_id(bridge, member).unwrap_or_else(|| member.to_owned());
+    let members = bridge.cluster_full_set(member);
+    if let Err(e) = cs.fold_default_room_history(&node, &members) {
+        warn!("could not fold the public room's history onto its node: {e}");
+    }
 }
 
 /// Room key for a file offer or completion that `delivering` handed us.
@@ -8184,83 +8207,6 @@ fn merge_room_list_values(
         an.cmp(bn)
     });
     serde_json::Value::Array(merged)
-}
-
-fn sync_saved_rooms_from_list(
-    room_store: &mut crate::room_store::RoomStore,
-    supernode_id: &str,
-    rooms: &serde_json::Value,
-) {
-    let Some(arr) = rooms.as_array() else {
-        return;
-    };
-    let mut pending: Vec<crate::room_store::RoomEntry> = Vec::with_capacity(arr.len());
-    for room in arr {
-        let room_id = room
-            .get("room_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        if room_id.is_empty() {
-            continue;
-        }
-        let existing = room_store.get(supernode_id, room_id);
-        let room_name = room
-            .get("name")
-            .or_else(|| room.get("room_name"))
-            .and_then(|v| v.as_str())
-            .filter(|n| !n.is_empty() && *n != room_id)
-            .map(str::to_owned)
-            .or_else(|| {
-                existing
-                    .filter(|e| !e.room_name.is_empty() && e.room_name != room_id)
-                    .map(|e| e.room_name.clone())
-            })
-            .unwrap_or_else(|| room_id.to_owned());
-        // Only take the remote room_type when it is explicitly present and
-        // non-empty; otherwise keep the stored type. Defaulting an absent value
-        // to "public" here would downgrade a stored *private* room (via upsert's
-        // non-empty-wins merge), flipping join_room off the token/invite path so
-        // the supernode silently denies entry to the private room.
-        let room_type_owned = room
-            .get("room_type")
-            .and_then(|v| v.as_str())
-            .filter(|t| !t.is_empty())
-            .map(str::to_owned)
-            .or_else(|| {
-                existing
-                    .map(|e| e.room_type.clone())
-                    .filter(|t| !t.is_empty())
-            })
-            .unwrap_or_else(|| "public".to_owned());
-        let room_type = room_type_owned.as_str();
-        let creator_id = room
-            .get("creator_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let is_creator = existing.map(|e| e.is_creator).unwrap_or(false);
-        let invite_token = existing.map(|e| e.invite_token.as_str()).unwrap_or("");
-        let entry = crate::room_store::RoomEntry::new(room_id, room_name)
-            .with_type(room_type)
-            .with_supernode(supernode_id)
-            .with_creator(
-                if creator_id.is_empty() {
-                    existing.map(|e| e.creator_id.as_str()).unwrap_or("")
-                } else {
-                    creator_id
-                },
-                is_creator,
-            )
-            .with_invite_token(invite_token);
-        pending.push(entry);
-    }
-
-    // Persist once for the whole list rather than once per room. `*_from_remote`
-    // semantics are preserved inside: a room the user hid locally is not
-    // resurrected, since a plain upsert would clear the hide tombstone and
-    // un-hide every listed room each time a room list arrives.
-    if let Err(e) = room_store.upsert_many_from_remote(pending) {
-        warn!("room_store sync from list error: {e}");
-    }
 }
 
 /// Record a cluster member's live WS state and push the resulting cluster-level
@@ -9586,6 +9532,7 @@ fn dispatch_event(
                     r.cluster_siblings.insert(key.clone(), members);
                     r.cluster_member_addrs.extend(relay_addrs);
                 }
+                fold_default_room_history(bridge.rust(), &key);
                 // Roster often arrives *after* SupernodeConnected for a cold
                 // sibling. Rematerialize only hosts not yet done this session
                 // (see rematerialized_hosts) so we don't re-CreateRoom forever.
@@ -10477,7 +10424,7 @@ fn dispatch_event(
                 })
                 .to_string();
                 if let Some(ref cs) = bridge.rust().chat_store {
-                    let store_key = room_chat_store_peer_id(&room_id);
+                    let store_key = room_chat_store_peer_id(bridge.rust(), &sn, &room_id);
                     let chat_msg = crate::chat_store::ChatMessage {
                         id: message_id.clone(),
                         peer_id: store_key,
@@ -10638,7 +10585,9 @@ fn dispatch_event(
                 ) {
                     let filtered = {
                         let mut store = rs.write();
-                        sync_saved_rooms_from_list(&mut store, &canon, &remote);
+                        if let Err(e) = store.sync_from_room_list(&canon, &remote) {
+                            warn!("room_store sync from list error: {e}");
+                        }
                         let peer_store = ps.read();
                         let local = local_rooms_json_for_supernode(&store, &peer_store, &canon);
                         let merged = merge_room_list_values(&local, &remote);
@@ -10990,7 +10939,7 @@ fn dispatch_event(
                         })
                         .to_string();
                         if let Some(ref cs) = bridge.rust().chat_store {
-                            let store_key = room_chat_store_peer_id(&rid);
+                            let store_key = room_chat_store_peer_id(bridge.rust(), &sn, &rid);
                             let chat_msg = crate::chat_store::ChatMessage {
                                 id: message_id.clone(),
                                 peer_id: store_key,
@@ -11435,7 +11384,7 @@ mod room_alert_tests {
         for room in ["saved", "new"] {
             cs.insert(&ChatMessage {
                 id: room.into(),
-                peer_id: room_chat_store_peer_id(room),
+                peer_id: crate::chat_store::room_conversation_id(room),
                 sender: "other".into(),
                 recipient: room.into(),
                 body: "unread".into(),
@@ -12160,6 +12109,28 @@ mod room_file_node_tests {
             room_file_node(&bridge, "Z"),
             "Z",
             "a node outside any cluster is kept as delivered"
+        );
+    }
+
+    /// Each node's built-in room keeps its own history, one per cluster.
+    #[test]
+    fn the_built_in_room_history_follows_the_cluster_node() {
+        use super::room_chat_store_peer_id;
+        use crate::chat_store::{room_conversation_id, room_history_id};
+        let mut bridge = AppBridgeRust::default();
+        bridge
+            .cluster_siblings
+            .insert("A".into(), vec!["B".into(), "C".into()]);
+        let a = room_history_id("A", "default");
+        assert_eq!(room_chat_store_peer_id(&bridge, "B", "default"), a);
+        assert_eq!(room_chat_store_peer_id(&bridge, "A", "default"), a);
+        assert_eq!(
+            room_chat_store_peer_id(&bridge, "Z", "default"),
+            room_history_id("Z", "default")
+        );
+        assert_eq!(
+            room_chat_store_peer_id(&bridge, "B", "r1"),
+            room_conversation_id("r1")
         );
     }
 }

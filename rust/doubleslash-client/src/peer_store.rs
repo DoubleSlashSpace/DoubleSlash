@@ -381,6 +381,22 @@ impl PeerStore {
             .collect()
     }
 
+    /// The supernode this device joined first, by invite where there is one:
+    /// the node the built-in room's history from before it was keyed per node
+    /// is filed under.
+    pub fn first_joined_supernode_id(&self) -> Option<String> {
+        self.supernodes()
+            .into_iter()
+            .filter(|r| !r.identity_pub.is_empty())
+            .min_by(|a, b| {
+                b.supernode_from_invite
+                    .cmp(&a.supernode_from_invite)
+                    .then(a.created_at.total_cmp(&b.created_at))
+                    .then_with(|| a.identity_pub.cmp(&b.identity_pub))
+            })
+            .map(|r| r.identity_pub.clone())
+    }
+
     /// True when `id` matches a trusted supernode (`peer_id` or `identity_pub`).
     pub fn is_supernode_id(&self, id: &str) -> bool {
         if id.is_empty() {
@@ -535,6 +551,36 @@ mod tests {
             Some("b64_identity".to_owned())
         );
         assert!(store.resolve_supernode_identity_pub("unknown").is_none());
+    }
+
+    #[test]
+    fn first_joined_supernode_prefers_the_oldest_invite_node() {
+        let dir = tempdir().unwrap();
+        let id = make_identity();
+        let mut store = PeerStore::open(&id, Some(&dir.path().join(PEER_STORE_FILE))).unwrap();
+        assert!(store.first_joined_supernode_id().is_none());
+        let node = |peer: &str, identity: &str, at: f64, from_invite: bool| PeerRecord {
+            peer_id: peer.to_owned(),
+            identity_pub: identity.to_owned(),
+            is_supernode: true,
+            supernode_from_invite: from_invite,
+            created_at: at,
+            ..Default::default()
+        };
+        store.upsert(node("p-new", "new-node", 300.0, true));
+        store.upsert(node("p-old", "old-node", 100.0, true));
+        // Older, but not joined by invite.
+        store.upsert(node("p-restored", "restored", 50.0, false));
+        store.upsert(PeerRecord {
+            peer_id: "p-friend".to_owned(),
+            identity_pub: "friend".to_owned(),
+            created_at: 1.0,
+            ..Default::default()
+        });
+        assert_eq!(
+            store.first_joined_supernode_id().as_deref(),
+            Some("old-node")
+        );
     }
 
     #[test]
