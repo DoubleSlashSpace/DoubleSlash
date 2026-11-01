@@ -519,7 +519,9 @@ jobs:
   # consent cannot be granted to a CI runner).
   test-macos:
     name: Rust tests (macOS, non-Qt)
-    runs-on: macos-14
+    # macos-14 runners retire on 2026-11-02. Stay on an arm64 image.
+    # macos-latest is macOS 26 and would move the Xcode SDK without a workflow edit.
+    runs-on: macos-15
     permissions:
       contents: read
 
@@ -542,7 +544,7 @@ jobs:
             ~/.cargo/git
             rust/target
             rust/doubleslash-client/target
-          key: macos-cargo-ci-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/doubleslash-client/Cargo.lock') }}
+          key: macos-15-cargo-ci-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/doubleslash-client/Cargo.lock') }}
 
       - name: Cache Opus DNN model weights
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
