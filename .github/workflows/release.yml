@@ -353,7 +353,9 @@ jobs:
   build-macos:
     needs: license-checks
     # preflight is only required for tagged releases. Develop/nightly builds run independently.
-    runs-on: macos-14
+    # macos-14 runners retire on 2026-11-02. Stay on an arm64 image.
+    # macos-latest is macOS 26, which Qt 6.8.3 does not target.
+    runs-on: macos-15
     env:
       # Empty credentials keep both build_macos.sh and notarization unsigned on nightlies.
       APPLE_CERTIFICATE_P12: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_P12 || '' }}
@@ -389,7 +391,7 @@ jobs:
           # from a previous workspace path (repo rename DoubleSlash → DoubleSlash)
           # leaves those links dangling and panics:
           # "Could not create symlink for include_prefix cxx-qt".
-          key: macos-cargo-${{ github.repository }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/doubleslash-client/Cargo.lock') }}
+          key: macos-15-cargo-${{ github.repository }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('rust/Cargo.lock') }}-${{ hashFiles('rust/doubleslash-client/Cargo.lock') }}
 
       - name: Drop rust/target if cxx-qt include symlinks are dangling
         run: |
