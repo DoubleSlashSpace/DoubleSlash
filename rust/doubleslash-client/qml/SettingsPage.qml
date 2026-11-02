@@ -2939,7 +2939,7 @@ Item {
 
                 SettingsCard {
                     title: "Direct P2P"
-                    subtitle: "Listen for trusted peers without requiring a supernode."
+                    subtitle: "Pins a UDP port so you can forward it."
 
                     SettingSwitch {
                         title: "Enable direct peer-to-peer listener"
@@ -2979,7 +2979,11 @@ Item {
 
                     Label {
                         Layout.fillWidth: true
-                        text: "Allow UDP through the host firewall. For internet P2P, forward the same UDP port to this device; otherwise use a supernode."
+                        text: "The listener stays on the port you set, so a port-forward rule and a "
+                            + "firewall allow rule have a fixed target. You only need this if you "
+                            + "will not use a supernode and you already know how to forward a UDP "
+                            + "port and allow it through your firewall. With a supernode, peers "
+                            + "connect through that node."
                         color: Theme.muted
                         wrapMode: Text.WordWrap
                         font.pixelSize: Theme.fontSizeCaption
