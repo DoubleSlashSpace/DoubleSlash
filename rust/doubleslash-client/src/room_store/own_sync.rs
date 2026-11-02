@@ -5,9 +5,16 @@
 //! The connection manager carries an [`OwnRoomSnapshot`] between our devices,
 //! sealed to our own identity, and each side merges what it lacks.
 //!
-//! Merging only adds. A stored room is never removed, renamed or retyped here,
-//! and sidebar hiding stays with the device that hid it: hidden rooms are left
-//! out of a snapshot, and a room hidden here is not brought back by one.
+//! Merging adds rooms and applies removals. Remove Room on one device removes
+//! the room on the others, unless one of them added it again later: each side
+//! keeps when the user last added a room ([`OwnRoomSnapshot::added`]) and when
+//! it was removed ([`RoomRemoval::at`]), and the later of the two wins. Those
+//! are wall-clock times from each device, so a clock that is far off can let
+//! the older action win. A supernode's room list does not count as adding a
+//! room, so it never outranks a removal. A stored room is never renamed or
+//! retyped here, and sidebar hiding stays with the device that hid it: hidden
+//! rooms are left out of a snapshot, and a room hidden here is not brought back
+//! by one.
 //!
 //! Space trees merge by node, and the result is re-signed at a new epoch when
 //! it matches neither side. Both devices sign roots for the same Space, so if
@@ -30,6 +37,22 @@ pub const MAX_SNAPSHOT_ROOMS: usize = 512;
 pub const MAX_SNAPSHOT_SPACES: usize = 64;
 /// Nodes one Space in a snapshot may hold.
 pub const MAX_SNAPSHOT_SPACE_NODES: usize = 1024;
+/// Removals one snapshot may carry; the newest are sent.
+pub const MAX_SNAPSHOT_REMOVALS: usize = 512;
+/// Hosts one removal may name.
+pub const MAX_REMOVAL_HOSTS: usize = 64;
+
+/// A room removed on one of our devices.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomRemoval {
+    pub room_id: String,
+    /// Every host the room was tombstoned under, so a sibling's room list
+    /// does not bring it back either.
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    /// When it was removed, in seconds since the Unix epoch.
+    pub at: u64,
+}
 
 /// What one device tells its siblings about its rooms.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -39,6 +62,13 @@ pub struct OwnRoomSnapshot {
     pub rooms: Vec<RoomEntry>,
     #[serde(default)]
     pub spaces: Vec<Space>,
+    /// When the user last added each room in `rooms`, by room id. A room
+    /// missing here was never added by hand and loses to any removal. Older
+    /// clients send neither this nor `removed`, and ignore both.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub added: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<RoomRemoval>,
 }
 
 impl OwnRoomSnapshot {
@@ -46,6 +76,12 @@ impl OwnRoomSnapshot {
     pub fn within_limits(&self) -> bool {
         self.v >= OWN_ROOM_SNAPSHOT_VERSION
             && self.rooms.len() <= MAX_SNAPSHOT_ROOMS
+            && self.added.len() <= MAX_SNAPSHOT_ROOMS
+            && self.removed.len() <= MAX_SNAPSHOT_REMOVALS
+            && self
+                .removed
+                .iter()
+                .all(|removal| removal.hosts.len() <= MAX_REMOVAL_HOSTS)
             && self.spaces.len() <= MAX_SNAPSHOT_SPACES
             && self
                 .spaces
@@ -61,10 +97,14 @@ pub struct OwnRoomMerge {
     pub changed: bool,
     /// Roots re-signed by this merge, as `(supernode_id, root)`, to announce.
     pub roots: Vec<(String, SignedSpaceRoot)>,
-    /// A Space here now differs from the sender's copy, so the sender should
-    /// be sent ours. A merge that ends equal to the sender's copy leaves this
-    /// unset, which is what stops two devices trading snapshots forever.
+    /// A Space here now differs from the sender's copy, or the sender holds a
+    /// room we removed later, or removed one we added later, so the sender
+    /// should be sent ours. A merge that ends equal to the sender's copy leaves
+    /// this unset, which is what stops two devices trading snapshots forever.
     pub sibling_behind: bool,
+    /// Rooms a sibling's removal took off this device, as `(host, room_id)`
+    /// for each stored copy, so the UI can leave the call and close the room.
+    pub removed: Vec<(String, String)>,
 }
 
 enum SpaceMerge {
@@ -222,10 +262,25 @@ impl RoomStore {
             .collect();
         spaces.sort_by(|a, b| a.space_id.cmp(&b.space_id));
         spaces.truncate(MAX_SNAPSHOT_SPACES);
+        let added = rooms
+            .iter()
+            .filter_map(|entry| {
+                self.added_at
+                    .get(&entry.room_id)
+                    .map(|at| (entry.room_id.clone(), *at))
+            })
+            .collect();
+        let mut removed = self.removals_newest_first();
+        removed.truncate(MAX_SNAPSHOT_REMOVALS);
+        for removal in &mut removed {
+            removal.hosts.truncate(MAX_REMOVAL_HOSTS);
+        }
         OwnRoomSnapshot {
             v: OWN_ROOM_SNAPSHOT_VERSION,
             rooms,
             spaces,
+            added,
+            removed,
         }
     }
 
@@ -293,8 +348,20 @@ impl RoomStore {
             }
         }
 
+        // Removals first: the sender's rooms never include one it removed, and
+        // a room we removed later than the sender added it stays removed below.
+        for removal in &snapshot.removed {
+            self.apply_own_device_removal(removal, &resolve_host, &mut out);
+        }
         for incoming in &snapshot.rooms {
-            out.changed |= self.merge_own_device_room(incoming, &resolve_host, &same_host);
+            let added_at = snapshot.added.get(&incoming.room_id).copied().unwrap_or(0);
+            out.changed |= self.merge_own_device_room(
+                incoming,
+                added_at,
+                &resolve_host,
+                &same_host,
+                &mut out.sibling_behind,
+            );
         }
         out.changed |= self.stamp_linkage_from_own_spaces(owner_pub, &same_host);
 
@@ -304,11 +371,79 @@ impl RoomStore {
         Ok(out)
     }
 
+    /// Apply a sibling's removal, unless the room was added here after it.
+    fn apply_own_device_removal(
+        &mut self,
+        removal: &RoomRemoval,
+        resolve_host: &impl Fn(&str) -> Option<String>,
+        out: &mut OwnRoomMerge,
+    ) {
+        let room_id = removal.room_id.as_str();
+        if room_id.is_empty() || room_id == "default" {
+            return;
+        }
+        if self
+            .removals
+            .get(room_id)
+            .is_some_and(|ours| ours.at >= removal.at)
+        {
+            return;
+        }
+        let stored: Vec<String> = self
+            .rooms
+            .iter()
+            .filter(|(_, entry)| entry.room_id == room_id)
+            .map(|(key, _)| key.clone())
+            .collect();
+        if !stored.is_empty() && self.added_at.get(room_id).copied().unwrap_or(0) > removal.at {
+            // Added here after the sibling removed it: ours stands, and the
+            // sibling should learn so from our snapshot.
+            out.sibling_behind = true;
+            return;
+        }
+        let mut hosts: Vec<String> = removal
+            .hosts
+            .iter()
+            .filter(|host| !host.is_empty())
+            .map(|host| resolve_host(host).unwrap_or_else(|| host.clone()))
+            .collect();
+        for key in &stored {
+            if let Some(entry) = self.rooms.remove(key) {
+                out.removed
+                    .push((entry.supernode_id.clone(), room_id.to_owned()));
+                hosts.push(entry.supernode_id);
+            }
+        }
+        hosts.sort();
+        hosts.dedup();
+        for host in &hosts {
+            self.deleted_ids.insert(Self::entry_key(host, room_id));
+        }
+        self.added_at.remove(room_id);
+        self.removals.insert(
+            room_id.to_owned(),
+            RoomRemoval {
+                room_id: room_id.to_owned(),
+                hosts,
+                at: removal.at,
+            },
+        );
+        out.changed = true;
+        if !stored.is_empty() {
+            info!(
+                "RoomStore: removed room {} because a sibling device removed it",
+                &room_id[..room_id.len().min(12)]
+            );
+        }
+    }
+
     fn merge_own_device_room(
         &mut self,
         incoming: &RoomEntry,
+        added_at: u64,
         resolve_host: &impl Fn(&str) -> Option<String>,
         same_host: &impl Fn(&str, &str) -> bool,
+        sibling_behind: &mut bool,
     ) -> bool {
         if incoming.room_id.is_empty() || incoming.room_id == "default" {
             return false;
@@ -316,6 +451,46 @@ impl RoomStore {
         let Some(host) = resolve_host(&incoming.supernode_id) else {
             return false;
         };
+        let mut changed = false;
+        if let Some(removal) = self.removals.get(&incoming.room_id) {
+            if added_at <= removal.at {
+                // We removed it after the sibling last added it. It stays
+                // removed, and our snapshot will tell the sibling.
+                *sibling_behind = true;
+                return false;
+            }
+            // Added again on the sibling after we removed it: lift our removal.
+            let lifted: Vec<String> = removal.hosts.clone();
+            for removed_host in &lifted {
+                self.deleted_ids
+                    .remove(&Self::entry_key(removed_host, &incoming.room_id));
+            }
+            self.deleted_ids.retain(|tombstone| {
+                !tombstone.split_once(':').is_some_and(|(sn, room)| {
+                    room == incoming.room_id && (sn == host || same_host(sn, &host))
+                })
+            });
+            self.removals.remove(&incoming.room_id);
+            changed = true;
+        }
+        changed |= self.merge_own_device_room_entry(incoming, host, same_host);
+        let stored = self
+            .rooms
+            .values()
+            .any(|entry| entry.room_id == incoming.room_id);
+        if stored && added_at > self.added_at.get(&incoming.room_id).copied().unwrap_or(0) {
+            self.added_at.insert(incoming.room_id.clone(), added_at);
+            changed = true;
+        }
+        changed
+    }
+
+    fn merge_own_device_room_entry(
+        &mut self,
+        incoming: &RoomEntry,
+        host: String,
+        same_host: &impl Fn(&str, &str) -> bool,
+    ) -> bool {
         let key = Self::entry_key(&host, &incoming.room_id);
         let existing = if self.rooms.contains_key(&key) {
             Some(key.clone())
@@ -585,6 +760,7 @@ mod tests {
                     .with_invite_token("other"),
             ],
             spaces: vec![],
+            ..Default::default()
         };
         let result = desktop
             .merge_own_device_snapshot(&snapshot, &owner, known, separate, 2, |b| identity.sign(b))
@@ -637,6 +813,7 @@ mod tests {
                 .with_supernode(HOST)
                 .with_invite_token("t")],
             spaces: vec![],
+            ..Default::default()
         };
         desktop
             .merge_own_device_snapshot(&snapshot, &owner, known, cluster, 2, |b| identity.sign(b))
@@ -678,6 +855,7 @@ mod tests {
                 .map(|i| RoomEntry::new(format!("r{i}"), "n").with_supernode(HOST))
                 .collect(),
             spaces: vec![],
+            ..Default::default()
         };
         let result = desktop
             .merge_own_device_snapshot(&big, &owner, known, separate, 2, |b| identity.sign(b))
@@ -701,5 +879,154 @@ mod tests {
             .merge_own_device_snapshot(&snapshot, &owner, known, separate, 2, |b| identity.sign(b))
             .unwrap();
         assert!(desktop.all_spaces().is_empty());
+    }
+
+    #[test]
+    fn a_room_removed_on_one_device_is_removed_on_the_other() {
+        let dir = tempdir().unwrap();
+        let identity = Identity::generate();
+        let mut phone = store(&identity, &dir, "phone.dat");
+        let mut desktop = store(&identity, &dir, "desktop.dat");
+        create(&mut phone, &identity, "lounge", "");
+        merge(&mut desktop, &phone, &identity);
+        assert!(desktop.get(HOST, "lounge").is_some());
+
+        desktop
+            .delete_local("lounge", &["node-b".to_owned()])
+            .unwrap();
+        let result = merge(&mut phone, &desktop, &identity);
+        assert!(result.changed);
+        assert_eq!(result.removed, vec![(HOST.to_owned(), "lounge".to_owned())]);
+        assert!(phone.get(HOST, "lounge").is_none());
+        assert!(!result.sibling_behind);
+
+        // A room list that still names it does not bring it back, here or
+        // under the other host the removal named.
+        let listed = serde_json::json!([{ "room_id": "lounge", "name": "Lounge" }]);
+        phone.sync_from_room_list(HOST, &listed).unwrap();
+        phone.sync_from_room_list("node-b", &listed).unwrap();
+        assert!(phone.get(HOST, "lounge").is_none());
+        assert!(phone.get("node-b", "lounge").is_none());
+
+        // The removal persisted and is passed on, so a third device hears it.
+        let reopened = store(&identity, &dir, "phone.dat");
+        let passed_on = reopened.own_device_snapshot(&identity.public_id());
+        assert!(passed_on.removed.iter().any(|r| r.room_id == "lounge"));
+
+        // Nothing more happens the second time.
+        let again = merge(&mut phone, &desktop, &identity);
+        assert!(!again.changed && again.removed.is_empty() && !again.sibling_behind);
+    }
+
+    #[test]
+    fn adding_a_room_again_after_its_removal_wins_on_both_devices() {
+        let dir = tempdir().unwrap();
+        let identity = Identity::generate();
+        let owner = identity.public_id();
+        let mut phone = store(&identity, &dir, "phone.dat");
+        let mut desktop = store(&identity, &dir, "desktop.dat");
+        create(&mut desktop, &identity, "lounge", "");
+        // Removed long ago on the desktop, then joined again on the phone.
+        desktop.delete_local_at("lounge", &[], 100).unwrap();
+        phone
+            .upsert(
+                RoomEntry::new("lounge", "Lounge")
+                    .with_supernode(HOST)
+                    .with_invite_token("tok"),
+            )
+            .unwrap();
+
+        let on_phone = merge(&mut phone, &desktop, &identity);
+        assert!(phone.get(HOST, "lounge").is_some(), "the later add stands");
+        assert!(on_phone.removed.is_empty());
+        assert!(on_phone.sibling_behind, "the desktop must hear about it");
+
+        let on_desktop = merge(&mut desktop, &phone, &identity);
+        assert!(on_desktop.changed);
+        assert_eq!(desktop.get(HOST, "lounge").unwrap().invite_token, "tok");
+        assert!(desktop
+            .own_device_snapshot(&owner)
+            .removed
+            .iter()
+            .all(|r| r.room_id != "lounge"));
+        // A room list may name it again now.
+        assert!(!desktop.is_hidden_from_sidebar(HOST, "lounge"));
+    }
+
+    #[test]
+    fn a_sibling_still_holding_a_room_we_removed_later_is_told() {
+        let dir = tempdir().unwrap();
+        let identity = Identity::generate();
+        let mut phone = store(&identity, &dir, "phone.dat");
+        let mut desktop = store(&identity, &dir, "desktop.dat");
+        // Listed passively on the phone: never added by hand there.
+        let listed = serde_json::json!([{ "room_id": "lounge", "name": "Lounge" }]);
+        phone.sync_from_room_list(HOST, &listed).unwrap();
+        create(&mut desktop, &identity, "lounge", "");
+        desktop.delete_local("lounge", &[]).unwrap();
+
+        // The phone's snapshot still has the room; the desktop keeps it removed
+        // and asks to answer.
+        let on_desktop = merge(&mut desktop, &phone, &identity);
+        assert!(desktop.get(HOST, "lounge").is_none());
+        assert!(on_desktop.sibling_behind);
+
+        // The answer removes it on the phone, and then both agree.
+        let on_phone = merge(&mut phone, &desktop, &identity);
+        assert_eq!(on_phone.removed.len(), 1);
+        assert!(phone.get(HOST, "lounge").is_none());
+        let settled = merge(&mut desktop, &phone, &identity);
+        assert!(!settled.sibling_behind && !settled.changed);
+    }
+
+    #[test]
+    fn hiding_is_not_a_removal_and_the_default_room_cannot_be_removed() {
+        let dir = tempdir().unwrap();
+        let identity = Identity::generate();
+        let owner = identity.public_id();
+        let mut desktop = store(&identity, &dir, "desktop.dat");
+        create(&mut desktop, &identity, "lounge", "");
+        desktop.hide_from_sidebar(HOST, "lounge").unwrap();
+        assert!(desktop.own_device_snapshot(&owner).removed.is_empty());
+
+        let mut phone = store(&identity, &dir, "phone.dat");
+        phone
+            .upsert(RoomEntry::new("default", "Lobby").with_supernode(HOST))
+            .unwrap();
+        let snapshot = OwnRoomSnapshot {
+            v: 1,
+            removed: vec![RoomRemoval {
+                room_id: "default".to_owned(),
+                hosts: vec![HOST.to_owned()],
+                at: u64::MAX,
+            }],
+            ..Default::default()
+        };
+        let result = phone
+            .merge_own_device_snapshot(&snapshot, &owner, known, separate, 2, |b| identity.sign(b))
+            .unwrap();
+        assert!(!result.changed);
+        assert!(phone.get(HOST, "default").is_some());
+    }
+
+    #[test]
+    fn a_snapshot_from_an_older_client_still_merges() {
+        let dir = tempdir().unwrap();
+        let identity = Identity::generate();
+        let owner = identity.public_id();
+        let old: OwnRoomSnapshot = serde_json::from_value(serde_json::json!({
+            "v": 1,
+            "rooms": [{ "room_id": "r", "room_name": "Room", "supernode_id": HOST }],
+        }))
+        .unwrap();
+        let mut desktop = store(&identity, &dir, "desktop.dat");
+        desktop
+            .merge_own_device_snapshot(&old, &owner, known, separate, 2, |b| identity.sign(b))
+            .unwrap();
+        assert!(desktop.get(HOST, "r").is_some());
+
+        // And one with nothing removed carries no new keys for it to see.
+        let sent = serde_json::to_value(desktop.own_device_snapshot(&owner)).unwrap();
+        assert!(sent.get("removed").is_none());
     }
 }

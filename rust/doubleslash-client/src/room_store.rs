@@ -24,7 +24,17 @@ use crate::identity::Identity;
 
 mod own_sync;
 
-pub use own_sync::{OwnRoomMerge, OwnRoomSnapshot};
+pub use own_sync::{OwnRoomMerge, OwnRoomSnapshot, RoomRemoval};
+
+/// Removal records one store keeps; the oldest go first.
+const MAX_STORED_REMOVALS: usize = 1024;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 pub const ROOM_STORE_FILE: &str = "my_rooms.dat";
 pub const ROOM_STORE_LABEL: &str = "doubleslash-store/rooms/v1";
@@ -124,6 +134,13 @@ struct StoreData {
     /// Additive `#[serde(default)]` field — no schema bump per the file's rule.
     #[serde(default)]
     spaces: Vec<crate::space::Space>,
+    /// When the user last added each room here, by room id. Own-device sync
+    /// compares it with a sibling's removal; additive, no schema bump.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    added_at: std::collections::BTreeMap<String, u64>,
+    /// Rooms removed on this device or a sibling, for own-device sync.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    removals: Vec<RoomRemoval>,
 }
 
 fn default_schema() -> u32 {
@@ -145,6 +162,13 @@ pub struct RoomStore {
     deleted_ids: HashSet<String>,
     /// Owner-held Space trees keyed by `space_id`.
     spaces: HashMap<String, crate::space::Space>,
+    /// When the user last added each room on this device (seconds), keyed by
+    /// room id. Only an explicit add counts: a supernode's room list and a
+    /// reconnect replay leave it alone, so neither outranks a removal made on
+    /// a sibling device.
+    added_at: HashMap<String, u64>,
+    /// Removals to pass to our other devices, keyed by room id.
+    removals: HashMap<String, RoomRemoval>,
 }
 
 impl RoomStore {
@@ -173,6 +197,8 @@ impl RoomStore {
             rooms: HashMap::new(),
             deleted_ids: HashSet::new(),
             spaces: HashMap::new(),
+            added_at: HashMap::new(),
+            removals: HashMap::new(),
         };
         store.load()?;
         Ok(store)
@@ -210,6 +236,10 @@ impl RoomStore {
         for space in data.spaces {
             self.spaces.insert(space.space_id.clone(), space);
         }
+        self.added_at.extend(data.added_at);
+        for removal in data.removals {
+            self.removals.insert(removal.room_id.clone(), removal);
+        }
         Ok(())
     }
 
@@ -241,6 +271,12 @@ impl RoomStore {
                 v.sort_by(|a, b| a.space_id.cmp(&b.space_id));
                 v
             },
+            added_at: self
+                .added_at
+                .iter()
+                .map(|(room, at)| (room.clone(), *at))
+                .collect(),
+            removals: self.removals_newest_first(),
         };
         let plaintext = serde_json::to_vec(&data)
             .map_err(|e| crate::error::ClientError::Store(e.to_string()))?;
@@ -367,7 +403,7 @@ impl RoomStore {
             ));
         }
         let hide_key = Self::sidebar_hide_key(&entry.supernode_id, &entry.room_id);
-        self.deleted_ids.remove(&hide_key);
+        let was_hidden = self.deleted_ids.remove(&hide_key);
         info!(
             "RoomStore: saving room '{}' ({}) on supernode {}",
             entry.room_name,
@@ -375,16 +411,40 @@ impl RoomStore {
             &entry.supernode_id[..entry.supernode_id.len().min(12)]
         );
         let key = Self::entry_key(&entry.supernode_id, &entry.room_id);
+        if was_hidden || !self.rooms.contains_key(&key) {
+            self.note_added(&entry.room_id);
+        }
         self.rooms.insert(key, entry);
         self.save()
     }
 
     /// Merge a room entry with any existing record (keeps non-empty prior fields).
+    ///
+    /// For explicit user actions: create, join, accept an invite. A room this
+    /// adds or brings back counts as added now for own-device sync.
     pub fn upsert(&mut self, entry: RoomEntry) -> Result<()> {
-        if self.merge_in_memory(entry)? {
+        if self.merge_in_memory(entry, true)? {
             self.save()?;
         }
         Ok(())
+    }
+
+    /// Record that the user added `room_id` on this device just now, which
+    /// outranks a sibling's earlier removal and cancels our own.
+    fn note_added(&mut self, room_id: &str) {
+        if room_id.is_empty() || room_id == "default" {
+            return;
+        }
+        self.added_at.insert(room_id.to_owned(), now_secs());
+        self.removals.remove(room_id);
+    }
+
+    /// Removal records, newest first, capped at [`MAX_STORED_REMOVALS`].
+    fn removals_newest_first(&self) -> Vec<RoomRemoval> {
+        let mut v: Vec<RoomRemoval> = self.removals.values().cloned().collect();
+        v.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.room_id.cmp(&b.room_id)));
+        v.truncate(MAX_STORED_REMOVALS);
+        v
     }
 
     /// Merge `entry` into the in-memory map **without persisting**.
@@ -394,7 +454,11 @@ impl RoomStore {
     /// re-encrypts and rewrites the *whole* store: a room list arriving with 4
     /// unchanged rooms previously cost 4 full-file writes for no state change,
     /// and a reconnect replays that list several times over.
-    fn merge_in_memory(&mut self, entry: RoomEntry) -> Result<bool> {
+    ///
+    /// `explicit` marks a user action, which stamps a newly added or un-hidden
+    /// room for own-device sync. A passive room list must not: a room a sibling
+    /// removed would come back on the strength of a list that still names it.
+    fn merge_in_memory(&mut self, entry: RoomEntry, explicit: bool) -> Result<bool> {
         if entry.supernode_id.is_empty() {
             return Err(crate::error::ClientError::Store(
                 "room entry missing supernode_id".to_owned(),
@@ -449,6 +513,10 @@ impl RoomStore {
 
         let hide_key = Self::sidebar_hide_key(&merged.supernode_id, &merged.room_id);
         let was_hidden = self.deleted_ids.remove(&hide_key);
+        let is_new = !self.rooms.contains_key(&key);
+        if explicit && (is_new || was_hidden) {
+            self.note_added(&merged.room_id);
+        }
         let unchanged = self.rooms.get(&key).is_some_and(|cur| *cur == merged);
         if unchanged && !was_hidden {
             return Ok(false);
@@ -483,7 +551,7 @@ impl RoomStore {
             {
                 continue;
             }
-            match self.merge_in_memory(entry) {
+            match self.merge_in_memory(entry, false) {
                 Ok(changed) => dirty |= changed,
                 Err(e) => warn!("room_store sync from list error: {e}"),
             }
@@ -588,7 +656,10 @@ impl RoomStore {
         {
             return Ok(());
         }
-        self.upsert(entry)
+        if self.merge_in_memory(entry, false)? {
+            self.save()?;
+        }
+        Ok(())
     }
 
     /// Drop every local copy of a room and tombstone each host.
@@ -601,7 +672,19 @@ impl RoomStore {
     /// `extra_supernode_ids` covers hosts the room was never stored under, so a
     /// list from a cluster sibling is tombstoned too. The built-in `default`
     /// room is refused.
+    ///
+    /// The removal is also recorded for our other devices, which drop the room
+    /// unless they added it again after this.
     pub fn delete_local(&mut self, room_id: &str, extra_supernode_ids: &[String]) -> Result<()> {
+        self.delete_local_at(room_id, extra_supernode_ids, now_secs())
+    }
+
+    fn delete_local_at(
+        &mut self,
+        room_id: &str,
+        extra_supernode_ids: &[String],
+        at: u64,
+    ) -> Result<()> {
         if room_id.is_empty() || room_id == "default" {
             return Ok(());
         }
@@ -619,11 +702,20 @@ impl RoomStore {
         );
         hosts.sort();
         hosts.dedup();
-        for host in hosts {
-            let key = Self::entry_key(&host, room_id);
+        for host in &hosts {
+            let key = Self::entry_key(host, room_id);
             self.rooms.remove(&key);
             self.deleted_ids.insert(key);
         }
+        self.added_at.remove(room_id);
+        self.removals.insert(
+            room_id.to_owned(),
+            RoomRemoval {
+                room_id: room_id.to_owned(),
+                hosts,
+                at,
+            },
+        );
         info!(
             "RoomStore: deleted room {} on this device",
             &room_id[..room_id.len().min(12)]

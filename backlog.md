@@ -282,7 +282,10 @@ Still required before claiming the preview:
   sealed exchange. Still to run live: a room and a sub-room created on the phone
   appear nested on the desktop and the reverse, with both clients running and
   after a restart, and a room hidden on one device stays visible on the other.
-  Room deletes and renames do not sync.
+  Removing a room now syncs too (unit tests only): run Remove on each device
+  with the other running, with the other offline and connecting later, while
+  the other is in that room's voice, and Remove on one then joining again on
+  the other. Rooms cannot be renamed, so there is no rename to sync.
 - **Restore edge cases.** A plain desktop → phone → desktop round trip works.
   Still to run: a large attachment, a missing attachment, a keyfile-protected
   source, a failed or cancelled document-picker copy, and a restart after

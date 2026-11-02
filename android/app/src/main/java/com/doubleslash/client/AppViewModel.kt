@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import java.util.Locale
@@ -2133,6 +2134,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Another of our devices removed these rooms, and the core has already
+     * dropped them from the store and unsubscribed their chat. Leave and close
+     * them the way [deleteRoom] does.
+     */
+    private fun forgetRoomsRemovedElsewhere(event: JsonObject) {
+        val removed = event["removed"] as? JsonArray ?: return
+        for (item in removed) {
+            val roomId = (item as? JsonObject)?.stringOrEmpty("room_id").orEmpty()
+            if (roomId.isEmpty() || roomId == "default") continue
+            if (_state.value.voiceRoom?.roomId == roomId) leaveRoomVoice()
+            val open = (_state.value.screen as? Screen.RoomChat)?.room
+            if (open?.roomId == roomId) closeRoom()
+            if (roomId in settings.roomMessageAlerts) {
+                setRoomMessageAlerts(Room(roomId = roomId), false)
+            }
+        }
+    }
+
+    /**
      * Open a room: join it, then subscribe to its chat.
      *
      * Order matters — the supernode only forwards room chat to peers it has
@@ -2995,9 +3015,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
             "handle_updated" -> refreshPeers()
 
-            // `rooms_synced`: another of our devices sent rooms this one lacked.
+            // `rooms_synced`: another of our devices sent rooms this one lacked,
+            // or removed some (`removed`).
+            "rooms_synced" -> {
+                forgetRoomsRemovedElsewhere(event)
+                refreshRooms()
+            }
+
             // `room_list`: a supernode listed its rooms, now saved by the core.
-            "room_created", "room_invite_ready", "rooms_synced", "room_list" -> refreshRooms()
+            "room_created", "room_invite_ready", "room_list" -> refreshRooms()
 
             // Our own offers echo back as events too; only an inbound one is
             // a question for the user.

@@ -1498,7 +1498,8 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                 title = { Text("Are you sure?") },
                 text = {
                     Text(
-                        "This removes ${room.label} from this device. Other people still " +
+                        "This removes ${room.label} from this device and your other " +
+                            "devices. Other people still " +
                             "have the room, and an invite can bring it back here. If you are " +
                             "in its voice, that call ends. Remove the chat history stored on " +
                             "this device as well, or only the room?",

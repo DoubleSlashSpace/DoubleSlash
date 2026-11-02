@@ -801,6 +801,15 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                 supernode_id: supernode_id.to_owned(),
                 room_id: room_id.to_owned(),
             });
+            // Our other devices drop it too, unless they add it again later.
+            let snapshot = session
+                .room_store
+                .read()
+                .own_device_snapshot(&session.my_public_id);
+            let _ = session.send(ConnectionCommand::SyncOwnRooms {
+                snapshot,
+                reply_wanted: false,
+            });
             json!({ "ok": true })
         }
         "room.join" => {

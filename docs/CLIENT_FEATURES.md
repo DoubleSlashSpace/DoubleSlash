@@ -191,8 +191,8 @@ read.
   contact, the same link the desktop's `generateRoomInviteForPeer` copies.
   Press and hold a room for Join Voice Room, Copy Room Invite, Invite
   Contact to Room, Hide room, and Remove room. Hide room only takes it off
-  this device's list. Remove room deletes it here and asks whether to also
-  delete its chat history. The built-in default room has no Remove item.
+  this device's list. Remove room deletes it here and on our other devices,
+  and asks whether to also delete this device's chat history for it. The built-in default room has no Remove item.
 
   Creation was not just a missing command. Nothing else on Android writes to
   the room store — the rooms a phone lists were persisted by a desktop client

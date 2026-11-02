@@ -1494,6 +1494,7 @@ mod tests {
                 .with_supernode("host")
                 .with_creator(identity.public_id(), true)],
             spaces: vec![],
+            ..Default::default()
         }
     }
 

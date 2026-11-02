@@ -4923,34 +4923,9 @@ impl ffi::AppBridge {
                 }
             }
         }
-        if let Some(ref tx) = self.rust().conn_cmd_tx {
-            let _ = tx.try_send(ConnectionCommand::UnsubscribeRoomChat {
-                supernode_id: sid.clone(),
-                room_id: rid.clone(),
-            });
-        }
-        let voice_here = self.rust().voice_supernode_id == sid && self.rust().voice_room_id == rid;
-        let chat_here =
-            self.rust().current_supernode_id == sid && self.rust().current_room_id == rid;
-        if voice_here {
-            self.as_mut().leave_room();
-        }
-        if chat_here {
-            {
-                let mut r = self.as_mut().rust_mut();
-                r.current_supernode_id.clear();
-                r.current_room_id.clear();
-                r.text_member_ids.clear();
-            }
-            self.as_mut().text_members_updated(QString::from("[]"));
-            if !self.rust().voice_active {
-                self.as_mut()
-                    .set_session_banner(QString::from("Offline \u{00b7} Room removed"));
-                self.as_mut().set_connection_mode(QString::from("offline"));
-            }
-        }
-        self.as_mut()
-            .room_deleted(QString::from(sid.as_str()), QString::from(rid.as_str()));
+        forget_removed_room(self.as_mut(), &sid, &rid);
+        // Our other devices drop it too, unless they add it again later.
+        sync_own_rooms(self.rust(), false);
     }
 
     fn unhide_room(self: Pin<&mut Self>, supernode_id: &QString, room_id: &QString) {
@@ -9010,12 +8985,57 @@ fn merge_own_rooms(
             }
         }
     }
+    for (host, room_id) in &merged.removed {
+        // The sidebar files a room under the supernode's identity, which is
+        // the id a local Remove Room signals with.
+        let sid = bridge
+            .rust()
+            .resolve_supernode_node_id_str(host)
+            .unwrap_or_else(|| host.clone());
+        forget_removed_room(bridge.as_mut(), &sid, room_id);
+    }
     if merged.changed {
         emit_local_rooms_for_all_supernodes(bridge.as_mut());
     }
     if reply_wanted || merged.sibling_behind {
         sync_own_rooms(bridge.rust(), false);
     }
+}
+
+/// Stop following a room that is gone from this device: unsubscribe its chat,
+/// leave its voice, close it if open, and drop its sidebar row. Shared by
+/// Remove Room here and a removal synced from another of our devices.
+fn forget_removed_room(mut bridge: Pin<&mut ffi::AppBridge>, sid: &str, rid: &str) {
+    if let Some(ref tx) = bridge.rust().conn_cmd_tx {
+        let _ = tx.try_send(ConnectionCommand::UnsubscribeRoomChat {
+            supernode_id: sid.to_owned(),
+            room_id: rid.to_owned(),
+        });
+    }
+    let voice_here = bridge.rust().voice_supernode_id == sid && bridge.rust().voice_room_id == rid;
+    let chat_here =
+        bridge.rust().current_supernode_id == sid && bridge.rust().current_room_id == rid;
+    if voice_here {
+        bridge.as_mut().leave_room();
+    }
+    if chat_here {
+        {
+            let mut r = bridge.as_mut().rust_mut();
+            r.current_supernode_id.clear();
+            r.current_room_id.clear();
+            r.text_member_ids.clear();
+        }
+        bridge.as_mut().text_members_updated(QString::from("[]"));
+        if !bridge.rust().voice_active {
+            bridge
+                .as_mut()
+                .set_session_banner(QString::from("Offline \u{00b7} Room removed"));
+            bridge
+                .as_mut()
+                .set_connection_mode(QString::from("offline"));
+        }
+    }
+    bridge.room_deleted(QString::from(sid), QString::from(rid));
 }
 
 fn emit_local_rooms_for_all_supernodes(mut bridge: Pin<&mut ffi::AppBridge>) {

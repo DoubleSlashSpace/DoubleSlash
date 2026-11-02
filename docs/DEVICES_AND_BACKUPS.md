@@ -186,13 +186,23 @@ supernode delivers it to every endpoint of the identity. A receiver accepts it
 only from another device of the same identity, and only sealed and fresh. The
 manager spaces sends by two seconds, and a newer snapshot replaces a waiting one.
 
-Merging (`room_store/own_sync.rs`) only adds. Unknown rooms are added when their
-supernode is known here; stored rooms only have empty fields filled. A room
+Merging (`room_store/own_sync.rs`) adds rooms and applies removals. Unknown
+rooms are added when their supernode is known here; stored rooms only have
+empty fields filled. A room
 hidden on the receiving device stays hidden, and hidden rooms are left out of a
 snapshot. Space trees are merged by node; when the union matches neither copy,
 the receiver signs it at an epoch above both and announces the root, so the two
-devices converge instead of announcing different roots for one epoch. Deleting
-or renaming a room does not propagate.
+devices converge instead of announcing different roots for one epoch.
+
+Remove Room on one device removes the room on the others. The snapshot carries
+each removal with the hosts it tombstoned and its time, and each room's last
+explicit add (create, join, or accepted invite). The later of the two wins, so a
+room joined again on the phone after the desktop removed it comes back on the
+desktop. The times are each device's own clock, so a clock that is far off can
+let the older action win. A supernode's room list never counts as an add. The
+receiving device leaves that room's voice, unsubscribes its chat and closes it.
+Chat history stays on each device; the Remove dialog's history option is
+local. Hiding is not synced, and rooms have no rename.
 
 `manager/device_calls.rs` selects one answering endpoint, confirms that selection
 with bounded retries, dismisses sibling ringing, and binds direct media and

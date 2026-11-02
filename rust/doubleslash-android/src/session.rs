@@ -503,7 +503,7 @@ fn spawn_event_pump(
                 if let ConnectionEvent::SupernodeConnected(_) = &ev {
                     sync_own_rooms(&room_store, &cmd_tx, &my_public_id, true);
                 }
-                if merge_if_own_rooms(
+                if let Some(removed) = merge_if_own_rooms(
                     &room_store,
                     &peer_store,
                     &cluster_members,
@@ -512,7 +512,16 @@ fn spawn_event_pump(
                     &my_public_id,
                     &ev,
                 ) {
-                    sink.emit(&mut guard, r#"{"event":"rooms_synced"}"#);
+                    // `removed` names rooms another of our devices removed, so
+                    // the UI can leave their voice and close them.
+                    let removed: Vec<_> = removed
+                        .iter()
+                        .map(|(supernode_id, room_id)| {
+                            serde_json::json!({ "supernode_id": supernode_id, "room_id": room_id })
+                        })
+                        .collect();
+                    let event = serde_json::json!({ "event": "rooms_synced", "removed": removed });
+                    sink.emit(&mut guard, &event.to_string());
                 }
 
                 queue_portal_datagram(&portal_datagrams, &ev);
@@ -1128,11 +1137,13 @@ fn sync_own_rooms(
     });
 }
 
-/// Merge rooms another of our devices sent. Returns whether the room list
-/// changed, so the UI can reload it.
+/// Merge rooms another of our devices sent. Returns the rooms its removals
+/// took off this phone when the room list changed, so the UI can reload it,
+/// and `None` when nothing changed.
 ///
-/// Announces any Space root the merge had to re-sign, and answers with our own
-/// snapshot when asked or when the sender's tree is behind ours.
+/// Announces any Space root the merge had to re-sign, unsubscribes the chat of
+/// each removed room, and answers with our own snapshot when asked or when the
+/// sender is behind.
 fn merge_if_own_rooms(
     room_store: &Arc<RwLock<RoomStore>>,
     peer_store: &Arc<RwLock<PeerStore>>,
@@ -1141,13 +1152,13 @@ fn merge_if_own_rooms(
     cmd_tx: &mpsc::Sender<ConnectionCommand>,
     my_public_id: &str,
     event: &ConnectionEvent,
-) -> bool {
+) -> Option<Vec<(String, String)>> {
     let ConnectionEvent::OwnRoomsReceived {
         snapshot,
         reply_wanted,
     } = event
     else {
-        return false;
+        return None;
     };
     let issued_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1169,7 +1180,7 @@ fn merge_if_own_rooms(
         Ok(merged) => merged,
         Err(e) => {
             warn!("could not merge rooms from another device: {e}");
-            return false;
+            return None;
         }
     };
     for (supernode_id, root) in &merged.roots {
@@ -1183,10 +1194,16 @@ fn merge_if_own_rooms(
             Err(e) => warn!("could not encode a merged space root: {e}"),
         }
     }
+    for (supernode_id, room_id) in &merged.removed {
+        let _ = cmd_tx.try_send(ConnectionCommand::UnsubscribeRoomChat {
+            supernode_id: supernode_id.clone(),
+            room_id: room_id.clone(),
+        });
+    }
     if *reply_wanted || merged.sibling_behind {
         sync_own_rooms(room_store, cmd_tx, my_public_id, false);
     }
-    merged.changed
+    merged.changed.then_some(merged.removed)
 }
 
 /// Save the rooms a supernode lists, as the desktop does, so a node shows its

@@ -3097,7 +3097,7 @@ ApplicationWindow {
                                 confirmRemoveDialog.askDelete(
                                     roomContextMenu.targetSupernodeId,
                                     roomContextMenu.targetRoomId,
-                                    qsTr("This removes %1 from this device. Other people still have the room, and an invite can bring it back here. If you are in its voice, that call ends. Remove the chat history stored on this device as well, or only the room?").arg(name))
+                                    qsTr("This removes %1 from this device and your other devices. Other people still have the room, and an invite can bring it back here. If you are in its voice, that call ends. Remove the chat history stored on this device as well, or only the room?").arg(name))
                             }
                         }
                     }
