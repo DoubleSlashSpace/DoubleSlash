@@ -395,9 +395,7 @@ stay-unlocked, Legal reader, backups. Do not re-open those as missing.
 
 ## Phase 5 — Client polish
 
-1. **Android room per-peer grants** (`generateRoomInviteForPeer`) are not wired;
-   shareable links carry a Space inclusion proof and no grant. Desktop has it.
-2. **Supernode rows in the Rooms list: live check.** Both clients head each
+1. **Supernode rows in the Rooms list: live check.** Both clients head each
    node's rooms with a foldable avatar row; unit tests only. Run with two
    unrelated supernodes on desktop and phone: two separate `default` rooms,
    folds survive a restart, portal and Create room from the row's menu, and
