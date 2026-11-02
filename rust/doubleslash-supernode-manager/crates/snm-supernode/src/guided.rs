@@ -54,6 +54,7 @@ impl GuidedSetup {
         Instance {
             id: "a".into(),
             public_host: public_host.into(),
+            hostname: None,
             relay_port: Some(snm_core::default_relay_port(0)),
             ws_port: Some(snm_core::default_ws_port(0)),
             listen_bind: None,

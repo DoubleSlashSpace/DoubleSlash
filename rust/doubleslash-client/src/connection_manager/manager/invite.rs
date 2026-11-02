@@ -683,6 +683,23 @@ impl ConnectionManager {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
+        // Hostname hints travel in `supernode_relay_hints` beside the IP in
+        // `relay_hint`. Only a supernode invite may add them to the dial list.
+        let dial_hints = if is_supernode {
+            let extra = payload
+                .get("supernode_relay_hints")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            crate::connection_fallback::ws_hints_from_invite(&supernode_hint, &extra)
+        } else {
+            Vec::new()
+        };
 
         info!(
             "Accepting invite from {} (id={})",
@@ -696,16 +713,11 @@ impl ConnectionManager {
         if is_supernode {
             {
                 let mut store = self.peer_store.write();
-                let relay_hints = if supernode_hint.is_empty() {
-                    vec![]
-                } else {
-                    vec![supernode_hint.clone()]
-                };
                 store.upsert_from_invite(crate::peer_store::PeerRecord {
                     peer_id: inviter_peer_id.clone(),
                     identity_pub: inviter_identity_pub.clone(),
                     handle: inviter_handle.clone(),
-                    relay_hints,
+                    relay_hints: dial_hints.clone(),
                     is_supernode: true,
                     supernode_from_invite: true,
                     created_at: unix_now_f64(),
@@ -739,11 +751,11 @@ impl ConnectionManager {
         // Open a signaling session only for supernode invites. Ordinary peers
         // may carry a ws relay hint for NAT traversal — that must not register
         // them in the Rooms sidebar or key a WS session under their identity.
-        if is_supernode && !supernode_hint.is_empty() {
+        if is_supernode && !dial_hints.is_empty() {
             if let Some(sn) = self.supernodes.remove(&inviter_identity_pub) {
                 sn.ws_task.abort();
             }
-            self.connect_supernode_ws(inviter_identity_pub.clone(), vec![supernode_hint.clone()])
+            self.connect_supernode_ws(inviter_identity_pub.clone(), dial_hints)
                 .await;
         }
 

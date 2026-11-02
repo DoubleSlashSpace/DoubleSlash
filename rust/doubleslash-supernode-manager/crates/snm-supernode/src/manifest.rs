@@ -121,6 +121,9 @@ pub fn render_supernode_toml_with_cluster(
         "access_mode".into(),
         toml::Value::String(config.access_mode.clone()),
     );
+    if let Some(hostname) = &config.hostname {
+        root.insert("hostname".into(), toml::Value::String(hostname.clone()));
+    }
     let header =
         toml::to_string_pretty(&toml::Value::Table(root)).expect("manifest header serializes");
     let feature_blocks = features
@@ -173,6 +176,7 @@ mod tests {
             relay_port: 3478,
             ws_port: 34935,
             public_host: "edge1.example.net".into(),
+            hostname: None,
             identity_file: "identity.json".into(),
             access_mode: "open".into(),
             features: default_instance_features(),
@@ -187,8 +191,18 @@ mod tests {
         assert!(raw.contains("ws_listen_addr = \"0.0.0.0:34935\""));
         assert!(!raw.contains("web_port"));
         assert!(raw.contains("access_mode = \"open\""));
+        assert!(!raw.contains("hostname"));
         assert!(raw.contains("core.chat.v1"));
         assert!(raw.contains("transport.quic.relay.v1"));
+    }
+
+    #[test]
+    fn writes_a_hostname_beside_the_address() {
+        let mut config = sample_config();
+        config.hostname = Some("relay.example.com".into());
+        let raw = render_supernode_toml(&config);
+        assert!(raw.contains("hostname = \"relay.example.com\""));
+        assert!(raw.contains("listen_addr"));
     }
 
     #[test]

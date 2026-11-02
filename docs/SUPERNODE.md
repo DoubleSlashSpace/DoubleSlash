@@ -171,7 +171,8 @@ See `src/access.rs` for the trait and examples.
 
 ## Tickets & Endpoint Mailbox
 
-- Relay tickets are Ed25519-signed by the supernode.
+- Relay tickets are Ed25519-signed by the supernode. `relay_host` is the IP in `supernode_host`.
+- Optional `hostname` in `supernode.toml` (or `supernode_hostname`) is a DNS name signed into the invite beside that IP and advertised on `SupernodeInfo`. Clients dial the IP. If that connection fails, they resolve an ordinary name with DNS, or a `*.doubleslash.space` name through DDDNS (`GET https://<name>/.well-known/doubleslash`), and dial the IP and port they get back. A failed lookup leaves them on the invite address. With a hostname set, an IP or signaling-port change keeps the same reusable invite id and rewrites the current IP into it. Without one, that change mints a new invite.
 - Clients should renew tickets when `needs_renewal()` returns true.
 - The endpoint mailbox allows clients to discover the current relay address after a supernode restart without re-onboarding.
 

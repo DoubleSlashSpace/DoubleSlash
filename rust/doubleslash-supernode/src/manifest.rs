@@ -67,6 +67,12 @@ pub struct SupernodeManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_mode: Option<String>,
 
+    /// DNS name advertised beside the IP in `supernode_host`. Clients keep
+    /// the IP for relay tickets and may also dial this name for signaling.
+    /// Absent on older manifests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+
     /// Optional `[cluster]` section: link this supernode with others into one
     /// logical node. Absent ⇒ standalone. Additive (no schema bump): older
     /// builds that don't know the field ignore it.
@@ -201,6 +207,14 @@ impl SupernodeManifest {
                 });
             }
         }
+        if let Some(name) = &self.hostname {
+            if crate::config::normalize_advertised_hostname(name).is_none() {
+                return Err(ManifestError::InvalidSetting {
+                    field: "hostname",
+                    value: name.clone(),
+                });
+            }
+        }
         if self.schema_version != SCHEMA_VERSION {
             return Err(ManifestError::UnsupportedSchema {
                 found: self.schema_version,
@@ -252,6 +266,10 @@ impl SupernodeManifest {
             .and_then(crate::config::AccessMode::parse)
         {
             config.access_mode = mode;
+        }
+        if let Some(name) = &self.hostname {
+            // `validate` already refused anything that is not a DNS name.
+            config.hostname = crate::config::normalize_advertised_hostname(name);
         }
         Ok(())
     }
@@ -832,8 +850,35 @@ mod tests {
             ad_content: String::new(),
             demo_links: false,
             external_host: None,
+            hostname: None,
             data_dir: data_dir.to_path_buf(),
         }
+    }
+
+    #[test]
+    fn hostname_from_the_manifest_replaces_the_env_name() {
+        let m = SupernodeManifest::from_toml_str(
+            r#"
+            hostname = "Relay.Example.COM."
+            "#,
+        )
+        .unwrap();
+        let mut config = legacy_config_for(std::path::Path::new("."));
+        config.hostname = Some("old.example".into());
+        m.apply_to_config(&mut config).unwrap();
+        assert_eq!(config.hostname.as_deref(), Some("relay.example.com"));
+    }
+
+    #[test]
+    fn an_ip_is_not_a_hostname() {
+        let err = SupernodeManifest::from_toml_str(
+            r#"
+            hostname = "198.51.100.7"
+            "#,
+        )
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("hostname"), "{message}");
     }
 
     // ── Phase 5: cdylib_manifest field + native_module_entries() ────────────

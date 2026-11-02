@@ -744,6 +744,9 @@ impl ConnectionManager {
             SupernodeSession {
                 peer_id: supernode_id.to_owned(),
                 ws_url: "ws://test.invalid:34935".to_owned(),
+                ws_candidates: Arc::new(std::sync::Mutex::new(vec![
+                    "ws://test.invalid:34935".to_owned()
+                ])),
                 send_tx,
                 connected: true,
                 ws_task: tokio::spawn(async {}),
@@ -1823,11 +1826,12 @@ impl ConnectionManager {
         let reconnect_now = Arc::new(Notify::new());
 
         // Spawn a dedicated task for this supernode connection
+        let ws_candidates = Arc::new(std::sync::Mutex::new(candidates));
         let ws_task = tokio::spawn(supernode_ws_task(
             identity,
             self.device_id,
             peer_id_clone,
-            candidates,
+            Arc::clone(&ws_candidates),
             send_rx,
             internal_tx,
             Arc::clone(&reconnect_now),
@@ -1838,6 +1842,7 @@ impl ConnectionManager {
             SupernodeSession {
                 peer_id,
                 ws_url,
+                ws_candidates,
                 send_tx,
                 connected: false,
                 ws_task,

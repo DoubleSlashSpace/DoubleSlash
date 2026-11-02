@@ -141,6 +141,7 @@ pub struct ResolvedSupernodeConfig {
     pub relay_port: u16,
     pub ws_port: u16,
     pub public_host: String,
+    pub hostname: Option<String>,
     pub identity_file: String,
     pub access_mode: String,
     pub features: Vec<FeatureSpec>,
@@ -167,6 +168,7 @@ pub fn resolve_supernode_config(
         relay_port,
         ws_port,
         public_host: instance.public_host.clone(),
+        hostname: instance.hostname.clone(),
         identity_file: instance
             .identity_file
             .clone()
@@ -381,6 +383,7 @@ ssh = "root@1.2.3.4"
         let instance = Instance {
             id: "a".into(),
             public_host: "h.example.net".into(),
+            hostname: None,
             relay_port: None,
             ws_port: None,
             cluster_port: None,
@@ -412,6 +415,7 @@ ssh = "root@1.2.3.4"
         let instance = Instance {
             id: "a".into(),
             public_host: "edge.example.net".into(),
+            hostname: None,
             relay_port: Some(3478),
             ws_port: Some(34935),
             cluster_port: None,

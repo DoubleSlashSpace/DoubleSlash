@@ -1,7 +1,7 @@
 //! Internal connection-manager state and helpers.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, Notify};
@@ -242,6 +242,9 @@ pub(super) mod drop_metrics {
 pub(super) struct SupernodeSession {
     pub(super) peer_id: String,
     pub(super) ws_url: String,
+    /// Dial list the WebSocket task rotates through. The manager appends a
+    /// hostname learned from `SupernodeInfo` so the next retry can use it.
+    pub(super) ws_candidates: Arc<Mutex<Vec<String>>>,
     pub(super) send_tx: mpsc::Sender<WsMessage>,
     pub(super) connected: bool,
     pub(super) ws_task: tokio::task::JoinHandle<()>,

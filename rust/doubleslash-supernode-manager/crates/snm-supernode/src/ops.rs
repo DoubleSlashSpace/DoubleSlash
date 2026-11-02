@@ -177,23 +177,31 @@ pub async fn install_instance_report(
 
     run_checked(transport, &format!("{prefix}systemctl daemon-reload")).await?;
 
-    // Older supernodes reuse a saved invite across restarts even after the
-    // public host or signaling port changed, so new members would dial an
-    // address the node no longer serves. Remove a stale one; the restart
-    // below mints a fresh invite for the current address.
-    let expected = format!("ws://{}:{}", network.public_host, network.ws_port);
-    let stale = run_checked(
-        transport,
-        &format!(
-            "{prefix}sh -c {}",
-            shell_escape(&stale_invite_script(&layout.data_dir, &expected))
-        ),
-    )
-    .await?;
-    if stale.stdout.contains("removed") {
-        report.push(format!(
-            "{label}: replaced the saved invite, which pointed at an old address"
-        ));
+    // Without a hostname, a saved invite for a different address would send
+    // new members to a socket the node no longer serves, so remove it and
+    // let the restart mint a fresh one. With a hostname, the node keeps the
+    // invite id and rewrites the current IP into the same link. Clients dial
+    // that IP and resolve the name only when the connection fails.
+    if resolved
+        .instance
+        .hostname
+        .as_deref()
+        .is_none_or(|name| name.trim().is_empty())
+    {
+        let expected = format!("ws://{}:{}", network.public_host, network.ws_port);
+        let stale = run_checked(
+            transport,
+            &format!(
+                "{prefix}sh -c {}",
+                shell_escape(&stale_invite_script(&layout.data_dir, &expected))
+            ),
+        )
+        .await?;
+        if stale.stdout.contains("removed") {
+            report.push(format!(
+                "{label}: replaced the saved invite, which pointed at an old address"
+            ));
+        }
     }
 
     report.extend(

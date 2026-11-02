@@ -29,6 +29,51 @@ fn same_supernode_pad(a: &str, b: &str) -> bool {
 }
 
 impl ConnectionManager {
+    /// Remember a DNS name from `SupernodeInfo` beside the IP we already dial.
+    /// The next time that IP fails, the WebSocket task resolves an ordinary
+    /// name with DNS, or a `*.doubleslash.space` name through DDDNS, and dials
+    /// the address it gets back.
+    fn remember_supernode_hostname(&mut self, supernode_id: &str, hostname: &str) {
+        let endpoint =
+            self.supernodes
+                .get(supernode_id)
+                .and_then(|session| crate::connection_fallback::signaling_endpoint(&session.ws_url))
+                .or_else(|| {
+                    self.peer_store
+                        .read()
+                        .find_identity(supernode_id)
+                        .and_then(|record| {
+                            record.relay_hints.iter().find_map(|hint| {
+                                crate::connection_fallback::signaling_endpoint(hint)
+                            })
+                        })
+                });
+        let Some((scheme, port)) = endpoint else {
+            return;
+        };
+        let Some(url) = crate::connection_fallback::hostname_ws_url(hostname, scheme, port) else {
+            return;
+        };
+        if let Some(session) = self.supernodes.get(supernode_id) {
+            let mut candidates = session
+                .ws_candidates
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            if !candidates.iter().any(|hint| hint == &url) {
+                candidates.push(url.clone());
+            }
+        }
+        let mut store = self.peer_store.write();
+        if store.add_relay_hint(supernode_id, &url) {
+            if let Err(error) = store.save() {
+                warn!(
+                    "Could not store hostname hint for {}: {error}",
+                    &supernode_id[..supernode_id.len().min(8)]
+                );
+            }
+        }
+    }
+
     /// Clear any pending private-join keys for this room (exact host or any
     /// cluster sibling). Returns whether a pending entry existed.
     fn take_pending_private_room_join(&mut self, answering_host: &str, room_id: &str) -> bool {
@@ -1251,6 +1296,9 @@ impl ConnectionManager {
                         },
                         Err(e) => debug!("Malformed cluster descriptor in SUPERNODE_INFO: {e}"),
                     }
+                }
+                if let Some(name) = msg.payload.get("hostname").and_then(Value::as_str) {
+                    self.remember_supernode_hostname(&msg.sender, name);
                 }
             }
             MessageType::RelayPaymentRequired => {

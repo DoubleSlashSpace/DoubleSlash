@@ -119,6 +119,11 @@ struct InvitePayload {
     inviter_handle: String,
     is_supernode: bool,
     turn_hints: Vec<String>,
+    /// Extra signaling URLs, such as a configured DNS name. Omitted on
+    /// invites minted before that name existed, so those links re-encode
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supernode_relay_hints: Option<Vec<String>>,
     signature: String,
 }
 
@@ -207,6 +212,20 @@ mod tests {
             url,
             "https://doubleslash.space/i#eyJpbnZpdGVyX3BlZXJfaWQiOiJjNDE2NmFhMDk2ZjE1OTJkOGE0YzQxMDY0NjVmZGEwNTFlNjQyN2ViNjMyMjE1MzMwNmFlODg3ZDJlMDg4NzQ4IiwiaW52aXRlcl9pZGVudGl0eV9wdWIiOiJaZGpuX1U2dG5yUEctSTFKRnlMNUc4bTI4eG9Ram1jWGtZVlRpVVBVMjQ4IiwiaW52aXRlX2lkIjoiMDhiMWFkMmNmYTJmOTYzN2JkNjkyN2QxMzBmYmQxMjQiLCJleHBpcmVzX2F0Ijo0OTM0ODc5MTQyLCJpbnZpdGVyX2VwaGVtZXJhbF9wdWIiOiJDWWRyRHlrRWREUTJ5MGF0aGUwZi0xZ1BNUW8wRjhMQkl6UEhmUnVqM3l3IiwicmVsYXlfaGludCI6IndzOi8vMTU1LjEzOC4yNDQuMTg5OjM1MDM1IiwiaW52aXRlcl9oYW5kbGUiOiJSZWxheSBOb2RlIiwiaXNfc3VwZXJub2RlIjp0cnVlLCJ0dXJuX2hpbnRzIjpbInR1cm46MTU1LjEzOC4yNDQuMTg5OjM1NzgiXSwic2lnbmF0dXJlIjoibmpFVXpzYlFSaWtmNjJMdWJZUDV4VTQ5cnE1a1NwMXo1dG85bnhEYlYwUE4tWmRudjExa3d3Z1JiTEktWmJWQm55ZDZ2eFZVS3VuTGFlSndETFItQmcifQ"
         );
+    }
+
+    #[test]
+    fn rebuilt_url_keeps_a_hostname_hint() {
+        let raw = SAMPLE_REUSABLE.replacen(
+            "\"signature\"",
+            "\"supernode_relay_hints\":[\"ws://relay.example.com:35035\"],\"signature\"",
+            1,
+        );
+        let url = parse_reusable_invite(&raw).unwrap();
+        let fragment = url.split('#').nth(1).unwrap();
+        let bytes = URL_SAFE_NO_PAD.decode(fragment).unwrap();
+        let json = String::from_utf8(bytes).unwrap();
+        assert!(json.contains("ws://relay.example.com:35035"));
     }
 
     #[test]

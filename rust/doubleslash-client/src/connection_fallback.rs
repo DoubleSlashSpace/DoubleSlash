@@ -16,6 +16,7 @@
 //! owns the I/O; this module holds the pure state machine and helpers.
 
 use std::collections::HashSet;
+use std::net::IpAddr;
 
 // ---------------------------------------------------------------------------
 // Candidate ordering
@@ -81,6 +82,247 @@ pub fn build_ws_candidates_from_hints(
         std::iter::empty(),
         relay_hints.iter().map(String::as_str),
     )
+}
+
+/// A DNS name an operator advertised for a supernode. IP literals, URLs,
+/// and empty strings are refused: the IP already travels separately.
+pub fn normalize_dns_name(raw: &str) -> Option<String> {
+    let name = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+    if name.is_empty() || name.len() > 253 || name.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    if name.contains(':') || name.contains('/') || name.contains('@') {
+        return None;
+    }
+    let ok = name.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    });
+    ok.then_some(name)
+}
+
+/// Parent zone whose names are DDDNS records, not DNS addresses of a supernode.
+pub const DDDNS_PARENT: &str = "doubleslash.space";
+
+/// `label.doubleslash.space`, including a deeper name under that zone.
+///
+/// Ordinary DNS for any of these names answers with the DDDNS servers, so a
+/// caller must look the name up over HTTPS instead of resolving it.
+pub fn dddns_name(hostname: &str) -> Option<String> {
+    let name = normalize_dns_name(hostname)?;
+    let label = name.strip_suffix(&format!(".{DDDNS_PARENT}"))?;
+    if label.is_empty() {
+        return None;
+    }
+    Some(name)
+}
+
+/// How the WebSocket task should turn a stored hint into an IP dial target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignalingHint {
+    /// Dial this URL as given. Its host is already an IP, or it is not a
+    /// hostname this client knows how to resolve.
+    Direct,
+    /// Resolve `name` with DNS and dial `scheme://ip:port`.
+    Dns {
+        name: String,
+        scheme: &'static str,
+        port: u16,
+    },
+    /// `GET https://name/.well-known/doubleslash`. The record carries the IP
+    /// and the signaling port.
+    Dddns { name: String, scheme: &'static str },
+}
+
+/// Classify a stored signaling URL. A `*.doubleslash.space` name is never
+/// [`SignalingHint::Dns`].
+pub fn classify_signaling_hint(url: &str) -> SignalingHint {
+    let Some((scheme, host, port)) = ws_authority(url) else {
+        return SignalingHint::Direct;
+    };
+    if host.parse::<IpAddr>().is_ok() {
+        return SignalingHint::Direct;
+    }
+    let Some(name) = normalize_dns_name(&host) else {
+        return SignalingHint::Direct;
+    };
+    if dddns_name(&name).is_some() {
+        return SignalingHint::Dddns { name, scheme };
+    }
+    match port {
+        Some(port) if port != 0 => SignalingHint::Dns { name, scheme, port },
+        _ => SignalingHint::Direct,
+    }
+}
+
+/// Addresses from a DDDNS name record (`v` 1, status `active` or `grace`).
+/// `name` is the hostname that was looked up. The record's `name` is the
+/// label, and it has to match.
+pub fn dddns_endpoints_from_json(name: &str, body: &str) -> Result<Vec<(IpAddr, u16)>, String> {
+    let fqdn = dddns_name(name).ok_or_else(|| "not a doubleslash.space name".to_owned())?;
+    let label = fqdn
+        .strip_suffix(&format!(".{DDDNS_PARENT}"))
+        .ok_or_else(|| "not a doubleslash.space name".to_owned())?;
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|error| format!("record is not JSON: {error}"))?;
+    let version = value.get("v").and_then(serde_json::Value::as_u64);
+    if version != Some(1) {
+        return Err(format!("unsupported record version {version:?}"));
+    }
+    let got = value
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if got != label {
+        return Err(format!("record is for {got}, not {label}"));
+    }
+    let status = value
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if status != "active" && status != "grace" {
+        return Err(format!("name is {status}"));
+    }
+    let port = value
+        .get("port")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if port == 0 || port > u64::from(u16::MAX) {
+        return Err("record has no signaling port".into());
+    }
+    let port = port as u16;
+    let mut out = Vec::new();
+    if let Some(text) = value.get("ipv4").and_then(serde_json::Value::as_str) {
+        if let Ok(IpAddr::V4(ip)) = text.parse() {
+            push_dialable(&mut out, IpAddr::V4(ip), port);
+        }
+    }
+    if let Some(text) = value.get("ipv6").and_then(serde_json::Value::as_str) {
+        if let Ok(IpAddr::V6(ip)) = text.parse() {
+            push_dialable(&mut out, IpAddr::V6(ip), port);
+        }
+    }
+    if out.is_empty() {
+        return Err("record has no address".into());
+    }
+    Ok(out)
+}
+
+fn push_dialable(out: &mut Vec<(IpAddr, u16)>, ip: IpAddr, port: u16) {
+    if ip.is_unspecified() || ip.is_multicast() {
+        return;
+    }
+    if !out.iter().any(|(existing, _)| existing == &ip) {
+        out.push((ip, port));
+    }
+}
+
+/// `ws://` or `wss://` URL for an IP. IPv6 is bracketed.
+pub fn signaling_url_for(scheme: &str, ip: IpAddr, port: u16) -> Option<String> {
+    if port == 0 {
+        return None;
+    }
+    let scheme = match scheme {
+        "wss" => "wss",
+        "ws" => "ws",
+        _ => return None,
+    };
+    Some(match ip {
+        IpAddr::V4(ip) => format!("{scheme}://{ip}:{port}"),
+        IpAddr::V6(ip) => format!("{scheme}://[{ip}]:{port}"),
+    })
+}
+
+fn ws_authority(url: &str) -> Option<(&'static str, String, Option<u16>)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let scheme = if scheme.eq_ignore_ascii_case("wss") {
+        "wss"
+    } else if scheme.eq_ignore_ascii_case("ws") {
+        "ws"
+    } else {
+        return None;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    if authority.is_empty() {
+        return None;
+    }
+    let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
+        let (host, after) = rest.split_once(']')?;
+        let port = after.strip_prefix(':').and_then(|text| text.parse().ok());
+        (host.to_owned(), port)
+    } else if let Some((host, port)) = authority.rsplit_once(':') {
+        (host.to_owned(), port.parse().ok())
+    } else {
+        (authority.to_owned(), None)
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some((scheme, host, port))
+}
+
+/// Signaling URL for a supernode hostname, using the scheme and port of the
+/// address we already reach that node on. This is stored beside the IP. It
+/// is resolved to an address only after that IP connection fails.
+pub fn hostname_ws_url(hostname: &str, scheme: &str, port: u16) -> Option<String> {
+    let name = normalize_dns_name(hostname)?;
+    if port == 0 {
+        return None;
+    }
+    let scheme = match scheme {
+        "wss" => "wss",
+        "ws" => "ws",
+        _ => return None,
+    };
+    Some(format!("{scheme}://{name}:{port}"))
+}
+
+/// Scheme and port of a `ws://` or `wss://` URL, including a bracketed IPv6 host.
+pub fn signaling_endpoint(ws_url: &str) -> Option<(&'static str, u16)> {
+    let (scheme, rest) = ws_url.split_once("://")?;
+    let scheme = if scheme.eq_ignore_ascii_case("wss") {
+        "wss"
+    } else if scheme.eq_ignore_ascii_case("ws") {
+        "ws"
+    } else {
+        return None;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    if authority.is_empty() {
+        return None;
+    }
+    let port_str = if let Some(host) = authority.strip_prefix('[') {
+        let (_, after) = host.split_once(']')?;
+        after.strip_prefix(':')?
+    } else {
+        authority.rsplit_once(':')?.1
+    };
+    let port = port_str.parse().ok()?;
+    (port != 0).then_some((scheme, port))
+}
+
+/// Dial list for a supernode invite: the IP hint first, then any extra
+/// `ws://` / `wss://` hints. The IP is what the client dials. A hostname in
+/// the list is resolved only after that connection fails. Duplicates drop out.
+pub fn ws_hints_from_invite(primary: &str, extra: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut push = |url: &str| {
+        let url = url.trim();
+        if url.is_empty() || out.iter().any(|existing| existing == url) {
+            return;
+        }
+        if url.starts_with("ws://") || url.starts_with("wss://") {
+            out.push(url.to_owned());
+        }
+    };
+    push(primary);
+    for url in extra {
+        push(url);
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +437,117 @@ impl DirectFallbackCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invite_hints_keep_the_ip_ahead_of_the_hostname() {
+        let hints = ws_hints_from_invite(
+            "ws://198.51.100.7:34935",
+            &[
+                "ws://relay.example.com:34935".into(),
+                "ws://198.51.100.7:34935".into(),
+                "turn:198.51.100.7:3478".into(),
+                "not a url".into(),
+            ],
+        );
+        assert_eq!(
+            hints,
+            vec![
+                "ws://198.51.100.7:34935".to_owned(),
+                "ws://relay.example.com:34935".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn hostname_url_uses_the_live_scheme_and_port() {
+        assert_eq!(
+            signaling_endpoint("ws://198.51.100.7:34935"),
+            Some(("ws", 34935))
+        );
+        assert_eq!(
+            signaling_endpoint("wss://[2001:db8::7]:34935/sig"),
+            Some(("wss", 34935))
+        );
+        assert_eq!(
+            hostname_ws_url("Relay.Example.COM.", "wss", 34935).as_deref(),
+            Some("wss://relay.example.com:34935")
+        );
+        assert!(hostname_ws_url("198.51.100.7", "ws", 34935).is_none());
+    }
+
+    #[test]
+    fn doubleslash_space_is_a_dddns_name_and_not_a_dns_lookup() {
+        assert_eq!(
+            dddns_name("My.DoubleSlash.Space."),
+            Some("my.doubleslash.space".into())
+        );
+        assert!(dddns_name("relay.example.com").is_none());
+        assert!(dddns_name("doubleslash.space").is_none());
+        assert_eq!(
+            classify_signaling_hint("ws://my.doubleslash.space:34935"),
+            SignalingHint::Dddns {
+                name: "my.doubleslash.space".into(),
+                scheme: "ws",
+            }
+        );
+        assert_eq!(
+            classify_signaling_hint("wss://a.b.doubleslash.space:34935"),
+            SignalingHint::Dddns {
+                name: "a.b.doubleslash.space".into(),
+                scheme: "wss",
+            }
+        );
+        assert_eq!(
+            classify_signaling_hint("ws://relay.example.com:34935"),
+            SignalingHint::Dns {
+                name: "relay.example.com".into(),
+                scheme: "ws",
+                port: 34935,
+            }
+        );
+        assert_eq!(
+            classify_signaling_hint("ws://198.51.100.7:34935"),
+            SignalingHint::Direct
+        );
+        assert_eq!(
+            classify_signaling_hint("ws://[2001:db8::7]:34935"),
+            SignalingHint::Direct
+        );
+    }
+
+    #[test]
+    fn dddns_record_yields_the_ip_and_port() {
+        let body = r#"{
+            "v": 1,
+            "name": "myfortniteserver",
+            "status": "active",
+            "ipv4": "203.0.113.7",
+            "ipv6": "2001:db8::7",
+            "port": 35035
+        }"#;
+        let endpoints =
+            dddns_endpoints_from_json("myfortniteserver.doubleslash.space", body).expect("record");
+        assert_eq!(
+            endpoints,
+            vec![
+                ("203.0.113.7".parse().unwrap(), 35035),
+                ("2001:db8::7".parse().unwrap(), 35035),
+            ]
+        );
+        assert_eq!(
+            signaling_url_for("ws", endpoints[1].0, endpoints[1].1).as_deref(),
+            Some("ws://[2001:db8::7]:35035")
+        );
+        let grace = body.replace("active", "grace");
+        assert!(dddns_endpoints_from_json("myfortniteserver.doubleslash.space", &grace).is_ok());
+        let available = body.replace("active", "available");
+        assert!(
+            dddns_endpoints_from_json("myfortniteserver.doubleslash.space", &available).is_err()
+        );
+        assert!(dddns_endpoints_from_json("other.doubleslash.space", body).is_err());
+        let next = body.replace("\"v\": 1", "\"v\": 2");
+        assert!(dddns_endpoints_from_json("myfortniteserver.doubleslash.space", &next).is_err());
+    }
 
     #[test]
     fn candidate_order_supernode_first() {

@@ -337,6 +337,29 @@ impl PeerStore {
         self.records.insert(record.peer_id.clone(), record);
     }
 
+    /// Append a signaling URL for a peer we already store. Returns false when
+    /// the peer is unknown or the hint is already there.
+    pub fn add_relay_hint(&mut self, identity_pub: &str, hint: &str) -> bool {
+        let hint = hint.trim();
+        if hint.is_empty() {
+            return false;
+        }
+        let bare = identity_pub.trim_end_matches('=');
+        if bare.is_empty() {
+            return false;
+        }
+        let Some(record) = self.records.values_mut().find(|record| {
+            record.identity_pub == identity_pub || record.identity_pub.trim_end_matches('=') == bare
+        }) else {
+            return false;
+        };
+        if record.relay_hints.iter().any(|existing| existing == hint) {
+            return false;
+        }
+        record.relay_hints.push(hint.to_owned());
+        true
+    }
+
     pub fn remove(&mut self, peer_id: &str) -> Option<PeerRecord> {
         self.records.remove(peer_id)
     }
@@ -662,6 +685,31 @@ mod tests {
         assert_eq!(store2.supernodes().len(), 2);
         assert!(store2.is_supernode_id("sn_a_b64"));
         assert!(store2.is_supernode_id("sn_b_b64"));
+    }
+
+    #[test]
+    fn add_relay_hint_appends_a_hostname_once() {
+        let dir = tempdir().unwrap();
+        let id = make_identity();
+        let mut store = PeerStore::open(&id, Some(&dir.path().join(PEER_STORE_FILE))).unwrap();
+        store.upsert_from_invite(PeerRecord {
+            peer_id: "sn".into(),
+            identity_pub: "sn_pub".into(),
+            relay_hints: vec!["ws://198.51.100.7:34935".into()],
+            is_supernode: true,
+            supernode_from_invite: true,
+            ..Default::default()
+        });
+        assert!(store.add_relay_hint("sn_pub", "ws://relay.example.com:34935"));
+        assert!(!store.add_relay_hint("sn_pub", "ws://relay.example.com:34935"));
+        assert!(!store.add_relay_hint("missing", "ws://other.example:34935"));
+        assert_eq!(
+            store.get("sn").unwrap().relay_hints,
+            vec![
+                "ws://198.51.100.7:34935".to_owned(),
+                "ws://relay.example.com:34935".to_owned(),
+            ]
+        );
     }
 
     #[test]

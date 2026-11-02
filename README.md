@@ -120,7 +120,8 @@ Run on Linux/macOS:
 
 ```sh
 export DOUBLESLASH_HOME="$HOME/.doubleslash-supernode"
-export supernode_host="relay.example.com" # replace with your reachable host/IP
+export supernode_host="198.51.100.7" # public IP clients dial
+export supernode_hostname="relay.example.com" # optional; used only if that IP fails
 ./rust/target/release/doubleslash-supernode
 ```
 
@@ -128,7 +129,8 @@ Run on Windows (PowerShell):
 
 ```powershell
 $env:DOUBLESLASH_HOME = "$env:USERPROFILE\.doubleslash-supernode"
-$env:supernode_host = "relay.example.com" # replace with your reachable host/IP
+$env:supernode_host = "198.51.100.7" # public IP clients dial
+$env:supernode_hostname = "relay.example.com" # optional; used only if that IP fails
 .\rust\target\release\doubleslash-supernode.exe
 ```
 
@@ -138,7 +140,8 @@ Use a separate data directory from your client. The node generates an identity a
 |---|---|---|
 | `supernode_port` | `3478` | QUIC UDP listener |
 | `supernode_signaling_port` | `34935` | WebSocket TCP listener |
-| `supernode_host` | unset | Reachable host/IP included in invites and relay tickets |
+| `supernode_host` | unset | Public IP in invites and relay tickets. An IPv6 address is bracketed |
+| `supernode_hostname` | unset | Optional DNS name stored beside that IP. Clients dial the IP, and resolve this name only if the connection fails. A name under `*.doubleslash.space` is looked up over HTTPS at `https://<name>/.well-known/doubleslash` (DDDNS), which returns the current IP and signaling port. Other names use DNS. Relay tickets stay the IP |
 | `supernode_invite_ttl` | `-1` | Invite lifetime in minutes; `-1` means no expiry |
 | `supernode_access_mode` | `open` | `open`, `tos`, `code`, or `ad` (timer gate) |
 | `supernode_sfu` | `true` | Enable the SFU room manager |

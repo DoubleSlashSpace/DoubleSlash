@@ -1150,6 +1150,12 @@ impl SupernodeState {
         // Advertise the signed cluster roster so a client can fail over to any
         // member. Signed by this node's identity, which the client already
         // trusts over the Ed25519-verified SUPERNODE_INFO channel.
+        if let Some(name) = &self.config.hostname {
+            payload
+                .as_object_mut()
+                .unwrap()
+                .insert("hostname".into(), json!(name));
+        }
         if let Some(ref cluster) = self.cluster {
             if let Ok(desc) = serde_json::to_value(cluster.sign(&self.identity)) {
                 payload
@@ -3738,6 +3744,14 @@ async fn main() -> anyhow::Result<()> {
             listener_host, config.relay_port
         )]);
     }
+    // The name rides beside the IP. Clients dial `supernode_host` first and
+    // resolve this name only if that connection fails. Tickets and turn hints
+    // stay the IP.
+    handshake.hostname_hints = config
+        .hostname
+        .as_deref()
+        .and_then(|name| crate::config::hostname_signaling_url(name, config.signaling_port))
+        .map(|url| vec![url]);
 
     let features = Arc::new(build_feature_registry(&manifest, &config));
 
@@ -5091,6 +5105,7 @@ mod build_feature_registry_tests {
             ad_content: String::new(),
             demo_links: false,
             external_host: None,
+            hostname: None,
             data_dir,
         }
     }

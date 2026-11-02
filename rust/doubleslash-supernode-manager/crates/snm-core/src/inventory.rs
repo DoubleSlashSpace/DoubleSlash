@@ -130,6 +130,11 @@ pub struct Host {
 pub struct Instance {
     pub id: String,
     pub public_host: String,
+    /// DNS name advertised beside `public_host`. Relay tickets stay the IP.
+    /// Clients dial the IP, and resolve this name only if that connection fails.
+    /// A name under `*.doubleslash.space` is resolved through DDDNS over HTTPS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_port: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -544,6 +549,7 @@ pub fn scaffold_inventory() -> Inventory {
             instances: vec![Instance {
                 id: "a".into(),
                 public_host: "edge1.example.net".into(),
+                hostname: None,
                 relay_port: Some(3478),
                 ws_port: Some(34935),
                 listen_bind: None,
@@ -681,6 +687,7 @@ ssh = "root@1.2.3.4"
             Instance {
                 id: "a".into(),
                 public_host: "edge2.example.net".into(),
+                hostname: None,
                 relay_port: Some(3578),
                 ws_port: Some(35935),
                 cluster_port: None,
@@ -716,6 +723,7 @@ ssh = "root@1.2.3.4"
             Instance {
                 id: "a".into(),
                 public_host: "edge1-new.example.net".into(),
+                hostname: None,
                 relay_port: Some(3479),
                 ws_port: Some(34936),
                 cluster_port: None,
@@ -751,6 +759,7 @@ ssh = "root@1.2.3.4"
             Instance {
                 id: "b".into(),
                 public_host: "edge2.example.net".into(),
+                hostname: None,
                 relay_port: Some(3578),
                 ws_port: Some(35935),
                 cluster_port: None,

@@ -166,6 +166,29 @@ impl InvitePayload {
     }
 }
 
+/// DNS name carried in `supernode_relay_hints`, ignoring the port in that URL.
+fn advertised_hostname(hints: &Option<Vec<String>>) -> Option<String> {
+    let hints = hints.as_ref()?;
+    hints.iter().find_map(|url| {
+        let host = ws_url_host(url)?;
+        crate::config::normalize_advertised_hostname(host)
+    })
+}
+
+fn ws_url_host(url: &str) -> Option<&str> {
+    let rest = url.split_once("://")?.1;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    if let Some(host) = authority.strip_prefix('[') {
+        return host.split_once(']').map(|(host, _)| host);
+    }
+    Some(
+        authority
+            .rsplit_once(':')
+            .map(|(host, _)| host)
+            .unwrap_or(authority),
+    )
+}
+
 /// State for a pending handshake (one per invite_id), keyed by `invite_id`
 /// in `HandshakeManager::pending`.
 pub struct PendingInvite {
@@ -186,6 +209,10 @@ pub struct HandshakeManager {
     invite_ttl_seconds: i64,
     /// TURN relay hints embedded in invites (e.g. ["turn:1.2.3.4:3478"])
     pub turn_hints: Option<Vec<String>>,
+    /// Extra signaling URLs signed into invites beside the IP `listener_url`.
+    /// A configured DNS name lands here as `ws://name:port`. Absent when no
+    /// name is set. Relay tickets are not built from this.
+    pub hostname_hints: Option<Vec<String>>,
     /// Human-readable name for this supernode (sent as inviter_handle in accept).
     pub node_title: String,
 }
@@ -199,6 +226,7 @@ impl HandshakeManager {
             reusable_invite: None,
             invite_ttl_seconds,
             turn_hints: None,
+            hostname_hints: None,
             node_title: "Supernode".into(),
         }
     }
@@ -230,7 +258,7 @@ impl HandshakeManager {
             lan_hint: None,
             is_supernode: Some(true),
             supernode_info: None,
-            supernode_relay_hints: None,
+            supernode_relay_hints: self.hostname_hints.clone(),
             stun_hints: None,
             turn_hints: self.turn_hints.clone(),
             signature: None,
@@ -326,22 +354,50 @@ impl HandshakeManager {
             }
         };
 
-        // An invite minted for another address (the node's public host or
-        // signaling port changed since) would send every new member to a
-        // socket that is not there. Mint a fresh one instead.
-        if invite.relay_hint.as_deref() != Some(self.listener_url.as_str()) {
+        // An invite minted for another address would send every new member to
+        // a socket that is not there. Without a hostname that can be resolved
+        // to the new address, mint a fresh invite. With the same hostname,
+        // keep this invite id: clients dial the IP in the link first, and
+        // resolve the name only when that connection fails.
+        let address_matches = invite.relay_hint.as_deref() == Some(self.listener_url.as_str());
+        let saved_name = advertised_hostname(&invite.supernode_relay_hints);
+        let configured_name = advertised_hostname(&self.hostname_hints);
+        let name_matches = configured_name.is_some() && saved_name == configured_name;
+        if !address_matches && !name_matches {
             tracing::info!(
-                "Reusable invite points at {:?}, not {}; minting a new one",
+                "Reusable invite points at {:?}, not {}, and its hostname {:?} does not match {:?}; minting a new one",
                 invite.relay_hint,
-                self.listener_url
+                self.listener_url,
+                saved_name,
+                configured_name
             );
             return false;
         }
 
-        // Restore the pending entry so handshake can complete
+        // Restore the pending entry so handshake can complete.
         self.restore_pending(invite.invite_id.clone(), secret_bytes, invite.expires_at);
-        self.reusable_invite = Some(invite);
-        tracing::info!("Restored reusable invite from {}", path.display());
+
+        if address_matches && invite.supernode_relay_hints == self.hostname_hints {
+            self.reusable_invite = Some(invite);
+            tracing::info!("Restored reusable invite from {}", path.display());
+            return true;
+        }
+
+        // Same invite id. The copied link picks up the current IP, and a
+        // hostname that was added or changed is signed in beside it.
+        let mut updated = invite;
+        updated.relay_hint = Some(self.listener_url.clone());
+        updated.supernode_relay_hints = self.hostname_hints.clone();
+        updated.signature = None;
+        let updated = updated.sign(&self.identity);
+        tracing::info!(
+            "Reusable invite kept id {} at {} with hostname hints {:?}",
+            updated.invite_id,
+            self.listener_url,
+            updated.supernode_relay_hints
+        );
+        self.reusable_invite = Some(updated);
+        self.save_reusable_invite(data_dir);
         true
     }
 
@@ -496,6 +552,91 @@ mod tests {
         let mut moved = HandshakeManager::new(id, "ws://198.51.100.7:34935".into(), -1);
         assert!(!moved.load_reusable_invite(&dir));
         assert!(moved.reusable_invite.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn minted_invite_keeps_the_ip_and_adds_the_hostname() {
+        let id = Identity::generate();
+        let mut mgr = HandshakeManager::new(id, "ws://198.51.100.7:34935".into(), -1);
+        mgr.hostname_hints = Some(vec!["ws://relay.example.com:34935".into()]);
+        let inv = mgr.create_invite(Some("Node"));
+        assert_eq!(inv.relay_hint.as_deref(), Some("ws://198.51.100.7:34935"));
+        assert_eq!(
+            inv.supernode_relay_hints,
+            Some(vec!["ws://relay.example.com:34935".to_owned()])
+        );
+        assert!(inv.verify());
+    }
+
+    #[test]
+    fn adding_a_hostname_keeps_the_invite_id() {
+        let dir = std::env::temp_dir().join(format!(
+            "ds-reusable-invite-host-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = Identity::generate();
+        let url = "ws://198.51.100.7:34935".to_string();
+
+        let mut first = HandshakeManager::new(id.clone(), url.clone(), -1);
+        let minted = first.get_or_create_reusable_invite(Some("Node"));
+        assert!(minted.supernode_relay_hints.is_none());
+        first.save_reusable_invite(&dir);
+
+        let mut named = HandshakeManager::new(id, url, -1);
+        named.hostname_hints = Some(vec!["ws://relay.example.com:34935".into()]);
+        assert!(named.load_reusable_invite(&dir));
+        let loaded = named.reusable_invite.expect("re-signed invite");
+        assert_eq!(loaded.invite_id, minted.invite_id);
+        assert_eq!(
+            loaded.supernode_relay_hints,
+            Some(vec!["ws://relay.example.com:34935".to_owned()])
+        );
+        assert!(loaded.verify());
+        let saved = std::fs::read_to_string(dir.join("reusable_invite.json")).unwrap();
+        assert!(saved.contains("ws://relay.example.com:34935"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_matching_hostname_keeps_the_invite_id_when_the_ip_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "ds-reusable-invite-move-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = Identity::generate();
+        let mut first = HandshakeManager::new(id.clone(), "ws://198.51.100.7:34935".into(), -1);
+        first.hostname_hints = Some(vec!["ws://my.doubleslash.space:34935".into()]);
+        let minted = first.get_or_create_reusable_invite(Some("Node"));
+        let old_id = minted.invite_id.clone();
+        first.save_reusable_invite(&dir);
+
+        let mut moved = HandshakeManager::new(id, "ws://203.0.113.8:34936".into(), -1);
+        moved.hostname_hints = Some(vec!["ws://my.doubleslash.space:34936".into()]);
+        assert!(moved.load_reusable_invite(&dir));
+        let loaded = moved.reusable_invite.clone().expect("kept invite");
+        assert_eq!(loaded.invite_id, old_id);
+        assert_eq!(loaded.relay_hint.as_deref(), Some("ws://203.0.113.8:34936"));
+        assert_eq!(
+            loaded.supernode_relay_hints,
+            Some(vec!["ws://my.doubleslash.space:34936".to_owned()])
+        );
+        assert!(loaded.verify());
+        let err = moved
+            .process_init(&serde_json::json!({ "invite_id": old_id }))
+            .unwrap_err();
+        assert!(
+            !err.contains("unknown invite_id"),
+            "the old link must still handshake: {err}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

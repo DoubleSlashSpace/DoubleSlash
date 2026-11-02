@@ -1,6 +1,6 @@
 //! Supernode WebSocket background tasks.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, Notify};
@@ -10,6 +10,9 @@ use tracing::{debug, info, warn};
 
 use serde_json::Value;
 
+use crate::connection_fallback::{
+    classify_signaling_hint, dddns_endpoints_from_json, signaling_url_for, SignalingHint,
+};
 use crate::identity::Identity;
 use crate::protocol::{MessageType, SignalingMessage};
 
@@ -28,6 +31,8 @@ const RECONNECT_MAX: Duration = Duration::from_secs(60);
 /// retry and no `WsDisconnected`, so the client looks connected while nothing
 /// flows.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Bound on a DNS or DDDNS lookup that runs only after an IP dial has failed.
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a session may receive *nothing* before we treat the link as dead.
 ///
 /// The manager pings every connected supernode every 30 s and the supernode
@@ -73,6 +78,12 @@ enum WsSessionEnd {
 /// Long-running tokio task that maintains a WebSocket connection to a
 /// supernode, rotating through ordered `candidates` on failure.
 ///
+/// A candidate whose host is an IP is dialed as written. A hostname is used
+/// only after that fails: an ordinary name is resolved with DNS, and a name
+/// under `*.doubleslash.space` is fetched from DDDNS over HTTPS. Both paths
+/// dial the resulting IP. A lookup that fails is skipped, and the task goes
+/// back to the invite address.
+///
 /// Reconnects on both clean remote close and I/O errors until the manager
 /// drops the outbound send channel (intentional teardown) or the task is
 /// aborted.
@@ -85,12 +96,16 @@ pub(super) async fn supernode_ws_task(
     identity: Arc<Identity>,
     device_id: Option<doubleslash_features::DeviceId>,
     peer_id: String,
-    candidates: Vec<String>,
+    candidates: Arc<Mutex<Vec<String>>>,
     mut send_rx: mpsc::Receiver<WsMessage>,
     internal_tx: mpsc::Sender<InternalEvent>,
     reconnect_now: Arc<Notify>,
 ) {
-    if candidates.is_empty() {
+    let initial_empty = candidates
+        .lock()
+        .map(|list| list.is_empty())
+        .unwrap_or(true);
+    if initial_empty {
         warn!(
             "Supernode {} has no WebSocket candidates — task exiting",
             peer_id
@@ -101,90 +116,189 @@ pub(super) async fn supernode_ws_task(
     let mut backoff = RECONNECT_BASE;
     let mut candidate_idx: usize = 0;
 
-    loop {
-        let ws_url = &candidates[candidate_idx % candidates.len()];
-        info!(
-            "Connecting to supernode {} at {} (candidate {}/{})",
-            peer_id,
-            ws_url,
-            candidate_idx % candidates.len() + 1,
-            candidates.len()
-        );
-        // Whether this attempt reached a live session. Separates "this endpoint
-        // is wrong" from "the link died under a working endpoint".
-        let mut established = false;
-        let outcome = connect_and_run_ws(
-            (&identity, device_id),
-            &peer_id,
-            ws_url,
-            &mut send_rx,
-            &internal_tx,
-            &reconnect_now,
-            &mut established,
-        )
-        .await;
-        match outcome {
-            Ok(WsSessionEnd::ChannelClosed) => {
-                info!(
-                    "Supernode {} WebSocket task stopping (outbound channel closed)",
+    'session: loop {
+        let hint = {
+            let list = candidates
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            if list.is_empty() {
+                warn!(
+                    "Supernode {} has no WebSocket candidates — task exiting",
                     peer_id
                 );
-                let _ = internal_tx
-                    .send(InternalEvent::WsDisconnected {
-                        peer_id: peer_id.clone(),
-                    })
-                    .await;
-                break;
+                return;
             }
-            Ok(WsSessionEnd::NetworkChanged) => {
-                info!(
-                    "Supernode {} network changed; re-dialing {} immediately",
-                    peer_id, ws_url
-                );
-                let _ = internal_tx
-                    .send(InternalEvent::WsDisconnected {
-                        peer_id: peer_id.clone(),
-                    })
-                    .await;
-                // Same candidate, no backoff: nothing is wrong with the
-                // endpoint, so rotating away from it would be a downgrade.
-                backoff = RECONNECT_BASE;
-                sleep(NETWORK_CHANGE_SETTLE).await;
-            }
-            Ok(WsSessionEnd::RemoteClosed) => {
-                info!(
-                    "Supernode {} WebSocket closed; reconnecting in {:?}",
-                    peer_id, RECONNECT_BASE
-                );
-                let _ = internal_tx
-                    .send(InternalEvent::WsDisconnected {
-                        peer_id: peer_id.clone(),
-                    })
-                    .await;
-                // Rotate candidate after a successful session ends so we probe
-                // alternate endpoints if the primary is flapping.
-                candidate_idx = candidate_idx.wrapping_add(1);
-                backoff = RECONNECT_BASE;
-                wait_before_retry(RECONNECT_BASE, &reconnect_now).await;
-            }
-            Err(e) => {
-                let (wait, next) = backoff_after_error(backoff, established);
-                backoff = next;
-                warn!(
-                    "Supernode {} WebSocket error on {}: {}; retry in {:?}",
-                    peer_id, ws_url, e, wait
-                );
-                let _ = internal_tx
-                    .send(InternalEvent::WsDisconnected {
-                        peer_id: peer_id.clone(),
-                    })
-                    .await;
-                // Prefer the next candidate after a connect/runtime failure.
-                candidate_idx = candidate_idx.wrapping_add(1);
-                wait_before_retry(wait, &reconnect_now).await;
+            list[candidate_idx % list.len()].clone()
+        };
+        let targets = dial_targets_for(&hint).await;
+        if targets.is_empty() {
+            warn!(
+                "Supernode {} hint {hint} did not resolve to an address",
+                peer_id
+            );
+            candidate_idx = candidate_idx.wrapping_add(1);
+            let (wait, next) = backoff_after_error(backoff, false);
+            backoff = next;
+            wait_before_retry(wait, &reconnect_now).await;
+            continue;
+        }
+
+        let mut target_idx = 0;
+        while target_idx < targets.len() {
+            let ws_url = &targets[target_idx];
+            info!("Connecting to supernode {} at {ws_url}", peer_id);
+            // Whether this attempt reached a live session. Separates "this endpoint
+            // is wrong" from "the link died under a working endpoint".
+            let mut established = false;
+            let outcome = connect_and_run_ws(
+                (&identity, device_id),
+                &peer_id,
+                ws_url,
+                &mut send_rx,
+                &internal_tx,
+                &reconnect_now,
+                &mut established,
+            )
+            .await;
+            match outcome {
+                Ok(WsSessionEnd::ChannelClosed) => {
+                    info!(
+                        "Supernode {} WebSocket task stopping (outbound channel closed)",
+                        peer_id
+                    );
+                    let _ = internal_tx
+                        .send(InternalEvent::WsDisconnected {
+                            peer_id: peer_id.clone(),
+                        })
+                        .await;
+                    break 'session;
+                }
+                Ok(WsSessionEnd::NetworkChanged) => {
+                    info!(
+                        "Supernode {} network changed; re-dialing {ws_url} immediately",
+                        peer_id
+                    );
+                    let _ = internal_tx
+                        .send(InternalEvent::WsDisconnected {
+                            peer_id: peer_id.clone(),
+                        })
+                        .await;
+                    // Same address, no backoff: nothing is wrong with the
+                    // endpoint, so rotating away from it would be a downgrade.
+                    backoff = RECONNECT_BASE;
+                    sleep(NETWORK_CHANGE_SETTLE).await;
+                }
+                Ok(WsSessionEnd::RemoteClosed) => {
+                    info!(
+                        "Supernode {} WebSocket closed; reconnecting in {:?}",
+                        peer_id, RECONNECT_BASE
+                    );
+                    let _ = internal_tx
+                        .send(InternalEvent::WsDisconnected {
+                            peer_id: peer_id.clone(),
+                        })
+                        .await;
+                    // Rotate candidate after a successful session ends so we probe
+                    // alternate endpoints if the primary is flapping.
+                    candidate_idx = candidate_idx.wrapping_add(1);
+                    backoff = RECONNECT_BASE;
+                    wait_before_retry(RECONNECT_BASE, &reconnect_now).await;
+                    break;
+                }
+                Err(e) => {
+                    warn!("Supernode {} WebSocket error on {ws_url}: {e}", peer_id);
+                    let _ = internal_tx
+                        .send(InternalEvent::WsDisconnected {
+                            peer_id: peer_id.clone(),
+                        })
+                        .await;
+                    // Another address from the same lookup (the other family)
+                    // is tried before the next stored candidate and its backoff.
+                    if !established && target_idx + 1 < targets.len() {
+                        target_idx += 1;
+                        continue;
+                    }
+                    let (wait, next) = backoff_after_error(backoff, established);
+                    backoff = next;
+                    warn!("Supernode {} retry in {:?}", peer_id, wait);
+                    candidate_idx = candidate_idx.wrapping_add(1);
+                    wait_before_retry(wait, &reconnect_now).await;
+                    break;
+                }
             }
         }
     }
+}
+
+/// IP WebSocket URLs for one stored hint.
+///
+/// An address is returned unchanged. An ordinary hostname is resolved with
+/// DNS at the port in the hint. A `*.doubleslash.space` name is fetched from
+/// DDDNS, and the record's IP and port are what gets dialed. Nothing in that
+/// zone is passed to DNS: the wildcard answers with the DDDNS servers.
+async fn dial_targets_for(hint: &str) -> Vec<String> {
+    match classify_signaling_hint(hint) {
+        SignalingHint::Direct => vec![hint.to_owned()],
+        SignalingHint::Dns { name, scheme, port } => match tokio::time::timeout(
+            LOOKUP_TIMEOUT,
+            tokio::net::lookup_host((name.as_str(), port)),
+        )
+        .await
+        {
+            Ok(Ok(addresses)) => {
+                let mut urls = Vec::new();
+                for address in addresses {
+                    let Some(url) = signaling_url_for(scheme, address.ip(), port) else {
+                        continue;
+                    };
+                    if !urls.contains(&url) {
+                        urls.push(url);
+                    }
+                }
+                if urls.is_empty() {
+                    warn!("DNS for {name} returned no address");
+                }
+                urls
+            }
+            Ok(Err(error)) => {
+                warn!("DNS for {name} failed: {error}");
+                Vec::new()
+            }
+            Err(_) => {
+                warn!("DNS for {name} timed out");
+                Vec::new()
+            }
+        },
+        SignalingHint::Dddns { name, scheme } => match lookup_dddns(&name).await {
+            Ok(endpoints) => endpoints
+                .into_iter()
+                .filter_map(|(ip, port)| signaling_url_for(scheme, ip, port))
+                .collect(),
+            Err(error) => {
+                warn!("DDDNS lookup for {name} failed: {error}");
+                Vec::new()
+            }
+        },
+    }
+}
+
+async fn lookup_dddns(name: &str) -> Result<Vec<(std::net::IpAddr, u16)>, String> {
+    let url = format!("https://{name}/.well-known/doubleslash");
+    let client = reqwest::Client::builder()
+        .timeout(LOOKUP_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    let body = response.text().await.map_err(|error| error.to_string())?;
+    dddns_endpoints_from_json(name, &body)
 }
 
 /// How long to wait before re-dialing after an errored attempt, and the backoff
@@ -389,6 +503,14 @@ mod tests {
     use tokio_tungstenite::accept_async;
 
     #[tokio::test]
+    async fn an_ip_hint_is_dialed_unchanged() {
+        let url = "ws://127.0.0.1:34935";
+        assert_eq!(dial_targets_for(url).await, vec![url.to_owned()]);
+        let v6 = "ws://[2001:db8::7]:34935";
+        assert_eq!(dial_targets_for(v6).await, vec![v6.to_owned()]);
+    }
+
+    #[tokio::test]
     async fn device_client_rejects_old_node_before_registering_identity() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
@@ -502,7 +624,7 @@ mod tests {
             Arc::new(Identity::generate()),
             None,
             "supernode-under-test".to_owned(),
-            vec![url.to_owned()],
+            Arc::new(Mutex::new(vec![url.to_owned()])),
             send_rx,
             internal_tx,
             Arc::clone(&reconnect_now),

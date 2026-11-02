@@ -28,8 +28,13 @@ pub struct Config {
     pub ad_content: String,
     pub demo_links: bool,
 
-    // External host/IP for relay tickets (required for clients to connect)
+    // External host/IP for relay tickets (required for clients to connect).
+    // An IP literal. A DNS name belongs in `hostname`, not here.
     pub external_host: Option<String>,
+
+    /// DNS name advertised beside `external_host`. Clients may dial it for
+    /// signaling. Relay tickets keep the IP.
+    pub hostname: Option<String>,
 
     // Data directory
     pub data_dir: std::path::PathBuf,
@@ -99,9 +104,49 @@ impl Config {
             ad_content: env::var("supernode_ad_content").unwrap_or_default(),
             demo_links: env_bool("supernode_demo_links", false),
             external_host: env::var("supernode_host").ok().filter(|s| !s.is_empty()),
+            hostname: env::var("supernode_hostname").ok().and_then(|raw| {
+                let name = normalize_advertised_hostname(&raw);
+                if name.is_none() && !raw.trim().is_empty() {
+                    tracing::warn!(
+                        "Ignoring supernode_hostname {raw:?}: it must be a DNS name, not an IP address"
+                    );
+                }
+                name
+            }),
             data_dir,
         }
     }
+}
+
+/// A DNS name an operator set for this node, or `None` when `raw` is empty
+/// or is not a hostname. IP literals are refused so they cannot take the
+/// place of `supernode_host`.
+pub fn normalize_advertised_hostname(raw: &str) -> Option<String> {
+    let name = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+    if name.is_empty() || name.len() > 253 || name.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    if name.contains(':') || name.contains('/') || name.contains('@') {
+        return None;
+    }
+    let ok = name.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    });
+    ok.then_some(name)
+}
+
+/// `ws://<name>:<port>` for the signaling listener. `None` when `hostname`
+/// is not a DNS name or the port is unset.
+pub fn hostname_signaling_url(hostname: &str, port: u16) -> Option<String> {
+    let name = normalize_advertised_hostname(hostname)?;
+    if port == 0 {
+        return None;
+    }
+    Some(format!("ws://{name}:{port}"))
 }
 
 fn env_u16(key: &str, default: u16) -> u16 {
@@ -134,6 +179,24 @@ fn dirs_next() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hostname_url_uses_the_signaling_port() {
+        assert_eq!(
+            hostname_signaling_url("Relay.Example.COM.", 34935).as_deref(),
+            Some("ws://relay.example.com:34935")
+        );
+    }
+
+    #[test]
+    fn hostname_rejects_addresses_and_urls() {
+        assert!(normalize_advertised_hostname("198.51.100.7").is_none());
+        assert!(normalize_advertised_hostname("[2001:db8::1]").is_none());
+        assert!(normalize_advertised_hostname("relay.example.com:34935").is_none());
+        assert!(normalize_advertised_hostname("ws://relay.example.com").is_none());
+        assert!(normalize_advertised_hostname("").is_none());
+        assert!(hostname_signaling_url("relay.example.com", 0).is_none());
+    }
 
     // Helper: parse env_bool directly via a unique env key.
     fn set_and_check_bool(key: &str, val: &str, default: bool) -> bool {
