@@ -1,5 +1,5 @@
 // HostSupernodeWizard.qml - set up a supernode on the user's own server, or
-// add a server to one they already manage.
+// add a server to an existing supernode's cluster.
 //
 // Notice -> server -> host key -> choices -> live checklist -> done. Every
 // server step is idempotent, so a failure is retried from the top with the
@@ -20,7 +20,7 @@ Dialog {
     height: Math.min(700, parent.height - 32)
     modal: true
     closePolicy: Popup.NoAutoClose
-    title: root.addToNodeId !== "" ? "Add a server to " + root.addToNodeName : "Host a supernode"
+    title: root.addToNodeId !== "" ? "Add a cluster node to " + root.addToNodeName : "Host a supernode"
 
     // The app's own surfaces, like the other dialogs: square, themed, and a
     // dark scrim behind instead of the style's default.
@@ -41,7 +41,7 @@ Dialog {
         elide: Text.ElideRight
     }
 
-    // Empty for a new node; a managed node's id to add a cluster member.
+    // Empty for a new supernode; a managed node's id to add a cluster node.
     property string addToNodeId: ""
     property string addToNodeName: ""
 
@@ -253,6 +253,17 @@ Dialog {
                 columnSpacing: Theme.spacingMd
                 rowSpacing: Theme.spacingSm
 
+                Label {
+                    visible: root.addToNodeId !== ""
+                    Layout.columnSpan: 2
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: Theme.text
+                    font.pixelSize: Theme.fontSizeBody
+                    text: "This server joins " + root.addToNodeName + " as another node in its "
+                        + "cluster. People keep the same invite and still see one supernode. "
+                        + "A client can fail over to this server if another one stops."
+                }
                 FieldLabel { text: "Name"; visible: root.addToNodeId === "" }
                 StyledTextField {
                     id: nameField
@@ -509,7 +520,7 @@ Dialog {
 
                 Label {
                     Layout.fillWidth: true
-                    text: root.addToNodeId !== "" ? "The server joined your node." : "Your supernode is ready."
+                    text: root.addToNodeId !== "" ? "This server joined the cluster." : "Your supernode is ready."
                     color: Theme.text
                     font.pixelSize: Theme.fontSizeTitle
                     font.bold: true
@@ -520,7 +531,8 @@ Dialog {
                     color: Theme.text
                     font.pixelSize: Theme.fontSizeBody
                     text: root.addToNodeId !== ""
-                        ? "Clients connected to your node can now fail over to this server."
+                        ? "Clients connected to " + root.addToNodeName + " can now fail over to "
+                          + "this server. They still see one supernode."
                         : "DoubleSlash is connecting to it through its invite. It appears under "
                           + "Rooms, and you can manage it from Settings › Network."
                 }
@@ -630,7 +642,7 @@ Dialog {
             StyledButton {
                 visible: root.page === "options"
                 primary: true
-                text: root.addToNodeId !== "" ? "Add server" : "Set up supernode"
+                text: root.addToNodeId !== "" ? "Add cluster node" : "Set up supernode"
                 enabled: !root.busy
                 onClicked: root.startSetup()
             }

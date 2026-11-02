@@ -11,8 +11,8 @@ Item {
 
     property var settings: null
     signal backupsRequested()
-    // Open the host-a-supernode wizard: empty for a new node, or a managed
-    // node's id and name to add a server to it.
+    // Open the host-a-supernode wizard: empty for a new supernode, or a managed
+    // node's id and name to add a server to that supernode's cluster.
     signal hostSupernodeRequested(string nodeId, string nodeName)
     property int currentTab: 0
 

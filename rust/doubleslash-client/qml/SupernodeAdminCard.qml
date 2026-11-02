@@ -15,7 +15,8 @@ SettingsCard {
     // The Rooms sidebar's node list, to show whether a managed node is live.
     property ListModel supernodeModel: null
 
-    // Opens the wizard: empty ids for a new node, or a node to add a server to.
+    // Opens the wizard: empty ids for a new supernode, or a managed node's id
+    // and name to add a server to that supernode's cluster.
     signal hostRequested(string nodeId, string nodeName)
 
     // Icon-only server action. The old label is the tooltip.
@@ -42,7 +43,8 @@ SettingsCard {
     }
 
     title: "Your servers"
-    subtitle: "Supernodes you set up on your own servers from this device."
+    subtitle: "Supernodes you set up from this device. Open a row to manage it. "
+              + "Add a cluster node to give one more servers."
 
     readonly property var adminState: {
         try { return JSON.parse(appBackend.supernode_admin_state) } catch (e) { return ({}) }
@@ -55,6 +57,10 @@ SettingsCard {
     property string pendingRemoveId: ""
     property bool showNotice: false
     property var pending: ({})
+    // One managed supernode is open at a time. A single node starts open; a
+    // longer list starts folded so the page stays a list of rows.
+    property string openNodeId: ""
+    property bool openChosen: false
 
     function send(nodeId, request) {
         var id = "card-" + request.op + "-" + Date.now()
@@ -64,7 +70,46 @@ SettingsCard {
         p[id] = nodeId
         pending = p
         patch(nodeId, { working: request.op, output: "" })
+        if (nodeId) {
+            openNodeId = nodeId
+            openChosen = true
+            if (pendingRemoveId !== "" && pendingRemoveId !== nodeId)
+                pendingRemoveId = ""
+        }
         appBackend.supernodeCommand(JSON.stringify(request))
+    }
+
+    // Name order, so a long list stays scannable as nodes are added.
+    function sortedNodes() {
+        var list = nodes.slice()
+        list.sort(function(a, b) {
+            var an = (a.name || "").toLowerCase()
+            var bn = (b.name || "").toLowerCase()
+            if (an < bn) return -1
+            if (an > bn) return 1
+            return 0
+        })
+        return list
+    }
+
+    function chooseInitialOpen() {
+        if (openChosen || nodes.length === 0) return
+        openChosen = true
+        if (nodes.length === 1)
+            openNodeId = nodes[0].id || ""
+    }
+
+    function toggleNode(nodeId) {
+        openChosen = true
+        if (openNodeId === nodeId) {
+            openNodeId = ""
+            if (pendingRemoveId === nodeId)
+                pendingRemoveId = ""
+        } else {
+            openNodeId = nodeId
+            if (pendingRemoveId !== "" && pendingRemoveId !== nodeId)
+                pendingRemoveId = ""
+        }
     }
 
     function patch(nodeId, fields) {
@@ -90,15 +135,24 @@ SettingsCard {
     }
 
     function statusLine(node) {
+        var hosts = node.hosts || []
         var parts = [connected(node) ? "Connected" : "Not connected"]
-        parts.push(node.hosts.length === 1 ? node.hosts[0].public_host
-                                           : node.hosts.length + " servers")
+        if (hosts.length > 1)
+            parts.push("Cluster of " + hosts.length)
+        else if (hosts.length === 1)
+            parts.push(hosts[0].public_host)
+        if (info(node.id).updateAvailable === true)
+            parts.push("update available")
         parts.push(node.update_mode === "server-timer" ? "updates automatically"
                                                        : "updates when you choose")
         return parts.join(" · ")
     }
 
-    Component.onCompleted: appBackend.supernodeCommand(JSON.stringify({ op: "state" }))
+    Component.onCompleted: {
+        chooseInitialOpen()
+        appBackend.supernodeCommand(JSON.stringify({ op: "state" }))
+    }
+    onAdminStateChanged: chooseInitialOpen()
 
     Connections {
         target: card.appBackend
@@ -121,13 +175,13 @@ SettingsCard {
             var fields = { working: "", failed: false, usedSaved: false }
             if (event.op === "status") fields.status = v.hosts
             else if (event.op === "invite") {
-                fields.inviteUrl = v.invite_url || ""
-                if (fields.inviteUrl !== "")
-                    card.appBackend.copyToClipboard(fields.inviteUrl)
-                fields.output = fields.inviteUrl !== ""
+                var url = v.invite_url || ""
+                if (url !== "")
+                    card.appBackend.copyToClipboard(url)
+                fields.output = url !== ""
                     ? "Invite copied. Anyone who accepts it adds this supernode."
                     : "The server did not return an invite."
-                fields.failed = fields.inviteUrl === ""
+                fields.failed = url === ""
             }
             else if (event.op === "check_update") {
                 fields.updateAvailable = v.update_available
@@ -176,7 +230,7 @@ SettingsCard {
     }
 
     Repeater {
-        model: card.nodes
+        model: card.sortedNodes()
         delegate: ColumnLayout {
             id: nodeColumn
             required property var modelData
@@ -184,8 +238,7 @@ SettingsCard {
             readonly property var info: card.info(node.id)
             readonly property bool working: (info.working || "") !== ""
             readonly property bool confirming: card.pendingRemoveId === node.id
-            // The link just read from the server, or the one saved at setup.
-            readonly property string shownInvite: info.inviteUrl || node.invite_url || ""
+            readonly property bool expanded: card.openNodeId === node.id
             Layout.fillWidth: true
             spacing: Theme.spacingSm
 
@@ -195,39 +248,86 @@ SettingsCard {
                 color: Theme.bg3
             }
 
-            RowLayout {
+            ItemDelegate {
+                id: nodeHeader
                 Layout.fillWidth: true
-                spacing: Theme.spacingMd
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 0
-                    Label {
-                        Layout.fillWidth: true
-                        text: nodeColumn.node.name
-                        color: Theme.text
-                        font.pixelSize: Theme.fontSizeBody
-                        font.bold: true
-                        elide: Text.ElideRight
-                    }
-                    Label {
-                        Layout.fillWidth: true
-                        text: card.statusLine(nodeColumn.node)
-                        color: Theme.muted
-                        font.pixelSize: Theme.fontSizeCaption
-                        elide: Text.ElideRight
-                    }
+                padding: 0
+                leftPadding: 0
+                rightPadding: 0
+                topPadding: Theme.spacingXs
+                bottomPadding: Theme.spacingXs
+                hoverEnabled: true
+                Accessible.name: nodeColumn.expanded
+                    ? "Hide " + nodeColumn.node.name
+                    : "Show " + nodeColumn.node.name
+                background: Rectangle {
+                    color: nodeHeader.hovered ? Theme.bg3 : "transparent"
                 }
-                SquareBusyIndicator {
-                    Layout.preferredWidth: 18
-                    Layout.preferredHeight: 18
-                    running: nodeColumn.working
-                    visible: running
+                onClicked: card.toggleNode(nodeColumn.node.id)
+                contentItem: RowLayout {
+                    spacing: Theme.spacingSm
+
+                    Item {
+                        Layout.preferredWidth: 18
+                        Layout.preferredHeight: 18
+                        Layout.alignment: Qt.AlignVCenter
+                        Image {
+                            anchors.centerIn: parent
+                            width: 10
+                            height: 10
+                            sourceSize.width: 20
+                            sourceSize.height: 20
+                            fillMode: Image.PreserveAspectFit
+                            smooth: true
+                            source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
+                            rotation: nodeColumn.expanded ? 90 : 0
+                            opacity: nodeColumn.expanded ? 1.0 : 0.6
+                            Behavior on rotation {
+                                NumberAnimation { duration: Theme.animNormal }
+                            }
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 0
+                        Label {
+                            Layout.fillWidth: true
+                            text: nodeColumn.node.name
+                            color: Theme.text
+                            font.pixelSize: Theme.fontSizeBody
+                            font.bold: true
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: card.statusLine(nodeColumn.node)
+                            color: Theme.muted
+                            font.pixelSize: Theme.fontSizeCaption
+                            elide: Text.ElideRight
+                        }
+                    }
+                    SquareBusyIndicator {
+                        Layout.preferredWidth: 18
+                        Layout.preferredHeight: 18
+                        running: nodeColumn.working
+                        visible: running
+                    }
                 }
             }
 
-            // One line per server, with the last status check.
+            Label {
+                Layout.fillWidth: true
+                visible: nodeColumn.expanded && (nodeColumn.node.hosts || []).length > 1
+                text: "Cluster nodes"
+                color: Theme.muted
+                font.pixelSize: Theme.fontSizeCaption
+            }
+
+            // One line per server, with the last status check. Folded rows
+            // keep an empty model so a long list does not build them.
             Repeater {
-                model: nodeColumn.node.hosts
+                model: nodeColumn.expanded ? (nodeColumn.node.hosts || []) : []
                 delegate: Label {
                     id: hostLine
                     required property var modelData
@@ -254,7 +354,7 @@ SettingsCard {
             Flow {
                 Layout.fillWidth: true
                 spacing: Theme.spacingSm
-                visible: !nodeColumn.confirming
+                visible: nodeColumn.expanded && !nodeColumn.confirming
 
                 ServerButton {
                     tip: "Copy invite"
@@ -300,12 +400,6 @@ SettingsCard {
                     onClicked: card.send(nodeColumn.node.id, { op: "logs", lines: 200 })
                 }
                 ServerButton {
-                    tip: "Add a server"
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
-                    enabled: !card.busy
-                    onClicked: card.hostRequested(nodeColumn.node.id, nodeColumn.node.name)
-                }
-                ServerButton {
                     tip: "Remove"
                     danger: true
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
@@ -314,38 +408,40 @@ SettingsCard {
                 }
             }
 
+            StyledButton {
+                visible: nodeColumn.expanded && !nodeColumn.confirming
+                Layout.alignment: Qt.AlignLeft
+                text: "Add a cluster node"
+                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
+                enabled: !card.busy
+                onClicked: card.hostRequested(nodeColumn.node.id, nodeColumn.node.name)
+            }
+
             Label {
                 Layout.fillWidth: true
-                visible: !nodeColumn.confirming
+                visible: nodeColumn.expanded && !nodeColumn.confirming
                 wrapMode: Text.WordWrap
                 color: Theme.muted
                 font.pixelSize: Theme.fontSizeCaption
-                text: "People who accept this link add the supernode, with the same rooms, "
+                text: "Joins another server to this supernode's cluster. People keep the same "
+                    + "invite and still see one node, and a client can fail over if a server "
+                    + "goes down."
+            }
+
+            Label {
+                Layout.fillWidth: true
+                visible: nodeColumn.expanded && !nodeColumn.confirming
+                wrapMode: Text.WordWrap
+                color: Theme.muted
+                font.pixelSize: Theme.fontSizeCaption
+                text: "People who accept the copied invite add the supernode, with the same rooms, "
                     + "relay, and portal. A room invite only opens that room. Copy invite "
                     + "reads the current link from the server."
             }
 
-            TextArea {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 72
-                visible: !nodeColumn.confirming && nodeColumn.shownInvite !== ""
-                readOnly: true
-                selectByMouse: true
-                text: nodeColumn.shownInvite
-                wrapMode: TextEdit.WrapAnywhere
-                font.family: "monospace"
-                font.pixelSize: Theme.fontSizeCaption
-                color: Theme.text
-                background: Rectangle {
-                    color: Theme.bg1
-                    border.color: Theme.divider
-                    border.width: 1
-                }
-            }
-
             SettingSwitch {
                 Layout.fillWidth: true
-                visible: !nodeColumn.confirming
+                visible: nodeColumn.expanded && !nodeColumn.confirming
                 title: "Update automatically on the server"
                 description: "Off: the node changes only when you choose Update now."
                 checked: nodeColumn.node.update_mode === "server-timer"
@@ -412,7 +508,7 @@ SettingsCard {
 
             Label {
                 Layout.fillWidth: true
-                visible: (nodeColumn.info.output || "") !== ""
+                visible: nodeColumn.expanded && (nodeColumn.info.output || "") !== ""
                 text: nodeColumn.info.output || ""
                 wrapMode: Text.WordWrap
                 color: nodeColumn.info.failed ? Theme.danger : Theme.muted
@@ -422,7 +518,7 @@ SettingsCard {
             ScrollView {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 220
-                visible: (nodeColumn.info.logs || "") !== ""
+                visible: nodeColumn.expanded && (nodeColumn.info.logs || "") !== ""
                 clip: true
                 TextArea {
                     readOnly: true
