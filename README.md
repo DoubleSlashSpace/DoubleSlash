@@ -102,13 +102,13 @@ The client attempts direct QUIC connections using known endpoints and can ask a 
 
 WebSocket signaling candidates are deduplicated and ordered with connected/known supernode endpoints first, then the peer endpoint, LAN hint, and further relay hints. This signaling order is separate from the media transport.
 
-Desktop UPnP can map ports when the router supports it and the setting is enabled. It does not guarantee reachability through carrier NAT or restrictive firewalls. The default direct QUIC listener is UDP `61045`.
+Desktop UPnP can map ports when the router supports it and the setting is enabled. It does not guarantee reachability through carrier NAT or restrictive firewalls. The default direct QUIC listener is UDP `61045`. Clients use one dual-stack IPv6/IPv4 socket when available, with an IPv4 fallback on systems that cannot bind it.
 
 Rooms require a supernode. Direct one-to-one sessions do not, provided the peers can reach each other. Direct calls that fail to connect can fall back after five seconds to a temporary private SFU room on a trusted supernode. Relay tickets renew automatically, and the supernode endpoint mailbox retains reconnection information for 24 hours.
 
 ## Running a Supernode
 
-The standalone supernode does not require Qt. Release workflows package Linux x86_64, Linux ARM64, and Windows x86_64 binaries with SHA-256 sidecars. Deployment, systemd configuration, portal templates, and clustering are covered in the [operator guide](docs/SUPERNODE.md). The [supernode manager](docs/supernode-manager.md) provides provisioning, deployment, cluster synchronization, and remote commands. The desktop client builds the same library in: Settings › Network › Your servers sets up a supernode on a Debian or Ubuntu server you rent, applies baseline hardening, keeps it updated, can add more servers as a cluster, and copies the supernode invite people accept to add that node. A room invite only opens that room. The server stays your responsibility. It has been live-tested on one Debian 12 server; IPv6-only servers do not yet carry relay traffic (see the backlog).
+The standalone supernode does not require Qt. Release workflows package Linux x86_64, Linux ARM64, and Windows x86_64 binaries with SHA-256 sidecars. Deployment, systemd configuration, portal templates, and clustering are covered in the [operator guide](docs/SUPERNODE.md). The [supernode manager](docs/supernode-manager.md) provides provisioning, deployment, cluster synchronization, and remote commands. The desktop client builds the same library in: Settings › Network › Your servers sets up a supernode on a Debian or Ubuntu server you rent, applies baseline hardening, keeps it updated, can add more servers as a cluster, and copies the supernode invite people accept to add that node. A room invite only opens that room. The server stays your responsibility. It has been live-tested on one Debian 12 server; the client now supports IPv6 QUIC, but relay traffic against an IPv6-only server still needs live acceptance (see the backlog).
 
 Build from the repository root:
 

@@ -1135,6 +1135,7 @@ dependencies = [
  "snm-core",
  "snm-supernode",
  "snm-transport",
+ "socket2 0.6.3",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

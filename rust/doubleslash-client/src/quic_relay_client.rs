@@ -29,7 +29,6 @@
 //!     self-describing (`msg.sender`) — and hand the JSON to the connection
 //!     manager, which verifies + dispatches it on the normal inbound path.
 
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -188,8 +187,7 @@ impl QuicRelayClient {
             content_audio: content_audio_tx,
         } = sinks;
         let supernode_id = supernode_id.into();
-        let addr: SocketAddr = format!("{host}:{port}")
-            .parse()
+        let addr = crate::quic_tls::quic_socket_addr(host, port)
             .with_context(|| format!("invalid relay address {host}:{port}"))?;
 
         // `server_name` is arbitrary for self-signed certs; the supernode
@@ -719,4 +717,64 @@ async fn read_signaling_frames(
         }
     }
     debug!("[relay {}] signaling reader exiting", sn_short);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::quic_tls::make_quic_endpoint;
+    use ed25519_dalek::SigningKey;
+
+    /// Real QUIC sockets exercise the production relay dialer and framing,
+    /// including bare IPv6 hosts returned by endpoint discovery.
+    #[tokio::test]
+    async fn relay_dialer_carries_signaling_and_datagrams_on_both_address_families() {
+        let server = make_quic_endpoint(&SigningKey::from_bytes(&[65; 32]), 0).unwrap();
+        let client = make_quic_endpoint(&SigningKey::from_bytes(&[66; 32]), 0).unwrap();
+        let port = server.local_addr().unwrap().port();
+
+        for host in ["127.0.0.1", "::1", "[::1]"] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (signaling, mut received) = mpsc::unbounded_channel();
+                let sinks = RelayInboundSinks {
+                    signaling,
+                    game: None,
+                    video: None,
+                    content_audio: None,
+                };
+                let connecting =
+                    QuicRelayClient::connect(&client, "test-node", host, port, sinks, false);
+                let accepting = async { server.accept().await.unwrap().await.unwrap() };
+                let (relay, connection) = tokio::join!(connecting, accepting);
+                let relay = relay.unwrap();
+
+                assert!(relay.send_room_audio(b"sealed audio"));
+                let datagram = connection.read_datagram().await.unwrap();
+                assert_eq!(&datagram[..2], &[BROADCAST_INDEX, ROOM_AUDIO_TAG]);
+                assert_eq!(&datagram[2..], b"sealed audio");
+
+                assert!(relay.send_signaling(b"sealed signal"));
+                let (mut send, mut recv) = connection.accept_bi().await.unwrap();
+                let mut header = [0; 4];
+                recv.read_exact(&mut header).await.unwrap();
+                assert_eq!(u32::from_be_bytes(header), RELAY_SIGNAL_STREAM_MAGIC);
+                recv.read_exact(&mut header).await.unwrap();
+                let mut frame = vec![0; u32::from_be_bytes(header) as usize];
+                recv.read_exact(&mut frame).await.unwrap();
+                assert_eq!(&frame, b"sealed signal");
+
+                send.write_all(&header).await.unwrap();
+                send.write_all(&frame).await.unwrap();
+                let inbound = received.recv().await.unwrap();
+                assert_eq!(inbound.supernode_id, "test-node");
+                assert_eq!(inbound.json, frame);
+                relay.close();
+                connection.closed().await;
+            })
+            .await
+            .unwrap();
+        }
+        server.close(0u32.into(), b"test complete");
+        client.close(0u32.into(), b"test complete");
+    }
 }

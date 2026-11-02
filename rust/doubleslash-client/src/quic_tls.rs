@@ -5,6 +5,7 @@
 //! - Both client and server use mutual TLS; cert verified by peer_id match.
 //! - ALPN = b"doubleslash/1".
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,7 +21,8 @@ pub const ALPN: &[u8] = b"doubleslash/1";
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Create a Quinn `Endpoint` bound on `0.0.0.0:<port>` (use port 0 for ephemeral).
+/// Create a dual-stack Quinn `Endpoint` on `[::]:<port>` (0 for ephemeral).
+/// Falls back to IPv4 when a dual-stack socket cannot be bound.
 ///
 /// The endpoint uses the caller's Ed25519 identity for its TLS certificate.
 /// Both inbound and outbound connections use mutual TLS; certificate
@@ -104,10 +106,53 @@ fn make_quic_endpoint_tuned(
     client_cfg.transport_config(Arc::clone(&transport));
 
     // -- bind endpoint ------------------------------------------------------
-    let bind_addr: std::net::SocketAddr = format!("0.0.0.0:{port}").parse()?;
-    let mut endpoint = quinn::Endpoint::server(server_cfg, bind_addr)?;
+    let socket = bind_quic_socket(port, bind_dual_stack_socket)?;
+    let runtime =
+        quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime found"))?;
+    let mut endpoint = quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(server_cfg),
+        socket,
+        runtime,
+    )?;
     endpoint.set_default_client_config(client_cfg);
     Ok(endpoint)
+}
+
+fn bind_quic_socket(
+    port: u16,
+    bind_ipv6: impl FnOnce(u16) -> std::io::Result<UdpSocket>,
+) -> std::io::Result<UdpSocket> {
+    bind_ipv6(port).or_else(|error| {
+        tracing::debug!(%error, "dual-stack QUIC bind failed; trying IPv4");
+        UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port))
+    })
+}
+
+fn bind_dual_stack_socket(port: u16) -> std::io::Result<UdpSocket> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV6,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    // Windows defaults to IPv6-only. If this option fails, use the IPv4
+    // fallback rather than silently losing connectivity to IPv4 peers.
+    socket.set_only_v6(false)?;
+    socket.bind(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)).into())?;
+    Ok(socket.into())
+}
+
+/// Numeric QUIC hosts may come from a parsed hint (bare IPv6) or a relay
+/// ticket (bracketed IPv6). Keep both dialers consistent without DNS work on
+/// the manager loop.
+pub(crate) fn quic_socket_addr(
+    host: &str,
+    port: u16,
+) -> Result<SocketAddr, std::net::AddrParseError> {
+    match host.parse::<IpAddr>() {
+        Ok(ip) => Ok(SocketAddr::new(ip, port)),
+        Err(_) => format!("{host}:{port}").parse(),
+    }
 }
 
 /// Derive `peer_id` from raw Ed25519 public key bytes: `hex(sha256(pub_bytes))`.
@@ -436,6 +481,94 @@ fn encode_asn1_length(len: usize, buf: &mut Vec<u8>) {
 mod tests {
     use super::*;
     use doubleslash_features::DeviceId;
+
+    #[test]
+    fn endpoint_without_an_async_runtime_returns_an_error() {
+        assert!(make_quic_endpoint(&SigningKey::from_bytes(&[67; 32]), 0).is_err());
+    }
+
+    #[test]
+    fn quic_addresses_accept_ipv4_and_both_ipv6_host_spellings() {
+        for (host, expected) in [
+            ("192.0.2.1", "192.0.2.1:3478"),
+            ("2001:db8::1", "[2001:db8::1]:3478"),
+            ("[2001:db8::1]", "[2001:db8::1]:3478"),
+        ] {
+            assert_eq!(quic_socket_addr(host, 3478).unwrap().to_string(), expected);
+        }
+        for invalid in ["", "[::1", "127.0.0.1:99", "not an address"] {
+            assert!(quic_socket_addr(invalid, 3478).is_err());
+        }
+    }
+
+    /// Exercise both address families and reconnect on the same production
+    /// endpoint. A Windows IPv6-only default would pass the IPv6 half but
+    /// strand every IPv4 peer; the old IPv4 bind fails the IPv6 half.
+    #[tokio::test]
+    async fn one_endpoint_carries_datagrams_and_reconnects_over_ipv4_and_ipv6() {
+        let server = make_quic_endpoint(&SigningKey::from_bytes(&[61; 32]), 0).unwrap();
+        let client = make_quic_endpoint(&SigningKey::from_bytes(&[62; 32]), 0).unwrap();
+        assert!(server.local_addr().unwrap().is_ipv6());
+        assert!(client.local_addr().unwrap().is_ipv6());
+        let port = server.local_addr().unwrap().port();
+
+        for host in ["127.0.0.1", "::1"] {
+            for _ in 0..2 {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    let connecting = client
+                        .connect(quic_socket_addr(host, port).unwrap(), "doubleslash")
+                        .unwrap();
+                    let accepting = async { server.accept().await.unwrap().await.unwrap() };
+                    let (outbound, inbound) = tokio::join!(connecting, accepting);
+                    let outbound = outbound.unwrap();
+                    outbound
+                        .send_datagram(b"to server".to_vec().into())
+                        .unwrap();
+                    assert_eq!(
+                        inbound.read_datagram().await.unwrap().as_ref(),
+                        b"to server"
+                    );
+                    inbound.send_datagram(b"to client".to_vec().into()).unwrap();
+                    assert_eq!(
+                        outbound.read_datagram().await.unwrap().as_ref(),
+                        b"to client"
+                    );
+                    outbound.close(0u32.into(), b"reconnect");
+                    inbound.closed().await;
+                })
+                .await
+                .unwrap();
+            }
+        }
+        server.close(0u32.into(), b"test complete");
+        client.close(0u32.into(), b"test complete");
+    }
+
+    #[test]
+    fn unavailable_dual_stack_bind_falls_back_to_ipv4_on_the_same_port() {
+        let unavailable = |_: u16| Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+        let fallback = bind_quic_socket(0, unavailable).unwrap();
+        let port = fallback.local_addr().unwrap().port();
+        assert_eq!(
+            fallback.local_addr().unwrap(),
+            SocketAddr::from((Ipv4Addr::UNSPECIFIED, port))
+        );
+        // A failed fallback must not silently choose another listener port.
+        assert!(bind_quic_socket(port, unavailable).is_err());
+        drop(fallback);
+        let fallback = bind_quic_socket(port, unavailable).unwrap();
+        assert_eq!(fallback.local_addr().unwrap().port(), port);
+        fallback
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        sender
+            .send_to(b"fallback", (Ipv4Addr::LOCALHOST, port))
+            .unwrap();
+        let mut received = [0; 8];
+        assert_eq!(fallback.recv(&mut received).unwrap(), 8);
+        assert_eq!(&received, b"fallback");
+    }
 
     /// A path that never grew past the QUIC floor — a phone on a mobile
     /// network — must still carry a full video fragment. Before this was

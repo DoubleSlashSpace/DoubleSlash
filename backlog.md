@@ -433,11 +433,13 @@ Fixed on the way:
 
 Remaining:
 
-- **Client QUIC is IPv4-only.** `quic_tls.rs` binds `0.0.0.0`, so a relay
-  ticket for an IPv6-only node fails with `invalid remote address`. Room
-  traffic falls back to WebSocket, while relay and direct QUIC do not work.
-  The fix is a dual-stack bind (`[::]`, `IPV6_V6ONLY` off, IPv4 fallback). It
-  touches every peer path, so take relay and two-client baselines first.
+- **IPv6-only relay: live acceptance.** The client now binds dual-stack with
+  IPv4 fallback, and both dialers accept IPv6 literals. Loopback QUIC tests
+  cover IPv4/IPv6 direct datagrams, reconnects, and the relay signaling and
+  datagram adapter. Still run packaged desktop and Android clients against the
+  IPv6-only node: portal fetch, room voice/video, relay traffic, and close/reopen
+  without restarting the node. Confirm QUIC is active rather than only the
+  WebSocket audio fallback. Keep an IPv4 peer/node in the same run.
 - Not yet run:
   - `own-key` access;
   - the server-timer update mode, on a host that can reach GitHub;

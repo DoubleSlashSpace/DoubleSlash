@@ -304,6 +304,12 @@ example"]
 
 ## Key Data Flows
 
+`quic_tls.rs` creates one dual-stack UDP socket for direct and relay QUIC,
+explicitly disabling `IPV6_V6ONLY`; a failed dual-stack bind falls back to IPv4
+on the requested port. The direct and relay dialers share numeric-host parsing
+for IPv4 and bare or bracketed IPv6. Hole-punch endpoint validation canonicalizes
+IPv4-mapped IPv6 before rejecting local and multicast destinations.
+
 Android's event pump routes shared-audio frames directly to `CallController`,
 preserving their sequence and capture PTS. The controller reorders and mixes
 them separately from voice and anchors video to each sender's playout timeline.

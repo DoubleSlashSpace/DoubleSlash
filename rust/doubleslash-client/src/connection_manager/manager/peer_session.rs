@@ -37,7 +37,10 @@ const PUNCH_MAX_DELAY_S: f64 = 5.0;
 /// them is either meaningless or aimed back at this machine; multicast
 /// because a NAT punch has exactly one intended recipient.
 fn parse_punch_endpoint(raw: &str) -> Option<SocketAddr> {
-    let addr: SocketAddr = raw.trim().parse().ok()?;
+    let mut addr: SocketAddr = raw.trim().parse().ok()?;
+    // Dual-stack sockets can reach IPv4 through mapped IPv6 addresses too.
+    // Apply the same local/multicast exclusions to either spelling.
+    addr.set_ip(addr.ip().to_canonical());
     if addr.port() == 0 || addr.ip().is_unspecified() || addr.ip().is_loopback() {
         return None;
     }
@@ -232,6 +235,7 @@ pub fn peer_quic_endpoints(record: &crate::peer_store::PeerRecord) -> Vec<(Strin
 /// signal that a hole punch is worth the round trip.
 pub fn is_local_only_host(host: &str) -> bool {
     host.parse::<std::net::IpAddr>()
+        .map(|ip| ip.to_canonical())
         .map(|ip| ip.is_loopback() || ip.is_unspecified())
         .unwrap_or(false)
 }
@@ -332,7 +336,7 @@ impl ConnectionManager {
         };
         let endpoint = endpoint.clone();
 
-        let addr: SocketAddr = match format!("{host}:{port}").parse() {
+        let addr = match quic_tls::quic_socket_addr(host, port) {
             Ok(a) => a,
             Err(e) => {
                 error!("Invalid peer address {host}:{port}: {e}");
@@ -1068,7 +1072,7 @@ impl ConnectionManager {
             .and_then(Value::as_str)
             .and_then(parse_punch_endpoint)
         {
-            let hint = format!("quic://{}:{}", addr.ip(), addr.port());
+            let hint = format!("quic://{addr}");
             if self.public_quic_hint.as_deref() != Some(hint.as_str()) {
                 info!("[punch] observed public address {hint}");
                 self.public_quic_hint = Some(hint);
@@ -1197,6 +1201,8 @@ mod tests {
         assert!(is_local_only_host("127.0.0.1"));
         assert!(is_local_only_host("0.0.0.0"));
         assert!(is_local_only_host("::1"));
+        assert!(is_local_only_host("::ffff:127.0.0.1"));
+        assert!(is_local_only_host("::ffff:0.0.0.0"));
         assert!(!is_local_only_host("192.168.1.5"));
         assert!(!is_local_only_host("203.0.113.7"));
         // Not an IP at all — a hostname is something we can still dial.
@@ -1209,6 +1215,16 @@ mod tests {
         assert!(parse_punch_endpoint("0.0.0.0:9000").is_none());
         assert!(parse_punch_endpoint("203.0.113.7:0").is_none());
         assert!(parse_punch_endpoint("239.1.1.1:9000").is_none());
+        for host in [
+            "::1",
+            "::",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "::ffff:0.0.0.0",
+            "::ffff:239.1.1.1",
+        ] {
+            assert!(parse_punch_endpoint(&format!("[{host}]:9000")).is_none());
+        }
         assert!(parse_punch_endpoint("not-an-address").is_none());
         assert!(parse_punch_endpoint("").is_none());
     }
@@ -1218,5 +1234,73 @@ mod tests {
         let got = parse_punch_endpoint(" 203.0.113.7:9000 ").expect("valid");
         assert_eq!(got.ip().to_string(), "203.0.113.7");
         assert_eq!(got.port(), 9000);
+        assert_eq!(parse_punch_endpoint("[::ffff:203.0.113.7]:9000"), Some(got));
+        assert_eq!(
+            parse_punch_endpoint("[2001:db8::7]:9000")
+                .unwrap()
+                .to_string(),
+            "[2001:db8::7]:9000"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_dialer_connects_to_a_bare_ipv6_hint() {
+        use crate::connection_manager::internal::InternalEvent;
+        use crate::identity::Identity;
+        use parking_lot::RwLock;
+        use std::sync::Arc;
+
+        let profile = tempfile::tempdir().unwrap();
+        let identity = Arc::new(Identity::generate());
+        let store =
+            crate::peer_store::PeerStore::open(&identity, Some(&profile.path().join("peers.dat")))
+                .unwrap();
+        let (mut manager, _events) =
+            super::ConnectionManager::new_for_test(identity.clone(), Arc::new(RwLock::new(store)));
+        manager.quic_endpoint =
+            Some(crate::quic_tls::make_quic_endpoint(identity.signing_key(), 0).unwrap());
+        let remote = Identity::generate();
+        let server = crate::quic_tls::make_quic_endpoint(remote.signing_key(), 0).unwrap();
+        let (host, port) = super::parse_quic_lan_hint(&format!(
+            "quic://[::1]:{}",
+            server.local_addr().unwrap().port()
+        ))
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            manager
+                .connect_direct_quic(&remote.peer_id(), &host, port)
+                .await;
+            let connection = server.accept().await.unwrap().await.unwrap();
+            loop {
+                match manager.internal_rx.recv().await.unwrap() {
+                    InternalEvent::QuicConnected {
+                        peer_id, out_tx, ..
+                    } => {
+                        assert_eq!(peer_id, remote.peer_id());
+                        out_tx
+                            .send(crate::connection_manager::internal::PeerOutbound::Datagram(
+                                b"direct".to_vec(),
+                            ))
+                            .await
+                            .unwrap();
+                        assert_eq!(
+                            connection.read_datagram().await.unwrap().as_ref(),
+                            b"direct"
+                        );
+                        break;
+                    }
+                    InternalEvent::QuicDisconnected { .. } => panic!("IPv6 dial failed"),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+        server.close(0u32.into(), b"test complete");
+        manager
+            .quic_endpoint
+            .as_ref()
+            .unwrap()
+            .close(0u32.into(), b"test complete");
     }
 }
