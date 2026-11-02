@@ -8,18 +8,24 @@ someone has run it on the stated build and recorded the result under
 
 ## Setup common to every check
 
-- **Two desktop profiles on one machine.** Launch the built binary directly,
-  once per profile, with its own home and key directory:
+- **Two desktop profiles on one machine.** Launch the packaged binary
+  (`dist\DoubleSlash\DoubleSlash.exe`, from `build_win64.ps1`) directly, once
+  per profile, with its own home and key directory:
 
   ```bat
   set DOUBLESLASH_HOME=Z:\ds-accept\A
   set DOUBLESLASH_KEY_DIR=%DOUBLESLASH_HOME%
-  rust\doubleslash-client\target\release\doubleslash-client.exe
+  dist\DoubleSlash\DoubleSlash.exe
   ```
 
   Do the same for `B` from a second console. `run_client.bat` always uses
-  `.clientA`, so it cannot provide the second profile.
-- **Logs.** Each profile writes to `%DOUBLESLASH_HOME%\logs`. Android logs to
+  `.clientA`, so it cannot provide the second profile. A Cargo build under
+  `rust\target` has no Qt beside it and may load another Qt from `PATH`.
+  [`scripts/acceptance_group_key.ps1`](../scripts/acceptance_group_key.ps1)
+  does all of this for §1 (see there).
+- **Logs.** Each profile writes to `%DOUBLESLASH_HOME%\logs`. The client
+  truncates that log on every start, so copy it aside before restarting a
+  profile, or a kill-and-restart step loses its first half. Android logs to
   logcat with tag `DoubleSlash`. Logcat keeps only about a minute of history,
   so start `adb logcat -v time > phone.log` *before* the step being tested.
 - **Use a private two-party room**, not the public `default` room. Members of
@@ -57,6 +63,33 @@ keyer is the member whose public id sorts lowest. Look for these lines:
 
 If a member is still stranded, attach both logs to the backlog item. The
 unexplained "desktop never got epochs 2 and 3" case needs exactly this pair.
+
+**Script.** [`scripts/acceptance_group_key.ps1`](../scripts/acceptance_group_key.ps1)
+runs A, B and C from separate copies of the packaged bundle under
+`Z:\ds-accept`, keeps each session's log across restarts, and records its own
+actions in the timeline. The room, invites, voice and talking stay manual.
+
+```powershell
+.\scripts\acceptance_group_key.ps1 -Action Start          # A, B and C
+.\scripts\acceptance_group_key.ps1 -Action Status         # keyer order, once each profile has unlocked
+.\scripts\acceptance_group_key.ps1 -Action Mark -Note "C left, rotation 1"
+.\scripts\acceptance_group_key.ps1 -Action Kill -Profile B   # step 4, kill
+.\scripts\acceptance_group_key.ps1 -Action Start -Profile B
+.\scripts\acceptance_group_key.ps1 -Action Cut -Profile B    # step 4, network; elevated shell
+.\scripts\acceptance_group_key.ps1 -Action Restore -Profile B
+.\scripts\acceptance_group_key.ps1 -Action Report
+```
+
+`Report` prints each profile's final epoch per room, an epoch verdict for A
+and B, key-request and rejoin-to-key times (over 5 s is flagged), every member
+a keyer dropped from its view, and key rejections. It writes the merged
+timeline to `Z:\ds-accept\reports`. `Cut` blocks one profile's copy of the
+bundle in Windows Firewall and then waits for that profile's log to show the
+connection dropping. A block rule may leave flows that were already open
+alone, so if no drop appears, the step does not count: cut B's network another
+way (a second machine). `Freeze` / `Thaw` suspend the process instead. That
+makes B go silent to everyone else, but B does not notice the outage itself,
+so it is a weaker test than a cut. Audibility is still judged by ear.
 
 ## 2. Android: private-room voice and the background
 
