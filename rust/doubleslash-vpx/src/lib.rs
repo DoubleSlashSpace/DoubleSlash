@@ -162,9 +162,10 @@ impl EncoderConfig {
     ///   small frames and 8 above ([`VP9_SLOW_SPEED_MAX_PIXELS`]).
     /// * **Threads.** One on aarch64: on the phone two and four threads were
     ///   3-8x *slower* than one, with large jitter — waking workers costs more
-    ///   than a 720p frame takes to encode on a single big core. Elsewhere the
-    ///   build has no SIMD (x86), so 720p and up takes a second thread, which
-    ///   halved VP9's 720p encode time on the desktop.
+    ///   than a 720p frame takes to encode on a single big core. On x86-64,
+    ///   720p and up takes a second thread: with the SIMD build it cut VP9's
+    ///   720p encode on the synthetic scene from 8.3 to 5.3 ms at speed 8, room
+    ///   a 1080p60 screen share needs inside its 16 ms frame.
     pub fn realtime(
         codec: Codec,
         width: u32,

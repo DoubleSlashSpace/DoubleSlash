@@ -186,6 +186,13 @@ jobs:
         shell: pwsh
         run: choco install 7zip -y --no-progress
 
+      # libvpx's x86-64 SIMD is partly nasm assembly (doubleslash-vpx/build.rs).
+      - name: Install nasm
+        shell: pwsh
+        run: |
+          choco install nasm -y --no-progress
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
       - name: Install Qt 6 (base + WebEngine for in-app supernode portal)
         shell: pwsh
         run: pwsh scripts/install_qt_windows.ps1
@@ -577,7 +584,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            cmake pkg-config fuse libfuse2 lld \
+            cmake pkg-config fuse libfuse2 lld nasm \
             libgl-dev libxkbcommon-dev libdbus-1-dev libpulse-dev \
             libasound2-dev libminiupnpc-dev \
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0

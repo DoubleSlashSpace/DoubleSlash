@@ -219,7 +219,7 @@ this, the shader included on WARP. Still to do:
    encode should each fit in the 16 ms frame, and `oversized` should be 0 after
    the first keyframe. If the sender keeps its rate and the viewer still
    stutters, the problem is downstream. Look at the viewer's decoder: libvpx
-   decodes on one thread, in plain C on x86.
+   decodes on one thread.
 2. **HDR live check.** On an HDR display, the capture log should read
    `capturing an HDR display (SDR white N nits), scaling on the GPU`, with N
    matching Windows' SDR content brightness. The viewer's picture should match
@@ -228,7 +228,7 @@ this, the shader included on WARP. Still to do:
 3. **Viewers on older builds** still drop any keyframe over 128 fragments. Ship
    the receiver change before relying on large keyframes.
 
-### VP9 room default: live acceptance and x86 SIMD
+### VP9 room default: live acceptance
 
 Rooms now send VP9, and VP8 takes over mid-call if a device cannot encode VP9
 in real time. The numbers behind that decision come from
@@ -244,6 +244,12 @@ conference clip (one encoder thread):
 At equal quality VP9 needs about 15% fewer bits on the phone, and about 40%
 fewer at 720p on the desktop, where VP8 has less spare CPU to spend on quality.
 
+The desktop row is from the plain-C build. x86-64 now builds libvpx's SIMD with
+runtime CPU detection: on the bench's synthetic scene, 720p VP9 at speed 8 on
+one thread went from 47 ms to 8.3 ms per frame (5.3 ms on two), and decode from
+10.3 ms to 2.1 ms, at the same PSNR. Re-run the FourPeople row on a SIMD build
+before quoting a desktop figure.
+
 Still to do:
 
 1. **Live check.** Run a room with a Windows desktop and the phone both
@@ -251,10 +257,9 @@ Still to do:
    start. Force the fallback on a slow machine (or temporarily lower
    `BUDGET_MEAN_SHARE`) and confirm that receivers keep the picture across the
    switch.
-2. **x86 SIMD.** x86 desktops still encode VP9 in plain C, so 720p needs two
-   threads and a weak laptop will fall back to VP8. Enabling libvpx's x86 SIMD
-   means adding nasm to every build machine and CI image, and then
-   `Simd::X86` in `doubleslash-vpx/build.rs`.
+2. **SIMD build on other x86-64 machines.** Measured on one desktop. Run the
+   bench on a weak laptop and on an x86-64 Linux box to see whether VP8
+   fallback still happens there.
 
 ### Installed simultaneous-use acceptance
 

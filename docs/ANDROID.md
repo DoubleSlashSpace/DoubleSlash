@@ -130,7 +130,8 @@ cargo ndk -t arm64-v8a --platform 26 -o ../../android/app/src/main/jniLibs build
 
 `gradle.properties` sets `doubleslash.abis=arm64-v8a`. Each extra ABI is a full
 Rust build of the core *including libopus and libvpx*, so add `x86_64` only when
-you actually need the emulator. `doubleslash.ndkApi` must stay equal to `minSdk`
+you actually need the emulator. An `x86_64` build also needs nasm 2.14+ for
+libvpx's SIMD assembly, or `DOUBLESLASH_VPX_GENERIC=1`. `doubleslash.ndkApi` must stay equal to `minSdk`
 (26): cargo-ndk bakes it into the clang target triple, and a mismatch produces a
 library `dlopen` refuses on older devices with no useful diagnostic.
 

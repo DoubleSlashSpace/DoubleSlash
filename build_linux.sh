@@ -13,10 +13,10 @@
 #   3. linuxdeployqt or appimagetool on PATH.
 #      linuxdeployqt: https://github.com/probonopd/linuxdeployqt/releases
 #      appimagetool:  https://github.com/AppImage/appimagetool/releases
-#   4. cmake on PATH.
+#   4. cmake and nasm (libvpx's x86-64 SIMD assembly) on PATH.
 #
 # System packages (Debian/Ubuntu):
-#   sudo apt install build-essential cmake lld libgl-dev libxkbcommon-dev \
+#   sudo apt install build-essential cmake lld nasm libgl-dev libxkbcommon-dev \
 #                    libdbus-1-dev libpulse-dev libminiupnpc-dev fuse
 #
 #   `lld` is not optional on a machine that also has GNU gold. cxx-qt's

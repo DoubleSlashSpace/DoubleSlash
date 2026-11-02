@@ -310,7 +310,7 @@ Capture starts through call, share, or preview controls. Local preview stays on 
 ### Prerequisites
 
 - Rust stable and a native C/C++ toolchain (MSVC on Windows).
-- CMake and Perl for the vendored codecs. With CMake 4, set `CMAKE_POLICY_VERSION_MINIMUM=3.5` when invoking Cargo from the repository root (workspace-local Cargo configs set it when building from their directories). Initialize submodules:
+- CMake and Perl for the vendored codecs, and nasm 2.14 or newer for VP8/VP9 on x86-64 (`winget install NASM.NASM`, `apt install nasm`, `brew install nasm`; `DOUBLESLASH_VPX_GENERIC=1` builds a slow plain-C codec without it). With CMake 4, set `CMAKE_POLICY_VERSION_MINIMUM=3.5` when invoking Cargo from the repository root (workspace-local Cargo configs set it when building from their directories). Initialize submodules:
 
   ```sh
   git submodule update --init --recursive

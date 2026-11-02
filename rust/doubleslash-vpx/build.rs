@@ -2,21 +2,20 @@
 //!
 //! # Why not libvpx's own build system
 //!
-//! libvpx ships a `configure` shell script plus GNU make, and on MSVC it wants
-//! yasm or nasm for its hand-written assembly. That is three build-time tools
-//! (`bash`, `make`, an assembler) that would have to exist on every developer
-//! machine and on all four CI targets — win64, linux-x86_64, linux-aarch64, and
-//! macOS. `doubleslash-opus` gets away with vendoring because libopus builds with
-//! CMake, which libvpx does not.
+//! libvpx ships a `configure` shell script plus GNU make. Those two tools would
+//! have to exist on every developer machine and on all four CI targets — win64,
+//! linux-x86_64, linux-aarch64, and macOS. `doubleslash-opus` gets away with
+//! vendoring because libopus builds with CMake, which libvpx does not.
 //!
 //! So this compiles libvpx's C sources directly with the `cc` crate, supplying
-//! the two things `configure` would otherwise generate: `vpx_config.h` (and its
-//! make-syntax twin for the RTCD generator) and the RTCD headers themselves,
-//! which come from libvpx's own `build/make/rtcd.pl`. Perl is the one tool this
-//! needs beyond a C compiler, and it is already present on all three platforms
-//! (Git for Windows ships it; Linux and macOS have it in base).
+//! the things `configure` would otherwise generate: `vpx_config.h` (with its
+//! make-syntax twin for the RTCD generator, and its assembler twin on x86) and
+//! the RTCD headers themselves, which come from libvpx's own
+//! `build/make/rtcd.pl`. Perl is needed beyond a C compiler, and it is already
+//! present on all three platforms (Git for Windows ships it; Linux and macOS
+//! have it in base). x86-64 also needs nasm (below).
 //!
-//! # SIMD: NEON on 64-bit ARM, plain C elsewhere
+//! # SIMD: NEON on 64-bit ARM, SSE2 to AVX-512 on x86-64
 //!
 //! On aarch64 (phones, Apple Silicon, ARM Linux) the build enables libvpx's
 //! NEON paths. Those are C intrinsics, so they need nothing beyond the C
@@ -25,13 +24,20 @@
 //! i8mm, SVE) are left off: using them without runtime detection would make the
 //! library crash on the older cores Android's minimum API still admits.
 //!
-//! x86 stays generic C for now. libvpx's x86 SIMD is partly hand-written
-//! assembly, so enabling it means adding nasm to every build machine; the RTCD
-//! indirection below is the seam, and nothing above this crate would change.
+//! On x86-64 the build enables every extension libvpx has, MMX through
+//! AVX-512, with libvpx's runtime CPU detection. The x86-64 baseline is only
+//! SSE2, so the RTCD headers bind each function to the best version the
+//! running CPU supports, through `x86_simd_caps()`. Part of that SIMD is
+//! hand-written assembly, which is why x86-64 builds need **nasm**: the build
+//! looks for `NASM`, then `nasm` on `PATH`, then the default install folders,
+//! and stops with instructions when none is found. Intrinsics files are
+//! compiled one extension group at a time, each with only its own `-m` (or
+//! MSVC `/arch:`) flag, so code for a newer extension cannot leak into a
+//! function an older CPU runs.
 //!
-//! `DOUBLESLASH_VPX_GENERIC=1` forces the generic build on aarch64 too. It
-//! exists to measure what SIMD buys and to rule it out when chasing a codec
-//! bug; nothing ships with it set.
+//! `DOUBLESLASH_VPX_GENERIC=1` forces the generic C build on either
+//! architecture. It exists to measure what SIMD buys, to rule it out when
+//! chasing a codec bug, and to build without nasm; nothing ships with it set.
 //!
 //! # Codecs: VP8 and VP9
 //!
@@ -66,17 +72,26 @@ const SRC_MAKEFILES: &[(&str, &str)] = &[
     ("vpx_util/vpx_util.mk", "vpx_util"),
 ];
 
-/// Evaluate one libvpx `.mk` manifest against `flags`, returning the `.c`
-/// sources it selects (paths relative to the libvpx tree root).
+/// The sources one manifest selects, paths relative to the libvpx tree root.
+#[derive(Default)]
+struct Sources {
+    c: Vec<String>,
+    asm: Vec<String>,
+}
+
+/// Evaluate one libvpx `.mk` manifest against `flags`, returning the `.c` and
+/// `.asm` sources it selects.
 ///
 /// This understands the subset of make syntax those manifests actually use:
 ///
 /// * `SRCS-yes += file.c` — unconditional.
-/// * `SRCS-$(CONFIG_X) += file.c` — included when the flag is on. Several
-///   `$(...)` may be concatenated (`$(VPX_ARCH_X86)$(VPX_ARCH_X86_64)`), in
-///   which case every one must be on, matching make's textual expansion.
-/// * `ifeq ($(FLAG),yes)` / `ifneq ($(filter yes,$(A) $(B)),)` / `else` /
-///   `endif` — nested, tracked with a stack.
+/// * `SRCS-$(CONFIG_X) += file.c` — included when the condition expands to
+///   `yes`. A flag that is on expands to `yes` and one that is off to nothing,
+///   as in libvpx's own `config.mk`, so `$(VPX_ARCH_X86)$(VPX_ARCH_X86_64)`
+///   means "either", the way make reads it.
+/// * `ifeq ($(FLAG),yes)` / `ifeq ($(A)$(B),yesyes)` /
+///   `ifneq ($(filter yes,$(A) $(B)),)` / `else` / `endif` — nested, tracked
+///   with a stack, both sides expanded the same way.
 /// * `<VAR>_REMOVE-$(CONFIG_X) += file.c` — subtracted from the result. VP9's
 ///   manifests list the two-pass encoder this way under
 ///   `CONFIG_REALTIME_ONLY`; reading them as additions would compile it back
@@ -86,8 +101,8 @@ const SRC_MAKEFILES: &[(&str, &str)] = &[
 /// understand the condition for is better left out (a missing optional file
 /// surfaces as a link error naming the symbol) than let in (which fails as a
 /// wall of errors inside vendored C).
-fn sources_from_makefile(text: &str, base: &str, flags: &Flags) -> Vec<String> {
-    let mut out = Vec::new();
+fn sources_from_makefile(text: &str, base: &str, flags: &Flags) -> Sources {
+    let mut out = Sources::default();
     let mut removed = Vec::new();
     // Each entry: (this branch is active, any branch of this if has been taken)
     let mut stack: Vec<(bool, bool)> = Vec::new();
@@ -130,8 +145,9 @@ fn sources_from_makefile(text: &str, base: &str, flags: &Flags) -> Vec<String> {
             continue;
         };
         let path = rhs.trim();
-        if !path.ends_with(".c") {
-            continue; // headers, .mk, .asm
+        let is_asm = path.ends_with(".asm");
+        if !path.ends_with(".c") && !is_asm {
+            continue; // headers, .mk
         }
         let Some((var, cond)) = lhs.trim().rsplit_once('-') else {
             continue;
@@ -142,37 +158,45 @@ fn sources_from_makefile(text: &str, base: &str, flags: &Flags) -> Vec<String> {
         let entry = format!("{base}/{path}");
         if var.ends_with("_REMOVE") {
             removed.push(entry);
+        } else if is_asm {
+            out.asm.push(entry);
         } else {
-            out.push(entry);
+            out.c.push(entry);
         }
     }
-    out.retain(|src| !removed.contains(src));
+    out.c.retain(|src| !removed.contains(src));
+    out.asm.retain(|src| !removed.contains(src));
     out
 }
 
-/// Is a `SRCS-<cond>` condition satisfied? `yes`, or every `$(FLAG)` on.
-fn cond_enabled(cond: &str, flags: &Flags) -> bool {
-    if cond == "yes" {
-        return true;
-    }
-    let mut rest = cond;
-    let mut saw_one = false;
+/// Expand every `$(FLAG)` in `text` the way libvpx's `config.mk` defines
+/// them: `yes` when on, nothing when off. Other text is kept as it is.
+fn expand(text: &str, flags: &Flags) -> String {
+    let mut out = String::new();
+    let mut rest = text;
     while let Some(start) = rest.find("$(") {
+        out.push_str(&rest[..start]);
         let Some(end) = rest[start..].find(')') else {
-            return false;
+            // Unbalanced: keep it verbatim, which matches nothing.
+            out.push_str(&rest[start..]);
+            return out;
         };
-        let name = &rest[start + 2..start + end];
-        if !flags.is_on(name) {
-            return false;
+        if flags.is_on(&rest[start + 2..start + end]) {
+            out.push_str("yes");
         }
-        saw_one = true;
         rest = &rest[start + end + 1..];
     }
-    saw_one
+    out.push_str(rest);
+    out
 }
 
-/// Evaluate an `ifeq (...)` argument. Handles the two forms libvpx uses:
-/// `($(FLAG),yes)` and `($(filter yes,$(A) $(B)),)`.
+/// Is a `SRCS-<cond>` condition satisfied? Only when it expands to `yes`.
+fn cond_enabled(cond: &str, flags: &Flags) -> bool {
+    expand(cond, flags) == "yes"
+}
+
+/// Evaluate an `ifeq (...)` argument. Handles the forms libvpx uses:
+/// `($(FLAG),yes)`, `($(A)$(B),yesyes)` and `($(filter yes,$(A) $(B)),)`.
 fn eval_ifeq(cond: &str, flags: &Flags) -> bool {
     let inner = cond.trim().trim_start_matches('(').trim_end_matches(')');
     if let Some(filter) = inner.strip_prefix("$(filter yes,") {
@@ -185,12 +209,17 @@ fn eval_ifeq(cond: &str, flags: &Flags) -> bool {
             .any(|t| flags.is_on(t.trim_end_matches(')')));
         return !any;
     }
+    // `inner` above trimmed every trailing `)`, including the last
+    // `$(...)`'s own; strip exactly one pair of parentheses instead.
+    let inner = cond
+        .trim()
+        .strip_prefix('(')
+        .and_then(|c| c.strip_suffix(')'))
+        .unwrap_or(inner);
     let Some((lhs, rhs)) = inner.split_once(',') else {
         return false;
     };
-    let want_yes = rhs.trim() == "yes";
-    let name = lhs.trim().trim_start_matches("$(").trim_end_matches(')');
-    flags.is_on(name) == want_yes
+    expand(lhs.trim(), flags) == expand(rhs.trim(), flags)
 }
 
 fn main() {
@@ -216,9 +245,13 @@ fn main() {
     println!("cargo:rerun-if-env-changed=DOUBLESLASH_VPX_GENERIC");
     let force_generic = std::env::var_os("DOUBLESLASH_VPX_GENERIC").is_some_and(|v| v == "1");
     // Windows on ARM is left generic: nothing ships there, so its MSVC NEON
-    // build has never been run.
-    let simd = if target_arch == "aarch64" && target_os != "windows" && !force_generic {
+    // build has never been run. 32-bit x86 is not a target.
+    let simd = if force_generic {
+        Simd::None
+    } else if target_arch == "aarch64" && target_os != "windows" {
         Simd::Neon
+    } else if target_arch == "x86_64" {
+        Simd::X86
     } else {
         Simd::None
     };
@@ -230,6 +263,10 @@ fn main() {
     std::fs::write(gen.join("vpx_config.h"), cfg.as_c_header()).expect("write vpx_config.h");
     std::fs::write(gen.join("vpx_config.mk"), cfg.as_make_fragment()).expect("write vpx_config.mk");
     std::fs::write(gen.join("vpx_version.h"), version_header()).expect("write vpx_version.h");
+    if simd == Simd::X86 {
+        std::fs::write(gen.join("vpx_config.asm"), cfg.as_asm_include())
+            .expect("write vpx_config.asm");
+    }
     // `vpx_codec_build_config()` returns this string; the real build derives it
     // from configure's argv. Ours is fixed, so a literal is honest.
     std::fs::write(
@@ -253,24 +290,40 @@ fn main() {
     }
 
     // ── Compile ─────────────────────────────────────────────────────────────
-    let mut build = cc::Build::new();
-    build
+    // Settings every object shares. Each ISA group below starts from a copy of
+    // this, before any source is added, so no file is compiled twice.
+    let mut common = cc::Build::new();
+    common
         .include(&gen)
         .include(&vpx)
         // libvpx includes its own headers as "vpx/vpx_encoder.h" etc., relative
         // to the tree root, which the line above covers.
-        .file(gen.join("vpx_config.c"))
         .warnings(false);
+    if unix {
+        // libvpx's threading uses pthreads directly.
+        common.flag_if_supported("-pthread");
+        // The vendored C is not warning-clean under our lint settings and is
+        // not ours to fix.
+        common.flag_if_supported("-Wno-unused-but-set-variable");
+    }
+    let msvc = common.get_compiler().is_like_msvc();
+    let mut build = common.clone();
+    build.file(gen.join("vpx_config.c"));
 
     let mut sources: Vec<String> = Vec::new();
+    let mut asm_sources: Vec<String> = Vec::new();
     for (mk, base) in SRC_MAKEFILES {
         let text =
             std::fs::read_to_string(vpx.join(mk)).unwrap_or_else(|e| panic!("read {mk}: {e}"));
-        sources.extend(sources_from_makefile(&text, base, &cfg));
+        let found = sources_from_makefile(&text, base, &cfg);
+        sources.extend(found.c);
+        asm_sources.extend(found.asm);
         println!("cargo:rerun-if-changed=libvpx/{mk}");
     }
     sources.sort();
     sources.dedup();
+    asm_sources.sort();
+    asm_sources.dedup();
 
     // `vp8/common/generic/systemdependent.c` provides `vp8_machine_specific_config`
     // and is selected by an architecture condition none of which hold in a
@@ -282,6 +335,8 @@ fn main() {
     }
 
     let mut compiled = 0usize;
+    // Intrinsics files, by the extension flags they need.
+    let mut by_isa: Vec<(&'static [&'static str], Vec<PathBuf>)> = Vec::new();
     for rel in &sources {
         let path = vpx.join(rel);
         if !path.exists() {
@@ -290,25 +345,57 @@ fn main() {
             // failing later with an undefined symbol.
             panic!("libvpx manifest lists {rel}, which does not exist in the submodule");
         }
-        build.file(&path);
+        match isa_flags(rel, msvc).filter(|_| simd == Simd::X86) {
+            Some(flags) if !flags.is_empty() => {
+                match by_isa.iter_mut().find(|(f, _)| *f == flags) {
+                    Some((_, files)) => files.push(path),
+                    None => by_isa.push((flags, vec![path])),
+                }
+            }
+            _ => {
+                build.file(&path);
+            }
+        }
         compiled += 1;
     }
     assert!(
         compiled > 50,
         "only {compiled} libvpx sources selected — the manifest parse is wrong"
     );
-
-    if unix {
-        // libvpx's threading uses pthreads directly.
-        build.flag_if_supported("-pthread");
-        // Bionic implements pthreads inside libc and ships no libpthread at
-        // all, so asking for one is a hard link error rather than a no-op.
-        if target_os != "android" {
-            println!("cargo:rustc-link-lib=pthread");
+    for (flags, files) in &by_isa {
+        let mut group = common.clone();
+        for flag in *flags {
+            group.flag(flag);
         }
-        // The vendored C is not warning-clean under our lint settings and is
-        // not ours to fix.
-        build.flag_if_supported("-Wno-unused-but-set-variable");
+        group.files(files);
+        for object in group.compile_intermediates() {
+            build.object(object);
+        }
+    }
+
+    if simd == Simd::X86 {
+        assert!(
+            asm_sources.len() > 20,
+            "only {} libvpx assembly sources selected — the manifest parse is wrong",
+            asm_sources.len()
+        );
+        let nasm = find_nasm();
+        let format = match target_os.as_str() {
+            "windows" => "win64",
+            "macos" | "ios" => "macho64",
+            _ => "elf64",
+        };
+        let asm_out = out.join("vpx-asm");
+        std::fs::create_dir_all(&asm_out).expect("create assembly output dir");
+        for rel in &asm_sources {
+            build.object(assemble(&nasm, &vpx, &gen, &asm_out, rel, format));
+        }
+    }
+
+    // Bionic implements pthreads inside libc and ships no libpthread at all,
+    // so asking for one is a hard link error rather than a no-op.
+    if unix && target_os != "android" {
+        println!("cargo:rustc-link-lib=pthread");
     }
 
     build.file(manifest_dir.join("src").join("shim.c")).include(
@@ -320,6 +407,126 @@ fn main() {
 
     println!("cargo:rerun-if-changed=src/shim.c");
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+/// The extension flags an intrinsics file needs, from its name, or `None` for
+/// one that needs nothing beyond the baseline. The suffixes and GCC flags are
+/// libvpx's own (`build/make/Makefile`). MSVC compiles SSE intrinsics without
+/// a flag on x64; its AVX files get the matching `/arch:`, as libvpx's
+/// Visual Studio projects do.
+fn isa_flags(rel: &str, msvc: bool) -> Option<&'static [&'static str]> {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    let flags: &'static [&'static str] = match (name, msvc) {
+        (n, false) if n.ends_with("_mmx.c") => &["-mmmx"],
+        (n, false) if n.ends_with("_sse2.c") => &["-msse2"],
+        (n, false) if n.ends_with("_sse3.c") => &["-msse3"],
+        (n, false) if n.ends_with("_ssse3.c") => &["-mssse3"],
+        (n, false) if n.ends_with("_sse4.c") => &["-msse4.1"],
+        (n, false) if n.ends_with("_avx.c") => &["-mavx"],
+        (n, false) if n.ends_with("_avx2.c") => &["-mavx2"],
+        (n, false) if n.ends_with("_avx512.c") => &[
+            "-mavx512f",
+            "-mavx512cd",
+            "-mavx512bw",
+            "-mavx512dq",
+            "-mavx512vl",
+        ],
+        (n, true) if n.ends_with("_avx.c") => &["/arch:AVX"],
+        (n, true) if n.ends_with("_avx2.c") => &["/arch:AVX2"],
+        (n, true) if n.ends_with("_avx512.c") => &["/arch:AVX512"],
+        _ => return None,
+    };
+    Some(flags)
+}
+
+/// Assemble one libvpx `.asm` source with nasm, returning the object path.
+fn assemble(nasm: &Path, vpx: &Path, gen: &Path, out: &Path, rel: &str, format: &str) -> PathBuf {
+    // Flatten the path into the name: several directories hold files with the
+    // same name (`loopfilter_sse2.asm`, for one).
+    let ext = if format == "win64" { "obj" } else { "o" };
+    let object = out.join(format!("{}.{ext}", rel.replace(['/', '.'], "_")));
+    // The sources `%include` "vpx_config.asm" (generated) and paths such as
+    // "third_party/x86inc/x86inc.asm" (relative to the tree root). nasm
+    // concatenates `-I` with the name, so each needs its trailing separator.
+    let output = std::process::Command::new(nasm)
+        .arg("-f")
+        .arg(format)
+        .arg(format!("-I{}/", gen.display()))
+        .arg(format!("-I{}/", vpx.display()))
+        .arg("-o")
+        .arg(&object)
+        .arg(vpx.join(rel))
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run nasm for {rel}: {e}"));
+    if !output.status.success() {
+        panic!(
+            "nasm failed on {rel}:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    object
+}
+
+/// Locate nasm 2.14 or newer, or stop the build with instructions.
+///
+/// Like perl on Windows, nasm's installer does not always put it on the PATH
+/// cargo inherits, so the default install folders are probed too.
+fn find_nasm() -> PathBuf {
+    println!("cargo:rerun-if-env-changed=NASM");
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(p) = std::env::var_os("NASM") {
+        candidates.push(p.into());
+    }
+    candidates.push("nasm".into());
+    if cfg!(windows) {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            // Where winget's NASM.NASM installs for one user.
+            candidates.push(Path::new(&local).join(r"bin\NASM\nasm.exe"));
+        }
+        candidates.push(r"C:\Program Files\NASM\nasm.exe".into());
+    } else {
+        candidates.push("/opt/homebrew/bin/nasm".into());
+        candidates.push("/usr/local/bin/nasm".into());
+    }
+    let mut too_old = None;
+    for candidate in candidates {
+        let Ok(out) = std::process::Command::new(&candidate).arg("-v").output() else {
+            continue;
+        };
+        if !out.status.success() {
+            continue;
+        }
+        // "NASM version 2.16.03 compiled on ..."
+        let banner = String::from_utf8_lossy(&out.stdout).into_owned();
+        let version = banner
+            .split_whitespace()
+            .skip_while(|w| *w != "version")
+            .nth(1)
+            .unwrap_or_default()
+            .to_owned();
+        let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+        let (major, minor) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+        if (major, minor) >= (2, 14) {
+            return candidate;
+        }
+        too_old = Some(format!("{} ({})", candidate.display(), banner.trim()));
+    }
+    let found = too_old
+        .map(|old| format!("\nFound only {old}, which is older than 2.14.\n"))
+        .unwrap_or_default();
+    panic!(
+        "\n\
+         Building VP8/VP9 for x86-64 needs nasm 2.14 or newer, for libvpx's\n\
+         SIMD assembly.{found}\n\
+         \n\
+         \tWindows: winget install NASM.NASM\n\
+         \tDebian/Ubuntu: sudo apt-get install nasm\n\
+         \tmacOS: brew install nasm\n\
+         \n\
+         Or point the NASM environment variable at the executable. For a slow\n\
+         plain-C build without nasm, set DOUBLESLASH_VPX_GENERIC=1.\n"
+    );
 }
 
 /// Locate a perl interpreter.
@@ -370,9 +577,11 @@ fn find_perl() -> std::ffi::OsString {
 
 /// Run libvpx's `rtcd.pl` for one symbol set.
 ///
-/// With runtime CPU detection off, the generator binds every function straight
-/// to the best implementation the config enables, so the arch named here must
-/// agree with [`ConfigFlags`] or it emits calls to functions nothing compiles.
+/// With runtime CPU detection off (generic and NEON), the generator binds
+/// every function straight to the best implementation the config enables. On
+/// x86-64 it emits function pointers and a `setup_rtcd_internal` that picks an
+/// implementation per CPU. Either way the arch named here must agree with
+/// [`ConfigFlags`] or it emits calls to functions nothing compiles.
 fn run_rtcd(vpx: &Path, gen: &Path, sym: &str, defs: &str, simd: Simd) {
     let out_file = gen.join(format!("{sym}.h"));
     let output = std::process::Command::new(find_perl())
@@ -423,6 +632,8 @@ enum Simd {
     None,
     /// aarch64 NEON intrinsics — the architectural baseline, nothing optional.
     Neon,
+    /// x86-64 MMX through AVX-512, chosen at run time; needs nasm.
+    X86,
 }
 
 impl Simd {
@@ -430,6 +641,7 @@ impl Simd {
         match self {
             Simd::None => "generic",
             Simd::Neon => "arm64",
+            Simd::X86 => "x86_64",
         }
     }
 
@@ -443,6 +655,8 @@ impl Simd {
         match self {
             Simd::None => &[],
             Simd::Neon => &["neon_dotprod", "neon_i8mm", "sve", "sve2"],
+            // Every x86 extension is built; the CPU decides at run time.
+            Simd::X86 => &[],
         }
     }
 
@@ -450,6 +664,7 @@ impl Simd {
         match self {
             Simd::None => "generic-c",
             Simd::Neon => "arm64-neon",
+            Simd::X86 => "x86_64-simd",
         }
     }
 }
@@ -483,24 +698,40 @@ impl ConfigFlags {
     fn for_target(unix: bool, simd: Simd) -> Self {
         let mut v: Vec<(&'static str, bool)> = Vec::new();
         let neon = simd == Simd::Neon;
+        let x86 = simd == Simd::X86;
 
         // Architecture. `VPX_ARCH_ARM` covers both ARM widths in libvpx's
         // manifests; `VPX_ARCH_AARCH64` picks the 64-bit CPU detection.
         v.push(("VPX_ARCH_ARM", neon));
         v.push(("VPX_ARCH_AARCH64", neon));
+        v.push(("VPX_ARCH_X86_64", x86));
         for a in [
             "VPX_ARCH_MIPS",
             "VPX_ARCH_X86",
-            "VPX_ARCH_X86_64",
             "VPX_ARCH_PPC",
             "VPX_ARCH_LOONGARCH",
         ] {
             v.push((a, false));
         }
 
-        // Instruction-set features. NEON only: see the module docs for why the
-        // optional ARM extensions stay off, and why x86 is generic.
+        // Instruction-set features: NEON on aarch64 (see the module docs for
+        // why the optional ARM extensions stay off), every x86 extension on
+        // x86-64, chosen per CPU at run time.
         v.push(("HAVE_NEON", neon));
+        for h in [
+            "HAVE_MMX",
+            "HAVE_SSE",
+            "HAVE_SSE2",
+            "HAVE_SSE3",
+            "HAVE_SSSE3",
+            "HAVE_SSE4_1",
+            "HAVE_AVX",
+            "HAVE_AVX2",
+            "HAVE_AVX512",
+            "HAVE_X86_ASM",
+        ] {
+            v.push((h, x86));
+        }
         for h in [
             "HAVE_NEON_ASM",
             "HAVE_NEON_DOTPROD",
@@ -511,20 +742,10 @@ impl ConfigFlags {
             "HAVE_DSPR2",
             "HAVE_MSA",
             "HAVE_MIPS64",
-            "HAVE_MMX",
-            "HAVE_SSE",
-            "HAVE_SSE2",
-            "HAVE_SSE3",
-            "HAVE_SSSE3",
-            "HAVE_SSE4_1",
-            "HAVE_AVX",
-            "HAVE_AVX2",
-            "HAVE_AVX512",
             "HAVE_VSX",
             "HAVE_MMI",
             "HAVE_LSX",
             "HAVE_LASX",
-            "HAVE_X86_ASM",
         ] {
             v.push((h, false));
         }
@@ -565,11 +786,12 @@ impl ConfigFlags {
         v.push(("CONFIG_DEBUG_LIBS", false));
         v.push(("CONFIG_DEQUANT_TOKENS", false));
         v.push(("CONFIG_DC_RECON", false));
-        // No runtime dispatch: each build has exactly one implementation per
-        // function (C, or NEON where the config enables it), so there is
-        // nothing to choose between at run time, and leaving it on would emit
-        // a resolver that expects per-extension symbols we do not build.
-        v.push(("CONFIG_RUNTIME_CPU_DETECT", false));
+        // Runtime dispatch on x86-64 only, where CPUs differ in which of the
+        // built extensions they have. Generic and NEON builds have exactly one
+        // implementation per function, so there is nothing to choose between,
+        // and turning it on there would emit a resolver that expects
+        // per-extension symbols we do not build.
+        v.push(("CONFIG_RUNTIME_CPU_DETECT", x86));
         v.push(("CONFIG_POSTPROC", false));
         v.push(("CONFIG_VP9_POSTPROC", false));
         v.push(("CONFIG_MULTITHREAD", true));
@@ -623,6 +845,17 @@ impl ConfigFlags {
             s.push_str(&format!("#define {k} {}\n", if *val { 1 } else { 0 }));
         }
         s.push_str("#endif /* VPX_CONFIG_H */\n");
+        s
+    }
+
+    /// The same flags as nasm `equ` lines, for the x86 assembly's
+    /// `%include "vpx_config.asm"`. libvpx's `libs.mk` derives this file from
+    /// `vpx_config.h` the same way.
+    fn as_asm_include(&self) -> String {
+        let mut s = String::new();
+        for (k, val) in &self.0 {
+            s.push_str(&format!("{k} equ {}\n", if *val { 1 } else { 0 }));
+        }
         s
     }
 

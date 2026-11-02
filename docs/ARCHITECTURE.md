@@ -149,7 +149,8 @@ web.host.app.v1 / game.relay.v1"]
         VPX[VpxEncoder / VpxDecoder]
         LIBVPX["libvpx C — VP8 + VP9
 built by our build.rs
-NEON on aarch64, generic C on x86"]
+NEON on aarch64, SSE2–AVX-512 on x86-64
+(runtime CPU detection, nasm)"]
         MFT["Media Foundation H.264
 Windows only — OS-held AVC licence"]
     end
