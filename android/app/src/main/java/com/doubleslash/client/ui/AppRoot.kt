@@ -981,12 +981,13 @@ private fun HomeScreen(
             val rooms = state.tab == HomeTab.ROOMS
             val hiddenCount = if (rooms) state.rooms.count { it.hidden } else state.peers.count { it.blocked }
             val showing = if (rooms) state.showHiddenRooms else state.showBlockedPeers
-            ListActionIcon(
-                if (rooms) R.drawable.ic_list_plus else R.drawable.ic_invite,
-                if (rooms) "Create Room" else "Create an Invite",
-                enabled = if (rooms) state.supernodes.isNotEmpty() else !state.busy,
-            ) {
-                if (rooms) showCreateRoom = true else viewModel.generateInvite(copyToClipboard = true)
+            // Peers already has Copy invite in the row above. Rooms still creates from here.
+            if (rooms) {
+                ListActionIcon(
+                    R.drawable.ic_list_plus,
+                    "Create Room",
+                    enabled = state.supernodes.isNotEmpty(),
+                ) { showCreateRoom = true }
             }
             ListActionIcon(
                 R.drawable.ic_list_eye,

@@ -2649,16 +2649,18 @@ ApplicationWindow {
                 Layout.margins: Theme.spacingXs
                 spacing: Theme.spacingXs
                 IconButton {
-                    icon.source: root.sidebarTab === 1 ? "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg" : "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
+                    // Peers already has Copy new invite link in the title bar.
+                    visible: root.sidebarTab === 1
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
                     icon.color: Theme.text
                     icon.width: 18; icon.height: 18
                     Layout.preferredWidth: 32; Layout.preferredHeight: 32
                     padding: 6
-                    Accessible.name: root.sidebarTab === 1 ? qsTr("Create Room") : qsTr("Create an Invite")
+                    Accessible.name: qsTr("Create Room")
                     ToolTip.text: Accessible.name
                     ToolTip.visible: hovered || visualFocus
-                    onClicked: root.sidebarTab === 1 ? createRoomDialog.openNew() : newInviteBtn.clicked()
-                    enabled: root.sidebarTab === 0 || nodeListModel.count > 0
+                    onClicked: createRoomDialog.openNew()
+                    enabled: nodeListModel.count > 0
                 }
                 IconButton {
                     id: hiddenToggle
