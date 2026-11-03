@@ -141,7 +141,8 @@ Use a separate data directory from your client. The node generates an identity a
 | `supernode_port` | `3478` | QUIC UDP listener |
 | `supernode_signaling_port` | `34935` | WebSocket TCP listener |
 | `supernode_host` | unset | Public IP in invites and relay tickets. An IPv6 address is bracketed |
-| `supernode_hostname` | unset | Optional DNS name stored beside that IP. Clients dial the IP, and resolve this name only if the connection fails. A name under `*.doubleslash.space` is looked up over HTTPS at `https://<name>/.well-known/doubleslash` (DDDNS), which returns the current IP and signaling port. Other names use DNS. Relay tickets stay the IP |
+| `supernode_hostname` | unset | Optional DNS name stored beside that IP. Clients dial the IP, and resolve this name only if the connection fails, as `supernode_hostname_lookup` says. Whatever answers must prove it holds the node's key before the client uses it. Relay tickets stay the IP |
+| `supernode_hostname_lookup` | by name | `dns`: clients resolve the hostname with DNS. `dddns`: it is a [DDDNS](docs/DDDNS.md) name in any zone, looked up over HTTPS at `https://<name>/.well-known/doubleslash`, which returns the current IP and signaling port; the invite carries it as `dddns://<name>`. Unset: `dddns` under `*.doubleslash.space`, `dns` otherwise |
 | `supernode_invite_ttl` | `-1` | Invite lifetime in minutes; `-1` means no expiry |
 | `supernode_access_mode` | `open` | `open`, `tos`, `code`, or `ad` (timer gate) |
 | `supernode_sfu` | `true` | Enable the SFU room manager |

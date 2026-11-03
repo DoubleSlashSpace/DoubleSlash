@@ -50,6 +50,10 @@ const APP_VERSION: &str = env!("DOUBLESLASH_VERSION");
 const RENEWAL_CHECK_INTERVAL_S: u64 = 60;
 /// Endpoint mailbox TTL (24 h).
 const ENDPOINT_MAX_AGE_S: f64 = 86400.0;
+/// Longest HELLO challenge we sign back. A client sends 43 characters (32
+/// random bytes, base64url); this only stops a peer making us sign a large
+/// payload.
+const MAX_HELLO_CHALLENGE_LEN: usize = 128;
 
 /// Build the supernode's [`FeatureRegistry`] from the manifest at
 /// `<data_dir>/supernode.toml`, or the full first-party default when the file
@@ -1151,10 +1155,10 @@ impl SupernodeState {
         // member. Signed by this node's identity, which the client already
         // trusts over the Ed25519-verified SUPERNODE_INFO channel.
         if let Some(name) = &self.config.hostname {
-            payload
-                .as_object_mut()
-                .unwrap()
-                .insert("hostname".into(), json!(name));
+            let lookup = crate::config::HostnameLookup::for_name(name, self.config.hostname_lookup);
+            let fields = payload.as_object_mut().unwrap();
+            fields.insert("hostname".into(), json!(name));
+            fields.insert("hostname_lookup".into(), json!(lookup.as_str()));
         }
         if let Some(ref cluster) = self.cluster {
             if let Ok(desc) = serde_json::to_value(cluster.sign(&self.identity)) {
@@ -1985,6 +1989,17 @@ impl ReplicatedKind {
 /// `payload` is copied as standard base64 and never parsed. Two calls with
 /// the same bytes and a different `seq` mint different ids, so a repeated
 /// fragment is delivered twice instead of being collapsed by the seen-cache.
+/// What a `HelloProof` answering `hello` carries, or `None` when the HELLO
+/// asks for no proof (an older client) or its challenge is empty or too long.
+fn hello_proof_payload(hello: &SignalingMessage) -> Option<serde_json::Value> {
+    let challenge = hello
+        .payload
+        .get("challenge")
+        .and_then(serde_json::Value::as_str)
+        .filter(|c| !c.is_empty() && c.len() <= MAX_HELLO_CHALLENGE_LEN)?;
+    Some(json!({ "challenge": challenge }))
+}
+
 fn room_video_replication_message(
     node_public_id: &str,
     seq: u64,
@@ -2269,6 +2284,21 @@ struct SupernodeHandler {
 impl SignalingHandler for SupernodeHandler {
     fn on_message(&self, msg: SignalingMessage, raw: &str) {
         match msg.msg_type {
+            MessageType::Hello => {
+                // Prove which node this is. A client reaches us at an address
+                // from an invite, DNS or DDDNS, none of which proves who
+                // answers, so it holds the session back until we sign the
+                // challenge its HELLO carries. Sent to the endpoint the HELLO
+                // came from, on the socket just registered.
+                if let Some(payload) = hello_proof_payload(&msg) {
+                    self.state.signaling.send_signed_reply(
+                        &self.state.identity,
+                        &msg,
+                        MessageType::HelloProof,
+                        payload,
+                    );
+                }
+            }
             MessageType::InviteHandshakeInit => {
                 self.handle_handshake_init(&msg);
             }
@@ -3745,12 +3775,14 @@ async fn main() -> anyhow::Result<()> {
         )]);
     }
     // The name rides beside the IP. Clients dial `supernode_host` first and
-    // resolve this name only if that connection fails. Tickets and turn hints
-    // stay the IP.
+    // resolve this name only if that connection fails, with DNS or, for a
+    // `dddns://` hint, a DDDNS lookup. Tickets and turn hints stay the IP.
     handshake.hostname_hints = config
         .hostname
         .as_deref()
-        .and_then(|name| crate::config::hostname_signaling_url(name, config.signaling_port))
+        .and_then(|name| {
+            crate::config::hostname_hint(name, config.hostname_lookup, config.signaling_port)
+        })
         .map(|url| vec![url]);
 
     let features = Arc::new(build_feature_registry(&manifest, &config));
@@ -5106,6 +5138,7 @@ mod build_feature_registry_tests {
             demo_links: false,
             external_host: None,
             hostname: None,
+            hostname_lookup: None,
             data_dir,
         }
     }
@@ -5450,5 +5483,29 @@ mod space_admission_tests {
         let mut proof = sp.prove(&rid).unwrap();
         proof.node.name = "Renamed".to_owned(); // leaf no longer matches the root
         assert!(!space_admission_ok(&root, &proof, None, "peer", &rid, 0));
+    }
+}
+
+#[cfg(test)]
+mod hello_proof_tests {
+    use super::*;
+
+    fn hello(payload: serde_json::Value) -> SignalingMessage {
+        SignalingMessage::new(MessageType::Hello, "client", payload)
+    }
+
+    #[test]
+    fn a_challenge_is_signed_back_unchanged() {
+        let payload = hello_proof_payload(&hello(json!({ "challenge": "abc_-123" })));
+        assert_eq!(payload, Some(json!({ "challenge": "abc_-123" })));
+    }
+
+    #[test]
+    fn no_empty_or_oversized_challenge_is_answered() {
+        assert!(hello_proof_payload(&hello(json!({}))).is_none());
+        assert!(hello_proof_payload(&hello(json!({ "challenge": "" }))).is_none());
+        assert!(hello_proof_payload(&hello(json!({ "challenge": 7 }))).is_none());
+        let long = "a".repeat(MAX_HELLO_CHALLENGE_LEN + 1);
+        assert!(hello_proof_payload(&hello(json!({ "challenge": long }))).is_none());
     }
 }

@@ -35,6 +35,9 @@ pub struct Config {
     /// DNS name advertised beside `external_host`. Clients may dial it for
     /// signaling. Relay tickets keep the IP.
     pub hostname: Option<String>,
+    /// How clients turn `hostname` into an address. `None` picks by name:
+    /// see [`HostnameLookup::for_name`].
+    pub hostname_lookup: Option<HostnameLookup>,
 
     // Data directory
     pub data_dir: std::path::PathBuf,
@@ -113,8 +116,55 @@ impl Config {
                 }
                 name
             }),
+            hostname_lookup: env::var("supernode_hostname_lookup").ok().and_then(|raw| {
+                let lookup = HostnameLookup::parse(raw.trim());
+                if lookup.is_none() && !raw.trim().is_empty() {
+                    tracing::warn!(
+                        "Ignoring supernode_hostname_lookup {raw:?}: use \"dns\" or \"dddns\""
+                    );
+                }
+                lookup
+            }),
             data_dir,
         }
+    }
+}
+
+/// How clients turn this node's `hostname` into an address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostnameLookup {
+    /// Ordinary DNS, at the signaling port.
+    Dns,
+    /// A DDDNS name record (`docs/DDDNS.md`), which also carries the port.
+    Dddns,
+}
+
+impl HostnameLookup {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "dns" => Some(Self::Dns),
+            "dddns" => Some(Self::Dddns),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dns => "dns",
+            Self::Dddns => "dddns",
+        }
+    }
+
+    /// `configured`, or else DDDNS for a name under `doubleslash.space` and
+    /// DNS for any other.
+    pub fn for_name(name: &str, configured: Option<Self>) -> Self {
+        configured.unwrap_or_else(|| {
+            if name.ends_with(".doubleslash.space") {
+                Self::Dddns
+            } else {
+                Self::Dns
+            }
+        })
     }
 }
 
@@ -147,6 +197,18 @@ pub fn hostname_signaling_url(hostname: &str, port: u16) -> Option<String> {
         return None;
     }
     Some(format!("ws://{name}:{port}"))
+}
+
+/// The hint signed into the invite for `hostname`: `ws://<name>:<port>` for a
+/// DNS name, or `dddns://<name>` for a DDDNS name, whose record carries the
+/// port. `None` when the name cannot be used that way. A DDDNS name needs a
+/// label in front of its zone.
+pub fn hostname_hint(hostname: &str, lookup: Option<HostnameLookup>, port: u16) -> Option<String> {
+    let name = normalize_advertised_hostname(hostname)?;
+    match HostnameLookup::for_name(&name, lookup) {
+        HostnameLookup::Dns => hostname_signaling_url(&name, port),
+        HostnameLookup::Dddns => name.contains('.').then(|| format!("dddns://{name}")),
+    }
 }
 
 fn env_u16(key: &str, default: u16) -> u16 {
@@ -196,6 +258,33 @@ mod tests {
         assert!(normalize_advertised_hostname("ws://relay.example.com").is_none());
         assert!(normalize_advertised_hostname("").is_none());
         assert!(hostname_signaling_url("relay.example.com", 0).is_none());
+    }
+
+    #[test]
+    fn a_dddns_name_is_hinted_as_such_in_any_zone() {
+        let dddns = Some(HostnameLookup::Dddns);
+        assert_eq!(
+            hostname_hint("My.Names.Example", dddns, 34935).as_deref(),
+            Some("dddns://my.names.example")
+        );
+        // By name alone: DDDNS under doubleslash.space, DNS elsewhere.
+        assert_eq!(
+            hostname_hint("my.doubleslash.space", None, 34935).as_deref(),
+            Some("dddns://my.doubleslash.space")
+        );
+        assert_eq!(
+            hostname_hint("relay.example.com", None, 34935).as_deref(),
+            Some("ws://relay.example.com:34935")
+        );
+        let dns = Some(HostnameLookup::Dns);
+        assert_eq!(
+            hostname_hint("my.doubleslash.space", dns, 34935).as_deref(),
+            Some("ws://my.doubleslash.space:34935")
+        );
+        // A DDDNS name needs a zone after its label.
+        assert!(hostname_hint("localhost", dddns, 34935).is_none());
+        assert_eq!(HostnameLookup::parse("DDDNS"), dddns);
+        assert!(HostnameLookup::parse("dynamic").is_none());
     }
 
     // Helper: parse env_bool directly via a unique env key.

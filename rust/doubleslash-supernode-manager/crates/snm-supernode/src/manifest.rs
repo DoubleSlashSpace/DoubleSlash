@@ -123,6 +123,12 @@ pub fn render_supernode_toml_with_cluster(
     );
     if let Some(hostname) = &config.hostname {
         root.insert("hostname".into(), toml::Value::String(hostname.clone()));
+        if let Some(lookup) = &config.hostname_lookup {
+            root.insert(
+                "hostname_lookup".into(),
+                toml::Value::String(lookup.clone()),
+            );
+        }
     }
     let header =
         toml::to_string_pretty(&toml::Value::Table(root)).expect("manifest header serializes");
@@ -177,6 +183,7 @@ mod tests {
             ws_port: 34935,
             public_host: "edge1.example.net".into(),
             hostname: None,
+            hostname_lookup: None,
             identity_file: "identity.json".into(),
             access_mode: "open".into(),
             features: default_instance_features(),
@@ -203,6 +210,15 @@ mod tests {
         let raw = render_supernode_toml(&config);
         assert!(raw.contains("hostname = \"relay.example.com\""));
         assert!(raw.contains("listen_addr"));
+    }
+
+    #[test]
+    fn writes_the_hostname_lookup_with_its_hostname() {
+        let mut config = sample_config();
+        config.hostname_lookup = Some("dddns".into());
+        assert!(!render_supernode_toml(&config).contains("hostname_lookup"));
+        config.hostname = Some("my.names.example".into());
+        assert!(render_supernode_toml(&config).contains("hostname_lookup = \"dddns\""));
     }
 
     #[test]

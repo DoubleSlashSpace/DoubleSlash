@@ -641,6 +641,38 @@ mod tests {
     }
 
     #[test]
+    fn switching_a_name_to_a_dddns_hint_keeps_the_invite_id() {
+        let dir = std::env::temp_dir().join(format!(
+            "ds-reusable-invite-dddns-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = Identity::generate();
+        let mut first = HandshakeManager::new(id.clone(), "ws://198.51.100.7:34935".into(), -1);
+        first.hostname_hints = Some(vec!["ws://my.names.example:34935".into()]);
+        let old_id = first
+            .get_or_create_reusable_invite(Some("Node"))
+            .invite_id
+            .clone();
+        first.save_reusable_invite(&dir);
+
+        let mut switched = HandshakeManager::new(id, "ws://203.0.113.8:34935".into(), -1);
+        switched.hostname_hints = Some(vec!["dddns://my.names.example".into()]);
+        assert!(switched.load_reusable_invite(&dir));
+        let loaded = switched.reusable_invite.clone().expect("kept invite");
+        assert_eq!(loaded.invite_id, old_id);
+        assert_eq!(
+            loaded.supernode_relay_hints,
+            Some(vec!["dddns://my.names.example".to_owned()])
+        );
+        assert!(loaded.verify());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_invite_canonical_bytes_includes_all_fields() {
         // Verify canonical_bytes includes null-valued optional fields in sorted order,
         // canonical: JSON with signature removed, keys sorted, no extra whitespace

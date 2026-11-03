@@ -68,7 +68,7 @@ No public web/game port. In-app portal uses `web.host.app.v1` over QUIC.
 
 Omitted relay/ws/cluster ports are auto-allocated at resolve time.
 
-`public_host` on each instance must be the IP remote clients use for relay tickets. Optional `hostname` is a DNS name advertised beside that IP. It is not the ticket address. Clients dial the IP and resolve the name only after that connection fails. A `*.doubleslash.space` name is resolved through DDDNS over HTTPS. When `hostname` is set, a deploy keeps the reusable invite id across an address change.
+`public_host` on each instance must be the IP remote clients use for relay tickets. Optional `hostname` is a DNS name advertised beside that IP. It is not the ticket address. Clients dial the IP and resolve the name only after that connection fails. `hostname_lookup` says how: `dns`, or `dddns` for a DDDNS name in any zone, looked up over HTTPS (`docs/DDDNS.md` in the client repository). Unset, it is `dddns` under `*.doubleslash.space` and `dns` otherwise. When `hostname` is set, a deploy keeps the reusable invite id across an address change.
 
 ### Process lifecycle
 

@@ -395,6 +395,52 @@ stay-unlocked, Legal reader, backups. Do not re-open those as missing.
 
 ## Phase 5 — Client polish
 
+### Supernode identity proof: deploy before clients
+
+A client built from this tree refuses a supernode WebSocket that does not
+answer HELLO with `hello_proof`, signed by that node's identity key. Ship the
+supernode build first, or in the same step as the client. An old node makes
+the client log `sent no identity proof` and `may need an update`, then try the
+next address.
+
+- **acdc.** Redeploy every dev node, then connect a desktop client built from
+  this tree. The log must show `Supernode <id> proved its identity` for each
+  acdc node, and room chat and voice must still work.
+- **Signaling encryption.** The proof stops an impostor. Over plain `ws://` a
+  host that relays to the real node can still read signaling. Binding an
+  encrypted channel to the node key is design work; do not start it without a
+  decision.
+
+### DDDNS names
+
+The client lookup and the `dddns://` invite hint are in the tree
+([spec](docs/DDDNS.md)). Nothing has looked a live record up.
+
+- **TLS, then one moved address.** The DDDNS service is plain HTTP. Clients
+  fetch only `https://<name>/.well-known/doubleslash`. After the wildcard
+  certificate (ACME DNS-01; DDDNS backlog), a supernode with
+  `hostname_lookup = "dddns"` whose IP has changed must be reached through
+  that record. The client log must show the lookup and the identity proof.
+- **Another zone.** Repeat with a name outside `doubleslash.space`, on a
+  domain that has a wildcard record and certificate. Only parsing tests cover
+  a foreign zone today.
+- **Desktop hostname settings.** `HostSupernodeWizard.qml` and
+  `SupernodeAdminCard.qml` have no `hostname` or `hostname_lookup` field.
+  Both are set only in `supernode.toml` or the manager inventory. Add them
+  through `supernode_admin/` onto the inventory fields. Validate the name
+  with `normalize_advertised_hostname`, and `hostname_lookup` as `dns` or
+  `dddns`.
+- **Supernode updater.** Not built. Opt-in in `supernode.toml`: learn the
+  public address from `GET /v1/ip` (both families), call `/v1/update` on
+  start and whenever it changes, keep the token in the data directory, and
+  never block start-up. Contract is parent-repo item 3 in the DDDNS
+  `AGENTS.md`. Needs tests in the supernode crate.
+- **Optional label check.** The client looks up any one-label name. The
+  server refuses labels under 3 characters and `xn--` labels, so those cost
+  one failed request. The spec allows a lenient client. Align
+  `dddns_name` / `is_dddns_lookup_name` only if that request is worth
+  avoiding.
+
 1. **Supernode rows in the Rooms list: live check.** Both clients head each
    node's rooms with a foldable avatar row; unit tests only. Run with two
    unrelated supernodes on desktop and phone: two separate `default` rooms,

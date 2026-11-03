@@ -11,7 +11,8 @@ use tracing::{debug, info, warn};
 use serde_json::Value;
 
 use crate::connection_fallback::{
-    classify_signaling_hint, dddns_endpoints_from_json, signaling_url_for, SignalingHint,
+    classify_signaling_hint, dddns_endpoints_from_json, is_dddns_lookup_name, signaling_url_for,
+    SignalingHint,
 };
 use crate::identity::Identity;
 use crate::protocol::{MessageType, SignalingMessage};
@@ -33,6 +34,18 @@ const RECONNECT_MAX: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Bound on a DNS or DDDNS lookup that runs only after an IP dial has failed.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Largest DDDNS response read. A v1 record is well under 1 KiB.
+const MAX_DDDNS_RECORD_BYTES: usize = 4096;
+/// How long a supernode has to sign back our HELLO's challenge. Until it does,
+/// nothing but the HELLO is sent and the session is not reported connected.
+#[cfg(not(test))]
+const HELLO_PROOF_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const HELLO_PROOF_TIMEOUT: Duration = Duration::from_millis(500);
+/// Messages a supernode may send before its proof, held until it arrives.
+const MAX_MESSAGES_BEFORE_PROOF: usize = 64;
+/// Same window as the manager's `MAX_MESSAGE_AGE_SECS` for signed signaling.
+const HELLO_PROOF_MAX_AGE_SECS: f64 = 300.0;
 /// How long a session may receive *nothing* before we treat the link as dead.
 ///
 /// The manager pings every connected supernode every 30 s and the supernode
@@ -233,42 +246,20 @@ pub(super) async fn supernode_ws_task(
 /// IP WebSocket URLs for one stored hint.
 ///
 /// An address is returned unchanged. An ordinary hostname is resolved with
-/// DNS at the port in the hint. A `*.doubleslash.space` name is fetched from
-/// DDDNS, and the record's IP and port are what gets dialed. Nothing in that
-/// zone is passed to DNS: the wildcard answers with the DDDNS servers.
+/// DNS at the port in the hint. A DDDNS name, from a `dddns://` hint in any
+/// zone or a name under `*.doubleslash.space`, is fetched over HTTPS
+/// (`docs/DDDNS.md`), and the record's IP and port are what gets dialed. A
+/// DDDNS name is never passed to DNS: that answers with the service's own
+/// servers. Whatever answers must still prove it is the supernode
+/// (`await_hello_proof`).
 async fn dial_targets_for(hint: &str) -> Vec<String> {
     match classify_signaling_hint(hint) {
         SignalingHint::Direct => vec![hint.to_owned()],
-        SignalingHint::Dns { name, scheme, port } => match tokio::time::timeout(
-            LOOKUP_TIMEOUT,
-            tokio::net::lookup_host((name.as_str(), port)),
-        )
-        .await
-        {
-            Ok(Ok(addresses)) => {
-                let mut urls = Vec::new();
-                for address in addresses {
-                    let Some(url) = signaling_url_for(scheme, address.ip(), port) else {
-                        continue;
-                    };
-                    if !urls.contains(&url) {
-                        urls.push(url);
-                    }
-                }
-                if urls.is_empty() {
-                    warn!("DNS for {name} returned no address");
-                }
-                urls
-            }
-            Ok(Err(error)) => {
-                warn!("DNS for {name} failed: {error}");
-                Vec::new()
-            }
-            Err(_) => {
-                warn!("DNS for {name} timed out");
-                Vec::new()
-            }
-        },
+        SignalingHint::Unusable => {
+            warn!("ignoring unusable DDDNS hint {hint}");
+            Vec::new()
+        }
+        SignalingHint::Dns { name, scheme, port } => lookup_dns(&name, scheme, port).await,
         SignalingHint::Dddns { name, scheme } => match lookup_dddns(&name).await {
             Ok(endpoints) => endpoints
                 .into_iter()
@@ -282,14 +273,46 @@ async fn dial_targets_for(hint: &str) -> Vec<String> {
     }
 }
 
+/// `scheme://ip:port` for each address DNS gives `name`.
+async fn lookup_dns(name: &str, scheme: &str, port: u16) -> Vec<String> {
+    match tokio::time::timeout(LOOKUP_TIMEOUT, tokio::net::lookup_host((name, port))).await {
+        Ok(Ok(addresses)) => {
+            let mut urls = Vec::new();
+            for address in addresses {
+                let Some(url) = signaling_url_for(scheme, address.ip(), port) else {
+                    continue;
+                };
+                if !urls.contains(&url) {
+                    urls.push(url);
+                }
+            }
+            if urls.is_empty() {
+                warn!("DNS for {name} returned no address");
+            }
+            urls
+        }
+        Ok(Err(error)) => {
+            warn!("DNS for {name} failed: {error}");
+            Vec::new()
+        }
+        Err(_) => {
+            warn!("DNS for {name} timed out");
+            Vec::new()
+        }
+    }
+}
+
 async fn lookup_dddns(name: &str) -> Result<Vec<(std::net::IpAddr, u16)>, String> {
+    if !is_dddns_lookup_name(name) {
+        return Err("not a name in a zone".into());
+    }
     let url = format!("https://{name}/.well-known/doubleslash");
     let client = reqwest::Client::builder()
         .timeout(LOOKUP_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| error.to_string())?;
-    let response = client
+    let mut response = client
         .get(&url)
         .send()
         .await
@@ -297,7 +320,15 @@ async fn lookup_dddns(name: &str) -> Result<Vec<(std::net::IpAddr, u16)>, String
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
-    let body = response.text().await.map_err(|error| error.to_string())?;
+    // Any operator's host can be asked now, so read no more than a record.
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if body.len() + chunk.len() > MAX_DDDNS_RECORD_BYTES {
+            return Err("response is larger than a record".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let body = String::from_utf8(body).map_err(|_| "record is not UTF-8".to_owned())?;
     dddns_endpoints_from_json(name, &body)
 }
 
@@ -375,12 +406,18 @@ async fn connect_and_run_ws(
             .await;
         return Err("This node needs an update for simultaneous identity use".into());
     }
-    info!("WebSocket connected to supernode {}", peer_id);
+    info!("WebSocket open to supernode {}", peer_id);
     let (mut ws_sink, mut ws_stream) = ws_stream.split();
 
-    // Send HELLO
-    let hello = build_hello(endpoint.0, endpoint.1)?;
+    // Send HELLO with a fresh challenge, then hold the session back until the
+    // node signs it. The address came from an invite, DNS or DDDNS, and none
+    // of those proves who answers; without this the client would replay rooms
+    // and invite tokens to whatever listens there.
+    let challenge = new_hello_challenge();
+    let hello = build_hello(endpoint.0, endpoint.1, &challenge)?;
     ws_sink.send(WsMessage::Text(hello)).await?;
+    let early = await_hello_proof(&mut ws_stream, peer_id, &challenge).await?;
+    info!("Supernode {} proved its identity", peer_id);
 
     *established = true;
     let _ = internal_tx
@@ -388,6 +425,14 @@ async fn connect_and_run_ws(
             peer_id: peer_id.to_owned(),
         })
         .await;
+    for msg in early {
+        let _ = internal_tx
+            .send(InternalEvent::WsSignalingMessage {
+                supernode_id: peer_id.to_owned(),
+                msg,
+            })
+            .await;
+    }
 
     // I/O loop
     let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_S));
@@ -470,9 +515,108 @@ async fn connect_and_run_ws(
     }
 }
 
+/// 32 random bytes, base64url: the challenge a supernode signs back.
+fn new_hello_challenge() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    crate::crypto::b64url_encode_nopad(&bytes)
+}
+
+/// Read until the supernode's `HelloProof` for `challenge` arrives. Returns
+/// the signaling messages that came before it, to deliver once it has.
+///
+/// The session fails, and the WebSocket task moves on, when the node sends no
+/// valid proof in time, sends one signed by another key, or closes. Each
+/// failure means this address does not answer as `expected`: an old supernode
+/// that needs an update, or a different machine.
+async fn await_hello_proof<S>(
+    stream: &mut S,
+    expected: &str,
+    challenge: &str,
+) -> std::result::Result<Vec<SignalingMessage>, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: futures_util::Stream<
+            Item = std::result::Result<WsMessage, tokio_tungstenite::tungstenite::Error>,
+        > + Unpin,
+{
+    use futures_util::StreamExt;
+    let deadline = tokio::time::Instant::now() + HELLO_PROOF_TIMEOUT;
+    let mut early = Vec::new();
+    loop {
+        let next = tokio::time::timeout_at(deadline, stream.next())
+            .await
+            .map_err(|_| {
+                format!(
+                    "supernode {expected} sent no identity proof within {HELLO_PROOF_TIMEOUT:?}: \
+                     it may need an update, or this address is not that node"
+                )
+            })?;
+        match next {
+            Some(Ok(WsMessage::Text(text))) => {
+                let Ok(msg) = serde_json::from_str::<SignalingMessage>(&text) else {
+                    continue;
+                };
+                if msg.msg_type == MessageType::HelloProof {
+                    if is_valid_hello_proof(&msg, expected, challenge) {
+                        return Ok(early);
+                    }
+                    return Err(format!(
+                        "the node at this address is not supernode {expected}: its identity proof \
+                         does not verify"
+                    )
+                    .into());
+                }
+                if early.len() >= MAX_MESSAGES_BEFORE_PROOF {
+                    return Err(format!(
+                        "supernode {expected} sent too much before its identity proof"
+                    )
+                    .into());
+                }
+                early.push(msg);
+            }
+            Some(Ok(WsMessage::Close(_))) | None => {
+                return Err(
+                    format!("supernode {expected} closed before proving its identity").into(),
+                );
+            }
+            Some(Ok(_)) => {}
+            Some(Err(e)) => return Err(Box::new(e)),
+        }
+    }
+}
+
+/// A `HelloProof` from `expected` (padding ignored), signed by that key,
+/// fresh, and carrying our `challenge`.
+fn is_valid_hello_proof(msg: &SignalingMessage, expected: &str, challenge: &str) -> bool {
+    if msg.sender.trim_end_matches('=') != expected.trim_end_matches('=') {
+        return false;
+    }
+    if msg.payload.get("challenge").and_then(Value::as_str) != Some(challenge) {
+        return false;
+    }
+    let Some(sig) = msg
+        .signature
+        .as_deref()
+        .and_then(|s| crate::crypto::b64url_decode(s).ok())
+    else {
+        return false;
+    };
+    let Ok(key) = crate::crypto::b64url_decode(&msg.sender) else {
+        return false;
+    };
+    let Ok(canonical) = msg.canonical_bytes() else {
+        return false;
+    };
+    key.len() == 32
+        && crate::crypto::ed25519_verify(&key, &sig, &canonical)
+        && msg.is_fresh(HELLO_PROOF_MAX_AGE_SECS)
+}
+
 pub(super) fn build_hello(
     identity: &Identity,
     device_id: Option<doubleslash_features::DeviceId>,
+    challenge: &str,
 ) -> std::result::Result<String, serde_json::Error> {
     let sender = identity.public_id();
     let mut msg = SignalingMessage::new(MessageType::Hello, sender.clone());
@@ -485,6 +629,9 @@ pub(super) fn build_hello(
         .insert("public_id".to_owned(), Value::String(sender.clone()));
     msg.payload
         .insert("peer_id".to_owned(), Value::String(identity.peer_id()));
+    // The supernode signs this back as a `HelloProof`.
+    msg.payload
+        .insert("challenge".to_owned(), Value::String(challenge.to_owned()));
     // Sign
     if let Ok(canonical) = msg.canonical_bytes() {
         let sig = identity.sign(&canonical);
@@ -560,9 +707,57 @@ mod tests {
         Chatty,
     }
 
-    /// Serve `behaviour` forever on loopback, reporting each accepted
-    /// WebSocket handshake on the returned channel.
+    /// Serve `behaviour` forever on loopback as `node`, reporting each
+    /// accepted WebSocket handshake on the returned channel.
     async fn serve(behaviour: ServerBehaviour) -> (String, mpsc::Receiver<()>) {
+        serve_as(behaviour, node_identity(), ProofBehaviour::Valid).await
+    }
+
+    /// The identity the fake node proves, shared with [`spawn_task`].
+    fn node_identity() -> Arc<Identity> {
+        static NODE: std::sync::OnceLock<Arc<Identity>> = std::sync::OnceLock::new();
+        Arc::clone(NODE.get_or_init(|| Arc::new(Identity::generate())))
+    }
+
+    /// How the fake node answers our HELLO's challenge.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ProofBehaviour {
+        Valid,
+        /// Signs with a key that is not the node's.
+        WrongKey,
+        /// Signs a different challenge.
+        WrongChallenge,
+        /// Never answers, like a supernode from before the proof.
+        None,
+    }
+
+    /// The fake node's `HelloProof` for `hello`, or `None` when it sends none.
+    fn proof_for(hello: &str, node: &Identity, proof: ProofBehaviour) -> Option<String> {
+        let hello: SignalingMessage = serde_json::from_str(hello).ok()?;
+        let mut challenge = hello.payload.get("challenge")?.as_str()?.to_owned();
+        let stranger = Identity::generate();
+        let signer: &Identity = match proof {
+            ProofBehaviour::None => return None,
+            ProofBehaviour::WrongKey => &stranger,
+            ProofBehaviour::WrongChallenge => {
+                challenge.push('x');
+                node
+            }
+            ProofBehaviour::Valid => node,
+        };
+        let mut msg = SignalingMessage::new(MessageType::HelloProof, node.public_id());
+        msg.payload
+            .insert("challenge".to_owned(), Value::String(challenge));
+        let canonical = msg.canonical_bytes().ok()?;
+        msg.signature = Some(crate::crypto::b64url_encode(&signer.sign(&canonical)));
+        msg.to_json().ok()
+    }
+
+    async fn serve_as(
+        behaviour: ServerBehaviour,
+        node: Arc<Identity>,
+        proof: ProofBehaviour,
+    ) -> (String, mpsc::Receiver<()>) {
         let (accepted_tx, accepted_rx) = mpsc::channel::<()>(16);
         // Bind before spawning so the caller has the address without having to
         // wait on the server task. Blocking the test thread for it would
@@ -578,12 +773,22 @@ mod tests {
                     return;
                 };
                 let accepted_tx = accepted_tx.clone();
+                let node = Arc::clone(&node);
                 tokio::spawn(async move {
                     let Ok(ws) = accept_async(stream).await else {
                         return;
                     };
                     let (mut sink, mut source) = ws.split();
                     let _ = accepted_tx.send(()).await;
+                    // The first frame is the client's HELLO.
+                    let Some(Ok(WsMessage::Text(hello))) = source.next().await else {
+                        return;
+                    };
+                    if let Some(answer) = proof_for(&hello, &node, proof) {
+                        if sink.send(WsMessage::Text(answer)).await.is_err() {
+                            return;
+                        }
+                    }
 
                     if behaviour == ServerBehaviour::Chatty {
                         tokio::spawn(async move {
@@ -607,6 +812,76 @@ mod tests {
         (format!("ws://{addr}"), accepted_rx)
     }
 
+    /// A socket is reported connected only once the node signs our challenge.
+    /// Each of these answers means the address is not that node, or is an
+    /// older one, and the session must never come up.
+    #[tokio::test]
+    async fn no_session_without_a_valid_identity_proof() {
+        for proof in [
+            ProofBehaviour::WrongKey,
+            ProofBehaviour::WrongChallenge,
+            ProofBehaviour::None,
+        ] {
+            let (url, mut accepted) =
+                serve_as(ServerBehaviour::Silent, node_identity(), proof).await;
+            let (mut events, _reconnect, _send, task) = spawn_task(&url);
+            assert!(accepted.recv().await.is_some(), "the node was dialed");
+            // A refused session reports a disconnect and retries; it must
+            // never report a connection.
+            let deadline = tokio::time::Instant::now() + HELLO_PROOF_TIMEOUT * 3;
+            let mut refused = false;
+            while tokio::time::Instant::now() < deadline {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                match next_transition(&mut events, remaining).await.as_str() {
+                    "connected" => panic!("an unproven socket was reported connected"),
+                    "disconnected" => refused = true,
+                    _ => break,
+                }
+            }
+            assert!(refused, "the unproven session must end");
+            task.abort();
+        }
+    }
+
+    /// A message the node sends before its proof still arrives, after it.
+    #[tokio::test]
+    async fn messages_before_the_proof_are_delivered_after_it() {
+        let node = node_identity();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let url = format!("ws://{}", listener.local_addr().expect("addr"));
+        let server_node = Arc::clone(&node);
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let ws = accept_async(stream).await.expect("upgrade");
+            let (mut sink, mut source) = ws.split();
+            let Some(Ok(WsMessage::Text(hello))) = source.next().await else {
+                return;
+            };
+            let early = SignalingMessage::new(MessageType::Pong, server_node.public_id());
+            sink.send(WsMessage::Text(early.to_json().expect("json")))
+                .await
+                .expect("send early");
+            let proof = proof_for(&hello, &server_node, ProofBehaviour::Valid).expect("proof");
+            sink.send(WsMessage::Text(proof)).await.expect("send proof");
+            while let Some(Ok(_)) = source.next().await {}
+        });
+        let (mut events, _reconnect, _send, task) = spawn_task(&url);
+        let mut order = Vec::new();
+        while order.len() < 2 {
+            match tokio::time::timeout(Duration::from_secs(5), events.recv()).await {
+                Ok(Some(InternalEvent::WsConnected { .. })) => order.push("connected"),
+                Ok(Some(InternalEvent::WsSignalingMessage { msg, .. })) => {
+                    assert_eq!(msg.msg_type, MessageType::Pong);
+                    order.push("pong");
+                }
+                Ok(Some(_)) => {}
+                other => panic!("expected the session, got {other:?}"),
+            }
+        }
+        assert_eq!(order, ["connected", "pong"]);
+        task.abort();
+    }
+
     /// Spawn the task under test against `url`, returning its event stream and
     /// the handle that signals a network change.
     fn spawn_task(
@@ -623,7 +898,7 @@ mod tests {
         let task = tokio::spawn(supernode_ws_task(
             Arc::new(Identity::generate()),
             None,
-            "supernode-under-test".to_owned(),
+            node_identity().public_id(),
             Arc::new(Mutex::new(vec![url.to_owned()])),
             send_rx,
             internal_tx,

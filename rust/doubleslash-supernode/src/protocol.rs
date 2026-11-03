@@ -20,6 +20,10 @@ pub enum MessageType {
     Hello,
     #[serde(rename = "welcome")]
     Welcome,
+    /// Answer to a HELLO carrying a `challenge`: the same challenge, signed by
+    /// this node, so the client knows which node it reached.
+    #[serde(rename = "hello_proof")]
+    HelloProof,
 
     // Room
     #[serde(rename = "room_join")]
@@ -726,6 +730,7 @@ mod tests {
         let types = [
             MessageType::Hello,
             MessageType::Welcome,
+            MessageType::HelloProof,
             MessageType::InviteHandshakeInit,
             MessageType::InviteHandshakeAccept,
             MessageType::RelayGranted,

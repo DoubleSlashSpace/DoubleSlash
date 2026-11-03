@@ -73,6 +73,12 @@ pub struct SupernodeManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
 
+    /// How clients turn `hostname` into an address: `"dns"`, or `"dddns"`
+    /// for a DDDNS name record (`docs/DDDNS.md`). Absent picks by name: DDDNS
+    /// under `doubleslash.space`, DNS otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname_lookup: Option<String>,
+
     /// Optional `[cluster]` section: link this supernode with others into one
     /// logical node. Absent ⇒ standalone. Additive (no schema bump): older
     /// builds that don't know the field ignore it.
@@ -207,6 +213,14 @@ impl SupernodeManifest {
                 });
             }
         }
+        if let Some(lookup) = &self.hostname_lookup {
+            if crate::config::HostnameLookup::parse(lookup).is_none() {
+                return Err(ManifestError::InvalidSetting {
+                    field: "hostname_lookup",
+                    value: lookup.clone(),
+                });
+            }
+        }
         if let Some(name) = &self.hostname {
             if crate::config::normalize_advertised_hostname(name).is_none() {
                 return Err(ManifestError::InvalidSetting {
@@ -270,6 +284,13 @@ impl SupernodeManifest {
         if let Some(name) = &self.hostname {
             // `validate` already refused anything that is not a DNS name.
             config.hostname = crate::config::normalize_advertised_hostname(name);
+        }
+        if let Some(lookup) = self
+            .hostname_lookup
+            .as_deref()
+            .and_then(crate::config::HostnameLookup::parse)
+        {
+            config.hostname_lookup = Some(lookup);
         }
         Ok(())
     }
@@ -851,6 +872,7 @@ mod tests {
             demo_links: false,
             external_host: None,
             hostname: None,
+            hostname_lookup: None,
             data_dir: data_dir.to_path_buf(),
         }
     }
@@ -879,6 +901,27 @@ mod tests {
         .unwrap_err();
         let message = err.to_string();
         assert!(message.contains("hostname"), "{message}");
+    }
+
+    #[test]
+    fn hostname_lookup_comes_from_the_manifest_and_is_checked() {
+        let m = SupernodeManifest::from_toml_str(
+            r#"
+            hostname = "my.names.example"
+            hostname_lookup = "dddns"
+            "#,
+        )
+        .unwrap();
+        let mut config = legacy_config_for(std::path::Path::new("."));
+        m.apply_to_config(&mut config).unwrap();
+        assert_eq!(
+            config.hostname_lookup,
+            Some(crate::config::HostnameLookup::Dddns)
+        );
+
+        let err = SupernodeManifest::from_toml_str(r#"hostname_lookup = "dynamic""#).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("hostname_lookup"), "{message}");
     }
 
     // ── Phase 5: cdylib_manifest field + native_module_entries() ────────────

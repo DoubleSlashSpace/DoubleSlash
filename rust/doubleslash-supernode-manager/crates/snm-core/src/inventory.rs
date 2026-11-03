@@ -132,9 +132,13 @@ pub struct Instance {
     pub public_host: String,
     /// DNS name advertised beside `public_host`. Relay tickets stay the IP.
     /// Clients dial the IP, and resolve this name only if that connection fails.
-    /// A name under `*.doubleslash.space` is resolved through DDDNS over HTTPS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
+    /// How clients turn `hostname` into an address: `"dns"`, or `"dddns"` for a
+    /// DDDNS name record (`docs/DDDNS.md`) in any zone. Absent: DDDNS under
+    /// `*.doubleslash.space`, DNS otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname_lookup: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_port: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -266,6 +270,15 @@ impl Inventory {
             for inst in &host.instances {
                 if inst.id.trim().is_empty() {
                     bail!("host {} has an instance with an empty id", host.name);
+                }
+                if let Some(lookup) = &inst.hostname_lookup {
+                    if lookup != "dns" && lookup != "dddns" {
+                        bail!(
+                            "host {} instance {} has hostname_lookup {lookup:?}; use \"dns\" or \"dddns\"",
+                            host.name,
+                            inst.id
+                        );
+                    }
                 }
                 if inst.public_host.trim().is_empty() {
                     bail!(
@@ -550,6 +563,7 @@ pub fn scaffold_inventory() -> Inventory {
                 id: "a".into(),
                 public_host: "edge1.example.net".into(),
                 hostname: None,
+                hostname_lookup: None,
                 relay_port: Some(3478),
                 ws_port: Some(34935),
                 listen_bind: None,
@@ -688,6 +702,7 @@ ssh = "root@1.2.3.4"
                 id: "a".into(),
                 public_host: "edge2.example.net".into(),
                 hostname: None,
+                hostname_lookup: None,
                 relay_port: Some(3578),
                 ws_port: Some(35935),
                 cluster_port: None,
@@ -724,6 +739,7 @@ ssh = "root@1.2.3.4"
                 id: "a".into(),
                 public_host: "edge1-new.example.net".into(),
                 hostname: None,
+                hostname_lookup: None,
                 relay_port: Some(3479),
                 ws_port: Some(34936),
                 cluster_port: None,
@@ -760,6 +776,7 @@ ssh = "root@1.2.3.4"
                 id: "b".into(),
                 public_host: "edge2.example.net".into(),
                 hostname: None,
+                hostname_lookup: None,
                 relay_port: Some(3578),
                 ws_port: Some(35935),
                 cluster_port: None,

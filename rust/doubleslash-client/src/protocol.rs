@@ -18,6 +18,9 @@ pub enum MessageType {
     // Authentication
     Hello,
     Welcome,
+    /// A supernode's answer to our HELLO's `challenge`: the same challenge,
+    /// signed by the node. Proves which node a socket reached.
+    HelloProof,
 
     // Room management
     RoomJoin,
@@ -214,6 +217,7 @@ impl MessageType {
         match self {
             Self::Hello => "hello",
             Self::Welcome => "welcome",
+            Self::HelloProof => "hello_proof",
             Self::RoomJoin => "room_join",
             Self::RoomLeave => "room_leave",
             Self::RoomState => "room_state",

@@ -31,27 +31,15 @@ fn same_supernode_pad(a: &str, b: &str) -> bool {
 impl ConnectionManager {
     /// Remember a DNS name from `SupernodeInfo` beside the IP we already dial.
     /// The next time that IP fails, the WebSocket task resolves an ordinary
-    /// name with DNS, or a `*.doubleslash.space` name through DDDNS, and dials
-    /// the address it gets back.
-    fn remember_supernode_hostname(&mut self, supernode_id: &str, hostname: &str) {
-        let endpoint =
-            self.supernodes
-                .get(supernode_id)
-                .and_then(|session| crate::connection_fallback::signaling_endpoint(&session.ws_url))
-                .or_else(|| {
-                    self.peer_store
-                        .read()
-                        .find_identity(supernode_id)
-                        .and_then(|record| {
-                            record.relay_hints.iter().find_map(|hint| {
-                                crate::connection_fallback::signaling_endpoint(hint)
-                            })
-                        })
-                });
-        let Some((scheme, port)) = endpoint else {
-            return;
+    /// name with DNS, or looks a DDDNS name up over HTTPS, and dials the
+    /// address it gets back. `dddns` is the node's `hostname_lookup`.
+    fn remember_supernode_hostname(&mut self, supernode_id: &str, hostname: &str, dddns: bool) {
+        let url = if dddns {
+            crate::connection_fallback::dddns_hint(hostname)
+        } else {
+            self.hostname_dial_url(supernode_id, hostname)
         };
-        let Some(url) = crate::connection_fallback::hostname_ws_url(hostname, scheme, port) else {
+        let Some(url) = url else {
             return;
         };
         if let Some(session) = self.supernodes.get(supernode_id) {
@@ -72,6 +60,27 @@ impl ConnectionManager {
                 );
             }
         }
+    }
+
+    /// `ws://<name>:<port>`, with the scheme and port we already reach the
+    /// node on.
+    fn hostname_dial_url(&self, supernode_id: &str, hostname: &str) -> Option<String> {
+        let endpoint =
+            self.supernodes
+                .get(supernode_id)
+                .and_then(|session| crate::connection_fallback::signaling_endpoint(&session.ws_url))
+                .or_else(|| {
+                    self.peer_store
+                        .read()
+                        .find_identity(supernode_id)
+                        .and_then(|record| {
+                            record.relay_hints.iter().find_map(|hint| {
+                                crate::connection_fallback::signaling_endpoint(hint)
+                            })
+                        })
+                });
+        let (scheme, port) = endpoint?;
+        crate::connection_fallback::hostname_ws_url(hostname, scheme, port)
     }
 
     /// Clear any pending private-join keys for this room (exact host or any
@@ -1298,7 +1307,9 @@ impl ConnectionManager {
                     }
                 }
                 if let Some(name) = msg.payload.get("hostname").and_then(Value::as_str) {
-                    self.remember_supernode_hostname(&msg.sender, name);
+                    let dddns =
+                        msg.payload.get("hostname_lookup").and_then(Value::as_str) == Some("dddns");
+                    self.remember_supernode_hostname(&msg.sender, name, dddns);
                 }
             }
             MessageType::RelayPaymentRequired => {

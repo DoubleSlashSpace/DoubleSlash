@@ -107,17 +107,56 @@ pub fn normalize_dns_name(raw: &str) -> Option<String> {
 /// Parent zone whose names are DDDNS records, not DNS addresses of a supernode.
 pub const DDDNS_PARENT: &str = "doubleslash.space";
 
-/// `label.doubleslash.space`, including a deeper name under that zone.
+/// `label.doubleslash.space`: exactly one label in the zone this client knows
+/// is DDDNS (see `docs/DDDNS.md`).
 ///
 /// Ordinary DNS for any of these names answers with the DDDNS servers, so a
-/// caller must look the name up over HTTPS instead of resolving it.
+/// caller must look the name up over HTTPS instead of resolving it. A deeper
+/// name such as `a.b.doubleslash.space` is not a DDDNS name.
 pub fn dddns_name(hostname: &str) -> Option<String> {
     let name = normalize_dns_name(hostname)?;
     let label = name.strip_suffix(&format!(".{DDDNS_PARENT}"))?;
-    if label.is_empty() {
+    if label.is_empty() || label.contains('.') {
         return None;
     }
     Some(name)
+}
+
+/// Whether `hostname` can be looked up as a DDDNS name at all: a valid DNS
+/// name with at least one label before its zone.
+pub fn is_dddns_lookup_name(hostname: &str) -> bool {
+    normalize_dns_name(hostname).is_some_and(|name| dddns_label(&name).is_some())
+}
+
+/// Scheme of a hint that marks a hostname as a DDDNS name in any zone.
+pub const DDDNS_HINT_SCHEME: &str = "dddns";
+
+/// `dddns://<name>`: the hint a supernode signs into its invite, and names in
+/// `SupernodeInfo`, when its hostname is a DDDNS name. It carries no port; the
+/// record does. `None` when `hostname` is not a name in a zone.
+pub fn dddns_hint(hostname: &str) -> Option<String> {
+    let name = normalize_dns_name(hostname)?;
+    dddns_label(&name)?;
+    Some(format!("{DDDNS_HINT_SCHEME}://{name}"))
+}
+
+/// The name in a `dddns://` hint, or `None` when `url` is not one. A port,
+/// path or anything else after the name makes the hint unusable.
+fn dddns_hint_name(url: &str) -> Option<Option<String>> {
+    let (scheme, rest) = url.trim().split_once("://")?;
+    if !scheme.eq_ignore_ascii_case(DDDNS_HINT_SCHEME) {
+        return None;
+    }
+    let name = rest.strip_suffix('/').unwrap_or(rest);
+    Some(dddns_hint(name).and_then(|_| normalize_dns_name(name)))
+}
+
+/// The label a DDDNS record for `name` must carry: its first label, when the
+/// name has a zone after it. A DDDNS service in any zone answers this way, so
+/// a name outside [`DDDNS_PARENT`] can be looked up too.
+fn dddns_label(name: &str) -> Option<&str> {
+    let (label, zone) = name.split_once('.')?;
+    (!label.is_empty() && !zone.is_empty()).then_some(label)
 }
 
 /// How the WebSocket task should turn a stored hint into an IP dial target.
@@ -135,11 +174,24 @@ pub enum SignalingHint {
     /// `GET https://name/.well-known/doubleslash`. The record carries the IP
     /// and the signaling port.
     Dddns { name: String, scheme: &'static str },
+    /// A `dddns://` hint whose name cannot be looked up. Nothing to dial.
+    Unusable,
 }
 
-/// Classify a stored signaling URL. A `*.doubleslash.space` name is never
-/// [`SignalingHint::Dns`].
+/// Classify a stored signaling URL.
+///
+/// `dddns://<name>` is a DDDNS name in any zone, dialed over `ws://` at the
+/// record's port. A `ws://` or `wss://` URL whose host is a name under
+/// [`DDDNS_PARENT`] is one too, so links minted before the `dddns://` hint
+/// keep working. Neither is ever [`SignalingHint::Dns`]: DNS for a DDDNS name
+/// answers with the service's own servers.
 pub fn classify_signaling_hint(url: &str) -> SignalingHint {
+    if let Some(name) = dddns_hint_name(url) {
+        return match name {
+            Some(name) => SignalingHint::Dddns { name, scheme: "ws" },
+            None => SignalingHint::Unusable,
+        };
+    }
     let Some((scheme, host, port)) = ws_authority(url) else {
         return SignalingHint::Direct;
     };
@@ -159,13 +211,11 @@ pub fn classify_signaling_hint(url: &str) -> SignalingHint {
 }
 
 /// Addresses from a DDDNS name record (`v` 1, status `active` or `grace`).
-/// `name` is the hostname that was looked up. The record's `name` is the
-/// label, and it has to match.
+/// `name` is the hostname that was looked up, in any zone. The record's `name`
+/// is that hostname's first label, and it has to match.
 pub fn dddns_endpoints_from_json(name: &str, body: &str) -> Result<Vec<(IpAddr, u16)>, String> {
-    let fqdn = dddns_name(name).ok_or_else(|| "not a doubleslash.space name".to_owned())?;
-    let label = fqdn
-        .strip_suffix(&format!(".{DDDNS_PARENT}"))
-        .ok_or_else(|| "not a doubleslash.space name".to_owned())?;
+    let fqdn = normalize_dns_name(name).ok_or_else(|| "not a DNS name".to_owned())?;
+    let label = dddns_label(&fqdn).ok_or_else(|| "not a name in a zone".to_owned())?;
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|error| format!("record is not JSON: {error}"))?;
     let version = value.get("v").and_then(serde_json::Value::as_u64);
@@ -314,7 +364,7 @@ pub fn ws_hints_from_invite(primary: &str, extra: &[String]) -> Vec<String> {
         if url.is_empty() || out.iter().any(|existing| existing == url) {
             return;
         }
-        if url.starts_with("ws://") || url.starts_with("wss://") {
+        if url.starts_with("ws://") || url.starts_with("wss://") || dddns_hint_name(url).is_some() {
             out.push(url.to_owned());
         }
     };
@@ -483,6 +533,63 @@ mod tests {
         );
         assert!(dddns_name("relay.example.com").is_none());
         assert!(dddns_name("doubleslash.space").is_none());
+        assert!(dddns_name("a.b.doubleslash.space").is_none());
+        assert!(is_dddns_lookup_name("relay.example.com"));
+        assert!(!is_dddns_lookup_name("localhost"));
+        assert!(!is_dddns_lookup_name("198.51.100.7"));
+    }
+
+    #[test]
+    fn a_dddns_hint_names_a_dddns_service_in_any_zone() {
+        assert_eq!(
+            dddns_hint("MyServer.Names.Example.").as_deref(),
+            Some("dddns://myserver.names.example")
+        );
+        assert!(dddns_hint("localhost").is_none());
+        assert!(dddns_hint("198.51.100.7").is_none());
+        assert_eq!(
+            classify_signaling_hint("dddns://myserver.names.example"),
+            SignalingHint::Dddns {
+                name: "myserver.names.example".into(),
+                scheme: "ws",
+            }
+        );
+        assert_eq!(
+            classify_signaling_hint("DDDNS://myserver.doubleslash.space/"),
+            SignalingHint::Dddns {
+                name: "myserver.doubleslash.space".into(),
+                scheme: "ws",
+            }
+        );
+        // A port, a path or a bare word is not a usable hint.
+        for bad in [
+            "dddns://myserver.names.example:34935",
+            "dddns://myserver.names.example/x",
+            "dddns://localhost",
+            "dddns://",
+        ] {
+            assert_eq!(
+                classify_signaling_hint(bad),
+                SignalingHint::Unusable,
+                "{bad}"
+            );
+        }
+        // Without the hint, a name in another zone is ordinary DNS.
+        assert!(matches!(
+            classify_signaling_hint("ws://myserver.names.example:34935"),
+            SignalingHint::Dns { .. }
+        ));
+        // A signed invite's DDDNS hint survives into the dial list.
+        assert_eq!(
+            ws_hints_from_invite(
+                "ws://198.51.100.7:34935",
+                &["dddns://myserver.names.example".into(), "https://x".into()],
+            ),
+            vec![
+                "ws://198.51.100.7:34935".to_owned(),
+                "dddns://myserver.names.example".to_owned(),
+            ]
+        );
         assert_eq!(
             classify_signaling_hint("ws://my.doubleslash.space:34935"),
             SignalingHint::Dddns {
@@ -490,11 +597,13 @@ mod tests {
                 scheme: "ws",
             }
         );
+        // Not a DDDNS name: two labels in front of the zone.
         assert_eq!(
             classify_signaling_hint("wss://a.b.doubleslash.space:34935"),
-            SignalingHint::Dddns {
+            SignalingHint::Dns {
                 name: "a.b.doubleslash.space".into(),
                 scheme: "wss",
+                port: 34935,
             }
         );
         assert_eq!(
@@ -545,6 +654,9 @@ mod tests {
             dddns_endpoints_from_json("myfortniteserver.doubleslash.space", &available).is_err()
         );
         assert!(dddns_endpoints_from_json("other.doubleslash.space", body).is_err());
+        // The same record served by a DDDNS service in another zone.
+        assert!(dddns_endpoints_from_json("myfortniteserver.names.example", body).is_ok());
+        assert!(dddns_endpoints_from_json("myfortniteserver", body).is_err());
         let next = body.replace("\"v\": 1", "\"v\": 2");
         assert!(dddns_endpoints_from_json("myfortniteserver.doubleslash.space", &next).is_err());
     }

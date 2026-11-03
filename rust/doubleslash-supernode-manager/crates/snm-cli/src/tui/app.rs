@@ -1166,6 +1166,7 @@ impl App {
             id: instance_id.into(),
             public_host: public_host.into(),
             hostname: preserved.and_then(|instance| instance.hostname.clone()),
+            hostname_lookup: preserved.and_then(|instance| instance.hostname_lookup.clone()),
             relay_port: Some(relay_port),
             ws_port: Some(ws_port),
             listen_bind: preserved.and_then(|i| i.listen_bind.clone()),
