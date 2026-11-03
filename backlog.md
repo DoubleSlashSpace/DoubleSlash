@@ -403,9 +403,11 @@ supernode build first, or in the same step as the client. An old node makes
 the client log `sent no identity proof` and `may need an update`, then try the
 next address.
 
-- **acdc.** Redeploy every dev node, then connect a desktop client built from
-  this tree. The log must show `Supernode <id> proved its identity` for each
-  acdc node, and room chat and voice must still work.
+- **acdc voice and chat.** The identity-proof build is running on acdc a/b/c
+  and cluster member ac1. A headless client built from this tree logged
+  `Supernode <id> proved its identity` for all four and subscribed to `default`
+  room chat on each. Still to run with two clients: a room chat message, and
+  voice.
 - **Signaling encryption.** The proof stops an impostor. Over plain `ws://` a
   host that relays to the real node can still read signaling. Binding an
   encrypted channel to the node key is design work; do not start it without a
