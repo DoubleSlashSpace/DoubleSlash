@@ -67,7 +67,8 @@ A service running a zone:
 
 - MUST publish a wildcard `A` and/or `AAAA` record for `*.<zone>` pointing at
   its edges, and SHOULD NOT publish per-name DNS records;
-- MUST serve HTTPS on every edge, with a certificate valid for `*.<zone>`;
+- MUST serve HTTPS on every edge, with a certificate valid for `*.<zone>`.
+  That certificate may be the edge's, or a TLS proxy's in front of the origin;
 - SHOULD publish more than one edge address, so a client can try the next
   address when one edge is down.
 

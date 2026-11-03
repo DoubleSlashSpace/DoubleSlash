@@ -418,11 +418,12 @@ next address.
 The client lookup and the `dddns://` invite hint are in the tree
 ([spec](docs/DDDNS.md)). Nothing has looked a live record up.
 
-- **TLS, then one moved address.** The DDDNS service is plain HTTP. Clients
-  fetch only `https://<name>/.well-known/doubleslash`. After the wildcard
-  certificate (ACME DNS-01; DDDNS backlog), a supernode with
-  `hostname_lookup = "dddns"` whose IP has changed must be reached through
-  that record. The client log must show the lookup and the identity proof.
+- **One moved address.** Public HTTPS for `*.doubleslash.space` is
+  Cloudflare's edge certificate. The origin stays plain HTTP for now (DDDNS
+  `AGENTS.md`). A supernode with `hostname_lookup = "dddns"` whose IP has
+  changed must be reached through `https://<name>/.well-known/doubleslash`.
+  The client log must show the lookup and the identity proof. Not run: the
+  service is not deployed behind the proxy.
 - **Another zone.** Repeat with a name outside `doubleslash.space`, on a
   domain that has a wildcard record and certificate. Only parsing tests cover
   a foreign zone today.
@@ -436,7 +437,9 @@ The client lookup and the `dddns://` invite hint are in the tree
   public address from `GET /v1/ip` (both families), call `/v1/update` on
   start and whenever it changes, keep the token in the data directory, and
   never block start-up. Contract is parent-repo item 3 in the DDDNS
-  `AGENTS.md`. Needs tests in the supernode crate.
+  `AGENTS.md`. Needs tests in the supernode crate. `/v1/ip` behind the
+  proxy reports a Cloudflare address until the origin trusts
+  `CF-Connecting-IP` from a Cloudflare peer, so the updater waits on that.
 - **Optional label check.** The client looks up any one-label name. The
   server refuses labels under 3 characters and `xn--` labels, so those cost
   one failed request. The spec allows a lenient client. Align
