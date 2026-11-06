@@ -109,10 +109,12 @@ pub mod ffi {
         #[qproperty(bool, video_preview_active)]
         #[qproperty(bool, backup_busy)]
         #[qproperty(QString, backup_result)]
-        /// True while a command that changes a managed server is running.
+        /// True while any command that changes a managed server is running.
+        /// Which supernodes are busy is in `supernode_admin_state`.
         #[qproperty(bool, supernode_admin_busy)]
         /// Managed supernodes, the responsibility notice and whether it was
-        /// accepted, as JSON (`AdminService::state`).
+        /// accepted, and the running tasks (`busy_nodes`, `setup_running`),
+        /// as JSON (`AdminService::state`).
         #[qproperty(QString, supernode_admin_state)]
         type AppBridge = super::AppBridgeRust;
 
@@ -2419,12 +2421,17 @@ impl ffi::AppBridge {
                 }
             }
         };
-        let mutating = request.is_mutating();
-        if mutating {
-            if self.rust().supernode_admin_busy {
-                return fail(self, "Another server task is still running");
-            }
+        // Different supernodes run tasks side by side; the claim refuses a
+        // second task on one supernode, or a second setup.
+        let task = match service.begin(&request) {
+            Ok(task) => task,
+            Err(error) => return fail(self, &error),
+        };
+        if task.is_some() {
             self.as_mut().set_supernode_admin_busy(true);
+            let state = service.state().to_string();
+            self.as_mut()
+                .set_supernode_admin_state(QString::from(state.as_str()));
         }
         info!("[supernode-admin] {op}");
 
@@ -2443,12 +2450,11 @@ impl ffi::AppBridge {
                     });
                 }
             };
-            let result = service.handle(request, &emit).await;
+            let result = service.run(request, task, &emit).await;
+            let busy = service.has_tasks();
             let state = service.state().to_string();
             let _ = qt.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
-                if mutating {
-                    bridge.as_mut().set_supernode_admin_busy(false);
-                }
+                bridge.as_mut().set_supernode_admin_busy(busy);
                 bridge
                     .as_mut()
                     .set_supernode_admin_state(QString::from(state.as_str()));

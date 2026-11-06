@@ -5,7 +5,7 @@
 //! result value or an error string. Nothing here touches Qt, so the same
 //! service can back the Android client later.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,6 +28,7 @@ use snm_transport::{
 use zeroize::Zeroize;
 
 use super::store::{ManagedHost, ManagedNode, ManagedNodeStore};
+use crate::peer_store::clean_local_name;
 
 /// Shown, and accepted, before the first deploy.
 pub const RESPONSIBILITY_NOTICE: &str = "DoubleSlash can automate initial setup of your server: \
@@ -62,6 +63,8 @@ pub enum Request {
     },
     Status {
         node_id: String,
+        #[serde(default)]
+        host_name: Option<String>,
     },
     Logs {
         node_id: String,
@@ -77,12 +80,18 @@ pub enum Request {
     },
     Restart {
         node_id: String,
+        #[serde(default)]
+        host_name: Option<String>,
     },
     CheckUpdate {
         node_id: String,
+        #[serde(default)]
+        host_name: Option<String>,
     },
     UpdateNow {
         node_id: String,
+        #[serde(default)]
+        host_name: Option<String>,
     },
     SetUpdateMode {
         node_id: String,
@@ -96,20 +105,93 @@ pub enum Request {
     Forget {
         node_id: String,
     },
+    /// Take one server out of a clustered supernode and relink the rest.
+    RemoveServer {
+        node_id: String,
+        host_name: String,
+        /// Uninstall the supernode from that server first. Off drops a server
+        /// that can no longer be reached without contacting it.
+        uninstall: bool,
+        #[serde(default)]
+        purge: bool,
+    },
+    /// Push the current member list to every server of a supernode again.
+    SyncCluster {
+        node_id: String,
+    },
+    /// This profile's name for a supernode. Nothing is sent to a server.
+    Rename {
+        node_id: String,
+        name: String,
+    },
+}
+
+/// What a running request holds. Setups share the release download cache,
+/// so one runs at a time; a supernode runs one task at a time; different
+/// supernodes run side by side.
+#[derive(Debug, PartialEq, Eq)]
+struct Claim<'a> {
+    setup: bool,
+    node: Option<&'a str>,
 }
 
 impl Request {
-    /// Operations that change a server. The UI runs one at a time.
-    pub fn is_mutating(&self) -> bool {
-        matches!(
-            self,
-            Self::Deploy(_)
-                | Self::AddServer { .. }
-                | Self::Restart { .. }
-                | Self::UpdateNow { .. }
-                | Self::SetUpdateMode { .. }
-                | Self::Uninstall { .. }
-        )
+    /// What the request must hold while it runs. Reads and local-only edits
+    /// hold nothing.
+    fn claim(&self) -> Option<Claim<'_>> {
+        match self {
+            Self::Deploy(_) => Some(Claim {
+                setup: true,
+                node: None,
+            }),
+            Self::AddServer { node_id, .. } => Some(Claim {
+                setup: true,
+                node: Some(node_id),
+            }),
+            Self::Restart { node_id, .. }
+            | Self::UpdateNow { node_id, .. }
+            | Self::SetUpdateMode { node_id, .. }
+            | Self::Uninstall { node_id, .. }
+            | Self::Forget { node_id }
+            | Self::RemoveServer { node_id, .. }
+            | Self::SyncCluster { node_id } => Some(Claim {
+                setup: false,
+                node: Some(node_id),
+            }),
+            Self::State
+            | Self::AcceptNotice
+            | Self::FetchHostKey { .. }
+            | Self::Status { .. }
+            | Self::Logs { .. }
+            | Self::Invite { .. }
+            | Self::CheckUpdate { .. }
+            | Self::Rename { .. } => None,
+        }
+    }
+}
+
+#[derive(Default)]
+struct Tasks {
+    setup: bool,
+    nodes: BTreeSet<String>,
+}
+
+/// Held while a server task runs. Dropping it frees what the task claimed.
+pub struct TaskGuard {
+    tasks: Arc<Mutex<Tasks>>,
+    setup: bool,
+    node: Option<String>,
+}
+
+impl Drop for TaskGuard {
+    fn drop(&mut self) {
+        let mut tasks = self.tasks.lock();
+        if self.setup {
+            tasks.setup = false;
+        }
+        if let Some(node) = &self.node {
+            tasks.nodes.remove(node);
+        }
     }
 }
 
@@ -265,34 +347,93 @@ fn bracket(host: &str) -> String {
 
 pub struct AdminService {
     store: Arc<Mutex<ManagedNodeStore>>,
+    tasks: Arc<Mutex<Tasks>>,
     /// Cluster roster cache the manager library keeps beside its inventory.
     cluster_cache: PathBuf,
+    /// Every supernode's roster goes through the one cache file, which a sync
+    /// reads and rewrites, so syncs take turns.
+    cluster_sync: tokio::sync::Mutex<()>,
 }
 
 impl AdminService {
     pub fn new(store: ManagedNodeStore, profile_dir: PathBuf) -> Self {
         Self {
             store: Arc::new(Mutex::new(store)),
+            tasks: Arc::default(),
             cluster_cache: profile_dir.join("managed_supernodes_cluster_cache.toml"),
+            cluster_sync: tokio::sync::Mutex::new(()),
         }
     }
 
     /// Everything the admin panel shows without contacting a server.
     pub fn state(&self) -> Value {
-        let store = self.store.lock();
-        let client_public_key = store
-            .existing_client_key()
-            .and_then(|k| k.public_key().to_openssh().ok());
-        let nodes: Vec<Value> = store.nodes().iter().map(node_json).collect();
+        let (notice_accepted, client_public_key, nodes) = {
+            let store = self.store.lock();
+            let client_public_key = store
+                .existing_client_key()
+                .and_then(|k| k.public_key().to_openssh().ok());
+            let nodes: Vec<Value> = store.nodes().iter().map(node_json).collect();
+            (store.notice_accepted(), client_public_key, nodes)
+        };
+        let tasks = self.tasks.lock();
         json!({
             "notice": RESPONSIBILITY_NOTICE,
-            "notice_accepted": store.notice_accepted(),
+            "notice_accepted": notice_accepted,
             "client_public_key": client_public_key,
             "nodes": nodes,
+            "busy_nodes": tasks.nodes.iter().collect::<Vec<_>>(),
+            "setup_running": tasks.setup,
         })
     }
 
+    /// Whether any server task is running.
+    pub fn has_tasks(&self) -> bool {
+        let tasks = self.tasks.lock();
+        tasks.setup || !tasks.nodes.is_empty()
+    }
+
+    /// Claim what `request` needs before it runs, or say what is in the way.
+    /// The caller keeps the guard until the task ends.
+    pub fn begin(&self, request: &Request) -> Result<Option<TaskGuard>, String> {
+        request
+            .claim()
+            .map(|claim| self.claim(claim.setup, claim.node))
+            .transpose()
+    }
+
+    fn claim(&self, setup: bool, node: Option<&str>) -> Result<TaskGuard, String> {
+        let mut tasks = self.tasks.lock();
+        if setup && tasks.setup {
+            return Err("Another server setup is still running".into());
+        }
+        if node.is_some_and(|id| tasks.nodes.contains(id)) {
+            return Err("This supernode is still busy with another task".into());
+        }
+        tasks.setup |= setup;
+        if let Some(id) = node {
+            tasks.nodes.insert(id.to_owned());
+        }
+        Ok(TaskGuard {
+            tasks: Arc::clone(&self.tasks),
+            setup,
+            node: node.map(str::to_owned),
+        })
+    }
+
+    /// Claim, then run. For callers that do not show the claim first.
     pub async fn handle(&self, request: Request, emit: Emit<'_>) -> Result<Value, String> {
+        let task = self.begin(&request)?;
+        self.run(request, task, emit).await
+    }
+
+    /// Run a request whose claim the caller took with [`Self::begin`]. The
+    /// claim is released when this returns.
+    pub async fn run(
+        &self,
+        request: Request,
+        _task: Option<TaskGuard>,
+        emit: Emit<'_>,
+    ) -> Result<Value, String> {
         match request {
             Request::State => Ok(self.state()),
             Request::AcceptNotice => {
@@ -314,31 +455,39 @@ impl AdminService {
             }
             Request::Deploy(server) => self.deploy(server, emit).await,
             Request::AddServer { node_id, server } => self.add_server(&node_id, server, emit).await,
-            Request::Status { node_id } => self.status(&node_id).await,
+            Request::Status { node_id, host_name } => {
+                self.status(&node_id, host_name.as_deref()).await
+            }
             Request::Logs {
                 node_id,
                 host_name,
                 lines,
             } => self.logs(&node_id, host_name.as_deref(), lines).await,
             Request::Invite { node_id } => self.invite(&node_id).await,
-            Request::Restart { node_id } => {
-                let lines = self.for_each_host(&node_id, HostAction::Restart).await?;
+            Request::Restart { node_id, host_name } => {
+                let lines = self
+                    .for_each_host(&node_id, host_name.as_deref(), HostAction::Restart)
+                    .await?;
                 Ok(json!({ "lines": lines }))
             }
-            Request::CheckUpdate { node_id } => self.check_update(&node_id).await,
-            Request::UpdateNow { node_id } => self.update_now(&node_id).await,
+            Request::CheckUpdate { node_id, host_name } => {
+                self.check_update(&node_id, host_name.as_deref()).await
+            }
+            Request::UpdateNow { node_id, host_name } => {
+                self.update_now(&node_id, host_name.as_deref()).await
+            }
             Request::SetUpdateMode { node_id, mode } => {
                 let parsed = UpdateMode::parse(&mode)
                     .ok_or_else(|| format!("Unknown update mode {mode:?}"))?;
                 let lines = self
-                    .for_each_host(&node_id, HostAction::SetUpdateMode(parsed))
+                    .for_each_host(&node_id, None, HostAction::SetUpdateMode(parsed))
                     .await?;
                 self.edit_node(&node_id, |node| node.update_mode = mode.clone())?;
                 Ok(json!({ "lines": lines, "state": self.state() }))
             }
             Request::Uninstall { node_id, purge } => {
                 let lines = self
-                    .for_each_host(&node_id, HostAction::Uninstall { purge })
+                    .for_each_host(&node_id, None, HostAction::Uninstall { purge })
                     .await?;
                 self.store
                     .lock()
@@ -351,6 +500,24 @@ impl AdminService {
                     .lock()
                     .remove(&node_id)
                     .map_err(|e| e.to_string())?;
+                Ok(self.state())
+            }
+            Request::RemoveServer {
+                node_id,
+                host_name,
+                uninstall,
+                purge,
+            } => {
+                self.remove_server(&node_id, &host_name, uninstall, purge)
+                    .await
+            }
+            Request::SyncCluster { node_id } => self.sync_cluster(&node_id).await,
+            Request::Rename { node_id, name } => {
+                let name = clean_local_name(&name);
+                if name.is_empty() {
+                    return Err("Enter a name".into());
+                }
+                self.edit_node(&node_id, |node| node.name = name)?;
                 Ok(self.state())
             }
         }
@@ -385,9 +552,9 @@ impl AdminService {
             .and_then(UpdateMode::parse)
             .ok_or("Choose how the supernode is updated")?;
         let client_key = self.key_for(checked.access)?;
-        let name = match server.name.trim() {
-            "" => checked.public_host.clone(),
-            name => name.to_string(),
+        let name = match clean_local_name(&server.name) {
+            name if name.is_empty() => checked.public_host.clone(),
+            name => name,
         };
         let setup = guided_setup(
             &server,
@@ -397,11 +564,10 @@ impl AdminService {
             update_mode,
         );
 
-        let outcome = run_with_progress(&setup, &[], emit).await?;
-        let host = managed_host(&setup, &outcome);
         // Setting up a server this profile already manages again (to change
         // its choices, or after fixing something) updates that entry rather
-        // than listing the server twice.
+        // than listing the server twice. That supernode must not be running
+        // another task meanwhile.
         let existing = self
             .store
             .lock()
@@ -409,6 +575,13 @@ impl AdminService {
             .iter()
             .find(|n| n.hosts.len() == 1 && n.hosts[0].public_host == checked.public_host)
             .map(|n| n.id.clone());
+        let _existing_task = existing
+            .as_deref()
+            .map(|id| self.claim(false, Some(id)))
+            .transpose()?;
+
+        let outcome = run_with_progress(&setup, &[], emit).await?;
+        let host = managed_host(&setup, &outcome);
         let node = ManagedNode {
             id: existing.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             name,
@@ -483,92 +656,150 @@ impl AdminService {
         };
         step("running", Vec::new(), None);
 
-        let mut node = node;
         let new_host = managed_host(&setup, &outcome);
-        let mut inventory = node.inventory.clone();
-        inventory
-            .host
-            .extend(outcome.inventory.host.iter().cloned());
-        let cluster_id = node
-            .cluster_id
-            .clone()
-            .unwrap_or_else(|| format!("ds-{}", &node.id[..8.min(node.id.len())]));
-        let cluster = ClusterDef {
-            id: cluster_id.clone(),
-            members: inventory
-                .host
-                .iter()
-                .flat_map(|h| {
-                    h.instances
-                        .iter()
-                        .map(move |i| format!("{}/{}", h.name, i.id))
-                })
-                .collect(),
-            cluster_port: None,
-        };
-        inventory.clusters = vec![cluster.clone()];
-        let mut hosts = node.hosts.clone();
-        hosts.push(new_host);
-
+        let cluster_id = cluster_id_for(&node);
         // Save the server before linking: a failed link must not lose track
         // of a machine that now runs a node.
-        node.hosts = hosts.clone();
-        node.inventory = inventory.clone();
-        self.store
-            .lock()
-            .upsert(node.clone())
-            .map_err(|e| e.to_string())?;
+        let node = self.edit_node(node_id, |node| {
+            node.inventory
+                .host
+                .extend(outcome.inventory.host.iter().cloned());
+            node.inventory.clusters = vec![cluster_def(&cluster_id, &node.inventory)];
+            node.hosts.push(new_host);
+            node.clone()
+        })?;
 
-        let key = self.store.lock().existing_client_key();
-        let result = cluster_sync_report_with(&inventory, &cluster, &self.cluster_cache, |host| {
-            let managed = hosts
-                .iter()
-                .find(|h| h.host_name == host.name)
-                .ok_or_else(|| anyhow::anyhow!("no credentials for {}", host.name))?;
-            host_transport(managed, key.as_ref()).map_err(anyhow::Error::msg)
-        })
-        .await;
-        match result {
+        match self.link_cluster(&node, &cluster_id).await {
             Ok(lines) => {
                 step("done", lines, None);
-                node.cluster_id = Some(cluster_id);
-                self.store.lock().upsert(node).map_err(|e| e.to_string())?;
+                self.edit_node(node_id, |node| node.cluster_id = Some(cluster_id))?;
                 Ok(
                     json!({ "node_id": node_id, "ports": ports_note(&setup), "state": self.state() }),
                 )
             }
-            Err(e) => {
-                let message = format!("{e:#}");
+            Err(message) => {
                 step("failed", Vec::new(), Some(message.clone()));
                 Err(format!("{LINK_STEP}: {message}"))
             }
         }
     }
 
-    async fn status(&self, node_id: &str) -> Result<Value, String> {
+    /// Take one server out of a cluster. It is uninstalled first when asked;
+    /// then it leaves the record, and the remaining servers get a member list
+    /// without it, which also drops it from their cluster firewall rules.
+    async fn remove_server(
+        &self,
+        node_id: &str,
+        host_name: &str,
+        uninstall: bool,
+        purge: bool,
+    ) -> Result<Value, String> {
+        let node = self.node(node_id)?;
+        let host = node
+            .host(host_name)
+            .ok_or_else(|| format!("No such server in this node: {host_name}"))?;
+        if node.hosts.len() < 2 {
+            return Err(
+                "This is the supernode's only server. Remove the supernode instead.".into(),
+            );
+        }
+        let mut lines = Vec::new();
+        if uninstall {
+            let key = self.store.lock().existing_client_key();
+            let transport = host_transport(host, key.as_ref())?;
+            let resolved = resolve_host(&node.inventory, host_name)?;
+            let removed = run_host_action(HostAction::Uninstall { purge }, &transport, &resolved)
+                .await
+                .map_err(|e| format!("{host_name}: {e}"))?;
+            lines.extend(removed.into_iter().map(|l| format!("{host_name}: {l}")));
+        }
+
+        let cluster_id = cluster_id_for(&node);
+        // Forget the server before relinking, so a failed relink cannot leave
+        // a server listed that may already be gone. Sync cluster retries.
+        let node = self.edit_node(node_id, |node| {
+            node.hosts.retain(|h| h.host_name != host_name);
+            node.inventory.host.retain(|h| h.name != host_name);
+            node.inventory.clusters = vec![cluster_def(&cluster_id, &node.inventory)];
+            node.clone()
+        })?;
+        let relinked = self.link_cluster(&node, &cluster_id).await.map_err(|e| {
+            format!(
+                "{host_name} was removed, but the other servers still list it: {e}. \
+                 Sync the cluster to try again."
+            )
+        })?;
+        lines.extend(relinked);
+        self.edit_node(node_id, |node| node.cluster_id = Some(cluster_id))?;
+        Ok(json!({ "lines": lines, "state": self.state() }))
+    }
+
+    /// Push the member list to every server again: after a failed link or
+    /// relink, or when a server was restored from elsewhere.
+    async fn sync_cluster(&self, node_id: &str) -> Result<Value, String> {
+        let node = self.node(node_id)?;
+        if node.hosts.len() < 2 && node.cluster_id.is_none() {
+            return Err("This supernode has one server. Add a cluster member first.".into());
+        }
+        let cluster_id = cluster_id_for(&node);
+        let node = self.edit_node(node_id, |node| {
+            node.inventory.clusters = vec![cluster_def(&cluster_id, &node.inventory)];
+            node.clone()
+        })?;
+        let lines = self.link_cluster(&node, &cluster_id).await?;
+        self.edit_node(node_id, |node| node.cluster_id = Some(cluster_id))?;
+        Ok(json!({ "lines": lines, "state": self.state() }))
+    }
+
+    /// Give each of the node's servers the shared member list and restart it,
+    /// one server at a time.
+    async fn link_cluster(
+        &self,
+        node: &ManagedNode,
+        cluster_id: &str,
+    ) -> Result<Vec<String>, String> {
+        let cluster = cluster_def(cluster_id, &node.inventory);
+        let key = self.store.lock().existing_client_key();
+        let _turn = self.cluster_sync.lock().await;
+        cluster_sync_report_with(&node.inventory, &cluster, &self.cluster_cache, |host| {
+            let managed = node
+                .host(&host.name)
+                .ok_or_else(|| anyhow::anyhow!("no credentials for {}", host.name))?;
+            host_transport(managed, key.as_ref()).map_err(anyhow::Error::msg)
+        })
+        .await
+        .map_err(|e| format!("{e:#}"))
+    }
+
+    /// Read-only, so a cluster's servers are asked together.
+    async fn status(&self, node_id: &str, host_name: Option<&str>) -> Result<Value, String> {
         let node = self.node(node_id)?;
         let key = self.store.lock().existing_client_key();
-        let mut hosts = Vec::new();
-        for host in &node.hosts {
-            let entry = match (
-                host_transport(host, key.as_ref()),
-                resolve_host(&node.inventory, &host.host_name),
-            ) {
-                (Ok(transport), Ok(resolved)) => match status_instance(&transport, &resolved).await
-                {
-                    Ok(status) => json!({
-                        "host_name": host.host_name,
-                        "reachable": true,
-                        "active": status.active,
-                        "state": status.systemd_state,
-                        "version": status.version_display(),
-                    }),
-                    Err(e) => unreachable_json(&host.host_name, &format!("{e:#}")),
-                },
-                (Err(e), _) | (_, Err(e)) => unreachable_json(&host.host_name, &e),
-            };
-            hosts.push(entry);
-        }
+        let checks = selected_hosts(&node, host_name)?.into_iter().map(|host| {
+            let key = key.as_ref();
+            let inventory = &node.inventory;
+            async move {
+                match (
+                    host_transport(host, key),
+                    resolve_host(inventory, &host.host_name),
+                ) {
+                    (Ok(transport), Ok(resolved)) => {
+                        match status_instance(&transport, &resolved).await {
+                            Ok(status) => json!({
+                                "host_name": host.host_name,
+                                "reachable": true,
+                                "active": status.active,
+                                "state": status.systemd_state,
+                                "version": status.version_display(),
+                            }),
+                            Err(e) => unreachable_json(&host.host_name, &format!("{e:#}")),
+                        }
+                    }
+                    (Err(e), _) | (_, Err(e)) => unreachable_json(&host.host_name, &e),
+                }
+            }
+        });
+        let hosts = futures_util::future::join_all(checks).await;
         Ok(json!({ "node_id": node_id, "hosts": hosts }))
     }
 
@@ -648,12 +879,13 @@ impl AdminService {
     async fn for_each_host(
         &self,
         node_id: &str,
+        host_name: Option<&str>,
         action: HostAction,
     ) -> Result<Vec<String>, String> {
         let node = self.node(node_id)?;
         let key = self.store.lock().existing_client_key();
         let mut out = Vec::new();
-        for host in &node.hosts {
+        for host in selected_hosts(&node, host_name)? {
             let transport = host_transport(host, key.as_ref())?;
             let resolved = resolve_host(&node.inventory, &host.host_name)?;
             let lines = run_host_action(action, &transport, &resolved)
@@ -671,12 +903,13 @@ impl AdminService {
     /// Compare each server's installed package with the published one. The
     /// client reads the release itself, so this works for servers that cannot
     /// reach GitHub.
-    async fn check_update(&self, node_id: &str) -> Result<Value, String> {
+    async fn check_update(&self, node_id: &str, host_name: Option<&str>) -> Result<Value, String> {
         let node = self.node(node_id)?;
+        let selected = selected_hosts(&node, host_name)?;
         let key = self.store.lock().existing_client_key();
         let mut published: HashMap<String, String> = HashMap::new();
         let mut hosts = Vec::new();
-        for host in &node.hosts {
+        for host in selected {
             if !published.contains_key(&host.platform) {
                 let digest = published_release_sha256(&node.inventory.defaults, &host.platform)
                     .await
@@ -698,13 +931,16 @@ impl AdminService {
     /// Download and verify the release here, then push it to each server in
     /// turn, which installs it and rolls back if the node fails to start. One
     /// server at a time keeps a cluster reachable through the others.
-    async fn update_now(&self, node_id: &str) -> Result<Value, String> {
+    async fn update_now(&self, node_id: &str, host_name: Option<&str>) -> Result<Value, String> {
         let node = self.node(node_id)?;
+        let selected = selected_hosts(&node, host_name)?;
         let key = self.store.lock().existing_client_key();
         let privilege = node.inventory.defaults.privilege;
         let mut packages: HashMap<String, (Vec<u8>, String)> = HashMap::new();
         let mut lines = Vec::new();
-        for host in &node.hosts {
+        let mut hosts = Vec::new();
+        for host in selected {
+            hosts.push(json!({ "host_name": host.host_name, "update_available": false }));
             if !packages.contains_key(&host.platform) {
                 let package = download_release_archive(&node.inventory.defaults, &host.platform)
                     .await
@@ -740,7 +976,7 @@ impl AdminService {
                     .map(|l| format!("{}: {l}", host.host_name)),
             );
         }
-        Ok(json!({ "lines": lines }))
+        Ok(json!({ "lines": lines, "hosts": hosts }))
     }
 
     fn node(&self, node_id: &str) -> Result<ManagedNode, String> {
@@ -751,10 +987,56 @@ impl AdminService {
             .ok_or_else(|| "That supernode is no longer managed here".to_string())
     }
 
-    fn edit_node(&self, node_id: &str, edit: impl FnOnce(&mut ManagedNode)) -> Result<(), String> {
-        let mut node = self.node(node_id)?;
-        edit(&mut node);
-        self.store.lock().upsert(node).map_err(|e| e.to_string())
+    fn edit_node<T>(
+        &self,
+        node_id: &str,
+        edit: impl FnOnce(&mut ManagedNode) -> T,
+    ) -> Result<T, String> {
+        self.store
+            .lock()
+            .edit(node_id, edit)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "That supernode is no longer managed here".to_string())
+    }
+}
+
+/// The node's cluster id: the one it was linked under, else the one a failed
+/// link recorded, else a new one from the node id.
+fn cluster_id_for(node: &ManagedNode) -> String {
+    node.cluster_id
+        .clone()
+        .or_else(|| node.inventory.clusters.first().map(|c| c.id.clone()))
+        .unwrap_or_else(|| format!("ds-{}", node.id.chars().take(8).collect::<String>()))
+}
+
+/// Every supernode instance in the inventory, as one cluster.
+fn cluster_def(cluster_id: &str, inventory: &Inventory) -> ClusterDef {
+    ClusterDef {
+        id: cluster_id.to_owned(),
+        members: inventory
+            .host
+            .iter()
+            .flat_map(|h| {
+                h.instances
+                    .iter()
+                    .map(move |i| format!("{}/{}", h.name, i.id))
+            })
+            .collect(),
+        cluster_port: None,
+    }
+}
+
+fn selected_hosts<'a>(
+    node: &'a ManagedNode,
+    host_name: Option<&str>,
+) -> Result<Vec<&'a ManagedHost>, String> {
+    match host_name {
+        Some(name) => node
+            .host(name)
+            .map(|host| vec![host])
+            .ok_or_else(|| format!("No such server in this node: {name}")),
+        None if node.hosts.is_empty() => Err("This node has no servers".into()),
+        None => Ok(node.hosts.iter().collect()),
     }
 }
 
@@ -1031,6 +1313,93 @@ mod tests {
 
     fn ignore(_: Value) {}
 
+    fn clustered_node() -> ManagedNode {
+        ManagedNode {
+            id: "node".into(),
+            name: "Test supernode".into(),
+            channel: CHANNEL.into(),
+            update_mode: "client".into(),
+            cluster_id: Some("cluster".into()),
+            invite_url: String::new(),
+            created_at: 1,
+            hosts: ["first", "second", "third"]
+                .into_iter()
+                .map(|name| ManagedHost {
+                    host_name: name.into(),
+                    ssh_target: "root@192.0.2.1".into(),
+                    host_key: String::new(),
+                    access: "own-key".into(),
+                    public_host: "192.0.2.1".into(),
+                    platform: "linux-x86_64".into(),
+                    node_identity: name.into(),
+                    os: "Debian".into(),
+                })
+                .collect(),
+            inventory: Inventory {
+                defaults: snm_core::Defaults::default(),
+                host: Vec::new(),
+                clusters: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn member_selection_is_exact_and_cluster_selection_keeps_order() {
+        let mut node = clustered_node();
+        let selected = selected_hosts(&node, Some("second")).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].host_name, "second");
+        let selected: Vec<_> = selected_hosts(&node, None)
+            .unwrap()
+            .iter()
+            .map(|host| host.host_name.as_str())
+            .collect();
+        assert_eq!(selected, ["first", "second", "third"]);
+        assert!(selected_hosts(&node, Some("SECOND")).is_err());
+        assert!(selected_hosts(&node, Some("")).is_err());
+        node.hosts.clear();
+        assert!(selected_hosts(&node, None).is_err());
+    }
+
+    #[tokio::test]
+    async fn unknown_members_are_rejected_before_ssh_or_release_downloads() {
+        let service = service();
+        service.store.lock().upsert(clustered_node()).unwrap();
+        for op in ["status", "restart", "check_update", "update_now", "logs"] {
+            let request = serde_json::from_value(json!({
+                "op": op, "node_id": "node", "host_name": "not-a-member",
+            }))
+            .unwrap();
+            let error = service.handle(request, &ignore).await.unwrap_err();
+            assert!(error.contains("No such server"), "{op}: {error}");
+        }
+    }
+
+    #[test]
+    fn cluster_commands_remain_compatible_and_member_mutations_stay_serialized() {
+        for op in ["status", "restart", "check_update", "update_now"] {
+            for name in [None, Some("second")] {
+                let mut value = json!({ "op": op, "node_id": "node" });
+                if let Some(name) = name {
+                    value["host_name"] = json!(name);
+                }
+                let request: Request = serde_json::from_value(value).unwrap();
+                assert_eq!(
+                    request.claim().is_some(),
+                    matches!(op, "restart" | "update_now")
+                );
+                let host_name = match request {
+                    Request::Status { host_name, .. }
+                    | Request::Restart { host_name, .. }
+                    | Request::CheckUpdate { host_name, .. }
+                    | Request::UpdateNow { host_name, .. } => host_name,
+                    _ => unreachable!(),
+                };
+                assert_eq!(host_name.as_deref(), name);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn deploy_is_refused_until_the_notice_is_accepted() {
         let service = service();
@@ -1116,14 +1485,202 @@ mod tests {
         require_send(&future);
     }
 
+    fn request(value: Value) -> Request {
+        serde_json::from_value(value).unwrap()
+    }
+
     #[test]
-    fn mutating_operations_are_flagged() {
-        let restart: Request = serde_json::from_str(r#"{"op":"restart","node_id":"x"}"#).unwrap();
-        let status: Request = serde_json::from_str(r#"{"op":"status","node_id":"x"}"#).unwrap();
-        let invite: Request = serde_json::from_str(r#"{"op":"invite","node_id":"x"}"#).unwrap();
-        assert!(restart.is_mutating());
-        assert!(!status.is_mutating());
-        assert!(!invite.is_mutating());
+    fn tasks_claim_their_supernode_and_setups_claim_the_setup() {
+        let node = |id| Claim {
+            setup: false,
+            node: Some(id),
+        };
+        for op in [
+            "restart",
+            "update_now",
+            "uninstall",
+            "forget",
+            "sync_cluster",
+        ] {
+            assert_eq!(
+                request(json!({ "op": op, "node_id": "x" })).claim(),
+                Some(node("x")),
+                "{op}"
+            );
+        }
+        assert_eq!(
+            request(json!({ "op": "set_update_mode", "node_id": "x", "mode": "client" })).claim(),
+            Some(node("x"))
+        );
+        assert_eq!(
+            request(json!({
+                "op": "remove_server", "node_id": "x", "host_name": "h", "uninstall": true,
+            }))
+            .claim(),
+            Some(node("x"))
+        );
+        for op in ["status", "invite", "check_update", "logs"] {
+            assert_eq!(request(json!({ "op": op, "node_id": "x" })).claim(), None);
+        }
+        assert_eq!(
+            request(json!({ "op": "rename", "node_id": "x", "name": "n" })).claim(),
+            None
+        );
+        let Ok(Request::Deploy(server)) = serde_json::from_str::<Request>(&server_json("")) else {
+            unreachable!()
+        };
+        assert_eq!(
+            Request::Deploy(server).claim(),
+            Some(Claim {
+                setup: true,
+                node: None
+            })
+        );
+    }
+
+    #[test]
+    fn remove_server_must_say_whether_to_uninstall() {
+        let missing = serde_json::from_value::<Request>(json!({
+            "op": "remove_server", "node_id": "x", "host_name": "h",
+        }));
+        assert!(missing.is_err());
+    }
+
+    #[test]
+    fn different_supernodes_run_side_by_side_but_one_supernode_runs_one_task() {
+        let service = service();
+        let restart_a = request(json!({ "op": "restart", "node_id": "a" }));
+        let update_a = request(json!({ "op": "update_now", "node_id": "a" }));
+        let restart_b = request(json!({ "op": "restart", "node_id": "b" }));
+        let status_a = request(json!({ "op": "status", "node_id": "a" }));
+
+        let a = service.begin(&restart_a).unwrap().unwrap();
+        let b = service.begin(&restart_b).unwrap().unwrap();
+        let busy = service.begin(&update_a).err().unwrap();
+        assert!(busy.contains("busy"), "{busy}");
+        assert!(service.begin(&status_a).unwrap().is_none());
+        assert_eq!(service.state()["busy_nodes"], json!(["a", "b"]));
+        assert!(service.has_tasks());
+
+        drop(a);
+        assert_eq!(service.state()["busy_nodes"], json!(["b"]));
+        assert!(service.begin(&update_a).unwrap().is_some());
+        drop(b);
+        assert!(!service.has_tasks());
+        assert_eq!(service.state()["setup_running"], false);
+    }
+
+    #[test]
+    fn one_setup_runs_at_a_time_beside_other_tasks() {
+        let service = service();
+        let setup = service.claim(true, None).unwrap();
+        assert_eq!(service.state()["setup_running"], true);
+        let add = request(json!({
+            "op": "add_server", "node_id": "a", "host": "198.51.100.9", "host_key": "k",
+            "access": "client-key-only",
+        }));
+        assert!(service.begin(&add).err().unwrap().contains("setup"));
+        assert!(service
+            .begin(&request(json!({ "op": "restart", "node_id": "a" })))
+            .unwrap()
+            .is_some());
+        drop(setup);
+        assert_eq!(service.state()["setup_running"], false);
+    }
+
+    #[tokio::test]
+    async fn removing_a_server_needs_another_one_left() {
+        let service = service();
+        let mut single = clustered_node();
+        single.hosts.truncate(1);
+        service.store.lock().upsert(single).unwrap();
+        let error = service
+            .handle(
+                request(json!({
+                    "op": "remove_server", "node_id": "node", "host_name": "first",
+                    "uninstall": false,
+                })),
+                &ignore,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("only server"), "{error}");
+        let error = service
+            .handle(
+                request(json!({
+                    "op": "remove_server", "node_id": "node", "host_name": "missing",
+                    "uninstall": false,
+                })),
+                &ignore,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("No such server"), "{error}");
+        assert_eq!(service.node("node").unwrap().hosts.len(), 1);
+        assert!(!service.has_tasks(), "a refused task frees its claim");
+    }
+
+    #[tokio::test]
+    async fn sync_needs_a_cluster() {
+        let service = service();
+        let mut single = clustered_node();
+        single.hosts.truncate(1);
+        single.cluster_id = None;
+        service.store.lock().upsert(single).unwrap();
+        let error = service
+            .handle(
+                request(json!({ "op": "sync_cluster", "node_id": "node" })),
+                &ignore,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("Add a cluster member"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn rename_is_local_and_cleaned() {
+        let service = service();
+        service.store.lock().upsert(clustered_node()).unwrap();
+        let state = service
+            .handle(
+                request(json!({
+                    "op": "rename", "node_id": "node", "name": "  \u{202e}Edge\n west  ",
+                })),
+                &ignore,
+            )
+            .await
+            .unwrap();
+        assert_eq!(state["nodes"][0]["name"], "Edge west");
+        let error = service
+            .handle(
+                request(json!({ "op": "rename", "node_id": "node", "name": " \u{200e} " })),
+                &ignore,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("Enter a name"), "{error}");
+        let error = service
+            .handle(
+                request(json!({ "op": "rename", "node_id": "gone", "name": "x" })),
+                &ignore,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("no longer managed"), "{error}");
+    }
+
+    #[test]
+    fn cluster_ids_survive_a_failed_link() {
+        let mut node = clustered_node();
+        assert_eq!(cluster_id_for(&node), "cluster");
+        node.cluster_id = None;
+        assert_eq!(cluster_id_for(&node), "ds-node");
+        node.inventory.clusters = vec![ClusterDef {
+            id: "ds-recorded".into(),
+            members: Vec::new(),
+            cluster_port: None,
+        }];
+        assert_eq!(cluster_id_for(&node), "ds-recorded");
     }
 
     #[tokio::test]

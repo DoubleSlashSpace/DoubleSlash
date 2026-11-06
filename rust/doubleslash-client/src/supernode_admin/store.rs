@@ -182,6 +182,22 @@ impl ManagedNodeStore {
         self.save()
     }
 
+    /// Change one node and save, in a single step, so two tasks editing
+    /// different fields of the node cannot undo each other. `None` when the
+    /// node is no longer here.
+    pub fn edit<T>(
+        &mut self,
+        id: &str,
+        edit: impl FnOnce(&mut ManagedNode) -> T,
+    ) -> Result<Option<T>> {
+        let Some(node) = self.data.nodes.iter_mut().find(|n| n.id == id) else {
+            return Ok(None);
+        };
+        let out = edit(node);
+        self.save()?;
+        Ok(Some(out))
+    }
+
     /// Forget a node locally. The server is not touched.
     pub fn remove(&mut self, id: &str) -> Result<bool> {
         let before = self.data.nodes.len();
@@ -278,6 +294,26 @@ mod tests {
         assert!(store.remove("n1").unwrap());
         assert!(!store.remove("n1").unwrap());
         assert!(store.nodes().is_empty());
+    }
+
+    #[test]
+    fn edit_changes_one_node_and_saves() {
+        let path = temp_path("edit");
+        let key = [4u8; 32];
+        let mut store = ManagedNodeStore::open_with_key(&key, &path).unwrap();
+        store.upsert(node("n1")).unwrap();
+        store.upsert(node("n2")).unwrap();
+        let hosts = store
+            .edit("n2", |n| {
+                n.name = "Edited".into();
+                n.hosts.len()
+            })
+            .unwrap();
+        assert_eq!(hosts, Some(1));
+        assert_eq!(store.edit("missing", |_| ()).unwrap(), None);
+        let reopened = ManagedNodeStore::open_with_key(&key, &path).unwrap();
+        assert_eq!(reopened.node("n1").unwrap().name, "My node");
+        assert_eq!(reopened.node("n2").unwrap().name, "Edited");
     }
 
     #[test]

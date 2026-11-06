@@ -123,12 +123,28 @@ Item {
         return nodeId.length > 16 ? nodeId.substring(0, 16) + "…" : nodeId
     }
 
-    // "Connected · 24 ms · AbC…" - ping only once the node has reported it.
+    // Identities of the servers this profile hosts (Your servers), unpadded.
+    readonly property var hostedNodeIds: {
+        var state
+        try { state = JSON.parse(backend ? backend.supernode_admin_state : "{}") } catch (e) { state = {} }
+        var ids = []
+        ;(state.nodes || []).forEach(function(node) {
+            ;(node.hosts || []).forEach(function(host) {
+                ids.push((host.node_identity || "").replace(/=+$/, ""))
+            })
+        })
+        return ids
+    }
+
+    // "Connected · 24 ms · hosted by you · AbC…" - ping only once the node
+    // has reported it. A cluster's row is any of its servers.
     function supernodeStatusLine(nodeId, connected) {
         var parts = [connected ? "Connected" : "Offline"]
         var stats = root.supernodeStats ? root.supernodeStats[nodeId] : null
         if (connected && stats && stats.rtt_ms > 0)
             parts.push(Math.round(stats.rtt_ms) + " ms")
+        if (root.hostedNodeIds.indexOf((nodeId || "").replace(/=+$/, "")) >= 0)
+            parts.push("hosted by you")
         parts.push(root.shortNodeId(nodeId))
         return parts.join(" · ")
     }

@@ -32,6 +32,21 @@ fn is_bidi_control(c: char) -> bool {
     matches!(c, '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
+/// A name this device gives something: control and bidi characters removed,
+/// trimmed, and capped at [`LOCAL_NAME_MAX_CHARS`].
+pub(crate) fn clean_local_name(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .filter(|c| !c.is_control() && !is_bidi_control(*c))
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(LOCAL_NAME_MAX_CHARS)
+        .collect();
+    // Cutting at the cap can leave a trailing space.
+    clean.trim_end().to_owned()
+}
+
 // ---------------------------------------------------------------------------
 // PeerRecord
 // ---------------------------------------------------------------------------
@@ -297,22 +312,14 @@ impl PeerStore {
     /// to the peer's own. Returns false when no record matches. The caller
     /// saves.
     pub fn set_local_name(&mut self, id: &str, name: &str) -> bool {
-        let clean: String = name
-            .chars()
-            .filter(|c| !c.is_control() && !is_bidi_control(*c))
-            .collect::<String>()
-            .trim()
-            .chars()
-            .take(LOCAL_NAME_MAX_CHARS)
-            .collect();
-        // Cutting at the cap can leave a trailing space.
+        let clean = clean_local_name(name);
         let bare = id.trim_end_matches('=');
         let Some(record) = self.records.values_mut().find(|r| {
             r.peer_id == id || (!bare.is_empty() && r.identity_pub.trim_end_matches('=') == bare)
         }) else {
             return false;
         };
-        record.local_name = clean.trim_end().to_owned();
+        record.local_name = clean;
         true
     }
 

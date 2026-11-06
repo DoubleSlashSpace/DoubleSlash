@@ -16,3 +16,6 @@ SquareSlider 1.0 SquareSlider.qml
 SquareSwitch 1.0 SquareSwitch.qml
 IconButton 1.0 IconButton.qml
 SquareBusyIndicator 1.0 SquareBusyIndicator.qml
+SettingsCard 1.0 SettingsCard.qml
+SettingSwitch 1.0 SettingSwitch.qml
+SupernodeAdminCard 1.0 SupernodeAdminCard.qml

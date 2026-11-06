@@ -459,8 +459,11 @@ The manager library has the guided flow, host hardening, SSH key install and
 lockdown, the unit sandbox, and the on-server updater with rollback. The
 desktop has the encrypted managed-node store, the wizard with the
 responsibility notice, the Your servers card (status, logs, restart, updates,
-update mode, add a server as a cluster member, copy the node's invite,
-uninstall, forget), and accepts the node's invite after setup. The QML is only rendered against a mock backend.
+update mode, add a server as a cluster member, remove one server from a
+cluster, sync a cluster, rename, copy the node's invite, uninstall, forget,
+and checks across every supernode), and accepts the node's invite after setup.
+Different supernodes run tasks side by side. The QML is only rendered against
+a mock backend.
 
 **Live result, 2026-10-27, IPv6-only Debian 12 (Vultr),** driven through
 `AdminService` by `examples/supernode_admin_live.rs`.
@@ -497,6 +500,12 @@ Remaining:
   - the server-timer update mode, on a host that can reach GitHub;
   - Ubuntu 24.04;
   - adding a second server as a cluster member;
+  - removing a server from a cluster, both uninstalled and dropped without
+    contact, then confirming clients still fail over between the rest and
+    the removed address is gone from their cluster firewall rules;
+  - Sync cluster after a failed link;
+  - two tasks on different supernodes at once (for example updating one while
+    restarting another);
   - uninstall;
   - the wizard in the real desktop app.
 - Import an existing `inventory.toml`; edit a node's features and room policy.

@@ -59,7 +59,10 @@ Dialog {
     readonly property var adminState: {
         try { return JSON.parse(appBackend.supernode_admin_state) } catch (e) { return ({}) }
     }
-    readonly property bool busy: appBackend.supernode_admin_busy
+    // Another setup is running, or the supernode this adds a server to is
+    // busy. Tasks on other supernodes do not hold a setup back.
+    readonly property bool busy: adminState.setup_running === true
+        || (addToNodeId !== "" && (adminState.busy_nodes || []).indexOf(addToNodeId) >= 0)
 
     function openFor(nodeId, nodeName) {
         addToNodeId = nodeId || ""

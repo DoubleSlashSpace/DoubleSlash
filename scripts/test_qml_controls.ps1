@@ -1,5 +1,6 @@
 param(
-    [string]$QtBin = "C:\Qt\6.8.3\msvc2022_64\bin"
+    [string]$QtBin = "C:\Qt\6.8.3\msvc2022_64\bin",
+    [string]$TestFile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,13 +17,18 @@ try {
                              "RoomTree", "RoomTreeMember", "TreeGuides", "CountPill",
                              "VoiceDock", "SidebarToggle", "Avatar",
                              "SquareSlider", "SquareSwitch", "IconButton",
-                             "SquareBusyIndicator")) {
+                             "SquareBusyIndicator", "SettingsCard", "SettingSwitch",
+                             "SupernodeAdminCard")) {
         Copy-Item (Join-Path $clientRoot "qml/$component.qml") $moduleRoot
     }
     $env:QT_QUICK_CONTROLS_STYLE = "Material"
-    & (Join-Path $QtBin "qmltestrunner.exe") -input (Join-Path $clientRoot "tests/qml") -import $temporaryRoot
-    if ($LASTEXITCODE -ne 0) {
-        throw "Qt Quick control tests failed (exit $LASTEXITCODE)."
+    $inputPath = if ($TestFile) { Join-Path $clientRoot "tests/qml/$TestFile" } else { Join-Path $clientRoot "tests/qml" }
+    $results = Join-Path $temporaryRoot "results.txt"
+    & (Join-Path $QtBin "qmltestrunner.exe") -input $inputPath -import $temporaryRoot -o "$results,txt"
+    $testExitCode = $LASTEXITCODE
+    if (Test-Path $results) { Get-Content $results }
+    if ($testExitCode -ne 0) {
+        throw "Qt Quick control tests failed (exit $testExitCode)."
     }
 } finally {
     Remove-Item -Recurse -Force $temporaryRoot
