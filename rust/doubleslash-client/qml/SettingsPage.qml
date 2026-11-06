@@ -2958,14 +2958,12 @@ Item {
                         columnSpacing: Theme.spacingXl
 
                         Label { text: "UDP listener port"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
-                        TextField {
+                        StyledTextField {
                             Layout.preferredWidth: 120
                             enabled: root.settings ? root.settings.direct_p2p_enabled : true
                             text: root.settings ? root.settings.direct_p2p_port.toString() : "61045"
                             inputMethodHints: Qt.ImhDigitsOnly
                             validator: IntValidator { bottom: 1; top: 65535 }
-                            color: enabled ? Theme.text : Theme.muted
-                            background: Rectangle { color: Theme.bg3; radius: Theme.radiusMd; border.color: activeFocus ? Theme.accent : Theme.bg3; border.width: 1 }
                             onEditingFinished: {
                                 if (!root.settings) return
                                 var port = parseInt(text, 10)
@@ -2987,31 +2985,6 @@ Item {
                         color: Theme.muted
                         wrapMode: Text.WordWrap
                         font.pixelSize: Theme.fontSizeCaption
-                    }
-                }
-
-                SettingsCard {
-                    title: "Relay"
-                    subtitle: "Transport assistance stays optional and client-owned."
-
-                    SettingSwitch { title: "Allow relay-gated connections"; checked: root.settings ? root.settings.relay_allow_gated : true; onChanged: if (root.settings) root.settings.relay_allow_gated = checked }
-                    SettingSwitch { title: "Auto-renew relay tickets"; checked: root.settings ? root.settings.relay_auto_renew : true; onChanged: if (root.settings) root.settings.relay_auto_renew = checked }
-
-                    GridLayout {
-                        Layout.fillWidth: true
-                        columns: 2
-                        columnSpacing: Theme.spacingXl
-
-                        Label { text: "Relay port"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
-                        TextField {
-                            Layout.preferredWidth: 120
-                            text: root.settings ? root.settings.relay_port.toString() : "0"
-                            inputMethodHints: Qt.ImhDigitsOnly
-                            validator: IntValidator { bottom: 0; top: 65535 }
-                            color: Theme.text
-                            background: Rectangle { color: Theme.bg3; radius: Theme.radiusMd; border.color: activeFocus ? Theme.accent : Theme.bg3; border.width: 1 }
-                            onEditingFinished: if (root.settings) root.settings.relay_port = parseInt(text) || 0
-                        }
                     }
                 }
             }

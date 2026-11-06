@@ -234,8 +234,6 @@ These are selected **desktop** defaults from [SettingsModel](rust/doubleslash-cl
 | `direct_p2p_enabled` | `true` | Accept direct QUIC sessions |
 | `direct_p2p_port` | `61045` | Preferred direct UDP listener port |
 | `upnp_enabled` | `true` | Router port mapping |
-| `relay_port` | `0` | Automatic local relay port |
-| `relay_allow_gated` / `relay_auto_renew` | `true` / `true` | Gated relay access and ticket renewal |
 | `auto_connect` | `false` | Startup reconnection preference |
 | `push_to_talk` / `voice_activation` | `false` / `false` | Optional transmission modes |
 | `ptt_key` | `space` | Push-to-talk binding |

@@ -90,7 +90,6 @@ pub mod ffi {
         #[qproperty(QString, video_popout_geometry_json)]
         #[qproperty(QString, local_handle)]
         #[qproperty(bool, update_check_enabled)]
-        #[qproperty(i32, relay_port)]
         #[qproperty(bool, ollama_enabled)]
         #[qproperty(QString, ollama_base_url)]
         #[qproperty(QString, ollama_model)]
@@ -141,10 +140,6 @@ pub mod ffi {
         /// Room ids whose text messages alert, as a JSON array. Empty means
         /// every room is muted. Keyed by room id alone, same as room history.
         #[qproperty(QString, room_message_alerts_json)]
-        /// Allow relay-gated (non-direct) connections.
-        #[qproperty(bool, relay_allow_gated)]
-        /// Auto-renew relay tickets before they expire.
-        #[qproperty(bool, relay_auto_renew)]
         /// Enable UPnP automatic port mapping.
         #[qproperty(bool, upnp_enabled)]
         /// Build-attestation verification policy: "off" | "warn" | "strict".
@@ -316,8 +311,6 @@ struct SettingsSnapshot {
     #[serde(default = "default_true")]
     update_check_enabled: bool,
     #[serde(default)]
-    relay_port: i32,
-    #[serde(default)]
     ollama_enabled: bool,
     #[serde(default = "default_ollama_url")]
     ollama_base_url: String,
@@ -361,10 +354,6 @@ struct SettingsSnapshot {
     /// so room text stays quiet until the user enables a room.
     #[serde(default = "default_room_message_alerts")]
     room_message_alerts_json: String,
-    #[serde(default = "default_true")]
-    relay_allow_gated: bool,
-    #[serde(default = "default_true")]
-    relay_auto_renew: bool,
     #[serde(default = "default_true")]
     upnp_enabled: bool,
     #[serde(default = "default_attestation_policy")]
@@ -543,7 +532,6 @@ impl Default for SettingsSnapshot {
             video_popout_geometry_json: default_prefs_blob(),
             local_handle: String::new(),
             update_check_enabled: true,
-            relay_port: 0,
             ollama_enabled: false,
             ollama_base_url: default_ollama_url(),
             ollama_model: default_ollama_model(),
@@ -562,8 +550,6 @@ impl Default for SettingsSnapshot {
             time_format: default_time_format(),
             room_list_order_json: default_room_list_order(),
             room_message_alerts_json: default_room_message_alerts(),
-            relay_allow_gated: true,
-            relay_auto_renew: true,
             upnp_enabled: true,
             attestation_policy: default_attestation_policy(),
             youtube_preview_enabled: true,
@@ -625,7 +611,6 @@ pub struct SettingsModelRust {
     video_popout_geometry_json: QString,
     local_handle: QString,
     update_check_enabled: bool,
-    relay_port: i32,
     ollama_enabled: bool,
     ollama_base_url: QString,
     ollama_model: QString,
@@ -647,8 +632,6 @@ pub struct SettingsModelRust {
     time_format: QString,
     room_list_order_json: QString,
     room_message_alerts_json: QString,
-    relay_allow_gated: bool,
-    relay_auto_renew: bool,
     upnp_enabled: bool,
     attestation_policy: QString,
     window_width: i32,
@@ -707,7 +690,6 @@ impl Default for SettingsModelRust {
             video_popout_geometry_json: QString::from(s.video_popout_geometry_json.as_str()),
             local_handle: QString::default(),
             update_check_enabled: s.update_check_enabled,
-            relay_port: s.relay_port,
             ollama_enabled: s.ollama_enabled,
             ollama_base_url: QString::from(s.ollama_base_url.as_str()),
             ollama_model: QString::from(s.ollama_model.as_str()),
@@ -729,8 +711,6 @@ impl Default for SettingsModelRust {
             time_format: QString::from(s.time_format.as_str()),
             room_list_order_json: QString::from(s.room_list_order_json.as_str()),
             room_message_alerts_json: QString::from(s.room_message_alerts_json.as_str()),
-            relay_allow_gated: s.relay_allow_gated,
-            relay_auto_renew: s.relay_auto_renew,
             upnp_enabled: s.upnp_enabled,
             attestation_policy: QString::from(s.attestation_policy.as_str()),
             window_width: s.window_width,
@@ -881,7 +861,6 @@ impl ffi::SettingsModel {
             video_popout_geometry_json: r.video_popout_geometry_json.to_string(),
             local_handle: r.local_handle.to_string(),
             update_check_enabled: r.update_check_enabled,
-            relay_port: r.relay_port,
             ollama_enabled: r.ollama_enabled,
             ollama_base_url: r.ollama_base_url.to_string(),
             ollama_model: r.ollama_model.to_string(),
@@ -903,8 +882,6 @@ impl ffi::SettingsModel {
             time_format: normalize_time_format(&r.time_format.to_string()),
             room_list_order_json: r.room_list_order_json.to_string(),
             room_message_alerts_json: r.room_message_alerts_json.to_string(),
-            relay_allow_gated: r.relay_allow_gated,
-            relay_auto_renew: r.relay_auto_renew,
             upnp_enabled: r.upnp_enabled,
             attestation_policy: r.attestation_policy.to_string(),
             window_width: r.window_width,
@@ -1122,7 +1099,6 @@ impl ffi::SettingsModel {
             .set_local_handle(QString::from(snap.local_handle.as_str()));
         self.as_mut()
             .set_update_check_enabled(snap.update_check_enabled);
-        self.as_mut().set_relay_port(snap.relay_port);
         self.as_mut().set_ollama_enabled(snap.ollama_enabled);
         self.as_mut()
             .set_ollama_base_url(QString::from(snap.ollama_base_url.as_str()));
@@ -1169,8 +1145,6 @@ impl ffi::SettingsModel {
             .set_room_list_order_json(QString::from(snap.room_list_order_json.as_str()));
         self.as_mut()
             .set_room_message_alerts_json(QString::from(snap.room_message_alerts_json.as_str()));
-        self.as_mut().set_relay_allow_gated(snap.relay_allow_gated);
-        self.as_mut().set_relay_auto_renew(snap.relay_auto_renew);
         self.as_mut().set_upnp_enabled(snap.upnp_enabled);
         self.as_mut()
             .set_attestation_policy(QString::from(snap.attestation_policy.as_str()));
