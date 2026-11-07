@@ -138,6 +138,29 @@ SettingsCard {
     // infoKey(node, server) of the server awaiting confirmation to remove.
     property string pendingServerRemove: ""
     property string renamingId: ""
+    property string editingHostnameKey: ""
+    property string hostnameDraft: ""
+    property string hostnameLookupDraft: ""
+    property string dddnsTokenDraft: ""
+    property string dddnsUpdateUrlDraft: ""
+    readonly property bool hostnameUsesDddns: {
+        var name = hostnameDraft.trim().toLowerCase().replace(/\.+$/, "")
+        return name !== "" && (hostnameLookupDraft === "dddns"
+            || (hostnameLookupDraft === "" && /^[^.]+\.doubleslash\.space$/.test(name)))
+    }
+
+    function defaultDddnsUpdateUrl(name) {
+        return /^[^.]+\.doubleslash\.space$/.test(name.trim().toLowerCase().replace(/\.+$/, ""))
+            ? "https://users.doubleslash.space/v1/update" : ""
+    }
+
+    function resetDddnsCredentials() {
+        dddnsTokenDraft = ""
+        dddnsUpdateUrlDraft = defaultDddnsUpdateUrl(hostnameDraft)
+    }
+
+    onEditingHostnameKeyChanged: if (editingHostnameKey === "") dddnsTokenDraft = ""
+    onVisibleChanged: if (!visible) { dddnsTokenDraft = ""; editingHostnameKey = "" }
     property string filterText: ""
     property bool showNotice: false
     property var pending: ({})
@@ -158,7 +181,9 @@ SettingsCard {
         var p = Object.assign({}, pending)
         p[id] = { nodeId: nodeId, hostName: hostName }
         pending = p
-        patch(nodeId, { working: request.op, output: "", logs: "", failed: false }, hostName)
+        patch(nodeId, request.op === "connection_info"
+            ? { addressesChecking: true, addressesError: "" }
+            : { working: request.op, output: "", logs: "", failed: false }, hostName)
         if (nodeId && focus !== false) {
             openNodeId = nodeId
             openChosen = true
@@ -182,7 +207,7 @@ SettingsCard {
         if (needle === "") return true
         var fields = [node.name || "", node.cluster_id || ""]
         ;(node.hosts || []).forEach(function(host) {
-            fields.push(host.host_name || "", host.public_host || "")
+            fields.push(host.host_name || "", host.public_host || "", host.hostname || "")
         })
         return fields.some(function(field) {
             return field.toLowerCase().indexOf(needle) >= 0
@@ -228,7 +253,10 @@ SettingsCard {
         if (health(node).checked > 0) return
         send(nodeId, { op: "status" }, false)
     }
-    onOpenNodeIdChanged: if (openNodeId !== "") Qt.callLater(checkOnOpen, openNodeId)
+    onOpenNodeIdChanged: {
+        editingHostnameKey = ""
+        if (openNodeId !== "") Qt.callLater(checkOnOpen, openNodeId)
+    }
 
     function infoKey(nodeId, hostName) {
         return hostName ? JSON.stringify([nodeId, hostName]) : nodeId
@@ -282,13 +310,32 @@ SettingsCard {
         return live.active ? "Running" : live.state
     }
 
+    function connectionDetails(host, addresses) {
+        var values = addresses || host
+        var missing = addresses ? "No public address detected" : "Not checked"
+        return "IPv4: " + (values.ipv4 || missing)
+            + "\nIPv6: " + (values.ipv6 || missing)
+            + (values.ipv6 && values.signaling_ipv6 === false
+                ? (values.dual_stack_on_apply ? " (Apply will enable dual stack)" : " (signaling is IPv4 only)") : "")
+            + "\nWebSocket signaling port (TCP): " + (values.ws_port || "Unavailable")
+            + "\nRelay port (UDP): " + (values.relay_port || "Unavailable")
+    }
+
+    function checkAddresses(nodeId, hostName, force) {
+        var current = info(nodeId, hostName)
+        if (current.addressesChecking || (!force && current.addresses)) return
+        send(nodeId, { op: "connection_info", host_name: hostName }, false)
+    }
+
     function memberDetails(nodeId, host) {
         var live = info(nodeId, host.host_name).status
-        var lines = [host.host_name, "Address: " + host.public_host,
+        var lines = [host.host_name, connectionDetails(host, info(nodeId, host.host_name).addresses),
                      "SSH: " + host.ssh_target, "OS: " + (host.os || host.platform),
                      "Platform: " + host.platform, "SSH access: " + host.access,
                      "SSH host key: " + host.host_key_fingerprint,
                      "Node identity: " + host.node_identity]
+        lines.push("Hostname: " + (host.hostname || "None"),
+                   "Hostname lookup: " + (host.hostname_lookup || "Automatic"))
         if (live) {
             lines.push("Status: " + memberStatus(nodeId, host))
             if (live.version) lines.push("Build: " + live.version)
@@ -332,7 +379,8 @@ SettingsCard {
         status: "checking", check_update: "checking for updates", update_now: "updating",
         restart: "restarting", set_update_mode: "changing updates", uninstall: "uninstalling",
         remove_server: "removing a server", sync_cluster: "syncing the cluster",
-        invite: "reading the invite", logs: "reading logs", rename: "renaming"
+        invite: "reading the invite", logs: "reading logs", rename: "renaming",
+        set_hostname: "applying hostname"
     })
 
     function workingWord(node) {
@@ -420,6 +468,12 @@ SettingsCard {
             var p = Object.assign({}, card.pending)
             delete p[event.request_id]
             card.pending = p
+            if (event.op === "connection_info") {
+                card.patch(nodeId, event.ok
+                    ? { addressesChecking: false, addresses: event.value, addressesError: "" }
+                    : { addressesChecking: false, addressesError: event.error || "Could not check addresses" }, hostName)
+                return
+            }
             if (!event.ok) {
                 var failed = event.error || "Request failed"
                 if (event.op === "invite" && card.info(nodeId).usedSaved)
@@ -428,6 +482,9 @@ SettingsCard {
                 return
             }
             var v = event.value || {}
+            if (event.op === "set_hostname"
+                    && card.editingHostnameKey === card.infoKey(nodeId, hostName))
+                card.editingHostnameKey = ""
             var fields = { working: "", failed: false, usedSaved: false }
             if (event.op === "check_update" || event.op === "update_now") {
                 (v.hosts || []).forEach(function(host) {
@@ -805,6 +862,8 @@ SettingsCard {
                         === card.infoKey(nodeColumn.node.id, modelData.host_name)
                     readonly property string label: "server " + (index + 1)
                     property bool showDetails: false
+                    readonly property bool editingHostname: card.editingHostnameKey
+                        === card.infoKey(nodeColumn.node.id, modelData.host_name)
                     Layout.fillWidth: true
                     Layout.leftMargin: Theme.spacingLg
                     spacing: Theme.spacingXs
@@ -903,6 +962,21 @@ SettingsCard {
                             }
                         }
                     }
+                    TextEdit {
+                        objectName: "connection-details-" + member.modelData.host_name
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 12 + Theme.spacingXs
+                        visible: !member.editingHostname
+                        text: card.connectionDetails(member.modelData, member.info.addresses)
+                        textFormat: TextEdit.PlainText
+                        readOnly: true
+                        selectByMouse: true
+                        wrapMode: TextEdit.Wrap
+                        color: Theme.muted
+                        selectionColor: Theme.accent
+                        selectedTextColor: Theme.textInv
+                        font.pixelSize: Theme.fontSizeCaption
+                    }
                     Label {
                         objectName: "details-" + member.modelData.host_name
                         Layout.fillWidth: true
@@ -913,6 +987,171 @@ SettingsCard {
                         wrapMode: Text.WrapAnywhere
                         color: Theme.muted
                         font.pixelSize: Theme.fontSizeCaption
+                    }
+
+                    StyledButton {
+                        objectName: "edit-hostname-" + member.modelData.host_name
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        Layout.leftMargin: 12 + Theme.spacingXs
+                        text: member.modelData.hostname ? "Hostname: " + member.modelData.hostname : "Set hostname"
+                        enabled: !nodeColumn.locked
+                        onClicked: {
+                            card.hostnameDraft = member.modelData.hostname || ""
+                            card.hostnameLookupDraft = member.modelData.hostname_lookup || ""
+                            card.resetDddnsCredentials()
+                            card.editingHostnameKey = member.editingHostname ? ""
+                                : card.infoKey(nodeColumn.node.id, member.modelData.host_name)
+                            if (member.editingHostname && card.hostnameDraft.trim() !== "")
+                                card.checkAddresses(nodeColumn.node.id, member.modelData.host_name, false)
+                        }
+                    }
+                    ColumnLayout {
+                        visible: member.editingHostname
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 12 + Theme.spacingXs
+                        spacing: Theme.spacingSm
+                        Label {
+                            text: "Hostname (optional)"
+                            color: Theme.muted
+                            font.pixelSize: Theme.fontSizeCaption
+                        }
+                        StyledTextField {
+                            id: hostnameField
+                            objectName: "hostname-field-" + member.modelData.host_name
+                            Layout.fillWidth: true
+                            placeholderText: "node.doubleslash.space or relay.example.com"
+                            text: member.editingHostname ? card.hostnameDraft : ""
+                            onTextEdited: {
+                                card.hostnameDraft = text
+                                card.resetDddnsCredentials()
+                                if (text.trim() !== "")
+                                    card.checkAddresses(nodeColumn.node.id, member.modelData.host_name, false)
+                            }
+                            enabled: !nodeColumn.locked
+                        }
+                        TextEdit {
+                            objectName: "hostname-addresses-" + member.modelData.host_name
+                            Layout.fillWidth: true
+                            visible: hostnameField.text.trim() !== ""
+                            text: card.connectionDetails(member.modelData, member.info.addresses)
+                            textFormat: TextEdit.PlainText
+                            readOnly: true
+                            selectByMouse: true
+                            wrapMode: TextEdit.Wrap
+                            color: Theme.text
+                            selectionColor: Theme.accent
+                            selectedTextColor: Theme.textInv
+                            font.pixelSize: Theme.fontSizeBody
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            visible: member.info.addressesChecking === true || !!member.info.addressesError
+                            text: member.info.addressesChecking ? "Checking server addresses…"
+                                : member.info.addressesError || ""
+                            wrapMode: Text.WordWrap
+                            color: member.info.addressesError ? Theme.danger : Theme.muted
+                            font.pixelSize: Theme.fontSizeCaption
+                        }
+                        StyledButton {
+                            objectName: "refresh-addresses-" + member.modelData.host_name
+                            visible: hostnameField.text.trim() !== ""
+                            text: "Refresh addresses"
+                            enabled: !member.info.addressesChecking
+                            onClicked: card.checkAddresses(nodeColumn.node.id, member.modelData.host_name, true)
+                        }
+                        Label {
+                            text: "Hostname lookup"
+                            color: Theme.muted
+                            font.pixelSize: Theme.fontSizeCaption
+                        }
+                        ComboBox {
+                            id: hostnameLookup
+                            objectName: "hostname-lookup-" + member.modelData.host_name
+                            Layout.fillWidth: true
+                            model: ["Automatic", "DNS", "DDDNS"]
+                            readonly property var values: ["", "dns", "dddns"]
+                            currentIndex: Math.max(0, values.indexOf(card.hostnameLookupDraft))
+                            onActivated: {
+                                card.hostnameLookupDraft = values[currentIndex]
+                                card.resetDddnsCredentials()
+                            }
+                            enabled: !nodeColumn.locked && hostnameField.text.trim() !== ""
+                        }
+                        Label {
+                            visible: card.hostnameUsesDddns
+                            text: "DDDNS update token"
+                            color: Theme.muted
+                            font.pixelSize: Theme.fontSizeCaption
+                        }
+                        StyledTextField {
+                            id: dddnsTokenField
+                            objectName: "dddns-token-" + member.modelData.host_name
+                            Layout.fillWidth: true
+                            visible: card.hostnameUsesDddns
+                            enabled: !nodeColumn.locked
+                            echoMode: TextInput.Password
+                            text: member.editingHostname ? card.dddnsTokenDraft : ""
+                            onTextEdited: card.dddnsTokenDraft = text
+                            placeholderText: "Used once to update this hostname; never saved"
+                        }
+                        Label {
+                            visible: card.hostnameUsesDddns
+                            text: card.defaultDddnsUpdateUrl(card.hostnameDraft) !== ""
+                                ? "DDDNS update endpoint (fixed)" : "DDDNS update URL"
+                            color: Theme.muted
+                            font.pixelSize: Theme.fontSizeCaption
+                        }
+                        StyledTextField {
+                            objectName: "dddns-update-url-" + member.modelData.host_name
+                            Layout.fillWidth: true
+                            visible: card.hostnameUsesDddns
+                            enabled: !nodeColumn.locked
+                            text: member.editingHostname ? card.dddnsUpdateUrlDraft : ""
+                            onTextEdited: card.dddnsUpdateUrlDraft = text
+                            placeholderText: readOnly ? "" : "Your provider's HTTPS update endpoint"
+                            readOnly: card.defaultDddnsUpdateUrl(card.hostnameDraft) !== ""
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: (card.hostnameUsesDddns
+                                   ? "Apply immediately points this name at this server's signaling addresses and port, "
+                                     + "replacing the previous record. The token is sent to the HTTPS URL above and is never saved. "
+                                   : "Clients try this name if the saved IP stops working. Automatic uses DDDNS "
+                                     + "under doubleslash.space and DNS elsewhere. Use a name you already control. ")
+                                + "Apply restarts this server and briefly interrupts its connections. "
+                                + "Leave the hostname empty to remove it."
+                            wrapMode: Text.WordWrap
+                            color: Theme.muted
+                            font.pixelSize: Theme.fontSizeCaption
+                        }
+                        RowLayout {
+                            StyledButton {
+                                objectName: "apply-hostname-" + member.modelData.host_name
+                                text: card.hostnameUsesDddns ? "Apply and update DDDNS" : "Apply and restart"
+                                enabled: !nodeColumn.locked && (!card.hostnameUsesDddns
+                                    || (card.dddnsTokenDraft !== "" && card.dddnsUpdateUrlDraft.trim() !== ""))
+                                onClicked: {
+                                    var request = {
+                                        op: "set_hostname", host_name: member.modelData.host_name,
+                                        hostname: hostnameField.text.trim(),
+                                        hostname_lookup: hostnameLookup.values[hostnameLookup.currentIndex]
+                                    }
+                                    if (card.hostnameUsesDddns) {
+                                        request.dddns_token = card.dddnsTokenDraft
+                                        request.dddns_update_url = card.dddnsUpdateUrlDraft.trim()
+                                    }
+                                    card.dddnsTokenDraft = ""
+                                    dddnsTokenField.clear()
+                                    card.send(nodeColumn.node.id, request)
+                                }
+                            }
+                            StyledButton {
+                                text: "Cancel"
+                                enabled: !nodeColumn.locked
+                                onClicked: card.editingHostnameKey = ""
+                            }
+                        }
                     }
 
                     // Remove one server: uninstall it, or drop one that is gone.

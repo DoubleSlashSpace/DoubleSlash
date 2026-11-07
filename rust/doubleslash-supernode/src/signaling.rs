@@ -8,7 +8,7 @@ use std::sync::{Arc, Weak};
 
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::RwLock;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{accept_hdr_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
@@ -633,7 +633,7 @@ impl SignalingServer {
         bind_addr: SocketAddr,
         handler: Arc<dyn SignalingHandler>,
     ) -> std::io::Result<u16> {
-        let listener = TcpListener::bind(bind_addr).await?;
+        let listener = crate::network_bind::tcp_listener(bind_addr)?;
         let port = listener.local_addr()?.port();
         info!("WebSocket signaling on {}", listener.local_addr()?);
 

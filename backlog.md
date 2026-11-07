@@ -427,19 +427,26 @@ The client lookup and the `dddns://` invite hint are in the tree
 - **Another zone.** Repeat with a name outside `doubleslash.space`, on a
   domain that has a wildcard record and certificate. Only parsing tests cover
   a foreign zone today.
-- **Desktop hostname settings.** `HostSupernodeWizard.qml` and
-  `SupernodeAdminCard.qml` have no `hostname` or `hostname_lookup` field.
-  Both are set only in `supernode.toml` or the manager inventory. Add them
-  through `supernode_admin/` onto the inventory fields. Validate the name
-  with `normalize_advertised_hostname`, and `hostname_lookup` as `dns` or
-  `dddns`.
-- **Supernode updater.** Not built. Opt-in in `supernode.toml`: learn the
-  public address from `GET /v1/ip` (both families), call `/v1/update` on
-  start and whenever it changes, keep the token in the data directory, and
-  never block start-up. Contract is parent-repo item 3 in the DDDNS
-  `AGENTS.md`. Needs tests in the supernode crate. `/v1/ip` behind the
-  proxy reports a Cloudflare address until the origin trusts
-  `CF-Connecting-IP` from a Cloudflare peer, so the updater waits on that.
+- **Desktop hostname acceptance.** Setup and Your servers expose an optional
+  hostname with Automatic/DNS/DDDNS lookup. Validate applying and clearing a
+  hostname on a live managed server, including a clustered member, then fetch
+  its invite and check the advertised hint. Check the hostname panel's SSH
+  IPv4/IPv6 discovery on dual-stack, single-family and NAT hosts, including
+  missing routes, missing `ip`, SSH errors and refresh. Automated service and
+  QML checks do not establish live SSH/restart or DDDNS recovery acceptance.
+  Validate dual-stack setup and wildcard-bind upgrades on a live Linux host:
+  IPv4 and IPv6 WebSocket/QUIC clients on the same ports, IPv6 disabled,
+  restart/reconnect and preserved explicit binds. Local socket tests cover
+  both families, fallback policy and authenticated cross-family QUIC relay;
+  they do not establish VPS firewall or Linux deployment acceptance.
+- **Client publication acceptance.** Apply/setup now posts the selected
+  server's explicit addresses and signaling port with a transient update
+  token from the desktop. Validate against the deployed HTTPS control service:
+  move one hostname between two servers, verify the old family is cleared,
+  reject revoked/wrong-name tokens, retry partial failures and confirm lookup
+  cache convergence. Verify an IPv4-only listener never publishes a detected
+  IPv6 address. The token must not appear in client logs, inventory, backups
+  or server files. Local HTTP fixtures and QML checks are not live acceptance.
 - **Optional label check.** The client looks up any one-label name. The
   server refuses labels under 3 characters and `xn--` labels, so those cost
   one failed request. The spec allows a lenient client. Align

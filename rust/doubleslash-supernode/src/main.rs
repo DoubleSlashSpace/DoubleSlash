@@ -9,6 +9,7 @@ mod crypto;
 mod handshake;
 mod identity;
 mod manifest;
+mod network_bind;
 mod peer_store;
 mod protocol;
 mod relay;

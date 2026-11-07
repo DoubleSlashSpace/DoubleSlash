@@ -9,6 +9,8 @@
 //! Desktop only (`supernode-admin`, turned on by `qt-ui`). See
 //! `docs/SUPERNODE_CLIENT_ADMIN_PLAN.md`.
 
+mod dddns;
+mod network;
 pub mod service;
 pub mod store;
 

@@ -755,7 +755,12 @@ impl QUICRelayServer {
             );
         };
         let (server_config, _cert_der) = build_quinn_server_config(signing_key)?;
-        let endpoint = Endpoint::server(server_config, bind_addr)?;
+        let endpoint = Endpoint::new(
+            quinn::EndpointConfig::default(),
+            Some(server_config),
+            crate::network_bind::udp_socket(bind_addr)?,
+            Arc::new(quinn::TokioRuntime),
+        )?;
         let port = endpoint.local_addr()?.port();
         let shown = &self.identity_pub_id[..self.identity_pub_id.len().min(12)];
         info!(
@@ -2332,6 +2337,13 @@ mod tests {
     fn build_test_client_endpoint(
         client_pub_bytes: &[u8],
     ) -> anyhow::Result<(Endpoint, SigningKey)> {
+        build_test_client_endpoint_on(client_pub_bytes, "127.0.0.1:0".parse()?)
+    }
+
+    fn build_test_client_endpoint_on(
+        client_pub_bytes: &[u8],
+        bind: SocketAddr,
+    ) -> anyhow::Result<(Endpoint, SigningKey)> {
         let signing_key = SigningKey::generate(&mut rand::thread_rng());
         let key_pair = KeyPair::generate_for(&rcgen::PKCS_ED25519)?;
 
@@ -2361,7 +2373,7 @@ mod tests {
         ));
 
         // Bind to ephemeral port on localhost
-        let mut endpoint = Endpoint::client("127.0.0.1:0".parse()?)?;
+        let mut endpoint = Endpoint::client(bind)?;
         endpoint.set_default_client_config(client_cfg);
 
         Ok((endpoint, signing_key))
@@ -2590,6 +2602,69 @@ mod tests {
     // =====================================================================
     // Additional P0 relay/room smoke tests over real localhost QUIC
     // =====================================================================
+
+    #[tokio::test]
+    async fn dual_stack_relay_authenticates_both_families_and_forwards_between_them(
+    ) -> anyhow::Result<()> {
+        use anyhow::Context;
+        let key = SigningKey::generate(&mut rand::thread_rng());
+        let id = crate::crypto::b64url_encode(&key.verifying_key().to_bytes());
+        let server = QUICRelayServer::new(id, test_features()).with_signing_key(key);
+        let port = server
+            .start("[::]:0".parse()?)
+            .await
+            .context("start dual-stack relay")?;
+        let mut peers = Vec::new();
+        for ip in [
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        ] {
+            let key = SigningKey::generate(&mut rand::thread_rng());
+            let public = key.verifying_key().to_bytes();
+            let id = crate::crypto::b64url_encode(&public);
+            server.allow_peer(&id);
+            // Quinn's dual-stack client socket must use a wildcard IPv6 bind
+            // on Windows, as the desktop client does. The destination still
+            // forces this peer's connection over IPv6 loopback.
+            let source = if ip.is_ipv6() {
+                std::net::Ipv6Addr::UNSPECIFIED.into()
+            } else {
+                ip
+            };
+            let (endpoint, _) = build_test_client_endpoint_on(&public, SocketAddr::new(source, 0))
+                .with_context(|| format!("build {ip} client endpoint"))?;
+            let connection = tokio::time::timeout(
+                Duration::from_secs(5),
+                endpoint
+                    .connect(SocketAddr::new(ip, port), "doubleslash")
+                    .context("begin client dial")?,
+            )
+            .await
+            .context("client connection deadline")?
+            .with_context(|| format!("connect {ip} client"))?;
+            server.join_room(&id, "dual-stack");
+            peers.push((connection, endpoint));
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while server.stats().peers_connected != 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .context("wait for both peer registrations")?;
+        let payload = b"IPv4 to IPv6 room relay";
+        peers[0]
+            .0
+            .send_datagram(Bytes::from([&[0xff], payload.as_slice()].concat()))?;
+        let received =
+            tokio::time::timeout(Duration::from_secs(2), peers[1].0.read_datagram()).await??;
+        assert!(received.ends_with(payload));
+        for (connection, _) in peers {
+            connection.close(0u32.into(), b"done");
+        }
+        server.shutdown();
+        Ok(())
+    }
 
     /// Helper: Connect a second (or Nth) real test peer to a running relay server.
     async fn connect_second_test_peer(

@@ -8,7 +8,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -17,9 +17,9 @@ use snm_core::{ClusterDef, Inventory, PrivilegeMode, ResolvedInstance, Selector}
 use snm_supernode::{
     cluster_sync_report_with, download_release_archive, guided_steps, installed_package,
     invite_instance, lifecycle_report, logs_instance_text, probe_host_os, published_release_sha256,
-    push_update, run_guided_setup, set_update_mode, status_instance, uninstall_instance_report,
-    GuidedProgress, GuidedSetup, HardeningOptions, LifecycleAction, OsSupport, SshAccessMode,
-    StepState, UpdateMode,
+    push_config_instance_report, push_update, run_guided_setup, set_update_mode, status_instance,
+    uninstall_instance_report, ClusterCache, GuidedProgress, GuidedSetup, HardeningOptions,
+    LifecycleAction, OsSupport, SshAccessMode, StepState, UpdateMode,
 };
 use snm_transport::{
     fetch_host_key, host_key_fingerprint, parse_public_key, PrivateKey, PublicKey, SessionAuth,
@@ -27,6 +27,8 @@ use snm_transport::{
 };
 use zeroize::Zeroize;
 
+use super::dddns::{UpdatePlan, UpdateRequest};
+use super::network::{probe_addresses, probe_listen_bind, PublicAddresses};
 use super::store::{ManagedHost, ManagedNode, ManagedNodeStore};
 use crate::peer_store::clean_local_name;
 
@@ -66,6 +68,10 @@ pub enum Request {
         #[serde(default)]
         host_name: Option<String>,
     },
+    ConnectionInfo {
+        node_id: String,
+        host_name: String,
+    },
     Logs {
         node_id: String,
         #[serde(default)]
@@ -96,6 +102,14 @@ pub enum Request {
     SetUpdateMode {
         node_id: String,
         mode: String,
+    },
+    SetHostname {
+        node_id: String,
+        host_name: String,
+        #[serde(flatten)]
+        settings: HostnameSettings,
+        #[serde(flatten)]
+        update: UpdateRequest,
     },
     Uninstall {
         node_id: String,
@@ -151,6 +165,7 @@ impl Request {
             Self::Restart { node_id, .. }
             | Self::UpdateNow { node_id, .. }
             | Self::SetUpdateMode { node_id, .. }
+            | Self::SetHostname { node_id, .. }
             | Self::Uninstall { node_id, .. }
             | Self::Forget { node_id }
             | Self::RemoveServer { node_id, .. }
@@ -162,6 +177,7 @@ impl Request {
             | Self::AcceptNotice
             | Self::FetchHostKey { .. }
             | Self::Status { .. }
+            | Self::ConnectionInfo { .. }
             | Self::Logs { .. }
             | Self::Invite { .. }
             | Self::CheckUpdate { .. }
@@ -208,6 +224,10 @@ pub struct ServerRequest {
     /// Where clients reach the node; the SSH host when empty.
     #[serde(default)]
     public_host: String,
+    #[serde(flatten)]
+    hostname: HostnameSettings,
+    #[serde(flatten)]
+    update: UpdateRequest,
     /// The OpenSSH key line the user confirmed by fingerprint.
     host_key: String,
     #[serde(default)]
@@ -263,6 +283,8 @@ fn default_port() -> u16 {
 struct CheckedServer {
     ssh_target: String,
     public_host: String,
+    hostname: HostnameSettings,
+    update_plan: Option<UpdatePlan>,
     host_key: PublicKey,
     access: SshAccessMode,
 }
@@ -294,12 +316,18 @@ impl ServerRequest {
             .map_err(|_| "Confirm the server's host key before continuing".to_string())?;
         let access = SshAccessMode::parse(&self.access)
             .ok_or_else(|| format!("Unknown SSH access choice {:?}", self.access))?;
+        let hostname = self.hostname.checked()?;
+        let update_plan = self
+            .update
+            .plan(&hostname.hostname, &hostname.hostname_lookup)?;
         Ok(CheckedServer {
             ssh_target: format!("{user}@{}:{}", bracket(host), self.port),
             public_host: match public_ip {
                 IpAddr::V4(ip) => ip.to_string(),
                 IpAddr::V6(ip) => format!("[{ip}]"),
             },
+            hostname,
+            update_plan,
             host_key,
             access,
         })
@@ -313,6 +341,45 @@ impl ServerRequest {
                 && self.hardening.automatic_reboot,
             fail2ban: self.hardening.fail2ban,
         }
+    }
+}
+
+/// Optional advertised name, separate from the public IP and SSH address.
+#[derive(Clone, Default, Deserialize)]
+pub struct HostnameSettings {
+    #[serde(default)]
+    hostname: String,
+    /// Empty means choose by name, as the supernode does.
+    #[serde(default)]
+    hostname_lookup: String,
+}
+
+impl HostnameSettings {
+    fn checked(&self) -> Result<Self, String> {
+        let lookup = self.hostname_lookup.trim().to_ascii_lowercase();
+        if !matches!(lookup.as_str(), "" | "dns" | "dddns") {
+            return Err("Choose Automatic, DNS or DDDNS for hostname lookup".into());
+        }
+        let raw = self.hostname.trim();
+        if raw.is_empty() {
+            return Ok(Self::default());
+        }
+        // Same validation as the supernode's normalize_advertised_hostname.
+        let hostname = crate::connection_fallback::normalize_dns_name(raw)
+            .ok_or("Enter a hostname without a scheme, port or path")?;
+        if lookup == "dddns" && !crate::connection_fallback::is_dddns_lookup_name(&hostname) {
+            return Err("A DDDNS hostname needs a name and zone, such as node.example.com".into());
+        }
+        Ok(Self {
+            hostname,
+            hostname_lookup: lookup,
+        })
+    }
+
+    fn apply(&self, instance: &mut snm_core::Instance) {
+        instance.hostname = (!self.hostname.is_empty()).then(|| self.hostname.clone());
+        instance.hostname_lookup =
+            (!self.hostname_lookup.is_empty()).then(|| self.hostname_lookup.clone());
     }
 }
 
@@ -353,6 +420,8 @@ pub struct AdminService {
     /// Every supernode's roster goes through the one cache file, which a sync
     /// reads and rewrites, so syncs take turns.
     cluster_sync: tokio::sync::Mutex<()>,
+    /// Serialize edits to one DDDNS record across different managed nodes.
+    dddns_changes: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
 }
 
 impl AdminService {
@@ -362,6 +431,7 @@ impl AdminService {
             tasks: Arc::default(),
             cluster_cache: profile_dir.join("managed_supernodes_cluster_cache.toml"),
             cluster_sync: tokio::sync::Mutex::new(()),
+            dddns_changes: Mutex::default(),
         }
     }
 
@@ -458,6 +528,9 @@ impl AdminService {
             Request::Status { node_id, host_name } => {
                 self.status(&node_id, host_name.as_deref()).await
             }
+            Request::ConnectionInfo { node_id, host_name } => {
+                self.connection_info(&node_id, &host_name).await
+            }
             Request::Logs {
                 node_id,
                 host_name,
@@ -484,6 +557,15 @@ impl AdminService {
                     .await?;
                 self.edit_node(&node_id, |node| node.update_mode = mode.clone())?;
                 Ok(json!({ "lines": lines, "state": self.state() }))
+            }
+            Request::SetHostname {
+                node_id,
+                host_name,
+                settings,
+                update,
+            } => {
+                self.set_hostname(&node_id, &host_name, settings, update)
+                    .await
             }
             Request::Uninstall { node_id, purge } => {
                 let lines = self
@@ -546,6 +628,7 @@ impl AdminService {
     async fn deploy(&self, server: ServerRequest, emit: Emit<'_>) -> Result<Value, String> {
         self.require_notice()?;
         let checked = server.check()?;
+        let _dddns_turn = self.dddns_turn(checked.update_plan.as_ref()).await;
         let update_mode = server
             .update_mode
             .as_deref()
@@ -556,13 +639,15 @@ impl AdminService {
             name if name.is_empty() => checked.public_host.clone(),
             name => name,
         };
-        let setup = guided_setup(
+        let mut setup = guided_setup(
             &server,
             &checked,
             host_slug(&name, &[]),
             client_key,
             update_mode,
         );
+        let probe = SshTransport::with_auth(&checked.ssh_target, setup_auth(&setup));
+        setup.instance.listen_bind = Some(probe_listen_bind(&probe).await?);
 
         // Setting up a server this profile already manages again (to change
         // its choices, or after fixing something) updates that entry rather
@@ -595,12 +680,22 @@ impl AdminService {
         };
         let node_id = node.id.clone();
         self.store.lock().upsert(node).map_err(|e| e.to_string())?;
+        let warning = self
+            .publish_after_setup(
+                &node_id,
+                &setup.host_name,
+                checked.update_plan.as_ref(),
+                &server.update,
+            )
+            .await;
         Ok(json!({
             "node_id": node_id,
             "node_identity": outcome.node_identity,
             "accept_invite": outcome.invite_url,
             "ports": ports_note(&setup),
             "state": self.state(),
+            "warning": warning,
+            "dddns_updated": checked.update_plan.is_some() && warning.is_none(),
         }))
     }
 
@@ -613,6 +708,7 @@ impl AdminService {
         self.require_notice()?;
         let node = self.node(node_id)?;
         let checked = server.check()?;
+        let _dddns_turn = self.dddns_turn(checked.update_plan.as_ref()).await;
         if node
             .hosts
             .iter()
@@ -627,11 +723,12 @@ impl AdminService {
             &format!("{}-{}", node.name, node.hosts.len() + 1),
             &existing,
         );
-        let setup = guided_setup(&server, &checked, host_name, client_key, update_mode);
+        let mut setup = guided_setup(&server, &checked, host_name, client_key, update_mode);
 
         // The cluster's shared defaults carry one privilege mode, so a new
         // server must be logged into the same way as the first.
         let probe = SshTransport::with_auth(&checked.ssh_target, setup_auth(&setup));
+        setup.instance.listen_bind = Some(probe_listen_bind(&probe).await?);
         let os = probe_host_os(&probe).await.map_err(|e| format!("{e:#}"))?;
         if let OsSupport::Unsupported(reason) = os.support() {
             return Err(reason);
@@ -673,8 +770,17 @@ impl AdminService {
             Ok(lines) => {
                 step("done", lines, None);
                 self.edit_node(node_id, |node| node.cluster_id = Some(cluster_id))?;
+                let warning = self
+                    .publish_after_setup(
+                        node_id,
+                        &setup.host_name,
+                        checked.update_plan.as_ref(),
+                        &server.update,
+                    )
+                    .await;
                 Ok(
-                    json!({ "node_id": node_id, "ports": ports_note(&setup), "state": self.state() }),
+                    json!({ "node_id": node_id, "ports": ports_note(&setup), "state": self.state(), "warning": warning,
+                        "dddns_updated": checked.update_plan.is_some() && warning.is_none() }),
                 )
             }
             Err(message) => {
@@ -801,6 +907,23 @@ impl AdminService {
         });
         let hosts = futures_util::future::join_all(checks).await;
         Ok(json!({ "node_id": node_id, "hosts": hosts }))
+    }
+
+    async fn connection_info(&self, node_id: &str, host_name: &str) -> Result<Value, String> {
+        let node = self.node(node_id)?;
+        let host = node.host(host_name).ok_or("No such server in this node")?;
+        let resolved = resolve_host(&node.inventory, host_name)?;
+        let configured = unbracket(&resolved.instance.public_host).parse().ok();
+        let key = self.store.lock().existing_client_key();
+        let transport = host_transport(host, key.as_ref())?;
+        let addresses = probe_addresses(&transport, configured).await?;
+        let can_upgrade = listen_bind(&resolved) == "0.0.0.0" && addresses.ipv6.is_some();
+        let mut result = serde_json::to_value(addresses).map_err(|e| e.to_string())?;
+        result["ws_port"] = json!(resolved.ws_port);
+        result["relay_port"] = json!(resolved.relay_port);
+        result["signaling_ipv6"] = json!(signaling_ipv6(&resolved));
+        result["dual_stack_on_apply"] = json!(can_upgrade);
+        Ok(result)
     }
 
     async fn logs(
@@ -987,6 +1110,121 @@ impl AdminService {
             .ok_or_else(|| "That supernode is no longer managed here".to_string())
     }
 
+    async fn set_hostname(
+        &self,
+        node_id: &str,
+        host_name: &str,
+        settings: HostnameSettings,
+        update: UpdateRequest,
+    ) -> Result<Value, String> {
+        let settings = settings.checked()?;
+        let plan = update.plan(&settings.hostname, &settings.hostname_lookup)?;
+        let _dddns_turn = self.dddns_turn(plan.as_ref()).await;
+        let mut node = self.node(node_id)?;
+        let host = node.host(host_name).ok_or("No such server in this node")?;
+        let key = self.store.lock().existing_client_key();
+        let transport = host_transport(host, key.as_ref())?;
+        let roster = match &node.cluster_id {
+            Some(id) => Some(
+                ClusterCache::load(&self.cluster_cache)
+                    .map_err(|e| format!("{e:#}"))?
+                    .find_roster(id)
+                    .ok_or("Sync the cluster before changing a server's hostname")?,
+            ),
+            None => None,
+        };
+        let bind = {
+            let resolved = resolve_host(&node.inventory, host_name)?;
+            if matches!(listen_bind(&resolved), "0.0.0.0" | "::") {
+                Some(probe_listen_bind(&transport).await?)
+            } else {
+                None
+            }
+        };
+        set_host_hostname(&mut node, host_name, &settings)?;
+        if let Some(bind) = &bind {
+            set_host_bind(&mut node, host_name, bind)?;
+        }
+        let resolved = resolve_host(&node.inventory, host_name)?;
+        let mut lines =
+            push_config_instance_report(&transport, &resolved, true, roster.as_ref(), false)
+                .await
+                .map_err(|e| {
+                    format!("Could not apply the hostname; the server may need a retry: {e:#}")
+                })?;
+        self.edit_node(node_id, |node| {
+            set_host_hostname(node, host_name, &settings)?;
+            if let Some(bind) = &bind {
+                set_host_bind(node, host_name, bind)?;
+            }
+            Ok::<(), String>(())
+        })??;
+        if let Some(plan) = plan {
+            self.publish_hostname(node_id, host_name, &plan, &update).await
+                .map_err(|error| format!("Hostname saved and applied, but the DDDNS update could not be confirmed: {error}. Re-enter the token and apply again."))?;
+            lines.push(format!(
+                "DDDNS updated: {} now points to this server.",
+                settings.hostname
+            ));
+        }
+        Ok(json!({ "lines": lines, "state": self.state() }))
+    }
+
+    async fn publish_hostname(
+        &self,
+        node_id: &str,
+        host_name: &str,
+        plan: &UpdatePlan,
+        update: &UpdateRequest,
+    ) -> Result<(), String> {
+        let node = self.node(node_id)?;
+        let host = node.host(host_name).ok_or("No such server in this node")?;
+        let resolved = resolve_host(&node.inventory, host_name)?;
+        let key = self.store.lock().existing_client_key();
+        let transport = host_transport(host, key.as_ref())?;
+        let configured = unbracket(&resolved.instance.public_host).parse().ok();
+        let addresses = probe_addresses(&transport, configured).await?;
+        plan.publish(
+            update,
+            addresses,
+            resolved.ws_port,
+            signaling_ipv6(&resolved),
+        )
+        .await
+    }
+
+    async fn dddns_turn(
+        &self,
+        plan: Option<&UpdatePlan>,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let plan = plan?;
+        let turn = {
+            let mut changes = self.dddns_changes.lock();
+            changes.retain(|_, turn| turn.strong_count() > 0);
+            let key = plan.key();
+            if let Some(turn) = changes.get(&key).and_then(Weak::upgrade) {
+                turn
+            } else {
+                let turn = Arc::new(tokio::sync::Mutex::new(()));
+                changes.insert(key, Arc::downgrade(&turn));
+                turn
+            }
+        };
+        Some(turn.lock_owned().await)
+    }
+
+    async fn publish_after_setup(
+        &self,
+        node_id: &str,
+        host_name: &str,
+        plan: Option<&UpdatePlan>,
+        update: &UpdateRequest,
+    ) -> Option<String> {
+        let plan = plan?;
+        self.publish_hostname(node_id, host_name, plan, update).await.err().map(|error|
+            format!("Server setup completed, but the DDDNS update could not be confirmed: {error}. Open this server in Your servers and apply the hostname with its update token to retry."))
+    }
+
     fn edit_node<T>(
         &self,
         node_id: &str,
@@ -998,6 +1236,38 @@ impl AdminService {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "That supernode is no longer managed here".to_string())
     }
+}
+
+fn set_host_hostname(
+    node: &mut ManagedNode,
+    host_name: &str,
+    settings: &HostnameSettings,
+) -> Result<(), String> {
+    let host = node
+        .inventory
+        .host
+        .iter_mut()
+        .find(|h| h.name == host_name)
+        .ok_or("No inventory for this server")?;
+    if host.instances.len() != 1 {
+        return Err("Expected one supernode instance on this managed server".into());
+    }
+    settings.apply(&mut host.instances[0]);
+    Ok(())
+}
+
+fn set_host_bind(node: &mut ManagedNode, host_name: &str, bind: &str) -> Result<(), String> {
+    let host = node
+        .inventory
+        .host
+        .iter_mut()
+        .find(|h| h.name == host_name)
+        .ok_or("No inventory for this server")?;
+    if host.instances.len() != 1 {
+        return Err("Expected one supernode instance on this managed server".into());
+    }
+    host.instances[0].listen_bind = Some(bind.to_owned());
+    Ok(())
 }
 
 /// The node's cluster id: the one it was linked under, else the one a failed
@@ -1099,12 +1369,10 @@ fn guided_setup(
     update_mode: UpdateMode,
 ) -> GuidedSetup {
     let mut instance = GuidedSetup::default_instance(&checked.public_host);
+    checked.hostname.apply(&mut instance);
     instance.allow_public_rooms = Some(server.allow_public_rooms);
-    // The default bind is IPv4 only. `::` also accepts IPv4 on Linux, but
-    // fails where IPv6 is switched off, so only an IPv6 node gets it.
-    if checked.public_host.starts_with('[') {
-        instance.listen_bind = Some("::".into());
-    }
+    // Deploy/add checks the target's IPv6 availability over pinned SSH before
+    // installation, independently of the family of its advertised public IP.
     GuidedSetup {
         host_name,
         ssh_target: checked.ssh_target.clone(),
@@ -1223,10 +1491,22 @@ fn node_json(node: &ManagedNode) -> Value {
         .hosts
         .iter()
         .map(|h| {
+            let instance = resolve_host(&node.inventory, &h.host_name).ok();
+            let public_host = instance.as_ref().map_or(h.public_host.as_str(), |r| r.instance.public_host.as_str());
+            let public_ip = unbracket(public_host).parse::<IpAddr>().ok().map(|ip| ip.to_string());
+            let addresses = PublicAddresses::configured(unbracket(public_host).parse().ok());
             json!({
                 "host_name": h.host_name,
                 "ssh_target": h.ssh_target,
                 "public_host": h.public_host,
+                "public_ip": public_ip,
+                "ipv4": addresses.ipv4,
+                "ipv6": addresses.ipv6,
+                "ws_port": instance.as_ref().map(|r| r.ws_port),
+                "relay_port": instance.as_ref().map(|r| r.relay_port),
+                "signaling_ipv6": instance.as_ref().and_then(signaling_ipv6),
+                "hostname": instance.as_ref().and_then(|r| r.instance.hostname.as_deref()).unwrap_or(""),
+                "hostname_lookup": instance.as_ref().and_then(|r| r.instance.hostname_lookup.as_deref()).unwrap_or(""),
                 "access": h.access,
                 "platform": h.platform,
                 "os": h.os,
@@ -1247,6 +1527,21 @@ fn node_json(node: &ManagedNode) -> Value {
         "created_at": node.created_at,
         "hosts": hosts,
     })
+}
+
+fn listen_bind<'a>(resolved: &'a ResolvedInstance<'_>) -> &'a str {
+    resolved
+        .instance
+        .listen_bind
+        .as_deref()
+        .unwrap_or(&resolved.defaults.supernode.listen_bind)
+}
+
+fn signaling_ipv6(resolved: &ResolvedInstance<'_>) -> Option<bool> {
+    unbracket(listen_bind(resolved))
+        .parse::<IpAddr>()
+        .ok()
+        .map(|ip| ip.is_ipv6())
 }
 
 fn unreachable_json(host_name: &str, error: &str) -> Value {
@@ -1361,11 +1656,88 @@ mod tests {
         assert!(selected_hosts(&node, None).is_err());
     }
 
+    #[test]
+    fn server_state_exposes_resolved_ports_and_unbracketed_public_ip() {
+        let mut node = clustered_node();
+        for name in ["first", "second"] {
+            let mut instance = GuidedSetup::default_instance("198.51.100.7");
+            if name == "first" {
+                instance.ws_port = None;
+                instance.relay_port = None;
+            } else {
+                instance.public_host = "[2001:db8::7]".into();
+                instance.listen_bind = Some("::".into());
+                instance.ws_port = Some(41000);
+                instance.relay_port = Some(42000);
+            }
+            node.inventory.host.push(snm_core::Host {
+                name: name.into(),
+                ssh: "root@192.0.2.1".into(),
+                arch: None,
+                instances: vec![instance],
+            });
+        }
+        let state = node_json(&node);
+        assert_eq!(state["hosts"][0]["public_ip"], "198.51.100.7");
+        assert_eq!(state["hosts"][0]["ipv4"], "198.51.100.7");
+        assert!(state["hosts"][0]["ipv6"].is_null());
+        assert_eq!(state["hosts"][0]["ws_port"], 34935);
+        assert_eq!(state["hosts"][0]["relay_port"], 3478);
+        assert_eq!(state["hosts"][0]["signaling_ipv6"], false);
+        assert_eq!(state["hosts"][1]["public_ip"], "2001:db8::7");
+        assert_eq!(state["hosts"][1]["ipv6"], "2001:db8::7");
+        assert_eq!(state["hosts"][1]["ws_port"], 41000);
+        assert_eq!(state["hosts"][1]["relay_port"], 42000);
+        assert_eq!(state["hosts"][1]["signaling_ipv6"], true);
+        // Missing inventory must not invent the usual port for this server.
+        assert!(state["hosts"][2]["ws_port"].is_null());
+        assert!(state["hosts"][2]["relay_port"].is_null());
+    }
+
+    #[tokio::test]
+    async fn moves_of_one_dddns_record_wait_while_other_names_stay_independent(
+    ) -> anyhow::Result<()> {
+        let service = service();
+        let update: UpdateRequest = serde_json::from_value(json!({"dddns_token":"ddt_test"}))?;
+        let first_plan = update
+            .plan("first.doubleslash.space", "")
+            .map_err(anyhow::Error::msg)?;
+        let other_plan = update
+            .plan("other.doubleslash.space", "")
+            .map_err(anyhow::Error::msg)?;
+        let first = service.dddns_turn(first_plan.as_ref()).await;
+        anyhow::ensure!(first.is_some());
+        let waiting = service.dddns_turn(first_plan.as_ref());
+        tokio::pin!(waiting);
+        anyhow::ensure!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut waiting)
+                .await
+                .is_err()
+        );
+        let independent = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            service.dddns_turn(other_plan.as_ref()),
+        )
+        .await?;
+        anyhow::ensure!(independent.is_some());
+        drop(first);
+        anyhow::ensure!(waiting.await.is_some());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn unknown_members_are_rejected_before_ssh_or_release_downloads() {
         let service = service();
         service.store.lock().upsert(clustered_node()).unwrap();
-        for op in ["status", "restart", "check_update", "update_now", "logs"] {
+        for op in [
+            "status",
+            "restart",
+            "check_update",
+            "update_now",
+            "logs",
+            "set_hostname",
+            "connection_info",
+        ] {
             let request = serde_json::from_value(json!({
                 "op": op, "node_id": "node", "host_name": "not-a-member",
             }))
@@ -1454,6 +1826,154 @@ mod tests {
         let mut unknown_access = parse("");
         unknown_access.access = "telnet".into();
         assert!(unknown_access.check().is_err());
+    }
+
+    #[test]
+    fn hostname_setup_and_edits_preserve_other_server_settings() {
+        let request: Request = serde_json::from_str(&server_json(
+            r#", "hostname":" Mine.Names.Example. ", "hostname_lookup":"DDDNS", "dddns_token":"ddt_test", "dddns_update_url":"https://users.names.example/v1/update""#,
+        ))
+        .unwrap();
+        let Request::Deploy(server) = request else {
+            unreachable!()
+        };
+        let checked = server.check().unwrap();
+        let setup = guided_setup(
+            &server,
+            &checked,
+            "first".into(),
+            None,
+            UpdateMode::ClientDriven,
+        );
+        assert_eq!(
+            setup.instance.hostname.as_deref(),
+            Some("mine.names.example")
+        );
+        assert_eq!(setup.instance.hostname_lookup.as_deref(), Some("dddns"));
+        assert_eq!(setup.instance.public_host, "198.51.100.7");
+
+        let mut node = clustered_node();
+        for host in &node.hosts {
+            node.inventory.host.push(snm_core::Host {
+                name: host.host_name.clone(),
+                ssh: host.ssh_target.clone(),
+                arch: None,
+                instances: vec![setup.instance.clone()],
+            });
+        }
+        let service = service();
+        service.store.lock().upsert(node.clone()).unwrap();
+        let settings = HostnameSettings {
+            hostname: "relay.example.com".into(),
+            hostname_lookup: "dns".into(),
+        }
+        .checked()
+        .unwrap();
+        service
+            .edit_node("node", |node| {
+                set_host_hostname(node, "second", &settings)?;
+                set_host_bind(node, "second", "::")
+            })
+            .unwrap()
+            .unwrap();
+        let reopened = ManagedNodeStore::open_with_key(
+            &[3u8; 32],
+            &service.cluster_cache.with_file_name("managed.dat"),
+        )
+        .unwrap();
+        let stored = reopened.node("node").unwrap().clone();
+        assert_eq!(
+            resolve_host(&stored.inventory, "first")
+                .unwrap()
+                .instance
+                .hostname
+                .as_deref(),
+            Some("mine.names.example")
+        );
+        let second = resolve_host(&stored.inventory, "second").unwrap();
+        assert_eq!(
+            second.instance.hostname.as_deref(),
+            Some("relay.example.com")
+        );
+        assert_eq!(second.instance.public_host, "198.51.100.7");
+        assert_eq!(signaling_ipv6(&second), Some(true));
+        assert_eq!(
+            listen_bind(&resolve_host(&stored.inventory, "first").unwrap()),
+            "0.0.0.0"
+        );
+        assert_eq!(stored.hosts[1].ssh_target, node.hosts[1].ssh_target);
+        assert_eq!(stored.hosts[1].node_identity, node.hosts[1].node_identity);
+        assert_eq!(stored.cluster_id, node.cluster_id);
+        assert_eq!(node_json(&stored)["hosts"][1]["hostname_lookup"], "dns");
+        assert!(!serde_json::to_string(&stored).unwrap().contains("ddt_test"));
+        assert!(!node_json(&stored).to_string().contains("ddt_test"));
+        let mut cleared = stored;
+        set_host_hostname(&mut cleared, "second", &HostnameSettings::default()).unwrap();
+        assert!(resolve_host(&cleared.inventory, "second")
+            .unwrap()
+            .instance
+            .hostname
+            .is_none());
+        assert!(resolve_host(&cleared.inventory, "second")
+            .unwrap()
+            .instance
+            .hostname_lookup
+            .is_none());
+        assert!(set_host_hostname(&mut cleared, "missing", &settings).is_err());
+    }
+
+    #[tokio::test]
+    async fn invalid_hostname_edits_fail_before_ssh_and_take_the_node_lock() {
+        let service = service();
+        service.store.lock().upsert(clustered_node()).unwrap();
+        for (hostname, lookup) in [
+            ("ws://relay.example.com", "dns"),
+            ("relay.example.com:34935", "dns"),
+            ("198.51.100.7", "dns"),
+            ("bad_host.example", "dns"),
+            ("relay.example.com", "unknown"),
+            ("localhost", "dddns"),
+        ] {
+            let request: Request = serde_json::from_value(json!({
+                "op": "set_hostname", "node_id": "node", "host_name": "second",
+                "hostname": hostname, "hostname_lookup": lookup,
+            }))
+            .unwrap();
+            assert_eq!(
+                request.claim(),
+                Some(Claim {
+                    setup: false,
+                    node: Some("node")
+                })
+            );
+            assert!(service.handle(request, &ignore).await.is_err());
+        }
+        assert!(!service.has_tasks());
+        let automatic = HostnameSettings {
+            hostname: "Node.DoubleSlash.Space.".into(),
+            hostname_lookup: String::new(),
+        }
+        .checked()
+        .unwrap();
+        assert_eq!(automatic.hostname, "node.doubleslash.space");
+        assert!(automatic.hostname_lookup.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hostname_edit_requires_the_cluster_roster_before_contacting_a_server() {
+        let service = service();
+        let mut node = clustered_node();
+        node.hosts[1].host_key = generate_ed25519_key("server").unwrap().public_openssh;
+        service.store.lock().upsert(node).unwrap();
+        let request = serde_json::from_value(json!({
+            "op": "set_hostname", "node_id": "node", "host_name": "second",
+            "hostname": "relay.example.com", "hostname_lookup": "dns",
+        }))
+        .unwrap();
+        let error = service.handle(request, &ignore).await.unwrap_err();
+        assert!(error.contains("Sync the cluster"), "{error}");
+        assert!(!service.has_tasks());
+        assert!(service.node("node").unwrap().inventory.host.is_empty());
     }
 
     #[test]

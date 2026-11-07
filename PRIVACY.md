@@ -1,6 +1,6 @@
 # DoubleSlash Privacy Policy
 
-**Effective date:** 2026-09-10
+**Effective date:** 2026-11-07
 
 This file is the privacy policy for the DoubleSlash **desktop** and **Android**
 clients. The public URL for store listings and in-app links is
@@ -278,6 +278,19 @@ from its distribution's mirrors.
 downloads a release, and your server's when the server updates itself. The distribution mirrors see your
 server's address. Whoever runs the server, usually you, can see the commands
 DoubleSlash runs on it.
+
+**Optional DDDNS record updates:** When you supply a DDDNS update token while
+setting up a server or applying its hostname, the desktop sends one authenticated
+HTTPS update to the URL displayed in that form. Names under `doubleslash.space`
+use the fixed endpoint `https://users.doubleslash.space/v1/update`; another provider needs
+its explicit HTTPS update URL. The provider receives the token, the name's label,
+the selected server's signaling IPv4/IPv6 addresses and WebSocket port, and sees
+your desktop's request IP address. Both address families are sent explicitly,
+including an empty value to remove a previous server's address. The token is
+masked, cleared from the form when submitted or closed, and is not saved to
+settings, backups, the managed-server inventory or the supernode. Request bodies,
+tokens and arbitrary service replies are not logged. Redirects are refused.
+This is a user-requested update; no background record updater is installed.
 
 ### Supernode portal and gated relay pages
 

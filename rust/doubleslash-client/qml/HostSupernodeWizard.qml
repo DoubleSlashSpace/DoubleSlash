@@ -55,6 +55,18 @@ Dialog {
 
     property string access: "client-key-only"
     property string updateMode: "server-timer"
+    readonly property bool hostnameUsesDddns: {
+        var name = hostnameField.text.trim().toLowerCase().replace(/\.+$/, "")
+        return name !== "" && (hostnameLookup.currentIndex === 2
+            || (hostnameLookup.currentIndex === 0 && /^[^.]+\.doubleslash\.space$/.test(name)))
+    }
+
+    function resetDddnsCredentials() {
+        dddnsTokenField.clear()
+        var name = hostnameField.text.trim().toLowerCase().replace(/\.+$/, "")
+        dddnsUpdateUrlField.text = /^[^.]+\.doubleslash\.space$/.test(name)
+            ? "https://users.doubleslash.space/v1/update" : ""
+    }
 
     readonly property var adminState: {
         try { return JSON.parse(appBackend.supernode_admin_state) } catch (e) { return ({}) }
@@ -85,6 +97,8 @@ Dialog {
             user: userField.text.trim() || "root",
             port: parseInt(portField.text) || 22,
             public_host: publicField.text.trim(),
+            hostname: hostnameField.text.trim(),
+            hostname_lookup: hostnameLookup.values[hostnameLookup.currentIndex],
             host_key: hostKey,
             password: passwordField.text,
             access: access,
@@ -97,6 +111,10 @@ Dialog {
         }
         if (addToNodeId !== "") request.node_id = addToNodeId
         else request.update_mode = updateMode
+        if (hostnameUsesDddns) {
+            request.dddns_token = dddnsTokenField.text
+            request.dddns_update_url = dddnsUpdateUrlField.text.trim()
+        }
         return request
     }
 
@@ -104,7 +122,9 @@ Dialog {
         steps = []
         outcome = ({})
         page = "run"
-        send(serverRequest())
+        var request = serverRequest()
+        dddnsTokenField.clear()
+        send(request)
     }
 
     onOpened: {
@@ -112,7 +132,7 @@ Dialog {
         page = adminState.notice_accepted ? "server" : "notice"
         send({ op: "state" })
     }
-    onClosed: passwordField.clear()
+    onAboutToHide: { passwordField.clear(); dddnsTokenField.clear() }
 
     Connections {
         target: root.appBackend
@@ -305,6 +325,59 @@ Dialog {
                     id: publicField
                     Layout.fillWidth: true
                     placeholderText: "Same as the server address"
+                }
+                FieldLabel { text: "Hostname (optional)" }
+                StyledTextField {
+                    id: hostnameField
+                    objectName: "setup-hostname"
+                    Layout.fillWidth: true
+                    placeholderText: "node.doubleslash.space or relay.example.com"
+                    onTextEdited: root.resetDddnsCredentials()
+                }
+                FieldLabel { text: "Hostname lookup" }
+                ComboBox {
+                    id: hostnameLookup
+                    objectName: "setup-hostname-lookup"
+                    Layout.fillWidth: true
+                    model: ["Automatic", "DNS", "DDDNS"]
+                    readonly property var values: ["", "dns", "dddns"]
+                    enabled: hostnameField.text.trim() !== ""
+                    onActivated: root.resetDddnsCredentials()
+                }
+                FieldLabel { text: "DDDNS update token"; visible: root.hostnameUsesDddns }
+                StyledTextField {
+                    id: dddnsTokenField
+                    objectName: "setup-dddns-token"
+                    visible: root.hostnameUsesDddns
+                    Layout.fillWidth: true
+                    echoMode: TextInput.Password
+                    placeholderText: "Used once after setup; never saved"
+                }
+                FieldLabel {
+                    text: dddnsUpdateUrlField.readOnly ? "DDDNS update endpoint (fixed)" : "DDDNS update URL"
+                    visible: root.hostnameUsesDddns
+                }
+                StyledTextField {
+                    id: dddnsUpdateUrlField
+                    objectName: "setup-dddns-update-url"
+                    visible: root.hostnameUsesDddns
+                    Layout.fillWidth: true
+                    placeholderText: readOnly ? "" : "Your provider's HTTPS update endpoint"
+                    readOnly: /^[^.]+\.doubleslash\.space$/.test(hostnameField.text.trim().toLowerCase().replace(/\.+$/, ""))
+                }
+                Label {
+                    Layout.columnSpan: 2
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: Theme.muted
+                    font.pixelSize: Theme.fontSizeCaption
+                    text: "Clients try this hostname if the saved IP stops working. Automatic "
+                        + "uses DDDNS for names under doubleslash.space and DNS elsewhere. "
+                        + (root.hostnameUsesDddns
+                           ? "After setup, DoubleSlash sends the token to the update URL above and points "
+                             + "this name at this server. Moving the name replaces the previous addresses and port. "
+                             + "The token is never saved."
+                           : "Use a name you already control.")
                 }
                 Label {
                     Layout.columnSpan: 2
@@ -529,6 +602,16 @@ Dialog {
                     font.bold: true
                 }
                 Label {
+                    objectName: "setup-dddns-result"
+                    Layout.fillWidth: true
+                    visible: !!root.outcome.warning || root.outcome.dddns_updated === true
+                    text: root.outcome.warning || "DDDNS now points to this server."
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                    color: root.outcome.warning ? Theme.danger : Theme.online
+                    font.pixelSize: Theme.fontSizeBody
+                }
+                Label {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     color: Theme.text
@@ -608,7 +691,7 @@ Dialog {
             StyledButton {
                 visible: root.page === "run" && root.errorText !== ""
                 text: "Change answers"
-                onClicked: { root.errorText = ""; root.page = "options" }
+                onClicked: { root.errorText = ""; root.page = root.hostnameUsesDddns ? "server" : "options" }
             }
             StyledButton {
                 visible: root.page === "run" && root.errorText !== ""
@@ -629,7 +712,8 @@ Dialog {
                 visible: root.page === "server"
                 primary: true
                 text: "Next"
-                enabled: hostField.text.trim() !== ""
+                enabled: hostField.text.trim() !== "" && (!root.hostnameUsesDddns
+                    || (dddnsTokenField.text !== "" && dddnsUpdateUrlField.text.trim() !== ""))
                 onClicked: root.send({
                     op: "fetch_host_key",
                     host: hostField.text.trim(),
@@ -653,7 +737,7 @@ Dialog {
                 visible: root.page === "run" && root.errorText !== ""
                 primary: true
                 text: "Retry"
-                enabled: !root.busy
+                enabled: !root.busy && (!root.hostnameUsesDddns || dddnsTokenField.text !== "")
                 onClicked: root.startSetup()
             }
             StyledButton {

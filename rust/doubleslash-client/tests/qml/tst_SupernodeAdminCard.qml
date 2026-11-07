@@ -42,6 +42,9 @@ Item {
         function host(name) {
             return {
                 host_name: name, public_host: "192.0.2.1",
+                public_ip: "192.0.2.1", ws_port: name === "second" ? 41000 : 34935,
+                ipv4: "192.0.2.1", ipv6: null,
+                relay_port: 3478,
                 ssh_target: "root@192.0.2.1:22", os: "Debian 12",
                 platform: "linux-x86_64", access: "own-key",
                 host_key_fingerprint: "SHA256:test", node_identity: name
@@ -57,6 +60,11 @@ Item {
             card.pendingRemoveId = ""
             card.pendingServerRemove = ""
             card.renamingId = ""
+            card.editingHostnameKey = ""
+            card.hostnameDraft = ""
+            card.hostnameLookupDraft = ""
+            card.dddnsTokenDraft = ""
+            card.dddnsUpdateUrlDraft = ""
             card.filterText = ""
             card.autoStatus = false
             card.width = 720
@@ -103,6 +111,141 @@ Item {
             compare(card.memberStatus("n1", host("second")), "Running")
             compare(card.memberStatus("n1", host("first")), "Not checked")
             verify(!card.working(card.nodes[0]))
+        }
+
+        function test_connection_details_are_visible_before_status_or_info() {
+            var summary = findChild(card, "connection-details-second")
+            verify(summary.visible)
+            verify(summary.readOnly && summary.selectByMouse)
+            verify(summary.text.indexOf("IPv4: 192.0.2.1") >= 0)
+            verify(summary.text.indexOf("IPv6: Not checked") >= 0)
+            verify(summary.text.indexOf("WebSocket signaling port (TCP): 41000") >= 0)
+            verify(summary.text.indexOf("Relay port (UDP): 3478") >= 0)
+            compare(card.info("n1", "second").status, undefined)
+            verify(!findChild(card, "details-second").visible)
+            findChild(card, "info-second").clicked()
+            verify(findChild(card, "details-second").text.indexOf("TCP): 41000") >= 0)
+            var missing = host("missing")
+            delete missing.ws_port
+            delete missing.relay_port
+            verify(card.connectionDetails(missing).indexOf("TCP): Unavailable") >= 0)
+        }
+
+        function test_hostname_shows_both_families_and_read_does_not_block_apply() {
+            findChild(card, "edit-hostname-second").clicked()
+            var field = findChild(card, "hostname-field-second")
+            field.text = "myserver.doubleslash.space"
+            field.textEdited()
+            var lookup = backend.requests[backend.requests.length - 1]
+            compare(lookup.op, "connection_info")
+            compare(lookup.host_name, "second")
+            card.dddnsTokenDraft = "ddt_test"
+            verify(findChild(card, "apply-hostname-second").enabled)
+            verify(!findChild(card, "refresh-addresses-second").enabled)
+            findChild(card, "apply-hostname-second").clicked()
+            var apply = backend.requests[backend.requests.length - 1]
+            backend.finish(lookup, { ipv4: "198.51.100.7", ipv6: "2606:4700::1234",
+                                   ws_port: 41000, relay_port: 3478, signaling_ipv6: false })
+            verify(card.working(card.nodes[0]), "read response must not release the apply task")
+            var text = findChild(card, "hostname-addresses-second").text
+            verify(text.indexOf("IPv4: 198.51.100.7") >= 0)
+            verify(text.indexOf("IPv6: 2606:4700::1234") >= 0)
+            verify(text.indexOf("signaling is IPv4 only") >= 0)
+            verify(card.connectionDetails(host("second"), {
+                ipv6: "2606:4700::1234", signaling_ipv6: false, dual_stack_on_apply: true,
+                ws_port: 41000
+            }).indexOf("Apply will enable dual stack") >= 0)
+            verify(text.indexOf("TCP): 41000") >= 0)
+            backend.finish(apply, {}, "Retry apply")
+            findChild(card, "refresh-addresses-second").clicked()
+            var refresh = backend.requests[backend.requests.length - 1]
+            backend.finish(refresh, {}, "SSH unavailable")
+            verify(findChild(card, "hostname-addresses-second").text.indexOf("2606:4700::1234") >= 0)
+            compare(card.info("n1", "second").addressesError, "SSH unavailable")
+        }
+
+        function test_hostname_edit_targets_one_server_and_survives_errors() {
+            findChild(card, "edit-hostname-second").clicked()
+            var field = findChild(card, "hostname-field-second")
+            verify(field.visible)
+            field.text = "node.names.example"
+            field.textEdited()
+            var lookup = findChild(card, "hostname-lookup-second")
+            lookup.currentIndex = 2
+            lookup.activated(2)
+            card.dddnsTokenDraft = "ddt_test"
+            card.dddnsUpdateUrlDraft = "https://users.names.example/v1/update"
+            findChild(card, "apply-hostname-second").clicked()
+            var request = backend.requests[backend.requests.length - 1]
+            compare(request.op, "set_hostname")
+            compare(request.node_id, "n1")
+            compare(request.host_name, "second")
+            compare(request.hostname, "node.names.example")
+            compare(request.hostname_lookup, "dddns")
+            compare(request.dddns_token, "ddt_test")
+            compare(card.dddnsTokenDraft, "")
+            verify(!findChild(card, "apply-hostname-second").enabled)
+            // The bridge republishes state when a task takes/releases its lock.
+            var state = JSON.parse(backend.supernode_admin_state)
+            state.busy_nodes = ["n1"]
+            backend.supernode_admin_state = JSON.stringify(state)
+            tryCompare(findChild(card, "hostname-field-second"), "text", "node.names.example")
+            state.busy_nodes = []
+            backend.supernode_admin_state = JSON.stringify(state)
+            backend.finish(request, {}, "SSH unavailable")
+            verify(findChild(card, "hostname-field-second").visible)
+            compare(card.hostnameDraft, "node.names.example")
+            compare(card.info("n1", "second").output, "SSH unavailable")
+            card.dddnsTokenDraft = "ddt_retry"
+            findChild(card, "apply-hostname-second").clicked()
+            backend.finish(backend.requests[backend.requests.length - 1], { lines: ["Applied"] })
+            compare(card.editingHostnameKey, "")
+        }
+
+        function test_dddns_token_is_masked_cleared_and_scoped_to_the_apply() {
+            findChild(card, "edit-hostname-first").clicked()
+            var hostname = findChild(card, "hostname-field-first")
+            hostname.text = "node.doubleslash.space"
+            hostname.textEdited()
+            var token = findChild(card, "dddns-token-first")
+            verify(token.visible)
+            compare(token.echoMode, TextInput.Password)
+            compare(findChild(card, "dddns-update-url-first").text,
+                    "https://users.doubleslash.space/v1/update")
+            verify(findChild(card, "dddns-update-url-first").readOnly)
+            verify(!findChild(card, "apply-hostname-first").enabled)
+            token.text = "ddt_test_secret"
+            token.textEdited()
+            verify(findChild(card, "apply-hostname-first").enabled)
+            findChild(card, "apply-hostname-first").clicked()
+            var sent = backend.requests[backend.requests.length - 1]
+            compare(sent.dddns_token, "ddt_test_secret")
+            compare(card.dddnsTokenDraft, "")
+            compare(token.text, "")
+            verify(JSON.stringify(card.nodeInfo).indexOf("ddt_test_secret") < 0)
+            verify(backend.supernode_admin_state.indexOf("ddt_test_secret") < 0)
+            backend.finish(sent, {}, "Hostname applied; DDDNS could not be confirmed")
+            verify(!findChild(card, "apply-hostname-first").enabled, "retry needs token re-entry")
+            findChild(card, "edit-hostname-second").clicked()
+            compare(card.dddnsTokenDraft, "")
+            compare(findChild(card, "dddns-token-second").text, "")
+        }
+
+        function test_hostname_load_clear_and_filter() {
+            var list = [node("n1", "Supernode", ["first", "second"])]
+            list[0].hosts[1].hostname = "relay.example.com"
+            list[0].hosts[1].hostname_lookup = "dns"
+            setNodes(list)
+            tryVerify(function() { return findChild(card, "edit-hostname-second") !== null })
+            findChild(card, "edit-hostname-second").clicked()
+            compare(findChild(card, "hostname-field-second").text, "relay.example.com")
+            compare(findChild(card, "hostname-lookup-second").currentIndex, 1)
+            card.filterText = "relay.example.com"
+            compare(card.listedNodes().length, 1)
+            card.hostnameDraft = ""
+            verify(!findChild(card, "hostname-lookup-second").enabled)
+            findChild(card, "apply-hostname-second").clicked()
+            compare(backend.requests[backend.requests.length - 1].hostname, "")
         }
 
         function test_cluster_and_member_status_merge_by_host_name() {
@@ -172,6 +315,12 @@ Item {
             verify(last.visible)
             var right = last.mapToItem(card, last.width, 0).x
             verify(right <= card.width - Theme.spacingLg, "Member controls must fit the card")
+            findChild(card, "edit-hostname-first").clicked()
+            var apply = findChild(card, "apply-hostname-first")
+            wait(20)
+            verify(apply.mapToItem(card, apply.width, 0).x <= card.width - Theme.spacingLg)
+            var field = findChild(card, "hostname-field-first")
+            verify(field.mapToItem(card, field.width, 0).x <= card.width - Theme.spacingLg)
         }
 
         function node(id, name, hosts) {

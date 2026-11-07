@@ -2368,20 +2368,17 @@ impl ffi::AppBridge {
     }
 
     fn supernode_command(mut self: Pin<&mut Self>, request: &QString) {
-        // May carry a server password: kept zeroized and never logged.
+        // May carry a server password or DDDNS token: never log the payload.
         let text = zeroize::Zeroizing::new(request.to_string());
-        let header: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-        let request_id = header
-            .get("request_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_owned();
-        let op = header
-            .get("op")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_owned();
-        drop(header);
+        #[derive(Default, serde::Deserialize)]
+        struct RequestHeader {
+            #[serde(default)]
+            request_id: String,
+            #[serde(default)]
+            op: String,
+        }
+        // Ignore the secret fields rather than copying them into a JSON Value.
+        let RequestHeader { request_id, op } = serde_json::from_str(&text).unwrap_or_default();
 
         let fail = |mut bridge: Pin<&mut Self>, error: &str| {
             let event = serde_json::json!({
