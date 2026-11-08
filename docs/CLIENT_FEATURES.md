@@ -239,9 +239,12 @@ signed, and admission is proved against it rather than asserted.
 * **Desktop** — `startCall`, `acceptCall`, `rejectCall`, `endCall`, `setMuted`,
   plus the full audio stack: `listAudioDevices`, `setAudioDevices`,
   `setInputVolume`, `setOutputVolume`, `startMicTest`, `stopMicTest`,
-  `testSpeaker`, `setVoiceActivation`, `setNoiseStrength`, `setJitterDepth`,
-  `setVoiceBitrate`, `setDecoderComplexity`, `enablePtt`, `disablePtt`.
+  `testSpeaker`, `stopSpeakerTest`, `setVoiceActivation`, `setNoiseStrength`,
+  `setJitterDepth`, `setVoiceBitrate`, `setDecoderComplexity`, `enablePtt`,
+  `disablePtt`.
   Decoder complexity is 0–10 and local to this device (5 is Deep PLC).
+  Mic test and the speaker-test tone stop when Settings closes or the Audio
+  section is no longer showing.
 * **Android** — `call.start`, `call.accept`, `call.reject`, `call.end`,
   `audio.start`, `audio.stop`, `audio.set_muted`, `audio.tune`. The last takes
   input/output gain, noise suppression and strength, bitrate ceiling, voice

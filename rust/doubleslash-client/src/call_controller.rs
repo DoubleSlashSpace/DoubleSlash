@@ -10,7 +10,7 @@
 //! via cxx-qt callbacks stored in the `CallController`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1187,6 +1187,8 @@ pub enum CallCommand {
     StopMicTest,
     /// Play a short speaker test tone.
     TestSpeaker,
+    /// Drop a speaker-test tone that is still playing.
+    StopSpeakerTest,
     /// Shutdown the controller task.
     Shutdown,
 }
@@ -1379,6 +1381,10 @@ pub struct CallController {
     /// Collect remote turns for Ollama STT.
     listen_utterances: bool,
     utterances: crate::agent_voice::UtteranceCollector,
+    /// Generation of the speaker-test tone. Each start and each stop moves it.
+    /// The tone keeps the generation it captured and drops its stream when the
+    /// value no longer matches, which is how leaving Settings cuts the beep off.
+    speaker_test_gen: Arc<AtomicU64>,
 }
 
 impl CallController {
@@ -1450,6 +1456,7 @@ impl CallController {
             agent_speaking: Arc::new(AtomicBool::new(false)),
             listen_utterances: false,
             utterances: crate::agent_voice::UtteranceCollector::new(),
+            speaker_test_gen: Arc::new(AtomicU64::new(0)),
         };
         (ctrl, cmd_tx, event_rx)
     }
@@ -2038,6 +2045,23 @@ impl CallController {
         }
     }
 
+    /// Capture a generation and play the tone on a blocking thread.
+    ///
+    /// A newer generation — another click, or leaving the Audio settings —
+    /// makes this tone drop its stream.
+    fn begin_speaker_test(&mut self) {
+        let generation = self
+            .speaker_test_gen
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        let gate = Arc::clone(&self.speaker_test_gen);
+        tokio::task::spawn_blocking(move || play_speaker_test_beep(generation, gate));
+    }
+
+    fn stop_speaker_test(&mut self) {
+        let _ = self.speaker_test_gen.fetch_add(1, Ordering::Release);
+    }
+
     fn handle_stop_mic_test(&mut self) {
         if self.state != CallState::MicTest {
             return;
@@ -2435,7 +2459,10 @@ impl CallController {
                             self.handle_stop_mic_test();
                         }
                         CallCommand::TestSpeaker => {
-                            tokio::task::spawn_blocking(play_speaker_test_beep);
+                            self.begin_speaker_test();
+                        }
+                        CallCommand::StopSpeakerTest => {
+                            self.stop_speaker_test();
                         }
                     }
                 }
@@ -3049,10 +3076,22 @@ fn playback_callback_u16(
 // Speaker test
 // ---------------------------------------------------------------------------
 
+/// True while `generation` is still the tone the controller asked to play.
+fn speaker_test_current(generation: u64, gate: &AtomicU64) -> bool {
+    gate.load(Ordering::Acquire) == generation
+}
+
 /// Play a 440 Hz sine-wave beep for ~1.2 s on the default output device,
 /// honouring the device's native sample-rate / channel-count / sample-format.
 /// Runs on a blocking thread (via `tokio::task::spawn_blocking`).
-fn play_speaker_test_beep() {
+///
+/// `gate` moving off `generation` drops the stream early. Settings does that
+/// when the Audio section is no longer on screen, so the tone cannot keep
+/// playing after the button is gone.
+fn play_speaker_test_beep(generation: u64, gate: Arc<AtomicU64>) {
+    if !speaker_test_current(generation, &gate) {
+        return;
+    }
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     let host = cpal::default_host();
     let Some(output_dev) = host.default_output_device() else {
@@ -3170,11 +3209,21 @@ fn play_speaker_test_beep() {
             return;
         }
     };
+    if !speaker_test_current(generation, &gate) {
+        return;
+    }
     if let Err(e) = stream.play() {
         warn!("Speaker test: could not start stream: {e}");
         return;
     }
-    std::thread::sleep(std::time::Duration::from_millis(1400));
+    // Short slices so a stop cuts the tone off instead of waiting out the beep.
+    // 28 × 50 ms keeps the previous 1.4 s hold.
+    for _ in 0..28 {
+        if !speaker_test_current(generation, &gate) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
     // stream dropped here, CPAL stops playback
 }
 
@@ -3334,6 +3383,20 @@ mod tests {
                 &watching(&["alice"])
             ),
             0.0
+        );
+    }
+
+    /// Leaving Settings bumps the generation the tone captured, so a beep that
+    /// already started is no longer current and drops its stream.
+    #[test]
+    fn speaker_test_stops_when_generation_moves() {
+        let gate = AtomicU64::new(0);
+        let started = gate.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        assert!(speaker_test_current(started, &gate));
+        gate.fetch_add(1, Ordering::Release);
+        assert!(
+            !speaker_test_current(started, &gate),
+            "a stop must make the in-flight tone drop its stream"
         );
     }
 

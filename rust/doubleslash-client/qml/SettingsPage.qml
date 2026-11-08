@@ -77,6 +77,19 @@ Item {
         return "Deep PLC and NOLACE"
     }
 
+    // Mic test holds the microphone open and plays it back. The speaker test
+    // holds an output stream for its tone. Those controls exist only on this
+    // page's Audio section, so leaving Settings or that section stops both.
+    function stopAudioTests() {
+        if (!backend) return
+        if (backend.mic_test_active) backend.stopMicTest()
+        backend.stopSpeakerTest()
+    }
+
+    onVisibleChanged: if (!visible) root.stopAudioTests()
+    onCurrentTabChanged: if (currentTab !== tabAudio) root.stopAudioTests()
+    Component.onDestruction: root.stopAudioTests()
+
     function pttKeyName(event) {
         switch (event.key) {
             case Qt.Key_Space: return "space"

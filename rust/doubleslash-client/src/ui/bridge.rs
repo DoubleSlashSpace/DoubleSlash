@@ -909,6 +909,12 @@ pub mod ffi {
         #[rust_name = "test_speaker"]
         fn testSpeaker(self: Pin<&mut AppBridge>);
 
+        /// Drop a speaker-test tone that is still playing. Settings calls this
+        /// when the Audio section is no longer on screen.
+        #[qinvokable]
+        #[rust_name = "stop_speaker_test"]
+        fn stopSpeakerTest(self: Pin<&mut AppBridge>);
+
         /// Set the noise gate suppression level. Accepted values (case-insensitive):
         /// "off", "mild", "moderate", "aggressive", "max".
         /// Takes effect immediately mid-call.
@@ -3317,6 +3323,12 @@ impl ffi::AppBridge {
     fn test_speaker(self: Pin<&mut Self>) {
         if let Some(ref tx) = self.rust().call_cmd_tx {
             let _ = tx.try_send(crate::call_controller::CallCommand::TestSpeaker);
+        }
+    }
+
+    fn stop_speaker_test(self: Pin<&mut Self>) {
+        if let Some(ref tx) = self.rust().call_cmd_tx {
+            let _ = tx.try_send(crate::call_controller::CallCommand::StopSpeakerTest);
         }
     }
 
