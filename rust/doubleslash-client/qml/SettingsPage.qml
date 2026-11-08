@@ -14,6 +14,7 @@ Item {
     // Open the host-a-supernode wizard: empty for a new supernode, or a managed
     // node's id and name to add a server to that supernode's cluster.
     signal hostSupernodeRequested(string nodeId, string nodeName)
+    signal importSupernodeRequested()
     property int currentTab: 0
 
     // The Rooms sidebar's node list, handed in by MainWindow. Reused rather
@@ -2948,6 +2949,7 @@ Item {
                 SupernodeAdminCard {
                     appBackend: backend
                     supernodeModel: root.supernodeModel
+                    onImportRequested: root.importSupernodeRequested()
                     onHostRequested: function(nodeId, nodeName) {
                         root.hostSupernodeRequested(nodeId, nodeName)
                     }

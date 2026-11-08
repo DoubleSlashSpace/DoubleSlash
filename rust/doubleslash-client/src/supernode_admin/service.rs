@@ -28,6 +28,7 @@ use snm_transport::{
 use zeroize::Zeroize;
 
 use super::dddns::{UpdatePlan, UpdateRequest};
+use super::import::{self, ImportCredentials, ImportServerRequest, PendingImport};
 use super::network::{probe_addresses, probe_listen_bind, PublicAddresses};
 use super::store::{ManagedHost, ManagedNode, ManagedNodeStore};
 use crate::peer_store::clean_local_name;
@@ -58,6 +59,11 @@ pub enum Request {
         port: u16,
     },
     Deploy(ServerRequest),
+    DiscoverExisting(ImportServerRequest),
+    ImportExisting {
+        discovery_id: String,
+        units: Vec<String>,
+    },
     AddServer {
         node_id: String,
         #[serde(flatten)]
@@ -71,6 +77,8 @@ pub enum Request {
     ConnectionInfo {
         node_id: String,
         host_name: String,
+        #[serde(flatten)]
+        credentials: ImportCredentials,
     },
     Logs {
         node_id: String,
@@ -110,6 +118,8 @@ pub enum Request {
         settings: HostnameSettings,
         #[serde(flatten)]
         update: UpdateRequest,
+        #[serde(flatten)]
+        credentials: ImportCredentials,
     },
     Uninstall {
         node_id: String,
@@ -154,10 +164,12 @@ impl Request {
     /// hold nothing.
     fn claim(&self) -> Option<Claim<'_>> {
         match self {
-            Self::Deploy(_) => Some(Claim {
-                setup: true,
-                node: None,
-            }),
+            Self::Deploy(_) | Self::DiscoverExisting(_) | Self::ImportExisting { .. } => {
+                Some(Claim {
+                    setup: true,
+                    node: None,
+                })
+            }
             Self::AddServer { node_id, .. } => Some(Claim {
                 setup: true,
                 node: Some(node_id),
@@ -386,7 +398,7 @@ impl HostnameSettings {
 const BAD_HOST: &str = "Enter the server's IP address or host name";
 
 /// The SSH host as typed, without brackets: an IP literal or a DNS name.
-fn ssh_host(raw: &str) -> Option<&str> {
+pub(super) fn ssh_host(raw: &str) -> Option<&str> {
     let host = unbracket(raw.trim());
     let dns_name = !host.is_empty()
         && host.len() <= 253
@@ -404,7 +416,7 @@ fn unbracket(host: &str) -> &str {
 }
 
 /// IPv6 literals in `host:port` strings need brackets.
-fn bracket(host: &str) -> String {
+pub(super) fn bracket(host: &str) -> String {
     if host.contains(':') {
         format!("[{host}]")
     } else {
@@ -417,6 +429,7 @@ pub struct AdminService {
     tasks: Arc<Mutex<Tasks>>,
     /// Cluster roster cache the manager library keeps beside its inventory.
     cluster_cache: PathBuf,
+    pending_import: Mutex<Option<PendingImport>>,
     /// Every supernode's roster goes through the one cache file, which a sync
     /// reads and rewrites, so syncs take turns.
     cluster_sync: tokio::sync::Mutex<()>,
@@ -432,6 +445,7 @@ impl AdminService {
             cluster_cache: profile_dir.join("managed_supernodes_cluster_cache.toml"),
             cluster_sync: tokio::sync::Mutex::new(()),
             dddns_changes: Mutex::default(),
+            pending_import: Mutex::default(),
         }
     }
 
@@ -504,7 +518,29 @@ impl AdminService {
         _task: Option<TaskGuard>,
         emit: Emit<'_>,
     ) -> Result<Value, String> {
+        // Imported inventory describes the existing deployment; it is never rendered.
+        let changing = match &request {
+            Request::AddServer { node_id, .. }
+            | Request::Restart { node_id, .. }
+            | Request::CheckUpdate { node_id, .. }
+            | Request::UpdateNow { node_id, .. }
+            | Request::SetUpdateMode { node_id, .. }
+            | Request::Uninstall { node_id, .. }
+            | Request::RemoveServer { node_id, .. }
+            | Request::SyncCluster { node_id } => Some(node_id),
+            _ => None,
+        };
+        if let Some(id) = changing {
+            if import::is_imported(&self.node(id)?) {
+                return Err("Imported deployments support hostname management only. Manage software and cluster configuration with your existing tools.".into());
+            }
+        }
         match request {
+            Request::DiscoverExisting(server) => self.discover_existing(server).await,
+            Request::ImportExisting {
+                discovery_id,
+                units,
+            } => self.import_existing(&discovery_id, &units),
             Request::State => Ok(self.state()),
             Request::AcceptNotice => {
                 self.store
@@ -528,8 +564,13 @@ impl AdminService {
             Request::Status { node_id, host_name } => {
                 self.status(&node_id, host_name.as_deref()).await
             }
-            Request::ConnectionInfo { node_id, host_name } => {
-                self.connection_info(&node_id, &host_name).await
+            Request::ConnectionInfo {
+                node_id,
+                host_name,
+                credentials,
+            } => {
+                self.connection_info(&node_id, &host_name, &credentials)
+                    .await
             }
             Request::Logs {
                 node_id,
@@ -563,8 +604,9 @@ impl AdminService {
                 host_name,
                 settings,
                 update,
+                credentials,
             } => {
-                self.set_hostname(&node_id, &host_name, settings, update)
+                self.set_hostname(&node_id, &host_name, settings, update, credentials)
                     .await
             }
             Request::Uninstall { node_id, purge } => {
@@ -603,6 +645,69 @@ impl AdminService {
                 Ok(self.state())
             }
         }
+    }
+
+    async fn discover_existing(&self, server: ImportServerRequest) -> Result<Value, String> {
+        // Reading existing keys is deliberately different from key_for: an
+        // import must neither create a login key nor install one remotely.
+        *self.pending_import.lock() = None;
+        let key = self.store.lock().existing_client_key();
+        let (connection, transport) = server.connection(key.as_ref())?;
+        let instances = snm_supernode::inspect_existing_supernodes(&transport)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        let pending = PendingImport {
+            id: uuid::Uuid::new_v4().to_string(),
+            created_at: now_secs(),
+            connection,
+            instances,
+        };
+        let preview = pending.preview();
+        *self.pending_import.lock() = Some(pending);
+        Ok(preview)
+    }
+
+    fn import_existing(&self, discovery_id: &str, units: &[String]) -> Result<Value, String> {
+        let mut pending = self.pending_import.lock();
+        let snapshot = pending
+            .as_ref()
+            .filter(|p| p.id == discovery_id && now_secs().saturating_sub(p.created_at) <= 300)
+            .ok_or("Discovery expired. Scan the existing server again.")?;
+        let nodes = snapshot.nodes(units, now_secs())?;
+        let _guards = nodes
+            .iter()
+            .map(|n| self.claim(false, Some(&n.id)))
+            .collect::<Result<Vec<_>, _>>()?;
+        {
+            let mut store = self.store.lock();
+            // A changed roster is not silently merged or rewritten. Re-import
+            // after locally forgetting the old entry to accept a new topology.
+            for node in &nodes {
+                if store.nodes().iter().any(|old| {
+                    old.id != node.id
+                        && old.hosts.iter().any(|h| {
+                            node.hosts.iter().any(|new| {
+                                h.node_identity.trim_end_matches('=')
+                                    == new.node_identity.trim_end_matches('=')
+                            })
+                        })
+                }) {
+                    return Err("An instance is already listed under another deployment. Forget that local entry before importing a changed topology.".into());
+                }
+            }
+            for node in nodes {
+                let id = node.id.clone();
+                if store.node(&id).is_some() {
+                    store
+                        .edit(&id, |existing| import::merge_imported(existing, node))
+                        .map_err(|e| e.to_string())?;
+                } else {
+                    store.upsert(node).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        *pending = None;
+        Ok(json!({"imported_instances":units.len(), "state":self.state()}))
     }
 
     fn require_notice(&self) -> Result<(), String> {
@@ -647,6 +752,12 @@ impl AdminService {
             update_mode,
         );
         let probe = SshTransport::with_auth(&checked.ssh_target, setup_auth(&setup));
+        if snm_supernode::has_existing_supernodes(&probe)
+            .await
+            .map_err(|e| format!("{e:#}"))?
+        {
+            return Err("Existing supernode deployment found. Use Import existing to keep its setup unchanged.".into());
+        }
         setup.instance.listen_bind = Some(probe_listen_bind(&probe).await?);
 
         // Setting up a server this profile already manages again (to change
@@ -728,6 +839,12 @@ impl AdminService {
         // The cluster's shared defaults carry one privilege mode, so a new
         // server must be logged into the same way as the first.
         let probe = SshTransport::with_auth(&checked.ssh_target, setup_auth(&setup));
+        if snm_supernode::has_existing_supernodes(&probe)
+            .await
+            .map_err(|e| format!("{e:#}"))?
+        {
+            return Err("Existing supernode deployment found. Use Import existing to keep its setup unchanged.".into());
+        }
         setup.instance.listen_bind = Some(probe_listen_bind(&probe).await?);
         let os = probe_host_os(&probe).await.map_err(|e| format!("{e:#}"))?;
         if let OsSupport::Unsupported(reason) = os.support() {
@@ -812,7 +929,7 @@ impl AdminService {
         let mut lines = Vec::new();
         if uninstall {
             let key = self.store.lock().existing_client_key();
-            let transport = host_transport(host, key.as_ref())?;
+            let transport = host_transport(host, key.as_ref(), None)?;
             let resolved = resolve_host(&node.inventory, host_name)?;
             let removed = run_host_action(HostAction::Uninstall { purge }, &transport, &resolved)
                 .await
@@ -871,7 +988,7 @@ impl AdminService {
             let managed = node
                 .host(&host.name)
                 .ok_or_else(|| anyhow::anyhow!("no credentials for {}", host.name))?;
-            host_transport(managed, key.as_ref()).map_err(anyhow::Error::msg)
+            host_transport(managed, key.as_ref(), None).map_err(anyhow::Error::msg)
         })
         .await
         .map_err(|e| format!("{e:#}"))
@@ -886,10 +1003,16 @@ impl AdminService {
             let inventory = &node.inventory;
             async move {
                 match (
-                    host_transport(host, key),
+                    host_transport(host, key, None),
                     resolve_host(inventory, &host.host_name),
                 ) {
                     (Ok(transport), Ok(resolved)) => {
+                        if let Some(instance) = &host.existing {
+                            return match snm_supernode::existing_status(&transport, instance).await {
+                                Ok(state) => json!({"host_name":host.host_name,"reachable":true,"active":state == "active","state":state,"version":"Existing deployment"}),
+                                Err(e) => unreachable_json(&host.host_name, &format!("{e:#}")),
+                            };
+                        }
                         match status_instance(&transport, &resolved).await {
                             Ok(status) => json!({
                                 "host_name": host.host_name,
@@ -909,15 +1032,42 @@ impl AdminService {
         Ok(json!({ "node_id": node_id, "hosts": hosts }))
     }
 
-    async fn connection_info(&self, node_id: &str, host_name: &str) -> Result<Value, String> {
+    async fn connection_info(
+        &self,
+        node_id: &str,
+        host_name: &str,
+        credentials: &ImportCredentials,
+    ) -> Result<Value, String> {
         let node = self.node(node_id)?;
         let host = node.host(host_name).ok_or("No such server in this node")?;
         let resolved = resolve_host(&node.inventory, host_name)?;
         let configured = unbracket(&resolved.instance.public_host).parse().ok();
         let key = self.store.lock().existing_client_key();
-        let transport = host_transport(host, key.as_ref())?;
+        let transport = host_transport(host, key.as_ref(), Some(&credentials.ssh_password))?;
+        if let Some(existing) = &host.existing {
+            let fresh = snm_supernode::inspect_existing_supernodes(&transport)
+                .await
+                .map_err(|e| format!("{e:#}"))?
+                .into_iter()
+                .find(|i| {
+                    i.unit == existing.unit
+                        && i.public_id == existing.public_id
+                        && i.data_dir == existing.data_dir
+                })
+                .ok_or("The imported instance changed; import it again")?;
+            let configured = fresh.public_host.parse().ok();
+            let addresses = probe_addresses(&transport, configured).await?;
+            let mut result = serde_json::to_value(addresses).map_err(|e| e.to_string())?;
+            result["ws_port"] = json!(fresh.ws_addr.port());
+            result["relay_port"] = json!(fresh.relay_addr.port());
+            result["signaling_ipv6"] = json!(fresh.ws_addr.is_ipv6());
+            result["dual_stack_on_apply"] = json!(false);
+            return Ok(result);
+        }
         let addresses = probe_addresses(&transport, configured).await?;
-        let can_upgrade = listen_bind(&resolved) == "0.0.0.0" && addresses.ipv6.is_some();
+        let can_upgrade = host.existing.is_none()
+            && listen_bind(&resolved) == "0.0.0.0"
+            && addresses.ipv6.is_some();
         let mut result = serde_json::to_value(addresses).map_err(|e| e.to_string())?;
         result["ws_port"] = json!(resolved.ws_port);
         result["relay_port"] = json!(resolved.relay_port);
@@ -938,8 +1088,15 @@ impl AdminService {
             None => node.hosts.first().ok_or("This node has no servers")?,
         };
         let key = self.store.lock().existing_client_key();
-        let transport = host_transport(host, key.as_ref())?;
+        let transport = host_transport(host, key.as_ref(), None)?;
         let resolved = resolve_host(&node.inventory, &host.host_name)?;
+        if let Some(instance) = &host.existing {
+            let text =
+                snm_supernode::existing_logs(&transport, instance, lines.unwrap_or(200).min(2000))
+                    .await
+                    .map_err(|e| format!("{e:#}"))?;
+            return Ok(json!({"host_name":host.host_name,"text":text}));
+        }
         let text = logs_instance_text(&transport, &resolved, false, lines.unwrap_or(200).min(2000))
             .await
             .map_err(|e| format!("{e:#}"))?;
@@ -958,13 +1115,31 @@ impl AdminService {
         let key = self.store.lock().existing_client_key();
         let mut last_error = String::new();
         for host in &node.hosts {
-            let transport = match host_transport(host, key.as_ref()) {
+            let transport = match host_transport(host, key.as_ref(), None) {
                 Ok(transport) => transport,
                 Err(e) => {
                     last_error = format!("{}: {e}", host.host_name);
                     continue;
                 }
             };
+            if let Some(existing) = &host.existing {
+                match snm_supernode::inspect_existing_supernodes(&transport).await {
+                    Ok(instances) => {
+                        if let Some(fresh) = instances.iter().find(|i| {
+                            i.unit == existing.unit
+                                && i.public_id == existing.public_id
+                                && !i.invite_url.is_empty()
+                        }) {
+                            let url = fresh.invite_url.clone();
+                            self.edit_node(node_id, |n| n.invite_url = url.clone())?;
+                            return Ok(json!({"invite_url":url,"host_name":host.host_name}));
+                        }
+                        last_error = "No public reusable invite found for this instance".into();
+                    }
+                    Err(e) => last_error = format!("{e:#}"),
+                }
+                continue;
+            }
             let resolved = match resolve_host(&node.inventory, &host.host_name) {
                 Ok(resolved) => resolved,
                 Err(e) => {
@@ -1009,7 +1184,7 @@ impl AdminService {
         let key = self.store.lock().existing_client_key();
         let mut out = Vec::new();
         for host in selected_hosts(&node, host_name)? {
-            let transport = host_transport(host, key.as_ref())?;
+            let transport = host_transport(host, key.as_ref(), None)?;
             let resolved = resolve_host(&node.inventory, &host.host_name)?;
             let lines = run_host_action(action, &transport, &resolved)
                 .await
@@ -1039,7 +1214,7 @@ impl AdminService {
                     .map_err(|e| format!("read the published release: {e:#}"))?;
                 published.insert(host.platform.clone(), digest);
             }
-            let transport = host_transport(host, key.as_ref())?;
+            let transport = host_transport(host, key.as_ref(), None)?;
             let installed = installed_package(&transport, node.inventory.defaults.privilege)
                 .await
                 .map_err(|e| format!("{}: {e:#}", host.host_name))?;
@@ -1071,7 +1246,7 @@ impl AdminService {
                 packages.insert(host.platform.clone(), package);
             }
             let (archive, digest) = &packages[&host.platform];
-            let transport = host_transport(host, key.as_ref())?;
+            let transport = host_transport(host, key.as_ref(), None)?;
             let installed = installed_package(&transport, privilege)
                 .await
                 .map_err(|e| format!("{}: {e:#}", host.host_name))?;
@@ -1116,6 +1291,7 @@ impl AdminService {
         host_name: &str,
         settings: HostnameSettings,
         update: UpdateRequest,
+        credentials: ImportCredentials,
     ) -> Result<Value, String> {
         let settings = settings.checked()?;
         let plan = update.plan(&settings.hostname, &settings.hostname_lookup)?;
@@ -1123,7 +1299,44 @@ impl AdminService {
         let mut node = self.node(node_id)?;
         let host = node.host(host_name).ok_or("No such server in this node")?;
         let key = self.store.lock().existing_client_key();
-        let transport = host_transport(host, key.as_ref())?;
+        let transport = host_transport(host, key.as_ref(), Some(&credentials.ssh_password))?;
+        if let Some(existing) = &host.existing {
+            let fresh = snm_supernode::update_existing_hostname(
+                &transport,
+                existing,
+                (!settings.hostname.is_empty()).then_some(settings.hostname.as_str()),
+                (!settings.hostname_lookup.is_empty()).then_some(settings.hostname_lookup.as_str()),
+            )
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+            self.edit_node(node_id, |node| {
+                let host = node
+                    .hosts
+                    .iter_mut()
+                    .find(|h| h.host_name == host_name)
+                    .ok_or("Imported instance was removed")?;
+                host.public_host = bracket(&fresh.public_host);
+                host.existing = Some(fresh.clone());
+                let inventory_host = node
+                    .inventory
+                    .host
+                    .iter_mut()
+                    .find(|h| h.name == host_name)
+                    .ok_or("Missing imported instance inventory")?;
+                inventory_host.instances = vec![import::proxy_instance(&fresh)];
+                Ok::<(), String>(())
+            })??;
+            snm_supernode::restart_existing(&transport, &fresh)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            if let Some(plan) = &plan {
+                self.publish_hostname(node_id, host_name, plan, &update, Some(&credentials.ssh_password)).await
+                    .map_err(|e| format!("Hostname saved and instance restarted, but DDDNS update failed: {e}. Re-enter the token and apply again."))?;
+            }
+            return Ok(
+                json!({ "lines": ["Hostname applied to this instance. Existing ports, binds, features and cluster configuration preserved."], "state": self.state() }),
+            );
+        }
         let roster = match &node.cluster_id {
             Some(id) => Some(
                 ClusterCache::load(&self.cluster_cache)
@@ -1160,7 +1373,7 @@ impl AdminService {
             Ok::<(), String>(())
         })??;
         if let Some(plan) = plan {
-            self.publish_hostname(node_id, host_name, &plan, &update).await
+            self.publish_hostname(node_id, host_name, &plan, &update, None).await
                 .map_err(|error| format!("Hostname saved and applied, but the DDDNS update could not be confirmed: {error}. Re-enter the token and apply again."))?;
             lines.push(format!(
                 "DDDNS updated: {} now points to this server.",
@@ -1176,12 +1389,13 @@ impl AdminService {
         host_name: &str,
         plan: &UpdatePlan,
         update: &UpdateRequest,
+        password: Option<&str>,
     ) -> Result<(), String> {
         let node = self.node(node_id)?;
         let host = node.host(host_name).ok_or("No such server in this node")?;
         let resolved = resolve_host(&node.inventory, host_name)?;
         let key = self.store.lock().existing_client_key();
-        let transport = host_transport(host, key.as_ref())?;
+        let transport = host_transport(host, key.as_ref(), password)?;
         let configured = unbracket(&resolved.instance.public_host).parse().ok();
         let addresses = probe_addresses(&transport, configured).await?;
         plan.publish(
@@ -1221,7 +1435,7 @@ impl AdminService {
         update: &UpdateRequest,
     ) -> Option<String> {
         let plan = plan?;
-        self.publish_hostname(node_id, host_name, plan, update).await.err().map(|error|
+        self.publish_hostname(node_id, host_name, plan, update, None).await.err().map(|error|
             format!("Server setup completed, but the DDDNS update could not be confirmed: {error}. Open this server in Your servers and apply the hostname with its update token to retry."))
     }
 
@@ -1444,6 +1658,7 @@ fn managed_host(setup: &GuidedSetup, outcome: &snm_supernode::GuidedOutcome) -> 
         platform: outcome.platform.clone(),
         node_identity: outcome.node_identity.clone(),
         os: outcome.host_os.display_name(),
+        existing: None,
     }
 }
 
@@ -1459,10 +1674,24 @@ fn ports_note(setup: &GuidedSetup) -> Value {
 
 /// Credentials for later management: the profile key, or the user's own.
 /// No password is kept, so a host set up with `own-key` needs that key.
-fn host_transport(host: &ManagedHost, key: Option<&PrivateKey>) -> Result<SshTransport, String> {
+fn host_transport(
+    host: &ManagedHost,
+    key: Option<&PrivateKey>,
+    password: Option<&str>,
+) -> Result<SshTransport, String> {
     let host_key = parse_public_key(&host.host_key)
         .map_err(|e| format!("{}: stored host key: {e}", host.host_name))?;
     let mut auth = SessionAuth::pinned(host_key);
+    if host.existing.is_some() {
+        auth = auth.with_default_identity_files();
+        if let Some(key) = key {
+            auth = auth.with_key(key.clone());
+        }
+        if let Some(password) = password.filter(|p| !p.is_empty()) {
+            auth = auth.with_password(password.to_owned());
+        }
+        return Ok(SshTransport::with_auth(&host.ssh_target, auth));
+    }
     match SshAccessMode::parse(&host.access) {
         Some(SshAccessMode::OwnKey) => auth = auth.with_default_identity_files(),
         Some(_) => {
@@ -1497,6 +1726,11 @@ fn node_json(node: &ManagedNode) -> Value {
             let addresses = PublicAddresses::configured(unbracket(public_host).parse().ok());
             json!({
                 "host_name": h.host_name,
+                "display_name": h.existing.as_ref().map(|e| e.instance_id.as_str()).unwrap_or(&h.host_name),
+                "imported": h.existing.is_some(),
+                "active_at_import": h.existing.as_ref().map(|e| e.active),
+                "unit": h.existing.as_ref().map(|e| &e.unit),
+                "data_dir": h.existing.as_ref().map(|e| &e.data_dir),
                 "ssh_target": h.ssh_target,
                 "public_host": h.public_host,
                 "public_ip": public_ip,
@@ -1519,6 +1753,10 @@ fn node_json(node: &ManagedNode) -> Value {
         .collect();
     json!({
         "id": node.id,
+        "imported": import::is_imported(node),
+        "unmanaged_members": node.hosts.iter().filter_map(|h| h.existing.as_ref()).find_map(|e| e.cluster.as_ref()).map(|c|
+            c.members.iter().filter(|m| !node.hosts.iter().any(|h| h.node_identity.trim_end_matches('=') == m.identity_pub.trim_end_matches('=')))
+            .map(|m| json!({"relay_addr":m.relay_addr,"ws_addr":m.ws_addr})).collect::<Vec<_>>()).unwrap_or_default(),
         "name": node.name,
         "channel": node.channel,
         "update_mode": node.update_mode,
@@ -1628,6 +1866,7 @@ mod tests {
                     platform: "linux-x86_64".into(),
                     node_identity: name.into(),
                     os: "Debian".into(),
+                    existing: None,
                 })
                 .collect(),
             inventory: Inventory {
@@ -2224,12 +2463,80 @@ mod tests {
             platform: "linux-x86_64".into(),
             node_identity: "id".into(),
             os: String::new(),
+            existing: None,
         };
-        assert!(host_transport(&host, None).is_err());
+        assert!(host_transport(&host, None, None).is_err());
         let own = ManagedHost {
             access: "own-key".into(),
             ..host.clone()
         };
-        assert!(host_transport(&own, None).is_ok());
+        assert!(host_transport(&own, None, None).is_ok());
+    }
+
+    #[tokio::test]
+    async fn import_is_local_needs_no_notice_or_new_key_and_refuses_deployment_actions() {
+        let service = service();
+        let mut pending = import::fixture(&[0, 1]);
+        pending.created_at = now_secs();
+        let units: Vec<_> = pending.instances.iter().map(|i| i.unit.clone()).collect();
+        *service.pending_import.lock() = Some(pending);
+        let result = service
+            .handle(
+                request(json!({"op":"import_existing","discovery_id":"discovery","units":units})),
+                &ignore,
+            )
+            .await
+            .unwrap();
+        assert!(result.get("accept_invite").is_none());
+        assert_eq!(result["imported_instances"], 2);
+        assert!(!service.store.lock().notice_accepted());
+        assert!(service.store.lock().existing_client_key().is_none());
+        let node = service.store.lock().nodes()[0].clone();
+        assert_eq!(
+            node_json(&node)["unmanaged_members"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        for op in [
+            "restart",
+            "sync_cluster",
+            "update_now",
+            "check_update",
+            "uninstall",
+            "set_update_mode",
+            "remove_server",
+        ] {
+            let err = service.handle(request(json!({"op":op,"node_id":node.id,"mode":"client","host_name":node.hosts[0].host_name,"uninstall":false})), &ignore).await.unwrap_err();
+            assert!(err.contains("hostname management only"), "{op}: {err}");
+        }
+        assert!(!service.has_tasks());
+    }
+
+    #[test]
+    fn import_preview_expires_and_commit_respects_busy_node_and_consumes_preview() {
+        let service = service();
+        let mut pending = import::fixture(&[0]);
+        let units = vec![pending.instances[0].unit.clone()];
+        let id = pending.nodes(&units, now_secs()).unwrap()[0].id.clone();
+        *service.pending_import.lock() = Some(pending);
+        assert!(service
+            .import_existing("discovery", &units)
+            .unwrap_err()
+            .contains("expired"));
+        pending = import::fixture(&[0]);
+        pending.created_at = now_secs();
+        *service.pending_import.lock() = Some(pending);
+        let guard = service.claim(false, Some(&id)).unwrap();
+        assert!(service
+            .import_existing("discovery", &units)
+            .unwrap_err()
+            .contains("busy"));
+        drop(guard);
+        service.import_existing("discovery", &units).unwrap();
+        assert!(service.pending_import.lock().is_none());
+        assert!(service.import_existing("discovery", &units).is_err());
+        assert_eq!(service.store.lock().nodes().len(), 1);
     }
 }

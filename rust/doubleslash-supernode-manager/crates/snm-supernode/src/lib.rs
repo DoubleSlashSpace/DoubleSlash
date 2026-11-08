@@ -1,6 +1,7 @@
 mod autoupdate;
 mod binary_probe;
 mod cluster_cache;
+mod existing;
 mod firewall;
 mod guided;
 mod harden;
@@ -15,6 +16,7 @@ mod systemd;
 pub use autoupdate::*;
 pub use binary_probe::*;
 pub use cluster_cache::*;
+pub use existing::*;
 pub use firewall::*;
 pub use guided::*;
 pub use harden::*;

@@ -82,7 +82,7 @@ pub async fn fetch_invite(
     })
 }
 
-fn parse_reusable_invite(raw: &str) -> Result<String> {
+pub(crate) fn parse_reusable_invite(raw: &str) -> Result<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         bail!("reusable_invite.json is empty");

@@ -72,6 +72,21 @@ Omitted relay/ws/cluster ports in inventory are auto-allocated at resolve time (
 
 `public_host` on each instance must be the IP remote clients use for relay tickets. Optional `hostname` is a DNS name advertised beside that IP. It is not the ticket address. Clients dial the IP and resolve the name only after that connection fails. `hostname_lookup` says how: `dns`, or `dddns` for a DDDNS name in any zone, looked up over HTTPS (`docs/DDDNS.md` in the client repository). Unset, it is `dddns` under `*.doubleslash.space` and `dns` otherwise. When `hostname` is set, a deploy keeps the reusable invite id across an address change.
 
+### Existing deployment discovery (embedding API)
+
+`inspect_existing_supernodes` reads Linux systemd instance units, their actual
+`DOUBLESLASH_HOME`, schema-1 manifests, and public identity/invite fields through
+a pinned transport. Requires Python 3 and root or passwordless sudo; it installs
+nothing. Private identity/invite key fields must never leave the host. Discovery
+and local client import must never call install, hardening, key installation,
+config push, cluster sync or restart. `has_existing_supernodes` is the setup
+preflight before remote writes. Imported metadata is descriptive; shared-root
+inventory operations are unsafe for arbitrary existing layouts. Explicit hostname
+Apply uses `update_existing_hostname` to compare identity/path/roster/hash and
+patch only root hostname fields while retaining the rest of the TOML; restart is
+separate and targets its exact unit. Linked/shared manifest files are refused.
+Automated tests use fake transports; live multi-host import acceptance is pending.
+
 ### Process lifecycle
 
 - No hot-reload; config/binary changes need a **restart** (`config-push` restarts by default; `--no-restart` to skip).

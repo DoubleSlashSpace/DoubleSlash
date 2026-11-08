@@ -4272,6 +4272,7 @@ ApplicationWindow {
             SettingsPage {
                 id: settingsPage
                 onBackupsRequested: { settingsModel.save(); backupWizard.open() }
+                onImportSupernodeRequested: hostSupernodeWizard.openImport()
                 onHostSupernodeRequested: function(nodeId, nodeName) {
                     hostSupernodeWizard.openFor(nodeId, nodeName)
                 }

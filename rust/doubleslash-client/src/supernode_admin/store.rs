@@ -65,6 +65,9 @@ pub struct ManagedHost {
     pub node_identity: String,
     #[serde(default)]
     pub os: String,
+    /// Discovered deployment metadata. Import never modifies the remote host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing: Option<snm_supernode::ExistingInstance>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -241,6 +244,7 @@ mod tests {
                 platform: "linux-x86_64".into(),
                 node_identity: "abc".into(),
                 os: "Debian GNU/Linux 12 (bookworm)".into(),
+                existing: None,
             }],
             inventory: snm_core::Inventory {
                 defaults: snm_core::Defaults::default(),

@@ -34,7 +34,7 @@ optional feature described below (updates, link previews, Ollama, and so on).
 | `chat_history.db` | Local chat history; message bodies and sender handles are AES-256-GCM encrypted at rest |
 | `settings.json` | App preferences (audio, video/capture choices, plugins, privacy toggles, window size, etc.) |
 | `my_rooms.dat` | Saved room invites (encrypted) |
-| `managed_supernodes.dat` | Only if you host a supernode from Settings › Network (encrypted): this profile's SSH login key, each server's address, login name and pinned host key, and its node identity. Server passwords are never stored. Not included in backups |
+| `managed_supernodes.dat` | Only if you host or import a supernode from Settings › Network (encrypted): this profile's SSH login key, each server's address, login name and pinned host key, and its node identity. Server passwords are never stored. Not included in backups |
 | OS keyring (`doubleslash` service) | Optional cached AES unlock key so you are not prompted for your passphrase every launch |
 | OS **Downloads** folder | Files received from peers (saved by the desktop client on completion) |
 | `installer.log` | Installer/updater activity log (written when `doubleslash-installer` runs) |
@@ -265,8 +265,16 @@ connects to the server you name over SSH. It installs and configures the
 supernode and the security settings you select, and later runs the status,
 log, update and removal actions you click.
 
+**Import existing:** The client reads systemd metadata, manifests and public node
+identities/invites over pinned SSH, then saves selected deployment metadata locally.
+Import does not install SSH keys, change configuration, restart services or join
+Rooms. It reads private identity files only on the server to extract public fields;
+private identity keys are not returned. SSH passwords are used only for the current
+scan, hostname Apply or address Refresh and are not retained. Later hostname Apply
+edits only the selected instance's hostname fields and restarts that instance.
+
 **Servers contacted:** Your server, over SSH, using the address, login and
-password or key you enter. The password is used for setup only and is not
+password or key you enter. The password is used only for the current operation and is not
 stored. For the install, for update checks and for Update now, the desktop client
 downloads the supernode release from GitHub
 (`github.com/DoubleSlashSpace/DoubleSlash`), checks its SHA-256, and uploads it

@@ -24,6 +24,7 @@ SettingsCard {
     // Opens the wizard: empty ids for a new supernode, or a managed node's id
     // and name to add a server to that supernode's cluster.
     signal hostRequested(string nodeId, string nodeName)
+    signal importRequested()
 
     component ServerButton: IconButton {
         property string tip: ""
@@ -142,6 +143,7 @@ SettingsCard {
     property string hostnameDraft: ""
     property string hostnameLookupDraft: ""
     property string dddnsTokenDraft: ""
+    property string sshPasswordDraft: ""
     property string dddnsUpdateUrlDraft: ""
     readonly property bool hostnameUsesDddns: {
         var name = hostnameDraft.trim().toLowerCase().replace(/\.+$/, "")
@@ -159,7 +161,7 @@ SettingsCard {
         dddnsUpdateUrlDraft = defaultDddnsUpdateUrl(hostnameDraft)
     }
 
-    onEditingHostnameKeyChanged: if (editingHostnameKey === "") dddnsTokenDraft = ""
+    onEditingHostnameKeyChanged: { sshPasswordDraft = ""; if (editingHostnameKey === "") dddnsTokenDraft = "" }
     onVisibleChanged: if (!visible) { dddnsTokenDraft = ""; editingHostnameKey = "" }
     property string filterText: ""
     property bool showNotice: false
@@ -249,7 +251,7 @@ SettingsCard {
     // rows say more than "Not checked".
     function checkOnOpen(nodeId) {
         var node = nodeById(nodeId)
-        if (!autoStatus || !node || working(node) || nodeBusy(nodeId)) return
+        if (!autoStatus || !node || node.imported || working(node) || nodeBusy(nodeId)) return
         if (health(node).checked > 0) return
         send(nodeId, { op: "status" }, false)
     }
@@ -305,7 +307,7 @@ SettingsCard {
 
     function memberStatus(nodeId, host) {
         var live = info(nodeId, host.host_name).status
-        if (!live) return "Not checked"
+        if (!live) return host.imported ? (host.active_at_import ? "Running at import" : "Stopped at import") : "Not checked"
         if (live.reachable === false) return "Unreachable"
         return live.active ? "Running" : live.state
     }
@@ -324,7 +326,9 @@ SettingsCard {
     function checkAddresses(nodeId, hostName, force) {
         var current = info(nodeId, hostName)
         if (current.addressesChecking || (!force && current.addresses)) return
-        send(nodeId, { op: "connection_info", host_name: hostName }, false)
+        var request = { op: "connection_info", host_name: hostName }
+        if (sshPasswordDraft !== "") { request.ssh_password = sshPasswordDraft; sshPasswordDraft = "" }
+        send(nodeId, request, false)
     }
 
     function memberDetails(nodeId, host) {
@@ -332,7 +336,7 @@ SettingsCard {
         var lines = [host.host_name, connectionDetails(host, info(nodeId, host.host_name).addresses),
                      "SSH: " + host.ssh_target, "OS: " + (host.os || host.platform),
                      "Platform: " + host.platform, "SSH access: " + host.access,
-                     "SSH host key: " + host.host_key_fingerprint,
+                     "Server SSH fingerprint: " + host.host_key_fingerprint,
                      "Node identity: " + host.node_identity]
         lines.push("Hostname: " + (host.hostname || "None"),
                    "Hostname lookup: " + (host.hostname_lookup || "Automatic"))
@@ -341,6 +345,7 @@ SettingsCard {
             if (live.version) lines.push("Build: " + live.version)
             if (live.error) lines.push("Error: " + live.error)
         }
+        if (host.imported) lines.push("Service: " + host.unit, "Data directory: " + host.data_dir)
         return lines.join("\n")
     }
 
@@ -405,6 +410,7 @@ SettingsCard {
             else if (h.checked === count) parts.push(count === 1 ? "running" : "all running")
             else parts.push(h.running + " of " + count + " running")
         }
+        if (node.imported) parts.push("imported")
         if (updateAvailable(node)) parts.push("update available")
         if (info(node.id).failed) parts.push("last action failed")
         var doing = workingWord(node)
@@ -438,7 +444,7 @@ SettingsCard {
     // updates run together across supernodes, one server at a time within each.
     function sendEach(op, onlyWithUpdates) {
         listedNodes().forEach(function(node) {
-            if (working(node) || nodeBusy(node.id)) return
+            if (working(node) || nodeBusy(node.id) || (node.imported && op !== "status")) return
             if (onlyWithUpdates && !updateAvailable(node)) return
             send(node.id, { op: op }, false)
         })
@@ -524,6 +530,12 @@ SettingsCard {
             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
             enabled: !card.setupRunning
             onClicked: card.hostRequested("", "")
+        }
+        StyledButton {
+            objectName: "import-existing-supernode"
+            text: "Import existing"
+            enabled: !card.setupRunning
+            onClicked: card.importRequested()
         }
         Item { Layout.fillWidth: true }
         // Across every listed supernode; a single one has its own controls.
@@ -700,6 +712,7 @@ SettingsCard {
                     }
                 }
                 ServerButton {
+                    visible: !nodeColumn.node.imported
                     objectName: "add-server-" + nodeColumn.node.id
                     tip: "Add a server to this supernode's cluster"
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
@@ -717,7 +730,7 @@ SettingsCard {
                     }
                 }
                 ServerButton {
-                    tip: "Remove this supernode and all its servers"
+                    tip: nodeColumn.node.imported ? "Forget this imported entry" : "Remove this supernode and all its servers"
                     danger: true
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
                     enabled: !nodeColumn.locked
@@ -780,7 +793,7 @@ SettingsCard {
                 font.pixelSize: Theme.fontSizeCaption
                 text: card.statusLine(nodeColumn.node)
                     + "\nChannel: " + nodeColumn.node.channel
-                    + "\nUpdates: " + (nodeColumn.node.update_mode === "server-timer"
+                    + "\nUpdates: " + (nodeColumn.node.imported ? "managed externally" : nodeColumn.node.update_mode === "server-timer"
                         ? "each server updates itself daily" : "when you choose Update")
                     + (nodeColumn.node.cluster_id ? "\nCluster: " + nodeColumn.node.cluster_id : "")
                     + "\nThe servers of a supernode share its rooms, relay and portal, and "
@@ -789,6 +802,19 @@ SettingsCard {
                     + "opens that room."
             }
 
+            Label {
+                visible: nodeColumn.expanded && nodeColumn.node.imported === true
+                Layout.fillWidth: true
+                Layout.leftMargin: Theme.spacingLg
+                text: "Imported deployment - hostname management. Existing update and cluster tools remain in charge."
+                    + ((nodeColumn.node.unmanaged_members || []).length > 0
+                        ? "\nOther cluster members: " + nodeColumn.node.unmanaged_members.map(function(m) { return m.ws_addr }).join(", ")
+                          + ". Import their VPS to manage their hostnames." : "")
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: Theme.muted
+                font.pixelSize: Theme.fontSizeCaption
+            }
             Flow {
                 Layout.fillWidth: true
                 Layout.leftMargin: Theme.spacingLg
@@ -808,12 +834,14 @@ SettingsCard {
                     onClicked: card.send(nodeColumn.node.id, { op: "status" })
                 }
                 ServerButton {
+                    visible: !nodeColumn.node.imported
                     tip: "Check every server for updates"
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/download.svg"
                     enabled: !nodeColumn.working
                     onClicked: card.send(nodeColumn.node.id, { op: "check_update" })
                 }
                 ServerButton {
+                    visible: !nodeColumn.node.imported
                     tip: "Update every server, one at a time"
                     accent: card.updateAvailable(nodeColumn.node)
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/update.svg"
@@ -821,6 +849,7 @@ SettingsCard {
                     onClicked: card.send(nodeColumn.node.id, { op: "update_now" })
                 }
                 ServerButton {
+                    visible: !nodeColumn.node.imported
                     tip: "Restart every server, one at a time"
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/restart.svg"
                     enabled: !nodeColumn.locked
@@ -828,7 +857,7 @@ SettingsCard {
                 }
                 ServerButton {
                     objectName: "sync-" + nodeColumn.node.id
-                    visible: nodeColumn.clustered
+                    visible: nodeColumn.clustered && !nodeColumn.node.imported
                     tip: "Sync the cluster: give every server the member list again and restart "
                         + "them one at a time"
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/chain.svg"
@@ -836,6 +865,7 @@ SettingsCard {
                     onClicked: card.send(nodeColumn.node.id, { op: "sync_cluster" })
                 }
                 SquareSwitch {
+                    visible: !nodeColumn.node.imported
                     implicitHeight: Math.max(28, Theme.fontSizeCaption + Theme.spacingSm)
                     padding: 0
                     text: "Auto updates"
@@ -880,7 +910,7 @@ SettingsCard {
                         Label {
                             id: memberName
                             Layout.fillWidth: true
-                            text: (member.index + 1) + ". " + member.modelData.host_name
+                            text: (member.index + 1) + ". " + (member.modelData.display_name || member.modelData.host_name)
                                 + "  " + member.modelData.public_host
                             textFormat: Text.PlainText
                             elide: Text.ElideRight
@@ -908,6 +938,7 @@ SettingsCard {
                             })
                         }
                         ServerButton {
+                            visible: !nodeColumn.node.imported
                             tip: "Check " + member.label + " for updates"
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/download.svg"
                             enabled: !nodeColumn.working
@@ -916,6 +947,7 @@ SettingsCard {
                             })
                         }
                         ServerButton {
+                            visible: !nodeColumn.node.imported
                             tip: "Update " + member.label
                             accent: member.info.updateAvailable === true
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/update.svg"
@@ -925,6 +957,7 @@ SettingsCard {
                             })
                         }
                         ServerButton {
+                            visible: !nodeColumn.node.imported
                             tip: "Restart " + member.label
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/restart.svg"
                             enabled: !nodeColumn.locked
@@ -950,7 +983,7 @@ SettingsCard {
                         // The last server goes with the supernode, not on its own.
                         ServerButton {
                             objectName: "remove-server-" + member.modelData.host_name
-                            visible: (nodeColumn.node.hosts || []).length > 1
+                            visible: !nodeColumn.node.imported && (nodeColumn.node.hosts || []).length > 1
                             tip: "Remove " + member.label + " from the cluster"
                             danger: true
                             icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
@@ -1002,7 +1035,7 @@ SettingsCard {
                             card.resetDddnsCredentials()
                             card.editingHostnameKey = member.editingHostname ? ""
                                 : card.infoKey(nodeColumn.node.id, member.modelData.host_name)
-                            if (member.editingHostname && card.hostnameDraft.trim() !== "")
+                            if (member.editingHostname && !member.modelData.imported && card.hostnameDraft.trim() !== "")
                                 card.checkAddresses(nodeColumn.node.id, member.modelData.host_name, false)
                         }
                     }
@@ -1011,6 +1044,31 @@ SettingsCard {
                         Layout.fillWidth: true
                         Layout.leftMargin: 12 + Theme.spacingXs
                         spacing: Theme.spacingSm
+                        Label {
+                            visible: member.modelData.imported === true
+                            Layout.fillWidth: true
+                            text: "Apply changes only this instance's hostname fields and restarts its service. Ports, binds, features and membership are preserved. For password login, enter it before each Apply or Refresh addresses; leave it blank to use your existing SSH key."
+                            wrapMode: Text.WordWrap
+                            color: Theme.muted
+                            font.pixelSize: Theme.fontSizeCaption
+                        }
+                        StyledTextField {
+                            id: sshPasswordField
+                            objectName: "hostname-ssh-password-" + member.modelData.host_name
+                            visible: member.modelData.imported === true
+                            Layout.fillWidth: true
+                            echoMode: TextInput.Password
+                            text: member.editingHostname ? card.sshPasswordDraft : ""
+                            onTextEdited: card.sshPasswordDraft = text
+                            onVisibleChanged: if (!visible) clear()
+                            placeholderText: "SSH password if needed (never saved)"
+                            Connections {
+                                target: card
+                                function onSshPasswordDraftChanged() {
+                                    if (card.sshPasswordDraft === "") sshPasswordField.clear()
+                                }
+                            }
+                        }
                         Label {
                             text: "Hostname (optional)"
                             color: Theme.muted
@@ -1025,7 +1083,7 @@ SettingsCard {
                             onTextEdited: {
                                 card.hostnameDraft = text
                                 card.resetDddnsCredentials()
-                                if (text.trim() !== "")
+                                if (!member.modelData.imported && text.trim() !== "")
                                     card.checkAddresses(nodeColumn.node.id, member.modelData.host_name, false)
                             }
                             enabled: !nodeColumn.locked
@@ -1141,6 +1199,8 @@ SettingsCard {
                                         request.dddns_token = card.dddnsTokenDraft
                                         request.dddns_update_url = card.dddnsUpdateUrlDraft.trim()
                                     }
+                                    if (member.modelData.imported) request.ssh_password = card.sshPasswordDraft
+                                    card.sshPasswordDraft = ""
                                     card.dddnsTokenDraft = ""
                                     dddnsTokenField.clear()
                                     card.send(nodeColumn.node.id, request)
@@ -1232,7 +1292,7 @@ SettingsCard {
                     wrapMode: Text.WordWrap
                     color: Theme.danger
                     font.pixelSize: Theme.fontSizeCaption
-                    text: "Are you sure? Uninstall stops the supernode and removes it from "
+                    text: nodeColumn.node.imported ? "Forget this entry from Your servers? The existing deployment keeps running unchanged." : "Are you sure? Uninstall stops the supernode and removes it from "
                         + ((nodeColumn.node.hosts || []).length > 1 ? "all its servers" : "the server")
                         + " (the firewall and security settings stay). Delete its data "
                         + "too, and the node's identity is gone: everyone who uses it has to "
@@ -1241,6 +1301,7 @@ SettingsCard {
                 }
                 SettingSwitch {
                     id: purgeSwitch
+                    visible: !nodeColumn.node.imported
                     Layout.fillWidth: true
                     title: "Also delete the node's data and identity"
                     checked: false
@@ -1250,6 +1311,7 @@ SettingsCard {
                     Layout.fillWidth: true
                     spacing: Theme.spacingSm
                     ServerButton {
+                        visible: !nodeColumn.node.imported
                         tip: "Uninstall"
                         danger: true
                         icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"

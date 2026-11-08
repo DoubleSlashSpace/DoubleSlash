@@ -495,6 +495,17 @@ Fixed on the way:
 
 Remaining:
 
+- **Existing deployment import: live acceptance.** Desktop read-only systemd
+  discovery, per-instance selection, cross-VPS roster grouping and hostname-only
+  edits are implemented with Rust/fake-transport and QML coverage. On a disposable
+  Linux host with Python 3, import two co-located instances and a third on another
+  VPS. Compare configs, units, firewall, SSH keys and running PIDs before/after
+  import. Apply a DDDNS hostname to only the second instance; verify its advertised
+  hint/current port and record, the unchanged full roster/custom configuration,
+  and that siblings never restarted. Exercise key and password SSH, custom paths,
+  changed identity/roster, concurrent file edits, and refused symlink/shared files.
+  Do not treat automated tests as live Linux/SSH acceptance. Existing inventory-file
+  import remains separate unfinished work.
 - **IPv6-only relay: live acceptance.** The client now binds dual-stack with
   IPv4 fallback, and both dialers accept IPv6 literals. Loopback QUIC tests
   cover IPv4/IPv6 direct datagrams, reconnects, and the relay signaling and

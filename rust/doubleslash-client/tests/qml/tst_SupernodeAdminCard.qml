@@ -78,6 +78,46 @@ Item {
             tryCompare(card, "openNodeId", "n1")
         }
 
+        function test_imported_hostname_targets_exact_instance_and_password_is_transient() {
+            var nodes = JSON.parse(backend.supernode_admin_state).nodes
+            nodes[0].imported = true
+            nodes[0].hosts.forEach(function(h) { h.imported = true; h.active_at_import = true })
+            backend.supernode_admin_state = JSON.stringify({nodes:nodes})
+            card.autoStatus = true
+            card.checkOnOpen("n1")
+            compare(backend.requests.length, 0)
+            verify(!findChild(card, "add-server-n1").visible)
+            verify(!findChild(card, "sync-n1").visible)
+            verify(!findChild(card, "remove-server-second").visible)
+            compare(card.memberStatus("n1", nodes[0].hosts[1]), "Running at import")
+            findChild(card, "edit-hostname-second").clicked()
+            var field = findChild(card, "hostname-field-second")
+            field.text = "moved.doubleslash.space"
+            field.textEdited()
+            compare(backend.requests.length, 0, "imported hosts do not auto-submit before password entry")
+            var password = findChild(card, "hostname-ssh-password-second")
+            verify(password.visible)
+            compare(password.echoMode, TextInput.Password)
+            password.text = "test-password"
+            password.textEdited()
+            card.dddnsTokenDraft = "ddt_test"
+            findChild(card, "apply-hostname-second").clicked()
+            var apply = backend.requests[0]
+            compare(apply.op, "set_hostname")
+            compare(apply.host_name, "second")
+            compare(apply.ssh_password, "test-password")
+            compare(apply.dddns_token, "ddt_test")
+            compare(card.sshPasswordDraft, "")
+            compare(password.text, "")
+            compare(card.dddnsTokenDraft, "")
+            backend.finish(apply, {}, "Retry")
+            card.sshPasswordDraft = "discard"
+            card.editingHostnameKey = ""
+            compare(card.sshPasswordDraft, "")
+            card.sendEach("update_now", false)
+            compare(backend.requests.length, 1, "bulk updates skip imported deployments")
+        }
+
         function test_numbered_tree_and_info_toggle() {
             var header = findChild(card, "supernode-n1")
             verify(header !== null)
