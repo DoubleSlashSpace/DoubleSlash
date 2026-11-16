@@ -1,9 +1,11 @@
 # DoubleSlash Privacy Policy
 
-**Effective date:** 2026-11-07
+**Effective date:** 2026-11-15
 
-This file is the privacy policy for the DoubleSlash **desktop** and **Android**
-clients. The public URL for store listings and in-app links is
+This policy covers the DoubleSlash **desktop** and **Android** clients, the
+public website, and the optional paid **DoubleSlash DDNS (DDDNS)** service at
+`users.doubleslash.space` and lookup names under `doubleslash.space`.
+The public URL for store listings and in-app links is
 [github.com/DoubleSlashSpace/DoubleSlash/blob/develop/PRIVACY.md](https://github.com/DoubleSlashSpace/DoubleSlash/blob/develop/PRIVACY.md).
 
 DoubleSlash is a local-first, invite-only peer-to-peer application. Voice, video,
@@ -13,8 +15,108 @@ payloads are encrypted on the wire; supernodes relay signed/encrypted frames and
 cannot read message, audio, or video content. DoubleSlash does not operate any
 central servers that store your identity, messages, or call data.
 
-There is no DoubleSlash account. Deleting the app, or purging local history in
-Settings, removes what this device holds. There is no server copy to request.
+Using the app does not require an account. Deleting the app, or purging local
+history in Settings, removes what this device holds; we have no central copy of
+your conversations to retrieve. The optional DDNS service has a separate account
+and server-side records, described below. Removing the app does not delete that
+account or cancel its subscription.
+
+---
+
+## Optional DoubleSlash DDNS service and website
+
+DDNS helps clients find a supernode after its address changes. Paying for DDNS
+is optional and supports development. You can use DoubleSlash without it, use
+your own DNS records, or host a compatible HTTPS JSON record yourself.
+
+### Information the service handles
+
+- **Account and security records:** a random account ID, a hash of the account
+  key, account status and creation time, accepted terms/privacy versions and
+  acceptance time for new signups, session/CSRF records, and hashed update tokens
+  with their name scope and creation time. Account keys and update tokens are
+  shown when created; the service keeps hashes rather than retrievable copies.
+- **Supernode records:** claimed names, ownership, current IPv4/IPv6 addresses
+  and port, status, timestamps and address-change history. We use these to answer
+  lookups and let the account holder manage the records.
+- **Billing references:** Stripe customer, checkout, subscription and event IDs,
+  payment/plan status and billing-period dates. Our account form does not ask
+  for an email address. Stripe's hosted checkout may collect an email, billing
+  address and payment details. We do not receive full card numbers or card
+  security codes. Authorized operators can access billing/contact information
+  through Stripe for support, refunds and payment disputes.
+- **Request and support information:** request IP addresses, browser/request
+  metadata, rate-limit counters, security/operational events and administrative
+  audit records. A support message also provides its sender address and whatever
+  information you include. Do not send account keys, update tokens or full card
+  details in a support message.
+
+DDNS does not receive your app identity's private keys, messages, contacts,
+voice/video content or files. An account key controls this optional service;
+it is separate from your app identity.
+
+### Public records and access
+
+**An active supernode's published name, IP addresses and port are public.**
+Anyone who knows or guesses the name can request its machine-readable lookup
+record. Browser visits redirect to the main site, but that does not make the
+record private or restrict lookups to DoubleSlash clients. Other people may
+cache or copy a record they retrieve. Owner account IDs, billing references,
+keys and owner-only address history are not included in public lookup records.
+
+### Providers, cookies and storage
+
+We use the records above to provide the service, authenticate account actions,
+process subscriptions, prevent abuse, resolve support requests and meet applicable
+obligations. We do not sell DDNS personal data or use it for advertising profiles.
+
+- **Stripe** processes payments, billing emails and customer-portal actions under
+  its [Privacy Policy](https://stripe.com/privacy). Service records and account/name
+  references are sent to Stripe to associate a purchase with the right account.
+- **Cloudflare** provides DNS, HTTPS delivery, tunnels and abuse protection. It
+  receives request IP addresses and traffic passing through it. The signup page
+  loads **Turnstile**, which processes browser/device signals to distinguish human
+  visitors from bots; we send its token and the request IP for verification. See
+  [Cloudflare's Privacy Policy](https://www.cloudflare.com/privacypolicy/) and
+  [Turnstile Privacy Addendum](https://www.cloudflare.com/turnstile-privacy-policy/).
+- **Hosting providers** run the service infrastructure. The public main website
+  and linked policy pages use GitHub hosting; see
+  [GitHub's Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
+- **Support email:** mail providers process your sender address and message
+  to deliver and handle your request.
+
+The users site uses a necessary, secure, HTTP-only session cookie for sign-in
+and request protection; sessions normally expire after seven days. The site also
+uses local storage to remember your selected visual theme. We do not add analytics
+or advertising trackers to the users site. Providers may use their own necessary
+security/payment storage. Their infrastructure may process data in countries
+other than yours, under their respective policies.
+
+### Retention and your choices
+
+Current name/account and billing-reference records are kept while needed to
+operate the account, enforce name ownership and resolve billing or abuse issues.
+Unused accounts that have never claimed a name and have no Stripe customer are
+eligible for automatic cleanup after 24 hours. Paid/previously used accounts do
+not have a fixed automatic deletion deadline. Address-history entries older than
+30 days are trimmed when the record is updated; older entries can remain until
+that next update or an operator cleanup. Operational logs, audit/change records
+and backups can retain earlier data until rotated or removed. We do not promise
+that a name release or cancellation immediately erases all related records.
+Stripe retains its records under its own policy and applicable obligations.
+
+You can edit addresses, revoke update tokens and release names on the users site.
+Releasing a name stops its published address record; copies already retrieved by
+others cannot be recalled. Cancelling renewal in the Stripe portal does not
+delete the DDNS account. For account data access, correction, deletion, privacy
+questions or account-key recovery, contact
+[admin@doubleslash.space](mailto:admin@doubleslash.space). We may need to verify account
+control or a payment receipt before acting. There is currently no self-service
+account-deletion/export button or email password reset. Deletion requests and any
+continuing billing must be handled together; some records may need to be retained
+for security, disputes or applicable legal obligations. Depending on where you
+live, additional data-protection rights may apply; you can raise a concern with
+the relevant privacy authority.
 
 ---
 
@@ -404,7 +506,8 @@ above.
 
 ## Deleting data
 
-There is no DoubleSlash cloud account. To remove data on a device:
+The app does not have a central conversation or identity account. To remove data
+on a device:
 
 - **Desktop:** Settings → Privacy (trim or purge stored messages). Deleting the
   profile directory (`~/.doubleslash/`) removes identity,
@@ -438,7 +541,10 @@ Material changes will be noted in the
 
 ## Contact
 
-For privacy concerns, open an issue at
-[github.com/DoubleSlashSpace/DoubleSlash/issues](https://github.com/DoubleSlashSpace/DoubleSlash/issues).
-There is no DoubleSlash-operated support inbox and no personal data held on a
-server we could look up.
+For privacy concerns and private DDNS account/billing requests, contact
+[admin@doubleslash.space](mailto:admin@doubleslash.space).
+
+For non-sensitive software questions, you can also use
+[GitHub issues](https://github.com/DoubleSlashSpace/DoubleSlash/issues). Issues are
+public; never post account keys, update tokens, payment details or private
+conversations there.
