@@ -15,6 +15,7 @@ under Settings > About > Third-Party Notices. Adding a file here ships it;
 | Component | Licence | Notices |
 |---|---|---|
 | Qt 6.8.3 | LGPL-3.0 | `qt-6.8.3-LGPL-3.0.txt`, `qt-6.8.3-source-information.txt` |
+| Qt Image Formats 6.8.3 (libwebp 1.5.0, libtiff 4.7.0) | LGPL-3.0 + BSD-3-Clause + libtiff | `qt-imageformats-6.8.3-third-party.txt` |
 | Qt WebEngine 6.8.3 + Chromium 122 | LGPL-3.0 + BSD-3-Clause | `chromium-122-LICENSE.txt`, `chromium-122-source-information.txt` |
 | FFmpeg 7.1 | LGPL-2.1-or-later | `ffmpeg-7.1-LGPL-2.1.txt`, `ffmpeg-7.1-source-information.txt` |
 | Mesa llvmpipe | MIT | `mesa-license.txt`, `mesa-source-information.txt` |

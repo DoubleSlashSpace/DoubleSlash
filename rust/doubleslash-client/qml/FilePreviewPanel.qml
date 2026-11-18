@@ -33,7 +33,7 @@ Item {
         : ""
 
     readonly property var _imageExts:
-        [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".ico"]
+        [".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".apng", ".gif", ".bmp", ".webp", ".avif", ".svg", ".ico"]
     readonly property var _webExts:
         [".pdf", ".html", ".htm", ".txt", ".md",
          ".py", ".js", ".ts", ".json", ".xml", ".css", ".log"]

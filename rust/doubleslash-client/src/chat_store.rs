@@ -63,7 +63,8 @@ pub fn message_kind_for_path(path: &str) -> MessageKind {
         .unwrap_or("")
         .to_ascii_lowercase();
     match ext.as_str() {
-        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "ico" => MessageKind::Image,
+        "jpg" | "jpeg" | "jpe" | "jfif" | "png" | "apng" | "gif" | "bmp" | "dib" | "webp"
+        | "svg" | "ico" | "tif" | "tiff" | "tga" | "heic" | "heif" | "avif" => MessageKind::Image,
         "mp4" | "webm" | "ogv" | "mov" | "mkv" | "m4v" => MessageKind::Video,
         _ => MessageKind::File,
     }
@@ -1296,6 +1297,9 @@ mod tests {
     #[test]
     fn message_kind_for_path_classifies_media() {
         assert_eq!(message_kind_for_path("photo.PNG"), MessageKind::Image);
+        for name in ["a.webp", "b.jfif", "c.TIFF", "d.heic", "e.avif", "f.gif"] {
+            assert_eq!(message_kind_for_path(name), MessageKind::Image, "{name}");
+        }
         assert_eq!(
             message_kind_for_path("ChatGPT Image Apr 21, 2026, 10_24_40 PM.png"),
             MessageKind::Image

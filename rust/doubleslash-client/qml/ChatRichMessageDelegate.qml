@@ -77,8 +77,15 @@ Item {
     readonly property bool mediaPreviewReady: (root.kind === "image" || root.kind === "video")
         && root.attachmentPath !== ""
         && (!root.xferLive || root.outboundFinished)
-    readonly property bool showImage: root.ownSentImage
-        || (root.kind === "image" && root.mediaPreviewReady)
+    /// Qt could not decode the picture (a format without a plugin, or a
+    /// damaged file): show the file card with Open instead of a blank box.
+    property bool imageUnreadable: false
+    onAttachmentPathChanged: root.imageUnreadable = false
+    /// Formats that can carry animation play through AnimatedImage.
+    readonly property bool animatedImage: /\.(gif|webp|apng)$/i.test(root.attachmentPath || root.attachmentName)
+    readonly property bool showImage: (root.ownSentImage
+        || (root.kind === "image" && root.mediaPreviewReady))
+        && !root.imageUnreadable
 
     function refreshTransfer() {
         if (!root.fileTransferModel || root.transferId === "") {
@@ -432,16 +439,30 @@ Item {
                     id: imageEmbed
                     visible: root.showImage
                     width: parent.width
-                    height: visible ? Math.min(220, Math.max(120, img.implicitHeight || 160)) : 0
+                    height: visible ? Math.min(220, Math.max(120, (root.animatedImage ? animImg.implicitHeight : img.implicitHeight) || 160)) : 0
 
                     Image {
                         id: img
                         anchors.fill: parent
-                        source: imageEmbed.visible ? root.fileUrlFromPath(root.attachmentPath) : ""
+                        visible: !root.animatedImage
+                        source: imageEmbed.visible && !root.animatedImage ? root.fileUrlFromPath(root.attachmentPath) : ""
                         fillMode: Image.PreserveAspectFit
                         asynchronous: true
                         cache: true
                         smooth: true
+                        onStatusChanged: if (status === Image.Error) root.imageUnreadable = true
+                    }
+
+                    AnimatedImage {
+                        id: animImg
+                        anchors.fill: parent
+                        visible: root.animatedImage
+                        source: imageEmbed.visible && root.animatedImage ? root.fileUrlFromPath(root.attachmentPath) : ""
+                        fillMode: Image.PreserveAspectFit
+                        cache: false
+                        smooth: true
+                        playing: visible
+                        onStatusChanged: if (status === Image.Error) root.imageUnreadable = true
                     }
 
                     MouseArea {
@@ -518,7 +539,7 @@ Item {
                     id: fileChip
                     // Keep the card while a finished image still needs Retry.
                     // The picture is already showing; the card is the control.
-                    visible: (root.isAttachment && !root.mediaPreviewReady) || root.canRetry
+                    visible: (root.isAttachment && !root.mediaPreviewReady) || root.canRetry || root.imageUnreadable
                     width: parent.width
                     height: visible ? fileChipCol.implicitHeight + 12 : 0
                     radius: Theme.radiusSm
