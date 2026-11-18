@@ -440,6 +440,13 @@ async fn connect_and_run_ws(
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let idle_deadline = tokio::time::sleep(READ_IDLE_TIMEOUT);
     tokio::pin!(idle_deadline);
+    // Held across iterations. A `notified()` future created inside `select!`
+    // is dropped when another branch wins, and that drop eats a permit that
+    // already arrived. The ping interval's first tick is immediate, so a
+    // network-change signal in that window would otherwise wait out the idle
+    // deadline.
+    let network_changed = reconnect_now.notified();
+    tokio::pin!(network_changed);
 
     loop {
         tokio::select! {
@@ -508,7 +515,7 @@ async fn connect_and_run_ws(
 
             // The platform told us the network moved. Do not wait for the
             // deadline above; the current socket is already worthless.
-            _ = reconnect_now.notified() => {
+            _ = &mut network_changed => {
                 return Ok(WsSessionEnd::NetworkChanged);
             }
         }
