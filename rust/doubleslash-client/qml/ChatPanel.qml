@@ -515,6 +515,7 @@ Item {
         RichChatComposer {
             Layout.margins: Theme.barMargin
             targetName: root.selectedPeerName || root.selectedPeerId
+            targetKey: root.selectedPeerId
             enabledForTarget: root.selectedPeerId !== ""
             fileTransferEnabled: !root.selfChat
             aiEnabled: backend.ollama_available

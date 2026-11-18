@@ -798,6 +798,19 @@ pub mod ffi {
         #[rust_name = "copy_to_clipboard"]
         fn copyToClipboard(self: Pin<&mut AppBridge>, text: &QString);
 
+        /// If the clipboard holds an image (bitmap or a copied image file),
+        /// return a `file:` URL for it, saving bitmap data as a PNG in the
+        /// profile's `pasted` folder. Empty when there is no image.
+        #[qinvokable]
+        #[rust_name = "paste_clipboard_image"]
+        fn pasteClipboardImage(self: Pin<&mut AppBridge>) -> QString;
+
+        /// Delete a PNG made by `pasteClipboardImage` that was removed before
+        /// sending. Anything outside the profile's `pasted` folder is left alone.
+        #[qinvokable]
+        #[rust_name = "discard_pasted_image"]
+        fn discardPastedImage(self: Pin<&mut AppBridge>, file_url: &QString);
+
         /// Reveal a local file in the system file manager (selects the file).
         #[qinvokable]
         #[rust_name = "open_containing_folder"]
@@ -3279,6 +3292,44 @@ impl ffi::AppBridge {
         match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(s.clone())) {
             Ok(_) => debug!("[bridge] Copied {} bytes to clipboard", s.len()),
             Err(e) => warn!("[bridge] Clipboard write failed: {e}"),
+        }
+    }
+
+    fn paste_clipboard_image(self: Pin<&mut Self>) -> QString {
+        extern "C" {
+            fn doubleslash_clipboard_take_image(
+                dir_utf8: *const std::os::raw::c_char,
+                out: *mut std::os::raw::c_char,
+                out_len: usize,
+            ) -> usize;
+        }
+        let dir = pasted_images_dir();
+        let Ok(dir_c) = std::ffi::CString::new(dir.to_string_lossy().into_owned()) else {
+            return QString::default();
+        };
+        let mut buf = vec![0u8; 8192];
+        // SAFETY: `dir_c` is NUL-terminated and outlives the call; `buf` is
+        // writable for `buf.len()` bytes and the shim writes at most that many,
+        // including the terminator. Called on the Qt GUI thread from QML.
+        let len = unsafe {
+            doubleslash_clipboard_take_image(dir_c.as_ptr(), buf.as_mut_ptr().cast(), buf.len())
+        };
+        if len == 0 || len >= buf.len() {
+            return QString::default();
+        }
+        let url = String::from_utf8_lossy(&buf[..len]).into_owned();
+        QString::from(url.as_str())
+    }
+
+    fn discard_pasted_image(self: Pin<&mut Self>, file_url: &QString) {
+        let path = std::path::PathBuf::from(parse_local_file_path(&file_url.to_string()));
+        let (Ok(file), Ok(dir)) = (path.canonicalize(), pasted_images_dir().canonicalize()) else {
+            return;
+        };
+        if file.parent() == Some(dir.as_path()) {
+            if let Err(e) = std::fs::remove_file(&file) {
+                warn!("[bridge] could not delete pasted image {:?}: {e}", file);
+            }
         }
     }
 
@@ -6924,6 +6975,13 @@ fn insert_inbound_file_offer(mut bridge: Pin<&mut ffi::AppBridge>, offer: Inboun
     bridge
         .as_mut()
         .chat_message_received(QString::from(msg_json.as_str()));
+}
+
+/// Where `pasteClipboardImage` saves bitmap data. Inside the active profile, so
+/// the file outlives the send: the local bubble shows it and a room member's
+/// late request is served from it.
+fn pasted_images_dir() -> std::path::PathBuf {
+    crate::identity::Identity::default_key_dir().join("pasted")
 }
 
 /// Convert a `file://` URL — the form QML's `FileDialog` hands back — into a

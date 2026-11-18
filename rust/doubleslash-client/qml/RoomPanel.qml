@@ -669,6 +669,7 @@ Item {
         RichChatComposer {
             Layout.margins: Theme.barMargin
             targetName: root.roomName
+            targetKey: root.supernodeId + "/" + root.roomId
             enabledForTarget: root.roomName !== ""
             fileTransferEnabled: root.roomId !== ""
             fileTransferTooltip: "Attach file"

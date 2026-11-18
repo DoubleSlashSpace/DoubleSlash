@@ -18,6 +18,15 @@ Rectangle {
     property string fileTransferTooltip: "Attach file"
     property bool aiEnabled: false
     property bool aiStreaming: false
+    /// Identifies the chat this composer sends to; pasted images that were
+    /// not sent are dropped when it changes.
+    property string targetKey: targetName
+    /// `file:` URLs of pasted images waiting for Send.
+    property var pendingImages: []
+
+    onTargetKeyChanged: clearPendingImages()
+    onFileTransferEnabledChanged: if (!fileTransferEnabled) clearPendingImages()
+    Component.onDestruction: clearPendingImages()
 
     Layout.fillWidth: true
     implicitHeight: composerLayout.implicitHeight + Theme.barPadding * 2
@@ -50,9 +59,40 @@ Rectangle {
         composer.forceActiveFocus()
     }
 
+    function canAttach() {
+        return root.enabledForTarget && root.fileTransferEnabled
+    }
+
+    /// Take an image from the clipboard into the pending row. False when the
+    /// clipboard holds no image, so an ordinary text paste can go ahead.
+    function pasteImage() {
+        if (!root.canAttach()) return false
+        var url = backend.pasteClipboardImage()
+        if (url === "") return false
+        if (root.pendingImages.indexOf(url) === -1)
+            root.pendingImages = root.pendingImages.concat([url])
+        composer.forceActiveFocus()
+        return true
+    }
+
+    function removePendingImage(url) {
+        root.pendingImages = root.pendingImages.filter(function(u) { return u !== url })
+        backend.discardPastedImage(url)
+    }
+
+    function clearPendingImages() {
+        var urls = root.pendingImages
+        root.pendingImages = []
+        for (var i = 0; i < urls.length; i++) backend.discardPastedImage(urls[i])
+    }
+
     function submit() {
+        if (!root.enabledForTarget) return
+        var images = root.pendingImages
+        root.pendingImages = []
+        for (var i = 0; i < images.length; i++) root.sendFile(images[i])
         var value = composer.text.trim()
-        if (value.length === 0 || !root.enabledForTarget) return
+        if (value.length === 0) return
         root.sendMessage(value)
         composer.clear()
     }
@@ -152,6 +192,53 @@ Rectangle {
             Item { Layout.fillWidth: true }
         }
 
+        Flow {
+            id: pendingRow
+            Layout.fillWidth: true
+            visible: root.pendingImages.length > 0
+            spacing: Theme.spacingXs
+
+            Repeater {
+                model: root.pendingImages
+
+                Rectangle {
+                    required property string modelData
+                    width: 72
+                    height: 72
+                    color: Theme.bg2
+                    border.color: Theme.muted
+                    border.width: 1
+
+                    Image {
+                        anchors.fill: parent
+                        anchors.margins: 1
+                        source: parent.modelData
+                        sourceSize.width: 144
+                        sourceSize.height: 144
+                        fillMode: Image.PreserveAspectCrop
+                        asynchronous: true
+                        cache: false
+                    }
+
+                    IconButton {
+                        anchors.top: parent.top
+                        anchors.right: parent.right
+                        implicitWidth: 22
+                        implicitHeight: 22
+                        padding: 0
+                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
+                        icon.width: 12
+                        icon.height: 12
+                        icon.color: Theme.text
+                        Accessible.name: "Remove image"
+                        ToolTip.text: "Remove image"
+                        ToolTip.visible: hovered
+                        onClicked: root.removePendingImage(parent.modelData)
+                    }
+                }
+            }
+        }
+
         RowLayout {
             Layout.fillWidth: true
             spacing: Theme.spacingXs
@@ -208,6 +295,10 @@ Rectangle {
                         visible: composer.length === 0 && composer.preeditText.length === 0
                     }
                     Keys.onPressed: function(event) {
+                        if (event.matches(StandardKey.Paste) && root.pasteImage()) {
+                            event.accepted = true
+                            return
+                        }
                         if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
                                 && !(event.modifiers & Qt.ShiftModifier)) {
                             root.submit()
@@ -220,7 +311,7 @@ Rectangle {
             ActionButton {
                 icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/send.svg"
                 icon.color: enabled ? Theme.accent : Theme.muted
-                enabled: composer.text.trim() !== "" && root.enabledForTarget
+                enabled: (composer.text.trim() !== "" || root.pendingImages.length > 0) && root.enabledForTarget
                 tip: "Send"
                 onClicked: root.submit()
             }
