@@ -494,11 +494,40 @@ impl SignalingServer {
         msg_type: MessageType,
         payload: serde_json::Value,
     ) -> bool {
+        self.send_signed_endpoint_reply(identity, request, msg_type, payload, false)
+    }
+
+    /// Answer a HELLO on the WebSocket it arrived on. A restarted client's
+    /// previous QUIC signaling stream can still be registered for the same
+    /// endpoint until it times out; preferring QUIC would hand the proof to
+    /// that dead process and leave the new session waiting for it.
+    pub fn send_hello_proof(
+        &self,
+        identity: &crate::identity::Identity,
+        hello: &SignalingMessage,
+        payload: serde_json::Value,
+    ) -> bool {
+        self.send_signed_endpoint_reply(identity, hello, MessageType::HelloProof, payload, true)
+    }
+
+    fn send_signed_endpoint_reply(
+        &self,
+        identity: &crate::identity::Identity,
+        request: &SignalingMessage,
+        msg_type: MessageType,
+        payload: serde_json::Value,
+        prefer_ws: bool,
+    ) -> bool {
         let mut reply = SignalingMessage::new(msg_type, &identity.public_id(), payload)
             .with_target(&request.sender);
         reply.target_device = request.source_device;
         let reply = reply.sign(identity);
-        self.send_to_endpoint(&request.sender, request.source_device, &reply.to_json())
+        self.state.read().send_to_endpoint(
+            &request.sender,
+            request.source_device,
+            &reply.to_json(),
+            prefer_ws,
+        )
     }
 
     /// Register a peer's reliable QUIC relay signaling-stream sender. Called
@@ -1712,6 +1741,54 @@ mod tests {
         assert!(server.send_bootstrap_to_peer(unpadded, grant));
         assert_eq!(ws_rx.try_recv().as_deref(), Some(grant));
         assert!(quic_rx.try_recv().is_none());
+    }
+
+    #[test]
+    fn hello_proof_bypasses_stale_quic_sender_and_keeps_device_target() {
+        let node = crate::identity::Identity::generate();
+        let owner = crate::identity::Identity::generate();
+        let server = SignalingServer::new(node.public_id());
+        let device = DeviceId([1; 32]);
+        let sibling = DeviceId([2; 32]);
+        let (quic_tx, mut quic_rx) = peer_channel();
+        let (ws_tx, mut ws_rx) = peer_channel();
+        let (sibling_tx, mut sibling_rx) = peer_channel();
+        {
+            let mut state = server.state.write();
+            state.device_routing_ready = true;
+            state
+                .quic_senders
+                .register_device(owner.public_id(), device, quic_tx)
+                .unwrap();
+            state
+                .peer_sockets
+                .register_device(owner.public_id(), device, ws_tx)
+                .unwrap();
+            state
+                .peer_sockets
+                .register_device(owner.public_id(), sibling, sibling_tx)
+                .unwrap();
+        }
+        let mut hello = SignalingMessage::new(
+            MessageType::Hello,
+            &owner.public_id(),
+            serde_json::json!({"challenge": "c"}),
+        );
+        hello.source_device = Some(device);
+        let hello = hello.sign(&owner);
+        assert!(server.send_hello_proof(&node, &hello, serde_json::json!({"challenge": "c"})));
+        let proof = SignalingMessage::from_json(&ws_rx.try_recv().unwrap()).unwrap();
+        assert_eq!(proof.msg_type, MessageType::HelloProof);
+        assert_eq!(proof.target_device, Some(device));
+        assert!(proof.verify());
+        assert!(
+            quic_rx.try_recv().is_none(),
+            "stale QUIC stream took the proof"
+        );
+        assert!(
+            sibling_rx.try_recv().is_none(),
+            "sibling received the proof"
+        );
     }
 
     #[test]

@@ -2292,12 +2292,9 @@ impl SignalingHandler for SupernodeHandler {
                 // challenge its HELLO carries. Sent to the endpoint the HELLO
                 // came from, on the socket just registered.
                 if let Some(payload) = hello_proof_payload(&msg) {
-                    self.state.signaling.send_signed_reply(
-                        &self.state.identity,
-                        &msg,
-                        MessageType::HelloProof,
-                        payload,
-                    );
+                    self.state
+                        .signaling
+                        .send_hello_proof(&self.state.identity, &msg, payload);
                 }
             }
             MessageType::InviteHandshakeInit => {
