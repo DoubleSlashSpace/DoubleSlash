@@ -68,7 +68,7 @@ ApplicationWindow {
         }
         if (filePreviewLoader.item) {
             filePreviewLoader.item.filePath = path
-            filePreviewLoader.visible = true
+            filePreviewLoader.open = true
             return
         }
         filePreviewLoader.active = true
@@ -78,7 +78,7 @@ ApplicationWindow {
         // setSource is async; check after a tick. On failure, open externally.
         Qt.callLater(function() {
             if (filePreviewLoader.status === Loader.Ready && filePreviewLoader.item) {
-                filePreviewLoader.visible = true
+                filePreviewLoader.open = true
             } else {
                 filePreviewLoader.active = false
                 filePreviewLoader.source = ""
@@ -4143,7 +4143,7 @@ ApplicationWindow {
             ChatPanel {
                 id: chatPanel
                 anchors {
-                    top: videoRegionLoader.bottom
+                    top: filePreviewLoader.bottom
                     left: parent.left
                     right: parent.right
                     bottom: parent.bottom
@@ -4174,7 +4174,7 @@ ApplicationWindow {
             RoomPanel {
                 id: roomPanel
                 anchors {
-                    top: videoRegionLoader.bottom
+                    top: filePreviewLoader.bottom
                     left: parent.left
                     right: parent.right
                     bottom: parent.bottom
@@ -4249,19 +4249,31 @@ ApplicationWindow {
                 }
             }
 
-            // Full-size local media / document preview (images, video, PDF, …).
+            // Local media / document preview (images, video, PDF, …), shown as a
+            // strip at the top of the chat like the video region, beneath it
+            // when both are open.
             // Loaded lazily so non-webengine builds still parse MainWindow.qml;
             // showFilePreview() falls back to the system app when unavailable.
             Loader {
                 id: filePreviewLoader
-                anchors.fill: parent
-                visible: false
-                z: 50
+                anchors { top: videoRegionLoader.bottom; left: parent.left; right: parent.right }
+                z: 40
                 active: false
+                property bool open: false
+                readonly property bool showing:
+                    open && status === Loader.Ready && (navIndex === 0 || navIndex === 1)
+                visible: showing
+                height: showing
+                    ? Math.round((contentArea.height - videoRegionLoader.height)
+                                 * root.videoRegionRatio)
+                    : 0
+                Behavior on height {
+                    NumberAnimation { duration: Theme.animFast; easing.type: Easing.InOutQuad }
+                }
                 onLoaded: {
                     if (item && item.closeRequested) {
                         item.closeRequested.connect(function() {
-                            filePreviewLoader.visible = false
+                            filePreviewLoader.open = false
                             if (filePreviewLoader.item)
                                 filePreviewLoader.item.filePath = ""
                         })
