@@ -328,6 +328,23 @@ Item {
         return directVideoUrl(root.body)
     }
 
+    // YouTube refuses an embed that arrives without a referrer (player error
+    // 153), and a top-level load of /embed/ has none. Host the player in an
+    // iframe on a page with an https origin so the request names an embedder.
+    readonly property string youtubeEmbedOrigin: "https://doubleslash.space/"
+
+    function youtubeEmbedHtml(id) {
+        return "<!DOCTYPE html><html><head><meta name='referrer' "
+            + "content='strict-origin-when-cross-origin'></head>"
+            + "<body style='margin:0;background:#000;overflow:hidden'>"
+            + "<iframe style='border:0;width:100vw;height:100vh' "
+            + "src='https://www.youtube.com/embed/" + id
+            + "?autoplay=1&rel=0&modestbranding=1&playsinline=1' "
+            + "referrerpolicy='strict-origin-when-cross-origin' "
+            + "allow='autoplay; encrypted-media; picture-in-picture; fullscreen' "
+            + "allowfullscreen></iframe></body></html>"
+    }
+
     function statusText() {
         var s = root.status || "delivered"
         if (s === "sending") return "Sending…"
@@ -991,9 +1008,13 @@ Item {
                     item.allowedDomains = [
                         "youtube.com", "youtu.be", "ytimg.com", "ggpht.com",
                         "googlevideo.com", "googleapis.com", "vimeo.com",
-                        "player.vimeo.com", "vimeocdn.com"
+                        "player.vimeo.com", "vimeocdn.com", "doubleslash.space"
                     ]
-                    item.navigate(root.inlineUrl())
+                    var yt = root.youtubeId(root.body)
+                    if (yt !== "")
+                        item.loadHtml(root.youtubeEmbedHtml(yt), root.youtubeEmbedOrigin)
+                    else
+                        item.navigate(root.inlineUrl())
                 }
             }
         }

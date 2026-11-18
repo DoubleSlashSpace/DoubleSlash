@@ -79,6 +79,12 @@ Item {
         _view.url = root.browserUrl(url)
     }
 
+    /// Load inline HTML as if served from `baseUrl`, so the frames it embeds
+    /// send that origin as their referrer.
+    function loadHtml(html, baseUrl) {
+        _view.loadHtml(html, baseUrl)
+    }
+
     /// Reload the current page.
     function reload() {
         _view.reload()
