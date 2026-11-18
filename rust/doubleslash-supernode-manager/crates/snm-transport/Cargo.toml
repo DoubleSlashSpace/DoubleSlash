@@ -11,7 +11,7 @@ crossterm = { workspace = true, optional = true }
 getrandom = "0.2"
 home = "0.5.12"
 log = "0.4.32"
-russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
+russh = { version = "0.65", default-features = false, features = ["flate2", "ring"] }
 russh-sftp = "2.3"
 tempfile = "3"
 thiserror.workspace = true

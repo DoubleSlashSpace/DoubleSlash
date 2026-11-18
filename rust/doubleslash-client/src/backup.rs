@@ -91,7 +91,9 @@ impl BackupSnapshot {
         let db_path = directory.path().join("chat_history.db");
         source.chat.backup_snapshot(&db_path)?;
         let db = rusqlite::Connection::open(&db_path)?;
-        let messages = db.query_row("SELECT count(*) FROM messages", [], |r| r.get(0))?;
+        let messages: i64 = db.query_row("SELECT count(*) FROM messages", [], |r| r.get(0))?;
+        let messages =
+            u64::try_from(messages).map_err(|_| invalid("Chat history count is invalid"))?;
         let paths: Vec<String> = db
             .prepare("SELECT DISTINCT attachment_path FROM messages WHERE attachment_path != ''")?
             .query_map([], |r| r.get(0))?

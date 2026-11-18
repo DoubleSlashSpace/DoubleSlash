@@ -16,8 +16,8 @@ use crate::identity::Identity;
 const STORE_LABEL: &str = "doubleslash-store/device-trust/v1";
 pub const DEVICE_TRUST_FILE: &str = "device-trust.db";
 const STORE_MARKER: &[u8] = b"doubleslash-device-trust-v1";
-const MAX_IDENTITIES: usize = 4096;
-const MAX_ENVELOPE: usize = MAX_REGISTRY_BYTES + 64;
+const MAX_IDENTITIES: i64 = 4096;
+const MAX_ENVELOPE: i64 = MAX_REGISTRY_BYTES as i64 + 64;
 
 /// Accepted registries, encrypted with a profile-specific storage subkey.
 ///
@@ -113,7 +113,7 @@ impl DeviceTrustStore {
             return Ok(false);
         }
         if previous.is_none() {
-            let count: usize =
+            let count: i64 =
                 transaction.query_row("SELECT count(*) FROM registries", [], |row| row.get(0))?;
             if count >= MAX_IDENTITIES {
                 return Err(invalid("Device trust database identity limit reached"));
@@ -141,8 +141,11 @@ impl DeviceTrustStore {
     /// Capture committed rows with SQLite's online backup API, including a
     /// source database using WAL. The destination is then fully authenticated.
     pub fn backup_snapshot(&self, destination: &Path) -> Result<()> {
-        self.connection
-            .backup(rusqlite::DatabaseName::Main, destination, None)?;
+        self.connection.backup(
+            rusqlite::MAIN_DB,
+            destination,
+            None::<fn(rusqlite::backup::Progress)>,
+        )?;
         Self::open_with_key(&self.key, destination)?.validate_all()
     }
 
@@ -227,7 +230,7 @@ fn read_registry(
     // Read size before the blob so a damaged/malicious database cannot force
     // allocation of an arbitrarily large envelope. Never treat an oversized
     // existing row as an absent predecessor.
-    let stored: Option<(usize, Option<Vec<u8>>)> = connection
+    let stored: Option<(i64, Option<Vec<u8>>)> = connection
         .query_row(
             "SELECT length(envelope), CASE WHEN length(envelope)<=?2 THEN envelope END
          FROM registries WHERE lookup=?1",

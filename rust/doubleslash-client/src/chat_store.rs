@@ -250,9 +250,11 @@ pub struct ChatStore {
 impl ChatStore {
     /// SQLite's backup API includes committed WAL pages in a consistent snapshot.
     pub fn backup_snapshot(&self, destination: &Path) -> Result<()> {
-        self.conn
-            .lock()
-            .backup(rusqlite::DatabaseName::Main, destination, None)?;
+        self.conn.lock().backup(
+            rusqlite::MAIN_DB,
+            destination,
+            None::<fn(rusqlite::backup::Progress)>,
+        )?;
         Ok(())
     }
 
