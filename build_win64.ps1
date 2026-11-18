@@ -224,10 +224,37 @@ function Sync-BundleInPlace {
             }
         }
         if ($pinned) { continue }
-        if ($item.PSIsContainer) {
-            [System.IO.Directory]::Move($item.FullName, $dest)
-        } else {
-            [System.IO.File]::Move($item.FullName, $dest)
+        try {
+            if ($item.PSIsContainer) {
+                [System.IO.Directory]::Move($item.FullName, $dest)
+            } else {
+                [System.IO.File]::Move($item.FullName, $dest)
+            }
+        } catch {
+            # Something (often a scanner) holds the staged entry open. Its old
+            # copy is already parked, so leaving here would ship a bundle
+            # without it: copy the entry instead, or put the old one back.
+            Write-Host "    [warn] Could not move $($item.Name) into place; copying it" -ForegroundColor Yellow
+            $copied = $false
+            if ($item.PSIsContainer) {
+                $_prevRobo = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                & robocopy.exe $item.FullName $dest /E /R:2 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+                $copied = $LASTEXITCODE -lt 8
+                $ErrorActionPreference = $_prevRobo
+            } else {
+                try { Copy-Item -LiteralPath $item.FullName -Destination $dest -Force -ErrorAction Stop; $copied = $true } catch { }
+            }
+            if (-not $copied) {
+                if ((Test-Path -LiteralPath $park) -and -not (Test-Path -LiteralPath $dest)) {
+                    if ($item.PSIsContainer) {
+                        [System.IO.Directory]::Move($park, $dest)
+                    } else {
+                        [System.IO.File]::Move($park, $dest)
+                    }
+                }
+                throw "Could not place $($item.Name) in dist\DoubleSlash: $_"
+            }
         }
     }
     foreach ($old in @(Get-ChildItem -LiteralPath $To -Force)) {
