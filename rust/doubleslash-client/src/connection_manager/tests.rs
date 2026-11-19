@@ -3310,3 +3310,202 @@ async fn a_join_replays_nothing_when_the_camera_is_off_or_the_room_differs() {
         "a stopped camera must not be replayed as on"
     );
 }
+
+/// Network moves (Wi-Fi to cellular) must not end a voice room.
+///
+/// The platform's network-change signal redials every supernode WebSocket,
+/// and each redial starts with a `WsDisconnected`. Treated as a lost node, it
+/// cleared the voice room and closed the QUIC relay voice was flowing over, so
+/// nothing was sent again until the user rejoined — even though the relay can
+/// follow the device to the new network and the node keeps a member whose
+/// WebSocket the same device replaces.
+mod network_handover {
+    use super::harness;
+    use crate::connection_manager::internal::InternalEvent;
+    use crate::protocol::MessageType;
+    use crate::quic_relay_client::{QuicRelayClient, RelayInboundSinks};
+    use crate::quic_tls::make_quic_endpoint;
+    use ed25519_dalek::SigningKey;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    const NODE: &str = "SN-AAAA";
+    const ROOM: &str = "room-1";
+
+    /// A real relay connection to a stand-in node: the client handle, the
+    /// node's side of the connection, and both endpoints (kept alive).
+    async fn relay_pair() -> (
+        Arc<QuicRelayClient>,
+        quinn::Connection,
+        [quinn::Endpoint; 2],
+    ) {
+        let server = make_quic_endpoint(&SigningKey::from_bytes(&[71; 32]), 0).unwrap();
+        let client = make_quic_endpoint(&SigningKey::from_bytes(&[72; 32]), 0).unwrap();
+        let port = server.local_addr().unwrap().port();
+        let (signaling, _) = mpsc::unbounded_channel();
+        let sinks = RelayInboundSinks {
+            signaling,
+            game: None,
+            video: None,
+            content_audio: None,
+        };
+        let (relay, connection) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(
+                QuicRelayClient::connect(&client, NODE, "127.0.0.1", port, sinks, false),
+                async { server.accept().await.unwrap().await.unwrap() }
+            )
+        })
+        .await
+        .expect("relay handshake timed out");
+        // Let the handshake's trailing packets land, so a later count change
+        // means something the test sent.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        (Arc::new(relay.unwrap()), connection, [server, client])
+    }
+
+    #[tokio::test]
+    async fn a_websocket_drop_during_a_move_keeps_the_room_and_rejoins_on_return() {
+        let mut t = harness::test_cm();
+        let mut ws = t.cm.test_add_supernode_session(NODE);
+        t.cm.test_set_room(NODE, ROOM);
+
+        t.cm.handle_network_changed();
+        t.cm.handle_internal_event(InternalEvent::WsDisconnected {
+            peer_id: NODE.to_owned(),
+        })
+        .await;
+        assert_eq!(
+            t.cm.test_current_room(),
+            (NODE.to_owned(), ROOM.to_owned()),
+            "the move must not end the voice room"
+        );
+
+        harness::drain_ws(&mut ws);
+        t.cm.handle_internal_event(InternalEvent::WsConnected {
+            peer_id: NODE.to_owned(),
+        })
+        .await;
+        let sent = harness::drain_ws(&mut ws);
+        assert!(
+            sent.iter().any(|m| m.msg_type == MessageType::SfuJoin
+                && m.payload.get("room_id").and_then(|v| v.as_str()) == Some(ROOM)),
+            "the node must be asked to confirm the room on return, got {:?}",
+            sent.iter().map(|m| &m.msg_type).collect::<Vec<_>>()
+        );
+    }
+
+    /// Without a move, a dropped node is still a lost node: the room ends here
+    /// and cluster failover takes over, as before.
+    #[tokio::test]
+    async fn a_websocket_drop_without_a_move_still_ends_the_room() {
+        let mut t = harness::test_cm();
+        let _ws = t.cm.test_add_supernode_session(NODE);
+        t.cm.test_set_room(NODE, ROOM);
+
+        t.cm.handle_internal_event(InternalEvent::WsDisconnected {
+            peer_id: NODE.to_owned(),
+        })
+        .await;
+        assert_eq!(t.cm.test_current_room(), (String::new(), String::new()));
+    }
+
+    /// A node that does not come back within the window is lost after all.
+    #[tokio::test]
+    async fn a_node_that_misses_the_window_is_treated_as_lost() {
+        let mut t = harness::test_cm();
+        let _ws = t.cm.test_add_supernode_session(NODE);
+        t.cm.test_set_room(NODE, ROOM);
+        let (relay, _node_side, _endpoints) = relay_pair().await;
+        t.cm.test_install_relay(NODE, relay);
+
+        t.cm.handle_network_changed();
+        t.cm.handle_internal_event(InternalEvent::WsDisconnected {
+            peer_id: NODE.to_owned(),
+        })
+        .await;
+        assert!(
+            t.cm.test_has_relay(NODE),
+            "a live relay is kept through the move"
+        );
+
+        t.cm.test_expire_network_handover().await;
+        assert_eq!(t.cm.test_current_room(), (String::new(), String::new()));
+        assert!(
+            !t.cm.test_has_relay(NODE),
+            "the lost node's relay is dropped"
+        );
+    }
+
+    /// While the node redials, voice keeps going out over its relay.
+    #[tokio::test]
+    async fn voice_keeps_flowing_over_the_relay_while_the_node_redials() {
+        let mut t = harness::test_cm();
+        let _ws = t.cm.test_add_supernode_session(NODE);
+        // A connected cluster sibling: the route a WebSocket-only lookup would
+        // switch to, although it never admitted us to the room.
+        let _sibling = t.cm.test_add_supernode_session("SN-BBBB");
+        t.cm.test_set_room(NODE, ROOM);
+        t.cm.test_mint_group_key(ROOM);
+        let (relay, node_side, _endpoints) = relay_pair().await;
+        t.cm.test_install_relay(NODE, relay);
+
+        t.cm.handle_network_changed();
+        t.cm.handle_internal_event(InternalEvent::WsDisconnected {
+            peer_id: NODE.to_owned(),
+        })
+        .await;
+        t.cm.test_send_room_audio(vec![0xAA; 80]).await;
+
+        let datagram = tokio::time::timeout(Duration::from_secs(5), node_side.read_datagram())
+            .await
+            .expect("no voice reached the node while it redialed")
+            .unwrap();
+        assert_eq!(
+            datagram[1],
+            doubleslash_features::channel_frame::ROOM_AUDIO_TAG
+        );
+    }
+
+    /// A relay that has heard nothing from its node since the move is on a
+    /// stranded path, however open quinn thinks it is. One that has heard
+    /// from it followed the move and stays.
+    #[tokio::test]
+    async fn a_relay_is_kept_on_return_only_if_its_node_answered_since_the_move() {
+        for answered in [false, true] {
+            let mut t = harness::test_cm();
+            let _ws = t.cm.test_add_supernode_session(NODE);
+            t.cm.test_set_room(NODE, ROOM);
+            let (relay, node_side, _endpoints) = relay_pair().await;
+            t.cm.test_install_relay(NODE, Arc::clone(&relay));
+
+            t.cm.handle_network_changed();
+            t.cm.handle_internal_event(InternalEvent::WsDisconnected {
+                peer_id: NODE.to_owned(),
+            })
+            .await;
+            if answered {
+                let before = relay.datagrams_received();
+                node_side
+                    .send_datagram(bytes::Bytes::from_static(&[0xFF, 0x00]))
+                    .unwrap();
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while relay.datagrams_received() == before {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("the node's datagram never arrived");
+            }
+            t.cm.handle_internal_event(InternalEvent::WsConnected {
+                peer_id: NODE.to_owned(),
+            })
+            .await;
+            assert_eq!(
+                t.cm.test_has_relay(NODE),
+                answered,
+                "answered={answered}: wrong relay decision on return"
+            );
+        }
+    }
+}

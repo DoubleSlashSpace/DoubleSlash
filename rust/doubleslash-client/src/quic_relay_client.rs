@@ -333,6 +333,17 @@ impl QuicRelayClient {
         self.connection.close_reason().is_none()
     }
 
+    /// UDP datagrams received on this connection so far, acknowledgements and
+    /// keep-alives included.
+    ///
+    /// A connection that is still open may have been stranded by a network
+    /// change, and quinn will not say so before its idle timeout. Comparing
+    /// this count across the move shows whether the node answered on the new
+    /// path.
+    pub fn datagrams_received(&self) -> u64 {
+        self.connection.stats().udp_rx.datagrams
+    }
+
     /// Reliable room chat/file stream is open and accepting frames.
     ///
     /// Distinct from [`is_alive`]: the QUIC connection can still be up after

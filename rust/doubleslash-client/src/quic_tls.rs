@@ -37,7 +37,43 @@ pub fn make_quic_endpoint_with_device(
     port: u16,
     device: Option<doubleslash_features::DeviceId>,
 ) -> anyhow::Result<quinn::Endpoint> {
+    make_quic_endpoint_tuned(signing_key, port, device, |_| {}).map(|(endpoint, _)| endpoint)
+}
+
+/// [`make_quic_endpoint_with_device`] that also returns a second handle to the
+/// endpoint's UDP socket, for [`move_to_new_network`].
+///
+/// The handle keeps the port bound for as long as it lives, so drop it with the
+/// endpoint: a listener re-created on the same port fails while it survives.
+pub fn make_rebindable_quic_endpoint(
+    signing_key: &SigningKey,
+    port: u16,
+    device: Option<doubleslash_features::DeviceId>,
+) -> anyhow::Result<(quinn::Endpoint, UdpSocket)> {
     make_quic_endpoint_tuned(signing_key, port, device, |_| {})
+}
+
+/// Tell every connection on `endpoint` that the device moved to another
+/// network, so each one migrates now rather than when it next has data to send.
+///
+/// Rebinding is quinn's signal that the local address changed: every
+/// connection switches to an unused connection ID and sends a probe at once.
+/// The server sees that probe arrive from the new address, validates the path,
+/// and sends there from then on. Without it, a connection with nothing to say
+/// (a listener in a voice room, or a quiet chat) migrates only at its next
+/// keep-alive, and until then the server keeps sending into the old network.
+///
+/// `socket` is the same socket the endpoint already uses (see
+/// [`make_rebindable_quic_endpoint`]), so the port does not change: the
+/// listener peers dial and its router mapping stay valid. The socket is not
+/// bound to an interface, so the kernel already routes it over whichever
+/// network is now the default; only the announcement was missing. Connections
+/// this endpoint accepted as a server cannot migrate (QUIC allows only the
+/// client to move); they recover through the ordinary reconnect path.
+pub fn move_to_new_network(endpoint: &quinn::Endpoint, socket: &UdpSocket) -> std::io::Result<()> {
+    let handle = socket.try_clone()?;
+    handle.set_nonblocking(true)?;
+    endpoint.rebind(handle)
 }
 
 /// [`make_quic_endpoint_with_device`] with a hook to adjust the transport
@@ -48,7 +84,7 @@ fn make_quic_endpoint_tuned(
     port: u16,
     device: Option<doubleslash_features::DeviceId>,
     tune: impl FnOnce(&mut quinn::TransportConfig),
-) -> anyhow::Result<quinn::Endpoint> {
+) -> anyhow::Result<(quinn::Endpoint, UdpSocket)> {
     let (cert_chain, key_der) = generate_self_signed_cert(signing_key, device)?;
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -107,6 +143,7 @@ fn make_quic_endpoint_tuned(
 
     // -- bind endpoint ------------------------------------------------------
     let socket = bind_quic_socket(port, bind_dual_stack_socket)?;
+    let handle = socket.try_clone()?;
     let runtime =
         quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime found"))?;
     let mut endpoint = quinn::Endpoint::new(
@@ -116,7 +153,7 @@ fn make_quic_endpoint_tuned(
         runtime,
     )?;
     endpoint.set_default_client_config(client_cfg);
-    Ok(endpoint)
+    Ok((endpoint, handle))
 }
 
 fn bind_quic_socket(
@@ -582,9 +619,9 @@ mod tests {
             t.min_mtu(1200);
             t.mtu_discovery_config(None);
         };
-        let a =
+        let (a, _) =
             make_quic_endpoint_tuned(&SigningKey::from_bytes(&[51; 32]), 0, None, floor).unwrap();
-        let b =
+        let (b, _) =
             make_quic_endpoint_tuned(&SigningKey::from_bytes(&[52; 32]), 0, None, floor).unwrap();
         let address = std::net::SocketAddr::from(([127, 0, 0, 1], a.local_addr().unwrap().port()));
         let connect = b.connect(address, "doubleslash").unwrap();
@@ -733,5 +770,49 @@ mod tests {
         .unwrap();
         assert!(client_result.is_err());
         assert!(server_result.is_err());
+    }
+
+    /// A network move must reach the server straight away, even from a
+    /// connection with nothing to send, and must not cost the listener its
+    /// port or the connection its session.
+    #[tokio::test]
+    async fn moving_networks_probes_at_once_and_keeps_the_port_and_session() {
+        let server = make_quic_endpoint(&SigningKey::from_bytes(&[61; 32]), 0).unwrap();
+        let (client, socket) =
+            make_rebindable_quic_endpoint(&SigningKey::from_bytes(&[62; 32]), 0, None).unwrap();
+        let port_before = client.local_addr().unwrap().port();
+        let address = SocketAddr::from(([127, 0, 0, 1], server.local_addr().unwrap().port()));
+        let connect = client.connect(address, "doubleslash").unwrap();
+        let accept = async { server.accept().await.unwrap().await.unwrap() };
+        let (to_server, at_server) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(connect, accept)
+        })
+        .await
+        .expect("handshake timed out");
+        let to_server = to_server.unwrap();
+
+        // Let the handshake's trailing acknowledgements drain. The keep-alive
+        // is five seconds away, so anything after this is the move's probe.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let heard_before = at_server.stats().udp_rx.datagrams;
+
+        move_to_new_network(&client, &socket).unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        assert!(
+            at_server.stats().udp_rx.datagrams > heard_before,
+            "the server heard nothing after the move"
+        );
+        assert_eq!(client.local_addr().unwrap().port(), port_before);
+
+        let mut send = to_server.open_uni().await.unwrap();
+        send.write_all(b"still here").await.unwrap();
+        send.finish().unwrap();
+        let mut recv = tokio::time::timeout(Duration::from_secs(5), at_server.accept_uni())
+            .await
+            .expect("no stream after the move")
+            .unwrap();
+        let body = recv.read_to_end(64).await.unwrap();
+        assert_eq!(body, b"still here");
     }
 }

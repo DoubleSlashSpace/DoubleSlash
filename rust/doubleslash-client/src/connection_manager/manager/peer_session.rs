@@ -257,18 +257,19 @@ impl ConnectionManager {
             let Some(candidate) = preferred.checked_add(offset) else {
                 break;
             };
-            match quic_tls::make_quic_endpoint_with_device(
+            match quic_tls::make_rebindable_quic_endpoint(
                 self.identity.signing_key(),
                 candidate,
                 self.device_id,
             ) {
-                Ok(ep) => {
+                Ok((ep, socket)) => {
                     info!(
                         "QUIC endpoint bound on {}",
                         ep.local_addr().map(|a| a.to_string()).unwrap_or_default()
                     );
                     save_quic_port(candidate);
                     self.quic_endpoint = Some(ep);
+                    self.quic_socket = Some(socket);
                     // Ask the router to forward this exact port. It is the
                     // listener peers dial, which is the only mapping that
                     // buys a direct session — mapping an outbound relay port

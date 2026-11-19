@@ -1335,6 +1335,22 @@ impl ConnectionManager {
         self.dispatch_outbound(msg).await;
     }
 
+    /// Where room media (voice, video, shared audio) goes: the room's node.
+    ///
+    /// Media rides the node's QUIC relay, so while that relay is open the node
+    /// is reachable even with its WebSocket down, as during a network move
+    /// (see [`super::handover`]). Rerouting to a cluster sibling then would
+    /// send it somewhere that never admitted us. Otherwise this is
+    /// [`Self::live_room_route`]. Outside a move a node that drops its
+    /// WebSocket also loses its relay entry, so the two agree there.
+    pub(super) fn room_media_route(&self) -> String {
+        let node = &self.current_supernode_id;
+        if self.quic_relays.get(node).is_some_and(|r| r.is_alive()) {
+            return node.clone();
+        }
+        self.live_room_route(node)
+    }
+
     /// Prefer a live cluster session when `supernode_id` is offline so room
     /// control traffic is not dropped after the invite host dies.
     pub(super) fn live_room_route(&self, supernode_id: &str) -> String {
@@ -1872,7 +1888,7 @@ impl ConnectionManager {
         }
         let sender = self.identity.public_id();
         let room_id = self.current_room_id.clone();
-        let supernode_id = self.live_room_route(&self.current_supernode_id.clone());
+        let supernode_id = self.room_media_route();
 
         // Same fail-closed rule as audio: never emit content the relay could
         // derive. The deterministic fallback key is a function of room_id, so
@@ -1979,7 +1995,7 @@ impl ConnectionManager {
         }
         let sender = self.identity.public_id();
         let room_id = self.current_room_id.clone();
-        let supernode_id = self.live_room_route(&self.current_supernode_id.clone());
+        let supernode_id = self.room_media_route();
 
         // Same fail-closed rule as every other room content type: never emit
         // something the relay could derive. The deterministic fallback key is a
@@ -2069,7 +2085,7 @@ impl ConnectionManager {
         let sender = self.identity.public_id();
         let room_id = self.current_room_id.clone();
         // Prefer a live cluster sibling when the original room host is offline.
-        let supernode_id = self.live_room_route(&self.current_supernode_id.clone());
+        let supernode_id = self.room_media_route();
         use base64::Engine;
 
         // E2E-seal under real group-key material only. The deterministic

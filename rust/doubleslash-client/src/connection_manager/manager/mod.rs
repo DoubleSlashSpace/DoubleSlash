@@ -10,6 +10,7 @@
 mod device_calls;
 mod device_session;
 mod file_work;
+mod handover;
 mod inbound;
 mod invite;
 mod peer_session;
@@ -193,6 +194,14 @@ pub struct ConnectionManager {
 
     /// Quinn QUIC endpoint (lazily created on first use).
     quic_endpoint: Option<quinn::Endpoint>,
+    /// A second handle to `quic_endpoint`'s UDP socket, used to tell its
+    /// connections the device changed networks without changing the port.
+    /// Created and dropped with the endpoint: while it lives, the port stays
+    /// bound.
+    quic_socket: Option<std::net::UdpSocket>,
+    /// A network move in progress: while it lasts, a dropped WebSocket keeps
+    /// the voice room and relays. See [`handover`].
+    network_handover: Option<handover::NetworkHandover>,
     /// Internal event channel (QUIC tasks + WS tasks → this manager task).
     internal_tx: mpsc::Sender<InternalEvent>,
     internal_rx: mpsc::Receiver<InternalEvent>,
@@ -580,6 +589,8 @@ impl ConnectionManager {
             failover_in_progress: HashSet::new(),
             failover_pending_room: None,
             quic_endpoint: None,
+            quic_socket: None,
+            network_handover: None,
             internal_tx,
             internal_rx,
             pending_invites: HashMap::new(),
@@ -784,6 +795,36 @@ impl ConnectionManager {
     pub(super) fn test_set_room(&mut self, supernode_id: &str, room_id: &str) {
         self.current_supernode_id = supernode_id.to_owned();
         self.current_room_id = room_id.to_owned();
+    }
+
+    /// Test-only: the voice room the manager is in, as `(node, room)`.
+    #[cfg(test)]
+    pub(super) fn test_current_room(&self) -> (String, String) {
+        (
+            self.current_supernode_id.clone(),
+            self.current_room_id.clone(),
+        )
+    }
+
+    /// Test-only: install a connected relay for `supernode_id`, as a finished
+    /// `RelayClientReady` would.
+    #[cfg(test)]
+    pub(super) fn test_install_relay(&mut self, supernode_id: &str, relay: Arc<QuicRelayClient>) {
+        self.quic_relays.insert(supernode_id.to_owned(), relay);
+    }
+
+    /// Test-only: whether a relay entry is held for `supernode_id`.
+    #[cfg(test)]
+    pub(super) fn test_has_relay(&self, supernode_id: &str) -> bool {
+        self.quic_relays.contains_key(supernode_id)
+    }
+
+    /// Test-only: end the current network handover window now and run the
+    /// expiry the reconnect tick would.
+    #[cfg(test)]
+    pub(super) async fn test_expire_network_handover(&mut self) {
+        self.test_end_network_handover_window();
+        self.expire_network_handover().await;
     }
 
     /// Test-only: mint a real group key for `room_id`, as being elected keyer
@@ -1178,6 +1219,9 @@ impl ConnectionManager {
                             if let Some(endpoint) = self.quic_endpoint.take() {
                                 endpoint.close(0u32.into(), b"listener reconfigured");
                             }
+                            // Releases the port, so the listener can be
+                            // re-created on it.
+                            self.quic_socket = None;
                             if enabled {
                                 self.ensure_quic_endpoint(port);
                             } else {
@@ -1617,6 +1661,7 @@ impl ConnectionManager {
                     self.retry_device_call_selections().await;
                 }
                 _ = peer_reconnect_interval.tick() => {
+                    self.expire_network_handover().await;
                     self.tick_peer_reconnects().await;
                     self.tick_call_fallback_checks().await;
                     self.resume_interrupted_transfers().await;
@@ -1881,15 +1926,19 @@ impl ConnectionManager {
     /// away, and TCP will not say so: a WebSocket stranded that way neither
     /// errors nor delivers, so its task would otherwise wait out the full
     /// read-idle deadline before redialing. Nudging each session instead makes
-    /// the recovery immediate. Nothing else needs doing here — the
-    /// `WsDisconnected` each session emits already tears down its QUIC relay
-    /// and room state, and the matching `WsConnected` rebuilds them.
+    /// the recovery immediate.
+    ///
+    /// QUIC connections, unlike the WebSockets, can follow the move, so the
+    /// redial must not take the voice room down with it: the handover keeps
+    /// the room and the relays while the sessions come back (see
+    /// [`handover`]).
     pub(super) fn handle_network_changed(&mut self) {
         info!(
             "Network changed — redialing {} supernode session(s), {} pending peer reconnect(s)",
             self.supernodes.len(),
             self.pending_peer_reconnects.len()
         );
+        self.begin_network_handover();
         for sn in self.supernodes.values() {
             // `notify_one` leaves a permit when the task is mid-dial rather
             // than parked, so the signal is never lost to a race.
@@ -2162,6 +2211,8 @@ impl ConnectionManager {
                 // This node came back — allow a future failover away from it.
                 self.failover_in_progress.remove(&peer_id);
                 self.emit_event(ConnectionEvent::SupernodeConnected(peer_id.clone()));
+                // Back from a network move: confirm the voice room it hosts.
+                self.finish_network_handover_for(&peer_id).await;
                 // First way out to the network: tell our other devices now
                 // rather than at the next presence tick. Later cluster members
                 // reach the same devices, so they add nothing.
@@ -2213,6 +2264,9 @@ impl ConnectionManager {
                 self.emit_event(ConnectionEvent::DeviceRoutingUnsupported { peer_id });
             }
             InternalEvent::WsDisconnected { peer_id } => {
+                // Part of a network move: the voice room and a live relay stay,
+                // because QUIC follows the device to the new network.
+                let handing_over = self.hold_through_network_handover(&peer_id);
                 self.forget_host_device_rosters(&peer_id);
                 if let Some(sn) = self.supernodes.get_mut(&peer_id) {
                     sn.connected = false;
@@ -2227,7 +2281,7 @@ impl ConnectionManager {
                 // or direct sessions remain usable.
                 // Capture the room this supernode was hosting before we clear it,
                 // so we can replay it on a cluster sibling below.
-                let lost_room = if self.current_supernode_id == peer_id {
+                let lost_room = if self.current_supernode_id == peer_id && !handing_over {
                     let room = self.current_room_id.clone();
                     self.current_room_id.clear();
                     self.current_supernode_id.clear();
@@ -2246,7 +2300,13 @@ impl ConnectionManager {
                 self.peer_capabilities.remove(&peer_id);
                 // The associated QUIC relay (if any) is likely also dead when
                 // signaling is lost; drop the entry so next use re-discovers.
-                self.quic_relays.remove(&peer_id);
+                // Not during a network move: there it is the one path that
+                // survives, and it is checked when the node is back.
+                let keep_relay =
+                    handing_over && self.quic_relays.get(&peer_id).is_some_and(|r| r.is_alive());
+                if !keep_relay {
+                    self.quic_relays.remove(&peer_id);
+                }
                 self.emit_event(ConnectionEvent::SupernodeDisconnected(peer_id.clone()));
                 // Clustered supernode lost while hosting our room → fail over to a
                 // verified sibling and resume there. No-op if not clustered.
