@@ -185,7 +185,8 @@ function Start-Profile([string]$name) {
 }
 
 function Stop-Profile([string]$name) {
-    $procs = Get-ProfileProcesses $name
+    # @() again: PowerShell unwraps a one-element array on return.
+    $procs = @(Get-ProfileProcesses $name)
     if ($procs.Count -eq 0) {
         Write-Host "$name is not running."
         return
@@ -193,6 +194,9 @@ function Stop-Profile([string]$name) {
     # A hard kill on purpose: Section 1 step 4 kills the process, and closing the
     # window would only send it to the tray.
     $procs | Stop-Process -Force
+    # Stop-Process returns before the process is gone; a Start right after
+    # would otherwise find it still running and do nothing.
+    $procs | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
     Write-ActionLog "[action] kill $name"
     Write-Host "Killed $name."
 }
