@@ -156,14 +156,29 @@ fn make_quic_endpoint_tuned(
     Ok((endpoint, handle))
 }
 
+/// Bind the dual-stack listener, or IPv4 alone when IPv6 is unavailable.
+///
+/// A port that is taken or refused is returned as an error, not retried on
+/// IPv4: Windows lets an IPv4 socket share a port another process holds
+/// dual-stack, and then delivers that port's IPv4 traffic to the newcomer.
+/// A second profile on one machine would receive the first one's relay and
+/// peer packets. The caller moves to the next port instead.
 fn bind_quic_socket(
     port: u16,
     bind_ipv6: impl FnOnce(u16) -> std::io::Result<UdpSocket>,
 ) -> std::io::Result<UdpSocket> {
-    bind_ipv6(port).or_else(|error| {
-        tracing::debug!(%error, "dual-stack QUIC bind failed; trying IPv4");
-        UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port))
-    })
+    match bind_ipv6(port) {
+        Err(error)
+            if !matches!(
+                error.kind(),
+                std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            tracing::debug!(%error, "dual-stack QUIC bind failed; trying IPv4");
+            UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port))
+        }
+        result => result,
+    }
 }
 
 fn bind_dual_stack_socket(port: u16) -> std::io::Result<UdpSocket> {
@@ -579,6 +594,38 @@ mod tests {
         }
         server.close(0u32.into(), b"test complete");
         client.close(0u32.into(), b"test complete");
+    }
+
+    #[test]
+    fn taken_or_refused_port_is_not_retried_on_ipv4() {
+        for kind in [
+            std::io::ErrorKind::AddrInUse,
+            std::io::ErrorKind::PermissionDenied,
+        ] {
+            let free = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+            let port = free.local_addr().unwrap().port();
+            drop(free);
+            let error = bind_quic_socket(port, |_| Err(std::io::Error::from(kind))).unwrap_err();
+            assert_eq!(error.kind(), kind);
+        }
+    }
+
+    #[test]
+    fn second_listener_does_not_share_a_dual_stack_port() {
+        let first = match bind_dual_stack_socket(0) {
+            Ok(socket) => socket,
+            Err(error) => {
+                // Without IPv6 the dual-stack listener never exists, so there
+                // is nothing for an IPv4 socket to share a port with.
+                eprintln!("dual-stack bind unavailable on this host: {error}");
+                return;
+            }
+        };
+        let port = first.local_addr().unwrap().port();
+        assert!(
+            bind_quic_socket(port, bind_dual_stack_socket).is_err(),
+            "a second listener took the port the first one holds"
+        );
     }
 
     #[test]

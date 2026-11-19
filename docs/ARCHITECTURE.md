@@ -305,8 +305,11 @@ example"]
 ## Key Data Flows
 
 `quic_tls.rs` creates one dual-stack UDP socket for direct and relay QUIC,
-explicitly disabling `IPV6_V6ONLY`; a failed dual-stack bind falls back to IPv4
-on the requested port. The direct and relay dialers share numeric-host parsing
+explicitly disabling `IPV6_V6ONLY`. When IPv6 is unavailable the bind falls
+back to IPv4 on the requested port. A port that is taken or refused is not
+retried on IPv4: Windows would let that socket share a port another process
+holds dual-stack and hand it the port's IPv4 traffic. The listener moves to the
+next port instead. The direct and relay dialers share numeric-host parsing
 for IPv4 and bare or bracketed IPv6. Hole-punch endpoint validation canonicalizes
 IPv4-mapped IPv6 before rejecting local and multicast destinations.
 
