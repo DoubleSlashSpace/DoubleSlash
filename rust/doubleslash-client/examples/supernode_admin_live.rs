@@ -12,7 +12,7 @@
 //! ```
 //!
 //! Commands: `fingerprint`, `deploy`, `state`, `status`, `check_update`,
-//! `update_now`, `restart`, `logs`, `set_update_mode <server-timer|client>`,
+//! `update_now`, `start`, `restart`, `logs`, `set_update_mode <server-timer|client>`,
 //! `uninstall [purge]`, `forget`. Node commands act on the first stored node.
 //! `deploy` reads `DS_ADMIN_ACCESS` (default `client-key-only`) and
 //! `DS_ADMIN_UPDATE` (default `server-timer`), and confirms the host key it
@@ -146,7 +146,7 @@ async fn command(service: &AdminService, args: &[String]) -> Result<Value, Strin
             )
             .await
         }
-        op @ ("status" | "check_update" | "update_now" | "restart" | "forget") => {
+        op @ ("status" | "check_update" | "update_now" | "start" | "restart" | "forget") => {
             run(service, json!({"op": op, "node_id": node_id()?})).await
         }
         other => Err(format!("unknown command {other}")),

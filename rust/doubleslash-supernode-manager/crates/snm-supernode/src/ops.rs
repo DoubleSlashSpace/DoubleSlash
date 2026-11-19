@@ -408,6 +408,15 @@ pub async fn lifecycle_report(
     action: LifecycleAction,
 ) -> Result<Vec<String>> {
     let layout = InstanceLayout::from_resolved(resolved);
+    if matches!(action, LifecycleAction::Start) {
+        // A crash loop may have exhausted systemd's start limit. An explicit
+        // operator Start should get a fresh attempt without restarting peers.
+        let reset = systemctl_command(
+            resolved.defaults,
+            &format!("reset-failed {}", layout.unit_name),
+        );
+        run_checked(transport, &reset).await?;
+    }
     let cmd = systemctl_command(
         resolved.defaults,
         &format!("{} {}", action.as_str(), layout.unit_name),

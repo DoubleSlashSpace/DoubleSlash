@@ -181,6 +181,8 @@ See `src/access.rs` for the trait and examples.
 ## Hot Reload & Operations
 
 - The supernode does **not** currently support hot-reload of the binary.
+- In **Settings > Network > Your servers**, **Start** (play icon) starts a managed supernode service on one server or all servers in that node. It clears systemd's failed/start-limit state first and refreshes status. Running services stay running. It requires SSH access and cannot power on a VPS or recover an unresponsive operating system; use the provider console for those cases. Imported deployments keep their existing lifecycle tools.
+- **Update now** refreshes the on-server updater script even when the binary is current. A new package restarts and health-checks running, activating, reloading and failed instances, while inactive services remain stopped. Restart and rollback clear systemd's start limit. A failed unit-list query aborts the update before promotion instead of reporting an unchecked success.
 - For plugin updates, restart is required.
 - Use a process supervisor (systemd, docker, etc.) for production.
 

@@ -515,6 +515,16 @@ Remaining:
   without restarting the node. Confirm QUIC is active rather than only the
   WebSocket audio fallback. Keep an IPv4 peer/node in the same run.
 - Not yet run:
+  - reproduce the whole-VPS stall around VeteranBastards' timer update on a
+    451 MiB host without swap; collect kernel/provider diagnostics if it
+    recurs. The retained journal ends when the updater starts, without an
+    OOM or crash cause. A provider reboot restored the enabled service and
+    authenticated client/QUIC connection; updater recovery fixes do not
+    establish the cause of the operating-system outage;
+  - Start from the packaged desktop against a stopped and start-limited
+    instance, including a failed start and a multi-server node. Backend/QML
+    tests and a Qt build cover the new control; Linux fake-systemd tests
+    cover updater recovery and rollback;
   - `own-key` access;
   - the server-timer update mode, on a host that can reach GitHub;
   - Ubuntu 24.04;

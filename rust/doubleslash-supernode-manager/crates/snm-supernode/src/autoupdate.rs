@@ -216,10 +216,18 @@ install -m 0755 "$new_bin" "$target.new"
 mv -f "$target.new" "$target"
 
 previous=$(readlink "$INSTALL_ROOT/bin/current" 2>/dev/null || true)
-units=$(systemctl list-units --state=active --plain --no-legend 'doubleslash-supernode@*.service' | awk '{ print $1 }')
+# Failed and auto-restarting instances also need the replacement binary.
+# Leave deliberately stopped (inactive) services stopped. Capture systemctl
+# separately so a failed listing cannot turn into an unchecked empty fleet.
+listed=$(systemctl list-units --all --state=active,activating,reloading,failed --plain --no-legend 'doubleslash-supernode@*.service')
+units=$(printf '%s\n' "$listed" | awk '{ print $1 }')
 
 restart_all() {
-  for unit in $units; do systemctl restart "$unit" || true; done
+  for unit in $units; do
+    # Both a failed update and its rollback can exhaust StartLimitBurst.
+    systemctl reset-failed "$unit" || true
+    systemctl restart "$unit" || true
+  done
 }
 
 # Up after 3 s, and still the same process 20 s later: a crash loop under
@@ -310,14 +318,7 @@ pub async fn install_updater(
         0o644,
     )
     .await?;
-    upload_text_file(
-        transport,
-        prefix,
-        UPDATER_SCRIPT_PATH,
-        UPDATER_SCRIPT,
-        0o755,
-    )
-    .await?;
+    refresh_updater_script(transport, privilege).await?;
     upload_text_file(
         transport,
         prefix,
@@ -336,6 +337,21 @@ pub async fn install_updater(
     .await?;
     run_checked(transport, &format!("{prefix}systemctl daemon-reload")).await?;
     set_update_mode(transport, privilege, mode).await
+}
+
+/// Refresh update/rollback logic without changing the channel, paths or timer.
+pub async fn refresh_updater_script(
+    transport: &SshTransport,
+    privilege: snm_core::PrivilegeMode,
+) -> Result<()> {
+    upload_text_file(
+        transport,
+        privilege_prefix(privilege),
+        UPDATER_SCRIPT_PATH,
+        UPDATER_SCRIPT,
+        0o755,
+    )
+    .await
 }
 
 pub async fn set_update_mode(
@@ -417,6 +433,7 @@ pub async fn push_update(
     if archive_sha256.len() != 64 || !archive_sha256.chars().all(|c| c.is_ascii_hexdigit()) {
         bail!("not a SHA-256 digest: {archive_sha256:?}");
     }
+    refresh_updater_script(transport, privilege).await?;
     let prefix = privilege_prefix(privilege);
     let staged = format!("/tmp/doubleslash-update-{}.tar.gz", &archive_sha256[..12]);
     transport

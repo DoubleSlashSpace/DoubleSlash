@@ -1,5 +1,5 @@
 // SupernodeAdminCard.qml - the supernodes this profile set up on its own
-// servers: status, updates, logs, restart, clustering, and removal.
+// servers: status, updates, logs, start/restart, clustering, and removal.
 //
 // Every server action goes through `supernodeCommand`; results come back on
 // `supernodeAdminEvent`, matched by request id. Different supernodes run
@@ -382,7 +382,7 @@ SettingsCard {
 
     readonly property var workingWords: ({
         status: "checking", check_update: "checking for updates", update_now: "updating",
-        restart: "restarting", set_update_mode: "changing updates", uninstall: "uninstalling",
+        start: "starting", restart: "restarting", set_update_mode: "changing updates", uninstall: "uninstalling",
         remove_server: "removing a server", sync_cluster: "syncing the cluster",
         invite: "reading the invite", logs: "reading logs", rename: "renaming",
         set_hostname: "applying hostname"
@@ -497,7 +497,7 @@ SettingsCard {
                     card.patch(nodeId, { updateAvailable: host.update_available }, host.host_name)
                 })
             }
-            if (event.op === "status") {
+            if (event.op === "status" || event.op === "start") {
                 (v.hosts || []).forEach(function(host) {
                     card.patch(nodeId, { status: host }, host.host_name)
                 })
@@ -849,6 +849,14 @@ SettingsCard {
                     onClicked: card.send(nodeColumn.node.id, { op: "update_now" })
                 }
                 ServerButton {
+                    objectName: "start-all-" + nodeColumn.node.id
+                    visible: !nodeColumn.node.imported
+                    tip: "Start the supernode service on every server (requires SSH)"
+                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/play.svg"
+                    enabled: !nodeColumn.locked
+                    onClicked: card.send(nodeColumn.node.id, { op: "start" })
+                }
+                ServerButton {
                     visible: !nodeColumn.node.imported
                     tip: "Restart every server, one at a time"
                     icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/restart.svg"
@@ -954,6 +962,16 @@ SettingsCard {
                             enabled: !nodeColumn.locked
                             onClicked: card.send(nodeColumn.node.id, {
                                 op: "update_now", host_name: member.modelData.host_name
+                            })
+                        }
+                        ServerButton {
+                            objectName: "start-" + member.modelData.host_name
+                            visible: !nodeColumn.node.imported
+                            tip: "Start the supernode service on " + member.label + " (requires SSH)"
+                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/play.svg"
+                            enabled: !nodeColumn.locked
+                            onClicked: card.send(nodeColumn.node.id, {
+                                op: "start", host_name: member.modelData.host_name
                             })
                         }
                         ServerButton {

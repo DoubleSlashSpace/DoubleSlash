@@ -88,6 +88,8 @@ Item {
             compare(backend.requests.length, 0)
             verify(!findChild(card, "add-server-n1").visible)
             verify(!findChild(card, "sync-n1").visible)
+            verify(!findChild(card, "start-all-n1").visible)
+            verify(!findChild(card, "start-second").visible)
             verify(!findChild(card, "remove-server-second").visible)
             compare(card.memberStatus("n1", nodes[0].hosts[1]), "Running at import")
             findChild(card, "edit-hostname-second").clicked()
@@ -151,6 +153,31 @@ Item {
             compare(card.memberStatus("n1", host("second")), "Running")
             compare(card.memberStatus("n1", host("first")), "Not checked")
             verify(!card.working(card.nodes[0]))
+        }
+
+        function test_start_stopped_member_is_scoped_serialized_and_refreshes_status() {
+            card.patch("n1", {status: {reachable: true, active: false, state: "failed"}}, "second")
+            var start = findChild(card, "start-second")
+            verify(start.enabled)
+            start.clicked()
+            var request = backend.requests[0]
+            compare(request.op, "start")
+            compare(request.node_id, "n1")
+            compare(request.host_name, "second")
+            verify(!findChild(card, "start-first").enabled)
+            verify(!findChild(card, "start-all-n1").enabled)
+            backend.finish(request, {hosts: [{host_name: "second", reachable: true, active: true}],
+                                      lines: ["second: start complete"]})
+            compare(card.memberStatus("n1", host("second")), "Running")
+            compare(card.memberStatus("n1", host("first")), "Not checked")
+            verify(start.enabled)
+            findChild(card, "start-all-n1").clicked()
+            request = backend.requests[1]
+            compare(request.op, "start")
+            verify(!("host_name" in request))
+            backend.finish(request, {}, "SSH unavailable")
+            verify(card.info("n1").failed)
+            compare(card.info("n1").output, "SSH unavailable")
         }
 
         function test_connection_details_are_visible_before_status_or_info() {

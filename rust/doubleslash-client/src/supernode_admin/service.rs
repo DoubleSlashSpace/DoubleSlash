@@ -92,6 +92,11 @@ pub enum Request {
     Invite {
         node_id: String,
     },
+    Start {
+        node_id: String,
+        #[serde(default)]
+        host_name: Option<String>,
+    },
     Restart {
         node_id: String,
         #[serde(default)]
@@ -174,7 +179,8 @@ impl Request {
                 setup: true,
                 node: Some(node_id),
             }),
-            Self::Restart { node_id, .. }
+            Self::Start { node_id, .. }
+            | Self::Restart { node_id, .. }
             | Self::UpdateNow { node_id, .. }
             | Self::SetUpdateMode { node_id, .. }
             | Self::SetHostname { node_id, .. }
@@ -521,6 +527,7 @@ impl AdminService {
         // Imported inventory describes the existing deployment; it is never rendered.
         let changing = match &request {
             Request::AddServer { node_id, .. }
+            | Request::Start { node_id, .. }
             | Request::Restart { node_id, .. }
             | Request::CheckUpdate { node_id, .. }
             | Request::UpdateNow { node_id, .. }
@@ -578,6 +585,14 @@ impl AdminService {
                 lines,
             } => self.logs(&node_id, host_name.as_deref(), lines).await,
             Request::Invite { node_id } => self.invite(&node_id).await,
+            Request::Start { node_id, host_name } => {
+                let lines = self
+                    .for_each_host(&node_id, host_name.as_deref(), HostAction::Start)
+                    .await?;
+                let mut result = self.status(&node_id, host_name.as_deref()).await?;
+                result["lines"] = json!(lines);
+                Ok(result)
+            }
             Request::Restart { node_id, host_name } => {
                 let lines = self
                     .for_each_host(&node_id, host_name.as_deref(), HostAction::Restart)
@@ -1251,8 +1266,11 @@ impl AdminService {
                 .await
                 .map_err(|e| format!("{}: {e:#}", host.host_name))?;
             if installed.as_deref() == Some(digest.as_str()) {
+                snm_supernode::refresh_updater_script(&transport, privilege)
+                    .await
+                    .map_err(|e| format!("{}: refresh updater: {e:#}", host.host_name))?;
                 lines.push(format!(
-                    "{}: already running the latest build",
+                    "{}: latest build already installed; updater refreshed (use Start if stopped)",
                     host.host_name
                 ));
                 continue;
@@ -1526,6 +1544,7 @@ fn selected_hosts<'a>(
 
 #[derive(Clone, Copy)]
 enum HostAction {
+    Start,
     Restart,
     SetUpdateMode(UpdateMode),
     Uninstall { purge: bool },
@@ -1539,6 +1558,9 @@ async fn run_host_action(
     let privilege = resolved.defaults.privilege;
     let detail = |e: anyhow::Error| format!("{e:#}");
     match action {
+        HostAction::Start => lifecycle_report(transport, resolved, LifecycleAction::Start)
+            .await
+            .map_err(detail),
         HostAction::Restart => lifecycle_report(transport, resolved, LifecycleAction::Restart)
             .await
             .map_err(detail),
@@ -1970,6 +1992,7 @@ mod tests {
         service.store.lock().upsert(clustered_node()).unwrap();
         for op in [
             "status",
+            "start",
             "restart",
             "check_update",
             "update_now",
@@ -1988,7 +2011,7 @@ mod tests {
 
     #[test]
     fn cluster_commands_remain_compatible_and_member_mutations_stay_serialized() {
-        for op in ["status", "restart", "check_update", "update_now"] {
+        for op in ["status", "start", "restart", "check_update", "update_now"] {
             for name in [None, Some("second")] {
                 let mut value = json!({ "op": op, "node_id": "node" });
                 if let Some(name) = name {
@@ -1997,10 +2020,11 @@ mod tests {
                 let request: Request = serde_json::from_value(value).unwrap();
                 assert_eq!(
                     request.claim().is_some(),
-                    matches!(op, "restart" | "update_now")
+                    matches!(op, "start" | "restart" | "update_now")
                 );
                 let host_name = match request {
                     Request::Status { host_name, .. }
+                    | Request::Start { host_name, .. }
                     | Request::Restart { host_name, .. }
                     | Request::CheckUpdate { host_name, .. }
                     | Request::UpdateNow { host_name, .. } => host_name,
@@ -2500,6 +2524,7 @@ mod tests {
             1
         );
         for op in [
+            "start",
             "restart",
             "sync_cluster",
             "update_now",
