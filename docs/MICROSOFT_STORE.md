@@ -88,20 +88,21 @@ No identity authority or runtime dependency on Store authentication is added.
 
 ## Submission and acceptance
 
-In Partner Center select **Windows 10/11 Desktop** only. Upload the MSIX, retain
-the checksum locally, and supply clear instructions for reviewers to create an
-identity and test invite-based communication against functioning peers/nodes.
-Use the exact feature declarations for the Windows build, including optional
-Ollama generative AI. Do not claim accessibility certification, chat moderation,
-or an in-app report flow that has not been implemented and validated.
+The package has passed Store certification and is published. For each update,
+select **Windows 10/11 Desktop** only in Partner Center, upload the MSIX, keep
+the checksum locally, and keep the reviewer instructions working: they must let
+a reviewer create an identity and test invite-based communication against
+functioning peers/nodes. Keep the feature declarations exact for the build being
+submitted, including optional Ollama generative AI. Do not claim accessibility
+certification, chat moderation, or an in-app report flow that has not been
+implemented and validated. A schema-valid local package is not a certified
+update until Partner Center accepts it.
 
-Outstanding acceptance is tracked in [backlog.md](../backlog.md). At minimum,
-validate package installation and update, alternate-volume installation,
-profile/credential preservation, first launch and invite activation with the app
-closed and open, Qt/WebEngine, privacy controls, direct/room media and files,
-notifications/tray, and uninstall/reinstall. Store content/reporting requirements
-need review before publication. A schema-valid package is not a passed Windows
-App Certification Kit run or a Store-approved submission.
+Certification does not run two-party flows or follow a profile across updates.
+The checks it leaves open (invite activation with the app closed, running, and
+beside a portable install; profile preservation across a Store update and a
+reinstall; media, files and portals from the installed package; and a desktop
+Report flow) are tracked in [backlog.md](../backlog.md#microsoft-store-package-what-certification-did-not-cover).
 
 References: [MSIX package requirements](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements),
 [protocol extensions](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/desktop-to-uwp-extensions),

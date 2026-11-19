@@ -23,31 +23,38 @@ in [`README.md`](README.md) and on the website must have a home here.
 
 ## Phase 1 — Prove what already ships
 
-### Microsoft Store MSIX acceptance
-
-The Microsoft Store listing is the official Windows release. Microsoft signs
-that package. SignPath signing of GitHub Windows builds waits until SignPath
-accepts the project on the strength of this existing distribution.
-
-The Windows packaging path is `build_msix.ps1`; see
-[Microsoft Store packaging](docs/MICROSOFT_STORE.md). These checks are still open:
-
-- Run Windows App Certification Kit and resolve package-specific failures.
-- Validate install/update on Windows 10/11 and an alternate drive; test
-  uninstall/reinstall with the existing identity and selected profile preserved.
-- Test invite links from a browser with the app closed and already running,
-  including an unpackaged installation also present. Preserve the profile lock.
-- Exercise first launch, unlock/keyring, backup/restore, Qt WebEngine portals,
-  notifications/tray and camera/screen/shared audio, direct/room calls and files
-  from an actually installed package. Confirm updates stay managed by Windows.
-- Address the Windows in-app abuse-reporting gap and review the Store UGC and
-  optional generative-AI requirements. The Android share-sheet report is not a
-  Windows reporting feature. Do not answer declarations based on planned work.
-- Supply working invite-based certification instructions and verify Store
-  publication/signing separately from a successful local build.
-
 Fixes and live acceptance of paths the product already advertises. Do not start
 new capture backends or pairing protocols until these have a written result.
+
+### Microsoft Store package: what certification did not cover
+
+The Store listing (product `9N09Q23FW92M`) has passed certification and is
+published; Microsoft signs the package and delivers its updates. Certification
+checks that the package installs, launches and meets policy. It does not run
+two-party flows or follow a profile across updates. These checks on an
+installed Store package are still open:
+
+- **Invite activation.** Open a `doubleslash://` invite from a browser with the
+  app closed (cold start, unlock, then the invite is acted on) and with it
+  running (the link reaches the running window and the second process exits,
+  keeping the profile lock). Repeat with the portable/GitHub build also
+  installed: it registers the same scheme in the registry, the package through
+  its manifest, and which one Windows opens is unverified.
+- **Profile across update and reinstall.** The profile, `settings.json` and
+  keyring entries live outside the package's virtualised `AppData` and
+  registry, so they should survive. Confirm that a Store update delivered while
+  the app is running, and an uninstall followed by a reinstall, keep the same
+  identity and selected profile.
+- **Media and files from the package.** Camera and microphone permissions are
+  granted per package in Windows privacy settings, and Qt WebEngine runs its
+  helpers from the read-only `WindowsApps` folder. Run direct/room calls,
+  camera, screen and shared audio, files, portals, notifications/tray and
+  backup/restore from the installed package, not the portable build.
+- **Desktop Report.** The desktop offers Block but no Report; the Android
+  share-sheet report has no Windows counterpart. Certification accepted the
+  current build, but a later update review may apply the Store's
+  user-generated-content policy more strictly. Add a desktop Report beside
+  Block, and do not declare one before it ships.
 
 ### Large file transfer acceptance
 
