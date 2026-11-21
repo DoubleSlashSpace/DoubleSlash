@@ -23,7 +23,8 @@ ItemDelegate {
     property bool selected: false
 
     width: parent ? parent.width : 200
-    height: Theme.touchTarget
+    // 44 at the designed size. The icon is 18, so a larger icon size grows the row.
+    height: Math.max(Theme.touchTarget, Theme.iconPx(18))
     padding: 0
     topPadding: 0
     bottomPadding: 0
@@ -47,12 +48,12 @@ ItemDelegate {
         spacing: Theme.spacingSm
 
         Image {
-            source: root.iconSource
+            source: Icons.resolve(root.iconSource)
             visible: root.iconSource !== ""
-            sourceSize.width: 18
-            sourceSize.height: 18
-            Layout.preferredWidth: 18
-            Layout.preferredHeight: 18
+            sourceSize.width: Theme.iconPx(18)
+            sourceSize.height: Theme.iconPx(18)
+            Layout.preferredWidth: Theme.iconPx(18)
+            Layout.preferredHeight: Theme.iconPx(18)
             fillMode: Image.PreserveAspectFit
             opacity: root.selected ? 1.0 : 0.72
         }

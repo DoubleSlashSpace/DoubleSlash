@@ -40,9 +40,9 @@ Rectangle {
 
         Image {
             anchors.verticalCenter: parent.verticalCenter
-            source: root.iconSource
-            sourceSize.width: 11; sourceSize.height: 11
-            width: 11; height: 11
+            source: Icons.resolve(root.iconSource)
+            sourceSize.width: Theme.iconPx(11); sourceSize.height: Theme.iconPx(11)
+            width: Theme.iconPx(11); height: Theme.iconPx(11)
             fillMode: Image.PreserveAspectFit
             opacity: root.active ? 1.0 : 0.55
         }

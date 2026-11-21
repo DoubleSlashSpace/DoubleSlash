@@ -61,6 +61,36 @@ TestCase {
         compare(Theme.touchTarget, 44)
         compare(Theme.titleBarHeight, 44)
         compare(Theme.bannerHeight, 32)
+        Theme.iconScale = 1
+        compare(Theme.iconPx(18), 18)
+        compare(Theme.iconPx(20), 20)
+        compare(Theme.barActionSize, 36)
+    }
+
+    function test_icon_scale_changes_icons_and_not_colours() {
+        var accent = Theme.toHex(Theme.accent)
+        Theme.fontScale = 1
+        Theme.iconScale = 0.5
+        compare(Theme.iconPx(18), 9)
+        compare(Theme.fontSizeBody, 13)
+        Theme.iconScale = 3
+        compare(Theme.iconPx(20), 60)
+        verify(Theme.barActionSize >= Theme.iconPx(20))
+        compare(Theme.toHex(Theme.accent), accent)
+        Theme.iconScale = 1
+        compare(Theme.barActionSize, 36)
+    }
+
+    function test_a_skin_cannot_set_the_icon_scale() {
+        Theme.iconScale = 1
+        Theme.applySkinJson(JSON.stringify({
+            v: 1, name: "Big", base: "dark",
+            colors: { accent: "#112233" },
+            iconScale: 3
+        }))
+        compare(Theme.iconPx(18), 18)
+        compare(Theme.iconScale, 1)
+        compare(Theme.toHex(Theme.accent), "#112233")
     }
 
     function test_font_scale_changes_text_and_not_colours() {

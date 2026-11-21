@@ -30,11 +30,11 @@ SettingsCard {
         property string tip: ""
         property bool danger: false
         property bool accent: false
-        implicitWidth: 28
-        implicitHeight: 28
+        implicitWidth: Theme.iconPx(28)
+        implicitHeight: Theme.iconPx(28)
         padding: 5
-        icon.width: 16
-        icon.height: 16
+        icon.width: Theme.iconPx(16)
+        icon.height: Theme.iconPx(16)
         icon.color: !enabled ? Theme.muted
             : danger ? Theme.danger
             : accent ? Theme.accent
@@ -75,14 +75,14 @@ SettingsCard {
                 anchors.margins: Theme.spacingSm
                 spacing: Theme.spacingSm
                 Image {
-                    Layout.preferredWidth: 18
-                    Layout.preferredHeight: 18
+                    Layout.preferredWidth: Theme.iconPx(18)
+                    Layout.preferredHeight: Theme.iconPx(18)
                     Layout.alignment: Qt.AlignTop
-                    sourceSize.width: 36
-                    sourceSize.height: 36
+                    sourceSize.width: Theme.iconPx(36)
+                    sourceSize.height: Theme.iconPx(36)
                     source: outputNotice.warning
-                        ? "qrc:/qt/qml/DoubleSlash/Client/icons/warning.svg"
-                        : "qrc:/qt/qml/DoubleSlash/Client/icons/info.svg"
+                        ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/warning.svg")
+                        : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/info.svg")
                 }
                 ColumnLayout {
                     Layout.fillWidth: true
@@ -527,7 +527,7 @@ SettingsCard {
         StyledButton {
             objectName: "host-supernode"
             text: "Host a supernode"
-            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
+            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg")
             enabled: !card.setupRunning
             onClicked: card.hostRequested("", "")
         }
@@ -543,14 +543,14 @@ SettingsCard {
             objectName: "check-all"
             visible: card.nodes.length > 1
             tip: "Check the status of every listed supernode"
-            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
+            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg")
             onClicked: card.sendEach("status", false)
         }
         ServerButton {
             objectName: "check-all-updates"
             visible: card.nodes.length > 1
             tip: "Check every listed supernode for updates"
-            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/download.svg"
+            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/download.svg")
             onClicked: card.sendEach("check_update", false)
         }
         ServerButton {
@@ -559,7 +559,7 @@ SettingsCard {
             tip: "Update every listed supernode that has an update"
             accent: enabled
             enabled: card.anyListedUpdate()
-            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/update.svg"
+            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/update.svg")
             onClicked: card.sendEach("update_now", true)
         }
     }
@@ -646,11 +646,11 @@ SettingsCard {
                     contentItem: RowLayout {
                         spacing: Theme.spacingSm
                         Image {
-                            Layout.preferredWidth: 10
-                            Layout.preferredHeight: 10
-                            sourceSize.width: 20
-                            sourceSize.height: 20
-                            source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
+                            Layout.preferredWidth: Theme.iconPx(10)
+                            Layout.preferredHeight: Theme.iconPx(10)
+                            sourceSize.width: Theme.iconPx(20)
+                            sourceSize.height: Theme.iconPx(20)
+                            source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg")
                             rotation: nodeColumn.expanded ? 90 : 0
                         }
                         // Ringed green while connected, as in the Rooms list.
@@ -695,13 +695,13 @@ SettingsCard {
                     objectName: "rename-" + nodeColumn.node.id
                     visible: nodeColumn.expanded
                     tip: "Rename"
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/pencil.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/pencil.svg")
                     checked: nodeColumn.renaming
                     onClicked: card.renamingId = nodeColumn.renaming ? "" : nodeColumn.node.id
                 }
                 ServerButton {
                     tip: "Copy invite"
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg")
                     enabled: !nodeColumn.working
                     onClicked: {
                         var saved = nodeColumn.node.invite_url || ""
@@ -715,13 +715,13 @@ SettingsCard {
                     visible: !nodeColumn.node.imported
                     objectName: "add-server-" + nodeColumn.node.id
                     tip: "Add a server to this supernode's cluster"
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg")
                     enabled: !nodeColumn.locked && !card.setupRunning
                     onClicked: card.hostRequested(nodeColumn.node.id, nodeColumn.node.name)
                 }
                 ServerButton {
                     tip: "Supernode info"
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/info.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/info.svg")
                     checked: nodeColumn.showDetails
                     onClicked: {
                         card.openNodeId = nodeColumn.node.id
@@ -732,7 +732,7 @@ SettingsCard {
                 ServerButton {
                     tip: nodeColumn.node.imported ? "Forget this imported entry" : "Remove this supernode and all its servers"
                     danger: true
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
                     enabled: !nodeColumn.locked
                     onClicked: {
                         card.openNodeId = nodeColumn.node.id
@@ -768,7 +768,7 @@ SettingsCard {
                     id: saveRename
                     tip: "Save name"
                     accent: true
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/check.svg")
                     enabled: renameField.text.trim() !== ""
                     onClicked: {
                         card.renamingId = ""
@@ -778,7 +778,7 @@ SettingsCard {
                 }
                 ServerButton {
                     tip: "Cancel"
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
                     onClicked: card.renamingId = ""
                 }
             }
@@ -829,14 +829,14 @@ SettingsCard {
                 }
                 ServerButton {
                     tip: "Check the status of every server"
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg")
                     enabled: !nodeColumn.working
                     onClicked: card.send(nodeColumn.node.id, { op: "status" })
                 }
                 ServerButton {
                     visible: !nodeColumn.node.imported
                     tip: "Check every server for updates"
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/download.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/download.svg")
                     enabled: !nodeColumn.working
                     onClicked: card.send(nodeColumn.node.id, { op: "check_update" })
                 }
@@ -844,7 +844,7 @@ SettingsCard {
                     visible: !nodeColumn.node.imported
                     tip: "Update every server, one at a time"
                     accent: card.updateAvailable(nodeColumn.node)
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/update.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/update.svg")
                     enabled: !nodeColumn.locked
                     onClicked: card.send(nodeColumn.node.id, { op: "update_now" })
                 }
@@ -852,14 +852,14 @@ SettingsCard {
                     objectName: "start-all-" + nodeColumn.node.id
                     visible: !nodeColumn.node.imported
                     tip: "Start the supernode service on every server (requires SSH)"
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/play.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/play.svg")
                     enabled: !nodeColumn.locked
                     onClicked: card.send(nodeColumn.node.id, { op: "start" })
                 }
                 ServerButton {
                     visible: !nodeColumn.node.imported
                     tip: "Restart every server, one at a time"
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/restart.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/restart.svg")
                     enabled: !nodeColumn.locked
                     onClicked: card.send(nodeColumn.node.id, { op: "restart" })
                 }
@@ -868,7 +868,7 @@ SettingsCard {
                     visible: nodeColumn.clustered && !nodeColumn.node.imported
                     tip: "Sync the cluster: give every server the member list again and restart "
                         + "them one at a time"
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/chain.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/chain.svg")
                     enabled: !nodeColumn.locked
                     onClicked: card.send(nodeColumn.node.id, { op: "sync_cluster" })
                 }
@@ -939,7 +939,7 @@ SettingsCard {
                         ServerButton {
                             objectName: "status-" + member.modelData.host_name
                             tip: "Check " + member.label + " status"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg")
                             enabled: !nodeColumn.working
                             onClicked: card.send(nodeColumn.node.id, {
                                 op: "status", host_name: member.modelData.host_name
@@ -948,7 +948,7 @@ SettingsCard {
                         ServerButton {
                             visible: !nodeColumn.node.imported
                             tip: "Check " + member.label + " for updates"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/download.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/download.svg")
                             enabled: !nodeColumn.working
                             onClicked: card.send(nodeColumn.node.id, {
                                 op: "check_update", host_name: member.modelData.host_name
@@ -958,7 +958,7 @@ SettingsCard {
                             visible: !nodeColumn.node.imported
                             tip: "Update " + member.label
                             accent: member.info.updateAvailable === true
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/update.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/update.svg")
                             enabled: !nodeColumn.locked
                             onClicked: card.send(nodeColumn.node.id, {
                                 op: "update_now", host_name: member.modelData.host_name
@@ -968,7 +968,7 @@ SettingsCard {
                             objectName: "start-" + member.modelData.host_name
                             visible: !nodeColumn.node.imported
                             tip: "Start the supernode service on " + member.label + " (requires SSH)"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/play.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/play.svg")
                             enabled: !nodeColumn.locked
                             onClicked: card.send(nodeColumn.node.id, {
                                 op: "start", host_name: member.modelData.host_name
@@ -977,7 +977,7 @@ SettingsCard {
                         ServerButton {
                             visible: !nodeColumn.node.imported
                             tip: "Restart " + member.label
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/restart.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/restart.svg")
                             enabled: !nodeColumn.locked
                             onClicked: card.send(nodeColumn.node.id, {
                                 op: "restart", host_name: member.modelData.host_name
@@ -985,7 +985,7 @@ SettingsCard {
                         }
                         ServerButton {
                             tip: "Logs of " + member.label
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/logs.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/logs.svg")
                             enabled: !nodeColumn.working
                             onClicked: card.send(nodeColumn.node.id, {
                                 op: "logs", host_name: member.modelData.host_name, lines: 200
@@ -994,7 +994,7 @@ SettingsCard {
                         ServerButton {
                             objectName: "info-" + member.modelData.host_name
                             tip: "Info about " + member.label
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/info.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/info.svg")
                             checked: member.showDetails
                             onClicked: member.showDetails = !member.showDetails
                         }
@@ -1004,7 +1004,7 @@ SettingsCard {
                             visible: !nodeColumn.node.imported && (nodeColumn.node.hosts || []).length > 1
                             tip: "Remove " + member.label + " from the cluster"
                             danger: true
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
                             enabled: !nodeColumn.locked
                             onClicked: {
                                 card.pendingRemoveId = ""
@@ -1266,7 +1266,7 @@ SettingsCard {
                                 objectName: "uninstall-server-" + member.modelData.host_name
                                 tip: "Uninstall and remove"
                                 danger: true
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
                                 enabled: !nodeColumn.locked
                                 onClicked: {
                                     card.pendingServerRemove = ""
@@ -1279,7 +1279,7 @@ SettingsCard {
                             ServerButton {
                                 objectName: "drop-server-" + member.modelData.host_name
                                 tip: "Remove without contacting it"
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/forget.svg"
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/forget.svg")
                                 enabled: !nodeColumn.locked
                                 onClicked: {
                                     card.pendingServerRemove = ""
@@ -1291,7 +1291,7 @@ SettingsCard {
                             }
                             ServerButton {
                                 tip: "Cancel"
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
                                 onClicked: card.pendingServerRemove = ""
                             }
                         }
@@ -1332,7 +1332,7 @@ SettingsCard {
                         visible: !nodeColumn.node.imported
                         tip: "Uninstall"
                         danger: true
-                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
                         enabled: !nodeColumn.locked
                         onClicked: {
                             card.pendingRemoveId = ""
@@ -1341,7 +1341,7 @@ SettingsCard {
                     }
                     ServerButton {
                         tip: "Forget"
-                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/forget.svg"
+                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/forget.svg")
                         enabled: !nodeColumn.locked
                         onClicked: {
                             card.pendingRemoveId = ""
@@ -1350,7 +1350,7 @@ SettingsCard {
                     }
                     ServerButton {
                         tip: "Cancel"
-                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
+                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
                         onClicked: card.pendingRemoveId = ""
                     }
                 }
@@ -1384,8 +1384,8 @@ SettingsCard {
         ServerButton {
             tip: card.showNotice ? "Hide the notice" : "Read the full notice"
             icon.source: card.showNotice
-                ? "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
-                : "qrc:/qt/qml/DoubleSlash/Client/icons/info.svg"
+                ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
+                : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/info.svg")
             onClicked: card.showNotice = !card.showNotice
         }
         Label {

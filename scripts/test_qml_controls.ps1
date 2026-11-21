@@ -12,7 +12,7 @@ try {
     Copy-Item (Join-Path $clientRoot "tests/qml/qmldir") $moduleRoot
     # Every component the tests in tests/qml instantiate. The directory is run
     # as a whole, so a component missing here fails as "not a type".
-    foreach ($component in @("Theme", "StyledButton", "StyledTextField",
+    foreach ($component in @("Theme", "Icons", "StyledButton", "StyledTextField",
                              "JumpToCurrentButton", "HistoryAnchor", "BackupWizard",
                              "RoomTree", "RoomTreeMember", "TreeGuides", "CountPill",
                              "VoiceDock", "SidebarToggle", "Avatar",

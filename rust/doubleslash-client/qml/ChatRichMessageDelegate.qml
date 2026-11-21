@@ -511,11 +511,11 @@ Item {
                         spacing: 8
                         Image {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            source: "qrc:/qt/qml/DoubleSlash/Client/icons/play.svg"
-                            sourceSize.width: 28
-                            sourceSize.height: 28
-                            width: 28
-                            height: 28
+                            source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/play.svg")
+                            sourceSize.width: Theme.iconPx(28)
+                            sourceSize.height: Theme.iconPx(28)
+                            width: Theme.iconPx(28)
+                            height: Theme.iconPx(28)
                         }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
@@ -579,11 +579,11 @@ Item {
                             spacing: 8
 
                             Image {
-                                source: "qrc:/qt/qml/DoubleSlash/Client/icons/attach.svg"
-                                sourceSize.width: 16
-                                sourceSize.height: 16
-                                width: 16
-                                height: 16
+                                source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/attach.svg")
+                                sourceSize.width: Theme.iconPx(16)
+                                sourceSize.height: Theme.iconPx(16)
+                                width: Theme.iconPx(16)
+                                height: Theme.iconPx(16)
                                 Layout.alignment: Qt.AlignVCenter
                             }
                             ColumnLayout {
@@ -609,12 +609,12 @@ Item {
                                 }
                             }
                             IconButton {
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg"
-                                icon.width: 14
-                                icon.height: 14
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/check.svg")
+                                icon.width: Theme.iconPx(14)
+                                icon.height: Theme.iconPx(14)
                                 icon.color: Theme.online
-                                implicitWidth: 28
-                                implicitHeight: 24
+                                implicitWidth: Theme.iconPx(28)
+                                implicitHeight: Theme.iconPx(24)
                                 flat: true
                                 visible: root.canDownload
                                 ToolTip.text: root.isRoom ? qsTr("Download") : qsTr("Accept")
@@ -626,12 +626,12 @@ Item {
                                 }
                             }
                             IconButton {
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
-                                icon.width: 14
-                                icon.height: 14
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg")
+                                icon.width: Theme.iconPx(14)
+                                icon.height: Theme.iconPx(14)
                                 icon.color: Theme.accent
-                                implicitWidth: 28
-                                implicitHeight: 24
+                                implicitWidth: Theme.iconPx(28)
+                                implicitHeight: Theme.iconPx(24)
                                 flat: true
                                 visible: root.canRetry
                                 ToolTip.text: qsTr("Retry")
@@ -643,12 +643,12 @@ Item {
                                 }
                             }
                             IconButton {
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg"
-                                icon.width: 14
-                                icon.height: 14
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg")
+                                icon.width: Theme.iconPx(14)
+                                icon.height: Theme.iconPx(14)
                                 icon.color: Theme.danger
-                                implicitWidth: 28
-                                implicitHeight: 24
+                                implicitWidth: Theme.iconPx(28)
+                                implicitHeight: Theme.iconPx(24)
                                 flat: true
                                 visible: root.xferState === "pending"
                                          || (root.xferState === "active" && !root.isRoom)
@@ -659,12 +659,12 @@ Item {
                             }
                             IconButton {
                                 id: openFileBtn
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/folder.svg"
-                                icon.width: 14
-                                icon.height: 14
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/folder.svg")
+                                icon.width: Theme.iconPx(14)
+                                icon.height: Theme.iconPx(14)
                                 icon.color: root.mine ? Theme.textInv : Theme.muted
-                                implicitWidth: 28
-                                implicitHeight: 24
+                                implicitWidth: Theme.iconPx(28)
+                                implicitHeight: Theme.iconPx(24)
                                 flat: true
                                 visible: root.attachmentPath !== "" && !root.xferLive
                                 ToolTip.text: qsTr("Open…")
@@ -756,12 +756,12 @@ Item {
                                 Image {
                                     anchors.centerIn: parent
                                     source: root.inviteKind === "room"
-                                        ? "qrc:/qt/qml/DoubleSlash/Client/icons/handshake.svg"
-                                        : "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
-                                    sourceSize.width: 18
-                                    sourceSize.height: 18
-                                    width: 18
-                                    height: 18
+                                        ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/handshake.svg")
+                                        : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg")
+                                    sourceSize.width: Theme.iconPx(18)
+                                    sourceSize.height: Theme.iconPx(18)
+                                    width: Theme.iconPx(18)
+                                    height: Theme.iconPx(18)
                                     fillMode: Image.PreserveAspectFit
                                     opacity: 0.95
                                 }
@@ -810,7 +810,7 @@ Item {
                                 text: root.inviteAccepted ? "Accepted" : "Accept"
                                 primary: true
                                 compact: true
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg"
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/check.svg")
                                 onClicked: root.acceptInvite()
                             }
                             StyledButton {
@@ -818,7 +818,7 @@ Item {
                                 text: "Ignore"
                                 compact: true
                                 flat: true
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
                                 onClicked: root.ignoreInvite()
                             }
                             StyledButton {
@@ -826,7 +826,7 @@ Item {
                                 text: "Copy link"
                                 compact: true
                                 flat: true
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg")
                                 onClicked: root.copyRequested(root.inviteUrl)
                             }
                             Item { Layout.fillWidth: true }
@@ -937,12 +937,12 @@ Item {
                     Image {
                         anchors.centerIn: parent
                         source: preview.kindName === "link"
-                            ? "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
-                            : "qrc:/qt/qml/DoubleSlash/Client/icons/play.svg"
-                        sourceSize.width: 13
-                        sourceSize.height: 13
-                        width: 13
-                        height: 13
+                            ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg")
+                            : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/play.svg")
+                        sourceSize.width: Theme.iconPx(13)
+                        sourceSize.height: Theme.iconPx(13)
+                        width: Theme.iconPx(13)
+                        height: Theme.iconPx(13)
                         fillMode: Image.PreserveAspectFit
                     }
                 }
@@ -967,12 +967,12 @@ Item {
 
                 IconButton {
                     visible: root.inlineUrl() !== ""
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/play.svg"
-                    icon.width: 14
-                    icon.height: 14
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/play.svg")
+                    icon.width: Theme.iconPx(14)
+                    icon.height: Theme.iconPx(14)
                     icon.color: Theme.muted
-                    implicitWidth: 28
-                    implicitHeight: 24
+                    implicitWidth: Theme.iconPx(28)
+                    implicitHeight: Theme.iconPx(24)
                     padding: 4
                     ToolTip.text: "Inline"
                     ToolTip.visible: hovered
@@ -987,12 +987,12 @@ Item {
                 }
 
                 IconButton {
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
-                    icon.width: 14
-                    icon.height: 14
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg")
+                    icon.width: Theme.iconPx(14)
+                    icon.height: Theme.iconPx(14)
                     icon.color: Theme.muted
-                    implicitWidth: 28
-                    implicitHeight: 24
+                    implicitWidth: Theme.iconPx(28)
+                    implicitHeight: Theme.iconPx(24)
                     padding: 4
                     ToolTip.text: "Open"
                     ToolTip.visible: hovered
@@ -1040,12 +1040,12 @@ Item {
 
             IconButton {
                 visible: root.copyableText() !== ""
-                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
-                icon.width: 14
-                icon.height: 14
+                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg")
+                icon.width: Theme.iconPx(14)
+                icon.height: Theme.iconPx(14)
                 icon.color: Theme.muted
-                implicitWidth: 22
-                implicitHeight: 22
+                implicitWidth: Theme.iconPx(22)
+                implicitHeight: Theme.iconPx(22)
                 padding: 4
                 ToolTip.text: "Copy message"
                 ToolTip.visible: hovered
@@ -1054,12 +1054,12 @@ Item {
 
             IconButton {
                 visible: root.mine && (root.status === "failed" || root.status === "sending")
-                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
-                icon.width: 14
-                icon.height: 14
+                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg")
+                icon.width: Theme.iconPx(14)
+                icon.height: Theme.iconPx(14)
                 icon.color: Theme.muted
-                implicitWidth: 22
-                implicitHeight: 22
+                implicitWidth: Theme.iconPx(22)
+                implicitHeight: Theme.iconPx(22)
                 padding: 4
                 ToolTip.text: "Retry"
                 ToolTip.visible: hovered
@@ -1068,12 +1068,12 @@ Item {
 
             IconButton {
                 visible: root.mine && root.msgId !== ""
-                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
-                icon.width: 14
-                icon.height: 14
+                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
+                icon.width: Theme.iconPx(14)
+                icon.height: Theme.iconPx(14)
                 icon.color: Theme.danger
-                implicitWidth: 22
-                implicitHeight: 22
+                implicitWidth: Theme.iconPx(22)
+                implicitHeight: Theme.iconPx(22)
                 padding: 4
                 ToolTip.text: "Delete"
                 ToolTip.visible: hovered

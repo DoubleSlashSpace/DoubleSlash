@@ -62,7 +62,7 @@ StyledButton {
 
     text: qsTr("Jump to current")
     primary: true
-    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/arrow-down.svg"
+    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/arrow-down.svg")
 
     // Driven by opacity so the button fades rather than blinking, and folded
     // back into `visible` so a fully faded button cannot be clicked or take

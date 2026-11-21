@@ -102,7 +102,7 @@ Item {
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.margins: Theme.spacingMd
-        anchors.topMargin: Theme.touchTarget + Theme.spacingMd + Theme.spacingXs
+        anchors.topMargin: chatHeader.height + Theme.spacingMd
         visible: root._statsPanelOpen && root.selectedPeerId !== ""
     }
 
@@ -118,8 +118,10 @@ Item {
         spacing: 0
 
         Rectangle {
+            id: chatHeader
             Layout.fillWidth: true
-            height: Theme.touchTarget + Theme.spacingXs
+            // 48 at the designed size. The call button's tile grows with the icon.
+            height: Math.max(Theme.touchTarget + Theme.spacingXs, Theme.barActionSize)
             color: Theme.bg2
 
             RowLayout {
@@ -174,9 +176,9 @@ Item {
                 }
 
                 IconButton {
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/search.svg"
-                    icon.width: 18
-                    icon.height: 18
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/search.svg")
+                    icon.width: Theme.iconPx(18)
+                    icon.height: Theme.iconPx(18)
                     visible: root.selectedPeerId !== ""
                     flat: true
                     ToolTip.text: "Search messages"
@@ -194,9 +196,9 @@ Item {
                 // Start a call: solid green on a green square, the same
                 // call control the Rooms tree uses.
                 IconButton {
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
-                    icon.width: 18
-                    icon.height: 18
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg")
+                    icon.width: Theme.iconPx(18)
+                    icon.height: Theme.iconPx(18)
                     icon.color: Theme.online
                     tileColor: Theme.semanticTint(Theme.online, 0.18)
                     tileBorder: Theme.online
@@ -246,9 +248,9 @@ Item {
                 }
 
                 IconButton {
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
-                    icon.width: 12
-                    icon.height: 12
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
+                    icon.width: Theme.iconPx(12)
+                    icon.height: Theme.iconPx(12)
                     icon.color: Theme.muted
                     flat: true
                     onClicked: {
@@ -286,32 +288,56 @@ Item {
             // The button owns that arithmetic so the view that follows the
             // newest message and the button offering a way back to it can
             // never disagree about where it is.
-            function _restPosition() {
+            //
+            // Only scrolling decides whether the reader has left the newest
+            // message (`judgePin`). A geometry change - an image or link embed
+            // loading to its real height, a row settling from its estimate,
+            // the panel resizing - moves the end away from a stationary
+            // `contentY`; judging pinned-ness from that unpinned the view a
+            // few pixels short of the end, so it stopped following and Jump
+            // to current took two presses. While pinned, those changes are
+            // followed instead.
+            function _restPosition(judgePin) {
                 // `jumpToCurrent` is a child, so it is still undefined for
                 // the layout passes that run while this view is being built.
                 // An empty list reads as pinned there, which is where a
                 // conversation should open anyway.
-                root._pinnedToLatest = contentHeight <= height
-                    || atYEnd
-                    || (jumpToCurrent && jumpToCurrent.distanceFromLatest <= 24)
+                if (judgePin)
+                    root._pinnedToLatest = contentHeight <= height
+                        || atYEnd
+                        || (jumpToCurrent && jumpToCurrent.distanceFromLatest <= 24)
                 if (root._loadingHistory || !root._hasMoreHistory || root.selectedPeerId === "")
                     return
                 if (contentHeight > height && (atYBeginning || contentY - originY <= 48))
                     root.loadOlderHistory()
             }
 
-            // Scrolling is not the only thing that moves the end away: a
-            // delegate settling to its real height, an inline preview loading,
-            // and the prepend itself all change the geometry underneath a
-            // stationary `contentY`.
-            onContentYChanged: _restPosition()
-            onContentHeightChanged: _restPosition()
-            onOriginYChanged: _restPosition()
-            onHeightChanged: _restPosition()
+            // True while `_followLatest` is moving the view, so the scroll it
+            // causes is not mistaken for the reader's.
+            property bool _following: false
+
+            function _followLatest() {
+                if (!root._pinnedToLatest)
+                    return
+                _following = true
+                positionViewAtEnd()
+                _following = false
+            }
+
+            function _geometryChanged() {
+                if (root._pinnedToLatest)
+                    Qt.callLater(msgList._followLatest)
+                _restPosition(!root._pinnedToLatest)
+            }
+
+            onContentYChanged: _restPosition(!_following)
+            onContentHeightChanged: _geometryChanged()
+            onOriginYChanged: _geometryChanged()
+            onHeightChanged: _geometryChanged()
 
             onCountChanged: {
                 if (root._pinnedToLatest)
-                    Qt.callLater(function() { msgList.positionViewAtEnd() })
+                    Qt.callLater(msgList._followLatest)
             }
 
             // A plain child of a ListView is parented to the view itself, not
@@ -342,12 +368,12 @@ Item {
 
                 Image {
                     source: root.selectedPeerId === ""
-                        ? "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
-                        : "qrc:/qt/qml/DoubleSlash/Client/icons/send.svg"
-                    sourceSize.width: 40
-                    sourceSize.height: 40
-                    Layout.preferredWidth: 40
-                    Layout.preferredHeight: 40
+                        ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg")
+                        : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/send.svg")
+                    sourceSize.width: Theme.iconPx(40)
+                    sourceSize.height: Theme.iconPx(40)
+                    Layout.preferredWidth: Theme.iconPx(40)
+                    Layout.preferredHeight: Theme.iconPx(40)
                     Layout.alignment: Qt.AlignHCenter
                     fillMode: Image.PreserveAspectFit
                     opacity: 0.72
@@ -470,9 +496,9 @@ Item {
                         }
                     }
                     IconButton {
-                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
-                        icon.width: 12
-                        icon.height: 12
+                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
+                        icon.width: Theme.iconPx(12)
+                        icon.height: Theme.iconPx(12)
                         icon.color: Theme.muted
                         visible: !root.aiStreaming
                         flat: true

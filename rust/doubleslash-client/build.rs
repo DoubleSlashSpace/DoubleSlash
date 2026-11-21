@@ -373,6 +373,7 @@ fn build_qt_ui() {
 
     let qml_files: Vec<QmlFile> = vec![
         QmlFile::from("qml/Theme.qml").singleton(true),
+        QmlFile::from("qml/Icons.qml").singleton(true),
         QmlFile::from("qml/RoomTree.qml").singleton(true),
         QmlFile::from("qml/MainWindow.qml"),
         QmlFile::from("qml/ChatPanel.qml"),

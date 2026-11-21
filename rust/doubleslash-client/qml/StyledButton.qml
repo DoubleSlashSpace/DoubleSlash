@@ -25,7 +25,9 @@ Button {
             + leftPadding
             + rightPadding
     )
-    implicitHeight: compact ? Theme.controlHeight : Theme.touchTarget
+    // The designed height stays 32 (compact) or 44. A larger icon grows it.
+    implicitHeight: Math.max(compact ? Theme.controlHeight : Theme.touchTarget,
+                              hasIcon ? icon.height : 0)
     topInset: 0
     bottomInset: 0
     // Material.Button sets verticalPadding to 14 (Normal) / 10 (Dense).
@@ -39,8 +41,8 @@ Button {
     font.pixelSize: Theme.fontSizeBody
     flat: !filled
 
-    icon.width: 20
-    icon.height: 20
+    icon.width: Theme.iconPx(20)
+    icon.height: Theme.iconPx(20)
     icon.color: enabled
         ? (filled ? Theme.textInv : Theme.text)
         : Theme.muted
@@ -56,7 +58,7 @@ Button {
 
             Image {
                 visible: control.hasIcon
-                source: control.icon.source
+                source: Icons.resolve(control.icon.source)
                 sourceSize.width: control.icon.width
                 sourceSize.height: control.icon.height
                 width: control.icon.width

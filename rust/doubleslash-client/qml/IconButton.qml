@@ -3,8 +3,10 @@
 // Material draws an icon-only ToolButton's highlight as a circle, and only on
 // hover. The app is angular throughout, and every control sits on a tile that
 // contrasts with what is behind it, so every tool button uses this instead.
-// The button keeps Material's size, so swapping one in moves nothing; the
-// tile is at most the bottom bars' action size, centred in it.
+// The button keeps Material's touch target at the designed icon size, so
+// swapping one in moves nothing. A larger icon size grows the control so
+// the tile and the glyph still fit. The tile is centred and is at most the
+// bottom bars' action size.
 
 import QtQuick
 import QtQuick.Controls.Material
@@ -17,6 +19,13 @@ ToolButton {
     property color tileColor: "transparent"
     /// An outline in that colour, or none.
     property color tileBorder: "transparent"
+
+    // Material's touch target at the designed size. iconScale grows this
+    // with the tile (barActionSize) and the glyph. A caller that sets its
+    // own implicit size, such as a room join button, replaces both.
+    implicitWidth: Math.max(Material.touchTarget, Theme.barActionSize,
+                             icon.width, icon.height)
+    implicitHeight: implicitWidth
 
     background: Item {
         implicitWidth: control.Material.touchTarget

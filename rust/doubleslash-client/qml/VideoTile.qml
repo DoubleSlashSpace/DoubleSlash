@@ -242,15 +242,15 @@ Item {
             Rectangle {
                 id: fullscreenButton
                 visible: root.showFullscreenButton
-                width: 26; height: 26; radius: Theme.radiusSm
+                width: Theme.iconPx(26); height: Theme.iconPx(26); radius: Theme.radiusSm
                 color: fullscreenMouse.containsMouse ? Qt.rgba(0, 0, 0, 0.85) : Qt.rgba(0, 0, 0, 0.6)
                 Image {
                     anchors.centerIn: parent
                     source: root.fullscreen
-                        ? "qrc:/qt/qml/DoubleSlash/Client/icons/wm-restore.svg"
-                        : "qrc:/qt/qml/DoubleSlash/Client/icons/expand.svg"
-                    sourceSize.width: 14; sourceSize.height: 14
-                    width: 14; height: 14
+                        ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/wm-restore.svg")
+                        : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/expand.svg")
+                    sourceSize.width: Theme.iconPx(14); sourceSize.height: Theme.iconPx(14)
+                    width: Theme.iconPx(14); height: Theme.iconPx(14)
                 }
                 MouseArea {
                     id: fullscreenMouse
@@ -266,13 +266,13 @@ Item {
             Rectangle {
                 id: popoutButton
                 visible: root.showPopoutButton
-                width: 26; height: 26; radius: Theme.radiusSm
+                width: Theme.iconPx(26); height: Theme.iconPx(26); radius: Theme.radiusSm
                 color: popoutMouse.containsMouse ? Qt.rgba(0, 0, 0, 0.85) : Qt.rgba(0, 0, 0, 0.6)
                 Image {
                     anchors.centerIn: parent
-                    source: "qrc:/qt/qml/DoubleSlash/Client/icons/popout.svg"
-                    sourceSize.width: 14; sourceSize.height: 14
-                    width: 14; height: 14
+                    source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/popout.svg")
+                    sourceSize.width: Theme.iconPx(14); sourceSize.height: Theme.iconPx(14)
+                    width: Theme.iconPx(14); height: Theme.iconPx(14)
                 }
                 MouseArea {
                     id: popoutMouse
@@ -292,7 +292,7 @@ Item {
             Rectangle {
                 id: audioButton
                 visible: root.showAudioControl
-                width: 26; height: 26; radius: Theme.radiusSm
+                width: Theme.iconPx(26); height: Theme.iconPx(26); radius: Theme.radiusSm
                 color: root.contentMuted
                     ? Theme.danger
                     : (audioHover.hovered ? Theme.bg3 : Qt.rgba(0, 0, 0, 0.6))
@@ -300,9 +300,9 @@ Item {
 
                 Image {
                     anchors.centerIn: parent
-                    source: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
-                    sourceSize.width: 14; sourceSize.height: 14
-                    width: 14; height: 14
+                    source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg")
+                    sourceSize.width: Theme.iconPx(14); sourceSize.height: Theme.iconPx(14)
+                    width: Theme.iconPx(14); height: Theme.iconPx(14)
                     opacity: root.contentMuted ? 0.5 : 1.0
                 }
                 HoverHandler { id: audioHover }
@@ -367,15 +367,15 @@ Item {
             Rectangle {
                 id: closeButton
                 visible: root.showChrome
-                width: 26; height: 26; radius: Theme.radiusSm
+                width: Theme.iconPx(26); height: Theme.iconPx(26); radius: Theme.radiusSm
                 color: closeHover.hovered ? Theme.danger : Qt.rgba(0, 0, 0, 0.6)
                 Behavior on color { ColorAnimation { duration: Theme.animMicro } }
 
                 Image {
                     anchors.centerIn: parent
-                    source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
-                    sourceSize.width: 14; sourceSize.height: 14
-                    width: 14; height: 14
+                    source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
+                    sourceSize.width: Theme.iconPx(14); sourceSize.height: Theme.iconPx(14)
+                    width: Theme.iconPx(14); height: Theme.iconPx(14)
                 }
                 HoverHandler { id: closeHover }
                 MouseArea {

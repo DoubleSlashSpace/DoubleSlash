@@ -26,7 +26,8 @@ Rectangle {
 
         Rectangle {
             Layout.fillWidth: true
-            height: Theme.touchTarget
+            // 44 at the designed size. The back button's tile grows with the icon.
+            height: Math.max(Theme.touchTarget, Theme.barActionSize)
             color: Theme.bg2
 
             IconButton {
@@ -34,9 +35,9 @@ Rectangle {
                 anchors.left: parent.left
                 anchors.leftMargin: Theme.spacingXs
                 anchors.verticalCenter: parent.verticalCenter
-                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
-                icon.width: 14
-                icon.height: 14
+                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg")
+                icon.width: Theme.iconPx(14)
+                icon.height: Theme.iconPx(14)
                 icon.color: Theme.text
                 // The chevron points right; flipped, it reads as "back".
                 rotation: 180
@@ -77,7 +78,8 @@ Rectangle {
             delegate: Item {
                 id: navItem
                 width: navList.width
-                height: Theme.touchTarget
+                // 44 at the designed size. The section icon is 20.
+                height: Math.max(Theme.touchTarget, Theme.iconPx(20))
                 property bool highlighted: index === root.currentIndex
                 property bool hovered: navMouse.containsMouse
 
@@ -111,11 +113,11 @@ Rectangle {
                     spacing: Theme.spacingSm
 
                     Image {
-                        source: model.icon
-                        sourceSize.width: 20
-                        sourceSize.height: 20
-                        Layout.preferredWidth: 20
-                        Layout.preferredHeight: 20
+                        source: Icons.resolve(model.icon)
+                        sourceSize.width: Theme.iconPx(20)
+                        sourceSize.height: Theme.iconPx(20)
+                        Layout.preferredWidth: Theme.iconPx(20)
+                        Layout.preferredHeight: Theme.iconPx(20)
                         fillMode: Image.PreserveAspectFit
                         opacity: navItem.highlighted ? 1.0 : 0.72
                     }
@@ -152,16 +154,16 @@ Rectangle {
 
         Rectangle {
             Layout.fillWidth: true
-            height: Theme.touchTarget
+            height: Math.max(Theme.touchTarget, Theme.barActionSize)
             color: Theme.bg0
 
             IconButton {
                 anchors.centerIn: parent
                 // Red only while there is something to save, and unclickable
                 // once there is not. The tooltip says which of the two it is.
-                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/save.svg"
-                icon.width: 18
-                icon.height: 18
+                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/save.svg")
+                icon.width: Theme.iconPx(18)
+                icon.height: Theme.iconPx(18)
                 icon.color: !enabled ? Theme.muted : Theme.danger
                 tileColor: root.dirty ? Theme.semanticTint(Theme.danger, 0.18) : "transparent"
                 tileBorder: root.dirty ? Theme.danger : "transparent"

@@ -87,15 +87,15 @@ Item {
 
         // Minimize
         TitleBarButton {
-            iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/wm-minimize.svg"
+            iconSource: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/wm-minimize.svg")
             onClicked: appWindow && appWindow.showMinimized()
         }
 
         // Maximize / Restore
         TitleBarButton {
             iconSource: root.isMaximized
-                ? "qrc:/qt/qml/DoubleSlash/Client/icons/wm-restore.svg"
-                : "qrc:/qt/qml/DoubleSlash/Client/icons/wm-maximize.svg"
+                ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/wm-restore.svg")
+                : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/wm-maximize.svg")
             onClicked: {
                 if (!appWindow) return
                 if (root.isMaximized) appWindow.showNormal()
@@ -106,7 +106,7 @@ Item {
         // Close
         TitleBarButton {
             id: closeBtn
-            iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/wm-close.svg"
+            iconSource: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/wm-close.svg")
             hoverColor: Theme.danger
             onClicked: appWindow && appWindow.close()
         }
@@ -126,8 +126,8 @@ Item {
 
         Image {
             anchors.centerIn: parent
-            source: btnRoot.iconSource
-            width: 12; height: 12
+            source: Icons.resolve(btnRoot.iconSource)
+            width: Theme.iconPx(12); height: Theme.iconPx(12)
             fillMode: Image.PreserveAspectFit
         }
 

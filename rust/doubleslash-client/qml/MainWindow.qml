@@ -53,6 +53,12 @@ ApplicationWindow {
         Theme.fontScale = (100 + p) / 100
     }
 
+    /// `percent` is the General icon-size setting: −50…+200, where 0 is designed.
+    function applyIconScale(percent) {
+        var p = Math.max(-50, Math.min(200, Math.round(percent)))
+        Theme.iconScale = (100 + p) / 100
+    }
+
     function applyTimeFormat(id) {
         Theme.timeFormat = Theme.normalizeTimeFormat(id)
     }
@@ -1030,10 +1036,10 @@ ApplicationWindow {
             Image {
                 id: logoImage
                 anchors.centerIn: parent
-                width: 48
-                height: 22
+                width: Theme.iconPx(48)
+                height: Theme.iconPx(22)
                 fillMode: Image.PreserveAspectFit
-                source: "qrc:/qt/qml/DoubleSlash/Client/icons/logo.svg"
+                source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/logo.svg")
             }
 
             HoverHandler { id: logoHover }
@@ -1089,7 +1095,7 @@ ApplicationWindow {
             Layout.preferredHeight: Theme.controlHeight
             Layout.maximumHeight: Theme.controlHeight
             Layout.alignment: Qt.AlignVCenter
-            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite-submit.svg"
+            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/invite-submit.svg")
             Accessible.name: "Accept invite"
             ToolTip.text: "Connect to peer / accept invite"
             ToolTip.visible: hovered || visualFocus
@@ -1110,7 +1116,7 @@ ApplicationWindow {
             leftPadding: 6
             rightPadding: 6
             primary: true
-            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
+            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg")
             Layout.preferredHeight: Theme.controlHeight
             Layout.maximumHeight: Theme.controlHeight
             Layout.alignment: Qt.AlignVCenter
@@ -1146,9 +1152,9 @@ ApplicationWindow {
             property bool installing: false
             property string errorMessage: ""
 
-            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/download.svg"
-            icon.width: 18
-            icon.height: 18
+            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/download.svg")
+            icon.width: Theme.iconPx(18)
+            icon.height: Theme.iconPx(18)
             icon.color: Theme.textInv
 
             background: Rectangle {
@@ -1167,11 +1173,11 @@ ApplicationWindow {
                 Image {
                     anchors.centerIn: parent
                     visible: !updateIndicator.installing
-                    source: updateIndicator.icon.source
-                    sourceSize.width: 18
-                    sourceSize.height: 18
-                    width: 18
-                    height: 18
+                    source: Icons.resolve(updateIndicator.icon.source)
+                    sourceSize.width: Theme.iconPx(18)
+                    sourceSize.height: Theme.iconPx(18)
+                    width: Theme.iconPx(18)
+                    height: Theme.iconPx(18)
                     fillMode: Image.PreserveAspectFit
                 }
                 SquareBusyIndicator {
@@ -1652,8 +1658,14 @@ ApplicationWindow {
         function onSkin_jsonChanged() {
             Theme.applySkinJson(settingsModel.skin_json)
         }
+        function onIcon_pack_dirChanged() {
+            Icons.applyDescribed(settingsModel.loadIconPack(settingsModel.icon_pack_dir))
+        }
         function onFont_scale_percentChanged() {
             applyFontScale(settingsModel.font_scale_percent)
+        }
+        function onIcon_scale_percentChanged() {
+            applyIconScale(settingsModel.icon_scale_percent)
         }
         function onTime_formatChanged() {
             applyTimeFormat(settingsModel.time_format)
@@ -1700,6 +1712,7 @@ ApplicationWindow {
         applyThemePreference(settingsModel.theme)
         Theme.applySkinJson(settingsModel.skin_json)
         applyFontScale(settingsModel.font_scale_percent)
+        applyIconScale(settingsModel.icon_scale_percent)
         applyTimeFormat(settingsModel.time_format)
         root.refreshVideoEncoderAvailable()
 
@@ -2551,12 +2564,12 @@ ApplicationWindow {
                 }
 
                 Button {
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
-                    icon.width: 30
-                    icon.height: 30
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg")
+                    icon.width: Theme.iconPx(30)
+                    icon.height: Theme.iconPx(30)
                     icon.color: Theme.text
-                    implicitHeight: 30
-                    implicitWidth: 30
+                    implicitHeight: Theme.iconPx(30)
+                    implicitWidth: Theme.iconPx(30)
                     flat: true
                     Material.foreground: Theme.text
                     ToolTip.text: "Copy to clipboard"
@@ -2640,9 +2653,9 @@ ApplicationWindow {
                 IconButton {
                     // Peers already has Copy new invite link in the title bar.
                     visible: root.sidebarTab === 1
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg")
                     icon.color: Theme.text
-                    icon.width: 18; icon.height: 18
+                    icon.width: Theme.iconPx(18); icon.height: Theme.iconPx(18)
                     Layout.preferredWidth: 32; Layout.preferredHeight: 32
                     padding: 6
                     Accessible.name: qsTr("Create Room")
@@ -2653,9 +2666,9 @@ ApplicationWindow {
                 }
                 IconButton {
                     id: hiddenToggle
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/eye.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/eye.svg")
                     icon.color: Theme.text
-                    icon.width: 18; icon.height: 18
+                    icon.width: Theme.iconPx(18); icon.height: Theme.iconPx(18)
                     Layout.preferredWidth: 32; Layout.preferredHeight: 32
                     padding: 6
                     Accessible.name: (showing ? qsTr("Hide %1 hidden") : qsTr("Show %1 hidden")).arg(hiddenCount)
@@ -2679,9 +2692,9 @@ ApplicationWindow {
                     }
                 }
                 IconButton {
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/sort.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/sort.svg")
                     icon.color: Theme.text
-                    icon.width: 18; icon.height: 18
+                    icon.width: Theme.iconPx(18); icon.height: Theme.iconPx(18)
                     Layout.preferredWidth: 32; Layout.preferredHeight: 32
                     padding: 6
                     Accessible.name: root.sidebarTab === 1 ? qsTr("Sort Rooms") : qsTr("Sort Peers")
@@ -2695,7 +2708,7 @@ ApplicationWindow {
                         /// The SVG check beside the mode in use, or no icon.
                         function mark(mode) {
                             return RoomTree.sortMode(root.roomListOrder) === mode
-                                ? "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg" : ""
+                                ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/check.svg") : ""
                         }
 
                         MenuItem {
@@ -2730,7 +2743,7 @@ ApplicationWindow {
                         /// The SVG check beside the mode in use, as in the room sort.
                         function mark(mode) {
                             return peerList.sortMode === mode
-                                ? "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg" : ""
+                                ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/check.svg") : ""
                         }
 
                         MenuItem { text: qsTr("Name (A\u2013Z)"); icon.source: peerSortMenu.mark("name_asc"); onTriggered: { peerList.sortMode = "name_asc"; peerModel.setSortMode("name_asc") } }
@@ -2740,9 +2753,9 @@ ApplicationWindow {
                 }
                 Item { Layout.fillWidth: true }
                 IconButton {
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg")
                     icon.color: Theme.text
-                    icon.width: 18; icon.height: 18
+                    icon.width: Theme.iconPx(18); icon.height: Theme.iconPx(18)
                     Layout.preferredWidth: 32; Layout.preferredHeight: 32
                     padding: 6
                     Accessible.name: qsTr("Refresh")
@@ -2828,7 +2841,7 @@ ApplicationWindow {
                         }
                         MenuItem {
                             text: qsTr("Move up")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/arrow-up.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/arrow-up.svg")
                             enabled: RoomTree.canMoveNode(
                                 root.nodeEntriesForOrder(),
                                 nodeContextMenu.targetNodeId,
@@ -2842,7 +2855,7 @@ ApplicationWindow {
                         }
                         MenuItem {
                             text: qsTr("Move down")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/arrow-down.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/arrow-down.svg")
                             enabled: RoomTree.canMoveNode(
                                 root.nodeEntriesForOrder(),
                                 nodeContextMenu.targetNodeId,
@@ -2856,7 +2869,7 @@ ApplicationWindow {
                         }
                         MenuItem {
                             text: qsTr("Rename…")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/pencil.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/pencil.svg")
                             onTriggered: renameNodeDialog.openFor(
                                 nodeContextMenu.targetNodeId,
                                 nodeContextMenu.targetLocalName,
@@ -2899,7 +2912,7 @@ ApplicationWindow {
 
                         MenuItem {
                             text: qsTr("Join Voice Room")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg")
                             enabled: !roomContextMenu.targetHidden
                             onTriggered: {
                                 roomPanel.switchToRoom(
@@ -2917,7 +2930,7 @@ ApplicationWindow {
                         }
                         MenuItem {
                             text: qsTr("Copy Room Invite")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg")
                             enabled: !roomContextMenu.targetHidden
                             onTriggered: {
                                 var url = backend.generateRoomInvite(
@@ -2941,7 +2954,7 @@ ApplicationWindow {
                         Menu {
                             id: inviteContactMenu
                             title: qsTr("Invite Contact to Room")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg")
                             enabled: !roomContextMenu.targetHidden && contactInviteInstantiator.count > 0
                             Instantiator {
                                 id: contactInviteInstantiator
@@ -2972,7 +2985,7 @@ ApplicationWindow {
                         MenuSeparator {}
                         MenuItem {
                             text: qsTr("Create Public Sub-room…")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg")
                             enabled: !roomContextMenu.targetHidden
                             onTriggered: createRoomDialog.openForParent(
                                 roomContextMenu.targetSupernodeId,
@@ -2982,7 +2995,7 @@ ApplicationWindow {
                         }
                         MenuItem {
                             text: qsTr("Create Private Sub-room…")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg")
                             enabled: !roomContextMenu.targetHidden
                             onTriggered: createRoomDialog.openForParent(
                                 roomContextMenu.targetSupernodeId,
@@ -2995,14 +3008,14 @@ ApplicationWindow {
                             text: roomContextMenu.targetPinned
                                 ? qsTr("Stop keeping at top")
                                 : qsTr("Keep at top")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/pin.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/pin.svg")
                             enabled: !roomContextMenu.targetHidden
                             onTriggered: root.commitRoomOrder(
                                 RoomTree.togglePin(root.roomListOrder, roomContextMenu.targetKey))
                         }
                         MenuItem {
                             text: qsTr("Move up")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/arrow-up.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/arrow-up.svg")
                             visible: roomContextMenu.targetManual || roomContextMenu.targetPinned
                             height: visible ? implicitHeight : 0
                             enabled: !roomContextMenu.targetHidden && RoomTree.canMove(
@@ -3020,7 +3033,7 @@ ApplicationWindow {
                         }
                         MenuItem {
                             text: qsTr("Move down")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/arrow-down.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/arrow-down.svg")
                             visible: roomContextMenu.targetManual || roomContextMenu.targetPinned
                             height: visible ? implicitHeight : 0
                             enabled: !roomContextMenu.targetHidden && RoomTree.canMove(
@@ -3041,8 +3054,8 @@ ApplicationWindow {
                                 ? qsTr("Mute message alerts")
                                 : qsTr("Enable message alerts")
                             icon.source: roomContextMenu.targetAlerts
-                                ? "qrc:/qt/qml/DoubleSlash/Client/icons/bell-off.svg"
-                                : "qrc:/qt/qml/DoubleSlash/Client/icons/bell.svg"
+                                ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/bell-off.svg")
+                                : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/bell.svg")
                             enabled: !roomContextMenu.targetHidden
                             onTriggered: root.setRoomMessageAlerts(
                                 roomContextMenu.targetRoomId,
@@ -3054,7 +3067,7 @@ ApplicationWindow {
                         // can be hidden and has no Remove.
                         MenuItem {
                             text: qsTr("Show in list")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/eye.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/eye.svg")
                             visible: roomContextMenu.targetHidden
                             height: visible ? implicitHeight : 0
                             onTriggered: root.unhideRoom(
@@ -3063,7 +3076,7 @@ ApplicationWindow {
                         }
                         MenuItem {
                             text: qsTr("Hide Room")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/eye-off.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/eye-off.svg")
                             visible: !roomContextMenu.targetHidden
                             height: visible ? implicitHeight : 0
                             onTriggered: {
@@ -3078,7 +3091,7 @@ ApplicationWindow {
                         }
                         MenuItem {
                             text: qsTr("Remove Room")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
                             visible: roomContextMenu.targetCanRemove
                             height: visible ? implicitHeight : 0
                             onTriggered: {
@@ -3105,7 +3118,7 @@ ApplicationWindow {
                             anchors.centerIn: parent
                             visible: nodeListModel.count === 0
                             width: Math.min(parent.width - Theme.spacingXl, 170)
-                            iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
+                            iconSource: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg")
                             iconSize: 30
                             title: "No rooms"
                             subtitle: "Accept a supernode invite to see the rooms it hosts."
@@ -3118,7 +3131,7 @@ ApplicationWindow {
                                 && root.hiddenRoomCount > 0
                                 && !root.showHiddenRooms
                             width: Math.min(parent.width - Theme.spacingXl, 170)
-                            iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
+                            iconSource: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg")
                             iconSize: 30
                             title: "All rooms are hidden"
                             subtitle: "Use Show hidden in the list header to show them."
@@ -3182,7 +3195,9 @@ ApplicationWindow {
                                 ItemDelegate {
                                     id: nodeRow
                                     width: roomColumn.width
-                                    implicitHeight: Math.max(40, Theme.fontSizeBody + 14)
+                                    // 40 at the designed size. The caret slot is 18, so a larger
+                                    // icon size grows the row.
+                                    implicitHeight: Math.max(40, Theme.fontSizeBody + 14, Theme.iconPx(18))
                                     padding: 0
                                     hoverEnabled: true
                                     Accessible.name: roomGroup.collapsed
@@ -3232,19 +3247,19 @@ ApplicationWindow {
                                         // The same caret as a room's, so the node
                                         // reads as the root of the tree below it.
                                         Item {
-                                            Layout.preferredWidth: 18
-                                            Layout.preferredHeight: 18
+                                            Layout.preferredWidth: Theme.iconPx(18)
+                                            Layout.preferredHeight: Theme.iconPx(18)
                                             Layout.alignment: Qt.AlignVCenter
 
                                             Image {
                                                 anchors.centerIn: parent
-                                                width: 10
-                                                height: 10
-                                                sourceSize.width: 20
-                                                sourceSize.height: 20
+                                                width: Theme.iconPx(10)
+                                                height: Theme.iconPx(10)
+                                                sourceSize.width: Theme.iconPx(20)
+                                                sourceSize.height: Theme.iconPx(20)
                                                 fillMode: Image.PreserveAspectFit
                                                 smooth: true
-                                                source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
+                                                source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg")
                                                 rotation: roomGroup.collapsed ? 0 : 90
                                                 opacity: roomGroup.collapsed ? 0.6 : 1.0
                                                 Behavior on rotation {
@@ -3304,7 +3319,7 @@ ApplicationWindow {
                                         CountPill {
                                             readonly property int voice: RoomTree.nodeVoiceCount(roomGroup.rooms)
                                             visible: roomGroup.collapsed && roomGroup.connected && voice > 0
-                                            iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
+                                            iconSource: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg")
                                             text: String(voice)
                                             tint: Theme.online
                                             active: true
@@ -3418,8 +3433,9 @@ ApplicationWindow {
                                                 HoverHandler { id: roomHover }
                                                 hoverEnabled: true
 
-                                                // 34 at the designed size; taller once the name no longer fits.
-                                                implicitHeight: Math.max(34, Theme.fontSizeBody + 8)
+                                                // 34 at the designed size; taller once the name or the
+                                                // join button no longer fits.
+                                                implicitHeight: Math.max(34, Theme.fontSizeBody + 8, Theme.iconPx(26))
                                                 padding: 0
 
                                                 background: Rectangle {
@@ -3485,8 +3501,8 @@ ApplicationWindow {
                                                     // Expand/collapse: an SVG caret rotated in
                                                     // place, so it never depends on the UI font.
                                                     Item {
-                                                        Layout.preferredWidth: 18
-                                                        Layout.preferredHeight: 18
+                                                        Layout.preferredWidth: Theme.iconPx(18)
+                                                        Layout.preferredHeight: Theme.iconPx(18)
                                                         Layout.alignment: Qt.AlignVCenter
 
                                                         // A square behind the caret on hover,
@@ -3499,14 +3515,14 @@ ApplicationWindow {
 
                                                         Image {
                                                             anchors.centerIn: parent
-                                                            width: 10
-                                                            height: 10
-                                                            sourceSize.width: 20
-                                                            sourceSize.height: 20
+                                                            width: Theme.iconPx(10)
+                                                            height: Theme.iconPx(10)
+                                                            sourceSize.width: Theme.iconPx(20)
+                                                            sourceSize.height: Theme.iconPx(20)
                                                             fillMode: Image.PreserveAspectFit
                                                             smooth: true
                                                             visible: row.has_children
-                                                            source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
+                                                            source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg")
                                                             rotation: row.collapsed ? 0 : 90
                                                             // Open reads at full strength, folded recedes.
                                                             opacity: row.collapsed ? 0.6 : 1.0
@@ -3529,10 +3545,10 @@ ApplicationWindow {
 
                                                     Image {
                                                         visible: roomDelegate.isPrivate
-                                                        source: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg"
-                                                        sourceSize.width: 12; sourceSize.height: 12
-                                                        Layout.preferredWidth: 12
-                                                        Layout.preferredHeight: 12
+                                                        source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg")
+                                                        sourceSize.width: Theme.iconPx(12); sourceSize.height: Theme.iconPx(12)
+                                                        Layout.preferredWidth: Theme.iconPx(12)
+                                                        Layout.preferredHeight: Theme.iconPx(12)
                                                         Layout.alignment: Qt.AlignVCenter
                                                         opacity: 0.7
                                                     }
@@ -3592,7 +3608,7 @@ ApplicationWindow {
                                                         // than a stale number.
                                                         visible: !roomGroup.connected
                                                             || (row.collapsed && row.voice_count > 0)
-                                                        iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
+                                                        iconSource: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg")
                                                         text: roomGroup.connected ? String(row.voice_count) : "—"
                                                         tint: roomGroup.connected ? Theme.online : Theme.muted
                                                         active: roomGroup.connected
@@ -3613,7 +3629,7 @@ ApplicationWindow {
                                                         // while the voice list is already open. That click
                                                         // is the only way the text members appear.
                                                         visible: roomGroup.connected && row.room_chat > 0
-                                                        iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
+                                                        iconSource: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg")
                                                         text: String(row.room_chat)
                                                         tint: Theme.accent
                                                         active: true
@@ -3649,17 +3665,17 @@ ApplicationWindow {
                                                             && (roomHover.hovered
                                                                 || roomDelegate.hovered
                                                                 || roomDelegate.roomSelected))
-                                                        implicitWidth: 26
-                                                        implicitHeight: 26
+                                                        implicitWidth: Theme.iconPx(26)
+                                                        implicitHeight: Theme.iconPx(26)
                                                         padding: 0
                                                         Layout.alignment: Qt.AlignVCenter
                                                         Layout.minimumWidth: implicitWidth
                                                         Layout.maximumWidth: implicitWidth
                                                         icon.source: endsCall
-                                                            ? "qrc:/qt/qml/DoubleSlash/Client/icons/phone-hangup.svg"
-                                                            : "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
-                                                        icon.width: 16
-                                                        icon.height: 16
+                                                            ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/phone-hangup.svg")
+                                                            : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg")
+                                                        icon.width: Theme.iconPx(16)
+                                                        icon.height: Theme.iconPx(16)
                                                         icon.color: callColor
                                                         tileColor: Theme.semanticTint(callColor, 0.18)
                                                         tileBorder: callColor
@@ -3689,7 +3705,8 @@ ApplicationWindow {
                                                 id: groupRow
                                                 readonly property var row: treeRow.row
                                                 readonly property bool isVoice: row.group === "voice"
-                                                implicitHeight: Math.max(26, Theme.fontSizeCaption + 10)
+                                                // 26 at the designed size. The caret slot is 16.
+                                                implicitHeight: Math.max(26, Theme.fontSizeCaption + 10, Theme.iconPx(16))
 
                                                 Rectangle {
                                                     anchors.fill: parent
@@ -3715,20 +3732,20 @@ ApplicationWindow {
                                                     Item {
                                                         id: leafToggle
                                                         Layout.fillWidth: true
-                                                        Layout.preferredHeight: Math.max(26, Theme.fontSizeCaption + 10)
+                                                        Layout.preferredHeight: Math.max(26, Theme.fontSizeCaption + 10, Theme.iconPx(16))
 
                                                         RowLayout {
                                                             anchors.fill: parent
                                                             spacing: Theme.spacingXs
 
                                                             Item {
-                                                                Layout.preferredWidth: 16
-                                                                Layout.preferredHeight: 16
+                                                                Layout.preferredWidth: Theme.iconPx(16)
+                                                                Layout.preferredHeight: Theme.iconPx(16)
                                                                 Image {
                                                                     anchors.centerIn: parent
-                                                                    width: 8; height: 8
-                                                                    sourceSize.width: 16; sourceSize.height: 16
-                                                                    source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
+                                                                    width: Theme.iconPx(8); height: Theme.iconPx(8)
+                                                                    sourceSize.width: Theme.iconPx(16); sourceSize.height: Theme.iconPx(16)
+                                                                    source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg")
                                                                     rotation: row.expanded ? 90 : 0
                                                                     opacity: row.expanded ? 1.0 : 0.6
                                                                     Behavior on rotation {
@@ -3741,11 +3758,11 @@ ApplicationWindow {
                                                                 // A folded list recedes; an open one reads in full.
                                                                 opacity: row.expanded ? 1.0 : 0.6
                                                                 source: groupRow.isVoice
-                                                                    ? "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
-                                                                    : "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
-                                                                sourceSize.width: 14; sourceSize.height: 14
-                                                                Layout.preferredWidth: 14
-                                                                Layout.preferredHeight: 14
+                                                                    ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg")
+                                                                    : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg")
+                                                                sourceSize.width: Theme.iconPx(14); sourceSize.height: Theme.iconPx(14)
+                                                                Layout.preferredWidth: Theme.iconPx(14)
+                                                                Layout.preferredHeight: Theme.iconPx(14)
                                                                 Layout.alignment: Qt.AlignVCenter
                                                                 Accessible.name: groupRow.isVoice
                                                                     ? qsTr("Voice")

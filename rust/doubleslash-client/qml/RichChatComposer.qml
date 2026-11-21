@@ -113,8 +113,8 @@ Rectangle {
         implicitHeight: Theme.barTopRowHeight
         padding: 0
         font.pixelSize: Theme.fontSizeTitle
-        icon.width: 18
-        icon.height: 18
+        icon.width: Theme.iconPx(18)
+        icon.height: Theme.iconPx(18)
         icon.color: Theme.muted
         Material.foreground: Theme.muted
         Accessible.name: tip
@@ -129,8 +129,8 @@ Rectangle {
         implicitWidth: Theme.barActionSize
         implicitHeight: Theme.barActionSize
         padding: 0
-        icon.width: 20
-        icon.height: 20
+        icon.width: Theme.iconPx(20)
+        icon.height: Theme.iconPx(20)
         Layout.alignment: Qt.AlignBottom
         Accessible.name: tip
         ToolTip.text: tip
@@ -184,7 +184,7 @@ Rectangle {
             }
 
             FormatButton {
-                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/chain.svg"
+                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/chain.svg")
                 tip: "Link"
                 onClicked: root.insertLink()
             }
@@ -223,12 +223,12 @@ Rectangle {
                     IconButton {
                         anchors.top: parent.top
                         anchors.right: parent.right
-                        implicitWidth: 22
-                        implicitHeight: 22
+                        implicitWidth: Theme.iconPx(22)
+                        implicitHeight: Theme.iconPx(22)
                         padding: 0
-                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
-                        icon.width: 12
-                        icon.height: 12
+                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
+                        icon.width: Theme.iconPx(12)
+                        icon.height: Theme.iconPx(12)
                         icon.color: Theme.text
                         Accessible.name: "Remove image"
                         ToolTip.text: "Remove image"
@@ -244,7 +244,7 @@ Rectangle {
             spacing: Theme.spacingXs
 
             ActionButton {
-                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/attach.svg"
+                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/attach.svg")
                 icon.color: enabled ? Theme.text : Theme.muted
                 enabled: root.enabledForTarget && root.fileTransferEnabled
                 tip: root.fileTransferEnabled ? root.fileTransferTooltip : "Room file transfer is not available yet"
@@ -309,7 +309,7 @@ Rectangle {
             }
 
             ActionButton {
-                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/send.svg"
+                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/send.svg")
                 icon.color: enabled ? Theme.accent : Theme.muted
                 enabled: (composer.text.trim() !== "" || root.pendingImages.length > 0) && root.enabledForTarget
                 tip: "Send"

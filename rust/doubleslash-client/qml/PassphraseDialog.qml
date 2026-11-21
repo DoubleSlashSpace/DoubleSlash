@@ -134,9 +134,9 @@ Item {
 
                 IconButton {
                     visible: root._selectedFilePath !== ""
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
-                    icon.width: 14
-                    icon.height: 14
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
+                    icon.width: Theme.iconPx(14)
+                    icon.height: Theme.iconPx(14)
                     icon.color: Theme.muted
                     implicitWidth: Theme.controlHeight
                     implicitHeight: Theme.controlHeight

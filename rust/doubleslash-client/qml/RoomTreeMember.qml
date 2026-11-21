@@ -46,8 +46,12 @@ Item {
     /// own: 0 blank, 1 pass-through, 2 last child, 3 child with a sibling below.
     property var guides: []
     readonly property int treeStep: Theme.spacingLg
-    // 28 at the designed size. The name is caption+1, so the row grows with it.
-    readonly property int rowHeight: Math.max(28, Theme.fontSizeCaption + 1 + Theme.spacingSm)
+    // 28 at the designed size. The name is caption+1, and the camera badge is
+    // a 20px icon, so the row grows with either. At the designed size this
+    // stays 28.
+    readonly property int rowHeight: Math.max(28,
+        Theme.fontSizeCaption + 1 + Theme.spacingSm,
+        Theme.iconPx(20))
 
     signal toggleRequested()
     signal watchToggled()
@@ -101,11 +105,11 @@ Item {
     /// One action under an open row: an SVG icon, named by its tooltip.
     component ActionIcon: IconButton {
         property string tip: ""
-        implicitWidth: 28
-        implicitHeight: 28
+        implicitWidth: Theme.iconPx(28)
+        implicitHeight: Theme.iconPx(28)
         padding: 0
-        icon.width: 16
-        icon.height: 16
+        icon.width: Theme.iconPx(16)
+        icon.height: Theme.iconPx(16)
         icon.color: Theme.text
         Accessible.name: tip
         ToolTip.text: tip
@@ -230,14 +234,14 @@ Item {
                 Rectangle {
                     visible: root.isMuted && root.inSession
                     anchors { right: parent.right; bottom: parent.bottom; rightMargin: -2; bottomMargin: -2 }
-                    width: 12; height: 12
+                    width: Theme.iconPx(12); height: Theme.iconPx(12)
                     color: Theme.danger
 
                     Image {
                         anchors.centerIn: parent
-                        source: "qrc:/qt/qml/DoubleSlash/Client/icons/mic-off.svg"
-                        sourceSize.width: 8; sourceSize.height: 8
-                        width: 8; height: 8
+                        source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/mic-off.svg")
+                        sourceSize.width: Theme.iconPx(8); sourceSize.height: Theme.iconPx(8)
+                        width: Theme.iconPx(8); height: Theme.iconPx(8)
                         fillMode: Image.PreserveAspectFit
                     }
                 }
@@ -257,8 +261,8 @@ Item {
             // Camera badge: present while they stream, filled while you watch.
             Rectangle {
                 visible: root.videoActive || root.watching
-                Layout.preferredWidth: 20
-                Layout.preferredHeight: 20
+                Layout.preferredWidth: Theme.iconPx(20)
+                Layout.preferredHeight: Theme.iconPx(20)
                 Layout.alignment: Qt.AlignVCenter
                 color: root.watching ? Theme.accent : "transparent"
                 border.color: Theme.accent
@@ -267,9 +271,9 @@ Item {
 
                 Image {
                     anchors.centerIn: parent
-                    source: "qrc:/qt/qml/DoubleSlash/Client/icons/video.svg"
-                    sourceSize.width: 11; sourceSize.height: 11
-                    width: 11; height: 11
+                    source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/video.svg")
+                    sourceSize.width: Theme.iconPx(11); sourceSize.height: Theme.iconPx(11)
+                    width: Theme.iconPx(11); height: Theme.iconPx(11)
                     fillMode: Image.PreserveAspectFit
                 }
 
@@ -295,10 +299,10 @@ Item {
             // on hover too, so a row reads as something that opens.
             Image {
                 visible: !root.isSelf
-                source: "qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg"
-                sourceSize.width: 20; sourceSize.height: 20
-                Layout.preferredWidth: 10
-                Layout.preferredHeight: 10
+                source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg")
+                sourceSize.width: Theme.iconPx(20); sourceSize.height: Theme.iconPx(20)
+                Layout.preferredWidth: Theme.iconPx(10)
+                Layout.preferredHeight: Theme.iconPx(10)
                 Layout.alignment: Qt.AlignVCenter
                 Layout.rightMargin: 2
                 rotation: root.expanded ? 90 : 0
@@ -341,8 +345,8 @@ Item {
                 // Mute for me, beside the volume it zeroes.
                 ActionIcon {
                     icon.source: root.locallyMuted
-                        ? "qrc:/qt/qml/DoubleSlash/Client/icons/speaker-off.svg"
-                        : "qrc:/qt/qml/DoubleSlash/Client/icons/speaker.svg"
+                        ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/speaker-off.svg")
+                        : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/speaker.svg")
                     icon.color: root.locallyMuted ? Theme.danger : Theme.text
                     checked: root.locallyMuted
                     tip: root.locallyMuted ? qsTr("Unmute for me") : qsTr("Mute for me")
@@ -380,8 +384,8 @@ Item {
                     id: watchIcon
                     visible: root.canWatch
                     icon.source: root.watching
-                        ? "qrc:/qt/qml/DoubleSlash/Client/icons/video-off.svg"
-                        : "qrc:/qt/qml/DoubleSlash/Client/icons/video.svg"
+                        ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/video-off.svg")
+                        : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/video.svg")
                     icon.color: root.watching ? Theme.text : Theme.accent
                     checked: root.watching
                     tip: root.watching ? qsTr("Stop watching") : qsTr("Watch video")
@@ -390,14 +394,14 @@ Item {
                 ActionIcon {
                     id: popoutIcon
                     visible: root.canPopout
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/popout.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/popout.svg")
                     tip: qsTr("Pop out video")
                     onClicked: root.popoutRequested()
                 }
                 ActionIcon {
                     id: fullscreenIcon
                     visible: root.canPopout
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/expand.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/expand.svg")
                     tip: qsTr("Full screen")
                     onClicked: root.fullscreenRequested()
                 }
@@ -406,7 +410,7 @@ Item {
                 ActionIcon {
                     id: messageIcon
                     visible: root.canMessage
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg")
                     tip: qsTr("Message")
                     onClicked: root.messageRequested()
                 }
@@ -415,8 +419,8 @@ Item {
                     visible: root.canOfferTrust
                     enabled: root.inviteState === ""
                     icon.source: root.inviteState === "sent"
-                        ? "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg"
-                        : "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
+                        ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/check.svg")
+                        : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg")
                     icon.color: root.inviteState === "" ? Theme.accent : Theme.muted
                     tip: root.inviteState === "sent" ? qsTr("Invite sent")
                         : root.inviteState === "pending" ? qsTr("Sending invite…")

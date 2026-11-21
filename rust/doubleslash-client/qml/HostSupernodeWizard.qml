@@ -612,8 +612,8 @@ Dialog {
                                 visible: stepRow.modelData.state === "done"
                                     || stepRow.modelData.state === "failed"
                                 source: stepRow.modelData.state === "done"
-                                    ? "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg"
-                                    : "qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg"
+                                    ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/check.svg")
+                                    : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg")
                                 sourceSize: Qt.size(18, 18)
                             }
                         }

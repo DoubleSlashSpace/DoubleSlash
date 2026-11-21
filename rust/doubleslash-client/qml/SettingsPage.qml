@@ -49,8 +49,8 @@ Item {
         property string tip: ""
         property bool danger: false
         property bool accent: false
-        icon.width: 18
-        icon.height: 18
+        icon.width: Theme.iconPx(18)
+        icon.height: Theme.iconPx(18)
         icon.color: !enabled ? Theme.muted
             : danger ? Theme.danger
             : accent ? Theme.accent
@@ -252,6 +252,13 @@ Item {
             root.settings.font_scale_percent = n
     }
 
+    function commitIconScale(value) {
+        if (!root.settings) return
+        var n = Math.max(-50, Math.min(200, Math.round(value)))
+        if (root.settings.icon_scale_percent !== n)
+            root.settings.icon_scale_percent = n
+    }
+
     function setTheme(value) {
         if (!settings) return
         settings.theme = value
@@ -347,7 +354,7 @@ Item {
                         SettingsIcon {
                             tip: "Push to Talk"
                             accent: root.settings ? root.settings.push_to_talk : false
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/ptt.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/ptt.svg")
                             onClicked: {
                                 if (!root.settings) return
                                 root.settings.push_to_talk = true
@@ -358,7 +365,7 @@ Item {
                         SettingsIcon {
                             tip: "Voice Activation"
                             accent: root.settings ? root.settings.voice_activation : false
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/vad.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/vad.svg")
                             onClicked: {
                                 if (!root.settings) return
                                 root.settings.push_to_talk = false
@@ -639,8 +646,8 @@ Item {
                         SettingsIcon {
                             tip: backend && backend.mic_test_active ? "Stop" : "Test Mic"
                             icon.source: backend && backend.mic_test_active
-                                ? "qrc:/qt/qml/DoubleSlash/Client/icons/stop.svg"
-                                : "qrc:/qt/qml/DoubleSlash/Client/icons/mic.svg"
+                                ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/stop.svg")
+                                : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/mic.svg")
                             onClicked: {
                                 if (backend && backend.mic_test_active) backend.stopMicTest()
                                 else if (backend) backend.startMicTest()
@@ -648,7 +655,7 @@ Item {
                         }
                         SettingsIcon {
                             tip: "Test Speaker"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/speaker.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/speaker.svg")
                             onClicked: if (backend) backend.testSpeaker()
                         }
                         Item { Layout.fillWidth: true }
@@ -940,8 +947,8 @@ Item {
                                          || cameraCard.previewBlockedReason === "")
                             tip: cameraCard.previewLive ? "Stop preview" : "Preview"
                             icon.source: cameraCard.previewLive
-                                ? "qrc:/qt/qml/DoubleSlash/Client/icons/stop.svg"
-                                : "qrc:/qt/qml/DoubleSlash/Client/icons/eye.svg"
+                                ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/stop.svg")
+                                : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/eye.svg")
                             onClicked: cameraCard.previewLive
                                 ? cameraCard.stopPreview()
                                 : cameraCard.startPreview()
@@ -956,7 +963,7 @@ Item {
                             // snapshot rather than live — this is how the user
                             // picks up an app opened since the page loaded.
                             tip: "Rescan"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg")
                             onClicked: cameraCard.reloadCameras()
                         }
 
@@ -1595,7 +1602,7 @@ Item {
 
                             SettingsIcon {
                                 tip: "Remove"
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
                                 onClicked: {
                                     overlayModel.remove(overlayRow.index)
                                     pipCard.persist()
@@ -1610,7 +1617,7 @@ Item {
 
                         SettingsIcon {
                             tip: "Add overlay"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg")
                             // `revision` is what makes this re-evaluate — a
                             // binding cannot see the model reads inside the
                             // function call.
@@ -1682,7 +1689,7 @@ Item {
                     subtitle: "Save a complete encrypted backup or move your identity to another device."
                     SettingsIcon {
                         tip: "Open backup wizard"
-                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/restore.svg"
+                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/restore.svg")
                         onClicked: root.backupsRequested()
                     }
                 }
@@ -1736,7 +1743,7 @@ Item {
                     SettingsIcon {
                         tip: "Copy Invite Link"
                         accent: true
-                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
+                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg")
                         onClicked: if (backend) backend.copyInvite()
                     }
                 }
@@ -1764,7 +1771,7 @@ Item {
 
                             SettingsIcon {
                                 tip: "Reset Avatar"
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/undo.svg"
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/undo.svg")
                                 onClicked: {
                                     if (!root.settings || !backend) return
                                     var defaultJson = JSON.stringify(root.defaultAvatarConfig())
@@ -2005,6 +2012,39 @@ Item {
                 }
 
                 SettingsCard {
+                    title: qsTr("Icons")
+                    subtitle: qsTr("Scales icons everywhere in DoubleSlash. The icon pack and skins do not change this.")
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingMd
+
+                        Label {
+                            text: qsTr("Icon size")
+                            color: Theme.muted
+                            font.pixelSize: Theme.fontSizeBody
+                        }
+                        SquareSlider {
+                            id: iconScaleSlider
+                            Layout.fillWidth: true
+                            from: -50
+                            to: 200
+                            stepSize: 5
+                            value: root.settings ? root.settings.icon_scale_percent : 0
+                            onMoved: root.commitIconScale(value)
+                            onPressedChanged: if (!pressed) root.commitIconScale(value)
+                            Accessible.name: qsTr("Icon size")
+                        }
+                        Label {
+                            text: root.fontScaleLabel(iconScaleSlider.value)
+                            color: Theme.text
+                            font.pixelSize: Theme.fontSizeBody
+                            Layout.minimumWidth: implicitWidth
+                        }
+                    }
+                }
+
+                SettingsCard {
                     title: qsTr("Date and time")
                     subtitle: qsTr("Chat times use this computer's clock. Military is the previous 24-hour stamp.")
 
@@ -2150,13 +2190,13 @@ Item {
 
                         SettingsIcon {
                             tip: qsTr("Reset colours")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/undo.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/undo.svg")
                             enabled: root.settings !== null && root.settings.skin_json !== ""
                             onClicked: root.settings.skin_json = ""
                         }
                         SettingsIcon {
                             tip: qsTr("Copy skin")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg")
                             onClicked: {
                                 backend.copyToClipboard(root.exportSkin())
                                 skinNotice.text = qsTr("Skin copied. Paste it into another DoubleSlash to use it there.")
@@ -2178,7 +2218,7 @@ Item {
                         }
                         SettingsIcon {
                             tip: qsTr("Apply")
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/check.svg")
                             enabled: skinPasteField.text.trim() !== ""
                             onClicked: {
                                 var why = root.importSkin(skinPasteField.text)
@@ -2201,6 +2241,97 @@ Item {
                         wrapMode: Text.WordWrap
                         color: Theme.muted
                         font.pixelSize: Theme.fontSizeCaption
+                    }
+                }
+
+                SettingsCard {
+                    id: iconPackCard
+                    title: qsTr("Icon pack")
+                    subtitle: qsTr("A folder of SVGs or PNGs replaces the built-in icons. A PNG uses the icon's name, such as phone.png, and the SVG wins if both are present. A missing name keeps the built-in one. Buttons tint the shape, so draw a solid shape on a transparent background. Save to keep the folder.")
+
+                    readonly property string folder: root.settings ? root.settings.icon_pack_dir : ""
+
+                    Row {
+                        spacing: Theme.spacingMd
+
+                        Repeater {
+                            model: ["phone.svg", "mic.svg", "speech.svg", "gear.svg", "trash.svg"]
+
+                            Image {
+                                required property string modelData
+                                source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/" + modelData)
+                                sourceSize.width: Theme.iconPx(20)
+                                sourceSize.height: Theme.iconPx(20)
+                                width: Theme.iconPx(20)
+                                height: Theme.iconPx(20)
+                                fillMode: Image.PreserveAspectFit
+                            }
+                        }
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: iconPackCard.folder === "" || Icons.packName === ""
+                            ? qsTr("Built-in icons")
+                            : qsTr("%1 · %2 of %3 icons").arg(Icons.packName).arg(Icons.replaced).arg(Icons.builtinCount)
+                        color: Theme.text
+                        font.pixelSize: Theme.fontSizeBody
+                        wrapMode: Text.WordWrap
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        visible: iconPackCard.folder !== ""
+                        text: iconPackCard.folder
+                        color: Theme.muted
+                        font.pixelSize: Theme.fontSizeCaption
+                        elide: Text.ElideMiddle
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        visible: Icons.problem !== "" || Icons.note !== ""
+                        text: Icons.problem !== "" ? Icons.problem : Icons.note
+                        color: Theme.warn
+                        font.pixelSize: Theme.fontSizeCaption
+                        wrapMode: Text.WordWrap
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Start from a copy of the built-in icons: node scripts/export_icon_pack.mjs")
+                        color: Theme.muted
+                        font.pixelSize: Theme.fontSizeCaption
+                        wrapMode: Text.WordWrap
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingSm
+
+                        SettingsIcon {
+                            tip: qsTr("Choose folder")
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/folder.svg")
+                            onClicked: iconPackDialog.open()
+                        }
+                        SettingsIcon {
+                            tip: qsTr("Built-in icons")
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/undo.svg")
+                            visible: iconPackCard.folder !== ""
+                            onClicked: if (root.settings) root.settings.icon_pack_dir = ""
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+
+                    FolderDialog {
+                        id: iconPackDialog
+                        title: qsTr("Icon pack folder")
+                        onAccepted: {
+                            if (!root.settings) return
+                            var text = selectedFolder.toString()
+                            root.settings.icon_pack_dir = decodeURIComponent(
+                                Qt.platform.os === "windows" ? text.slice(8) : text.slice(7))
+                        }
                     }
                 }
             }
@@ -2582,9 +2713,9 @@ Item {
                                 Layout.alignment: Qt.AlignVCenter
                                 implicitWidth: Theme.controlHeight
                                 implicitHeight: Theme.controlHeight
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
-                                icon.width: 16
-                                icon.height: 16
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg")
+                                icon.width: Theme.iconPx(16)
+                                icon.height: Theme.iconPx(16)
                                 icon.color: Theme.muted
                                 ToolTip.text: "Fetch available models from Ollama"
                                 ToolTip.visible: hovered
@@ -2717,12 +2848,12 @@ Item {
                                     }
                                     SettingsIcon {
                                         tip: "Choose folder"
-                                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/folder.svg"
+                                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/folder.svg")
                                         onClicked: shareFolderDialog.open()
                                     }
                                     SettingsIcon {
                                         tip: "Clear"
-                                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
+                                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
                                         visible: shareFolderRow.folder !== ""
                                         onClicked: if (root.settings) root.settings.ollama_share_folder = ""
                                     }
@@ -2884,13 +3015,13 @@ Item {
 
                                 SettingsIcon {
                                     tip: "Open Portal"
-                                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
+                                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg")
                                     onClicked: if (backend) backend.openNodePortal(nodeRow.node_id)
                                 }
 
                                 SettingsIcon {
                                     tip: "Copy ID"
-                                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
+                                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg")
                                     onClicked: if (backend) backend.copyToClipboard(nodeRow.node_id)
                                 }
 
@@ -2898,7 +3029,7 @@ Item {
                                     visible: !nodeRow.confirming
                                     tip: "Remove"
                                     danger: true
-                                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+                                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
                                     onClicked: supernodesCard.pendingRemoveId = nodeRow.node_id
                                 }
                             }
@@ -2924,7 +3055,7 @@ Item {
                                     SettingsIcon {
                                         tip: "Remove Supernode"
                                         danger: true
-                                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+                                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
                                         onClicked: {
                                             supernodesCard.pendingRemoveId = ""
                                             if (backend) backend.removeSupernode(nodeRow.node_id)
@@ -2932,7 +3063,7 @@ Item {
                                     }
                                     SettingsIcon {
                                         tip: "Cancel"
-                                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
+                                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
                                         onClicked: supernodesCard.pendingRemoveId = ""
                                     }
                                     Item { Layout.fillWidth: true }
@@ -3105,7 +3236,7 @@ Item {
                         SpinBox { id: trimAgeSpin; from: 1; to: 3650; value: 30; textFromValue: function(v) { return v + " days" }; valueFromText: function(t) { return parseInt(t) || 30 } }
                         SettingsIcon {
                             tip: "Trim by Age"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trim-age.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trim-age.svg")
                             onClicked: {
                                 if (backend) backend.trimMessagesByAge(trimAgeSpin.value)
                                 privacyBox.storedCount = backend ? backend.getStoredMessageCount() : 0
@@ -3123,7 +3254,7 @@ Item {
                         Label { text: "per conversation"; color: Theme.muted }
                         SettingsIcon {
                             tip: "Trim to Limit"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trim-count.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trim-count.svg")
                             onClicked: {
                                 if (backend) backend.trimMessagesByCount(trimCountSpin.value)
                                 privacyBox.storedCount = backend ? backend.getStoredMessageCount() : 0
@@ -3147,7 +3278,7 @@ Item {
                             SettingsIcon {
                                 tip: "Delete Everything"
                                 danger: true
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
                                 onClicked: {
                                     if (backend) backend.purgeAllChatHistory()
                                     privacyBox.storedCount = backend ? backend.getStoredMessageCount() : 0
@@ -3156,7 +3287,7 @@ Item {
                             }
                             SettingsIcon {
                                 tip: "Cancel"
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
                                 onClicked: privacyBox.confirmPurge = false
                             }
                         }
@@ -3166,7 +3297,7 @@ Item {
                         visible: !privacyBox.confirmPurge
                         tip: "Purge All Chat History"
                         danger: true
-                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
                         onClicked: privacyBox.confirmPurge = true
                     }
 
@@ -3190,12 +3321,12 @@ Item {
                             SettingsIcon {
                                 tip: "Lock and Quit"
                                 danger: true
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg"
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg")
                                 onClicked: if (backend) backend.lockIdentityAndQuit()
                             }
                             SettingsIcon {
                                 tip: "Cancel"
-                                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
+                                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
                                 onClicked: privacyBox.confirmLock = false
                             }
                         }
@@ -3205,7 +3336,7 @@ Item {
                         visible: !privacyBox.confirmLock
                         tip: "Lock Identity and Quit"
                         danger: true
-                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg"
+                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg")
                         onClicked: privacyBox.confirmLock = true
                     }
                 }
@@ -3260,13 +3391,13 @@ Item {
                         spacing: Theme.spacingSm
                         SettingsIcon {
                             tip: "Refresh"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg")
                             onClicked: diagnosticsBox.logText = backend ? backend.getEventLogs() : ""
                         }
                         SettingsIcon {
                             tip: "Clear"
                             danger: true
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
                             onClicked: {
                                 if (backend) backend.clearEventLogs()
                                 diagnosticsBox.logText = ""
@@ -3319,7 +3450,7 @@ Item {
                         SettingsIcon {
                             tip: "Create Shortcuts"
                             visible: !(backend && backend.windows_package)
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg")
                             onClicked: {
                                 if (!backend) return
                                 backend.createDesktopShortcuts()
@@ -3329,7 +3460,7 @@ Item {
                         SettingsIcon {
                             tip: "Remove Shortcuts"
                             visible: !(backend && backend.windows_package)
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
                             onClicked: {
                                 if (!backend) return
                                 backend.removeDesktopShortcuts()
@@ -3381,7 +3512,7 @@ Item {
 
                         SettingsIcon {
                             tip: "Open Licence Notices"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/logs.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/logs.svg")
                             enabled: noticesStatus.noticesPath !== ""
                             onClicked: {
                                 if (noticesStatus.noticesPath === "") return
@@ -3391,7 +3522,7 @@ Item {
 
                         SettingsIcon {
                             tip: "Qt LGPL Terms"
-                            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
+                            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg")
                             onClicked: Qt.openUrlExternally("https://www.qt.io/development/open-source-lgpl-obligations")
                         }
                     }

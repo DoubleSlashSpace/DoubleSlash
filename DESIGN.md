@@ -26,7 +26,10 @@ The default base is dark; light and system modes are supported. Settings >
 Appearance offers DoubleSlash, Midnight, Slate, Forest, High contrast and Paper
 skins, per-color edits and portable JSON Copy/Paste across clients. A skin has
 version, name, base and color overrides; text scaling and date format are separate
-preferences. Android uses the app palette rather than wallpaper-derived colors.
+preferences. Desktop icon packs are a folder of the packaged SVGs, or a
+PNG of the same name (`icon_pack_dir`, Settings › General › Icon pack), not
+part of a skin.
+Android uses the app palette rather than wallpaper-derived colors.
 
 | Token | Default dark value | Use |
 |---|---|---|
@@ -48,7 +51,8 @@ color token in the desktop theme; use the existing semantic token.
 
 At zero text adjustment, desktop title/body/caption sizes are 15/13/11 px.
 `font_scale_percent` ranges from -50 to +200; consume the scaled tokens
-instead of duplicating those literals. Desktop spacing tokens are 4, 8, 12,
+instead of duplicating those literals. `icon_scale_percent` uses that same
+range for icon glyphs (`Theme.iconPx`); it is not a skin token. Desktop spacing tokens are 4, 8, 12,
 16 and 24 px. Angular components use zero small/medium/large radius; circular
 badges use `radiusPill`. Controls derive height from font size with a 32 px
 minimum and `touchTarget` has a 44 px minimum.

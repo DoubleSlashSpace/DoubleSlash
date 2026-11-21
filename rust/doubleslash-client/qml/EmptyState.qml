@@ -16,11 +16,11 @@ ColumnLayout {
 
     Image {
         visible: root.iconSource !== ""
-        source: root.iconSource
-        sourceSize.width: root.iconSize
-        sourceSize.height: root.iconSize
-        Layout.preferredWidth: root.iconSize
-        Layout.preferredHeight: root.iconSize
+        source: Icons.resolve(root.iconSource)
+        sourceSize.width: Theme.iconPx(root.iconSize)
+        sourceSize.height: Theme.iconPx(root.iconSize)
+        Layout.preferredWidth: Theme.iconPx(root.iconSize)
+        Layout.preferredHeight: Theme.iconPx(root.iconSize)
         Layout.alignment: Qt.AlignHCenter
         fillMode: Image.PreserveAspectFit
         opacity: 0.72

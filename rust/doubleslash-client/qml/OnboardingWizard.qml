@@ -84,11 +84,11 @@ Dialog {
                 spacing: Theme.spacingMd
 
                 Image {
-                    source: "qrc:/qt/qml/DoubleSlash/Client/icons/logo.svg"
-                    sourceSize.width: 32
-                    sourceSize.height: 32
-                    Layout.preferredWidth: 32
-                    Layout.preferredHeight: 32
+                    source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/logo.svg")
+                    sourceSize.width: Theme.iconPx(32)
+                    sourceSize.height: Theme.iconPx(32)
+                    Layout.preferredWidth: Theme.iconPx(32)
+                    Layout.preferredHeight: Theme.iconPx(32)
                     fillMode: Image.PreserveAspectFit
                 }
 
@@ -208,7 +208,7 @@ Dialog {
                     StyledButton {
                         text: "Join"
                         primary: true
-                        icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/connect.svg"
+                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/connect.svg")
                         enabled: incomingInviteField.text.trim().length > 0
                         onClicked: root.acceptInvite()
                     }
@@ -264,8 +264,8 @@ Dialog {
                         text: root.generatedInvite === "" ? "Create"
                             : root.copiedInvite ? "Copied" : "Copy"
                         icon.source: root.generatedInvite === ""
-                            ? "qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg"
-                            : "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
+                            ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg")
+                            : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg")
                         success: root.copiedInvite
                         onClicked: {
                             if (!root.appBackend) return

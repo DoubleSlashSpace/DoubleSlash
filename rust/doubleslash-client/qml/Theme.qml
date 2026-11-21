@@ -170,6 +170,19 @@ QtObject {
             fontScale = clamped
     }
 
+    // General owns this (icon_scale_percent, −50%…+200% → 0.5…3). A skin
+    // cannot set it. 1 is the designed icon size. Draw icons with iconPx().
+    property real iconScale: 1.0
+    onIconScaleChanged: {
+        var clamped = Math.max(0.5, Math.min(3.0, iconScale))
+        if (iconScale !== clamped)
+            iconScale = clamped
+    }
+
+    function iconPx(px) {
+        return Math.max(1, Math.round(px * iconScale))
+    }
+
     readonly property int fontSizeBody:    Math.max(1, Math.round(13 * fontScale))
     readonly property int fontSizeCaption: Math.max(1, Math.round(11 * fontScale))
     readonly property int fontSizeTitle:   Math.max(1, Math.round(15 * fontScale))
@@ -250,8 +263,9 @@ QtObject {
     readonly property int barRowGap: spacingXs
     /// Formatting buttons; call status.
     readonly property int barTopRowHeight: controlHeight
-    /// Attach and send; mute, share and leave.
-    readonly property int barActionSize: controlHeight + spacingXs
+    /// Attach and send; mute, share and leave. Grows with the text and with
+    /// the icon size. At the designed size this stays 36.
+    readonly property int barActionSize: Math.max(controlHeight + spacingXs, iconPx(20) + spacingSm)
     /// Either bar's two rows with their padding, before the text box grows.
     readonly property int barHeight: barPadding * 2 + barTopRowHeight + barRowGap + barActionSize
 

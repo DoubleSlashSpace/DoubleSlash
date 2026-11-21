@@ -23,8 +23,8 @@ Item {
     signal activated(int index)
 
     readonly property var segments: [
-        { label: qsTr("Peers"), icon: "qrc:/qt/qml/DoubleSlash/Client/icons/peers.svg" },
-        { label: qsTr("Rooms"), icon: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg" }
+        { label: qsTr("Peers"), icon: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/peers.svg") },
+        { label: qsTr("Rooms"), icon: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg") }
     ]
 
     /// Gap between the track and the segments.
@@ -128,9 +128,9 @@ Item {
 
                     Image {
                         anchors.verticalCenter: parent.verticalCenter
-                        source: segment.modelData.icon
-                        sourceSize.width: 16; sourceSize.height: 16
-                        width: 16; height: 16
+                        source: Icons.resolve(segment.modelData.icon)
+                        sourceSize.width: Theme.iconPx(16); sourceSize.height: Theme.iconPx(16)
+                        width: Theme.iconPx(16); height: Theme.iconPx(16)
                         opacity: segment.selected ? 1.0 : 0.75
                     }
                     Text {

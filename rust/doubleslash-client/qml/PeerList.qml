@@ -177,7 +177,7 @@ Rectangle {
                     && peerListView.count > 0 && root.blockedCount >= peerListView.count
                 visible: peerListView.count === 0 || allHidden
                 width: Math.min(parent.width - Theme.spacingXl, 170)
-                iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/peers.svg"
+                iconSource: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/peers.svg")
                 iconSize: 32
                 title: allHidden ? qsTr("All peers are blocked") : qsTr("No peers yet")
                 subtitle: allHidden ? qsTr("Use Show hidden in the list header to show them.")
@@ -264,11 +264,11 @@ Rectangle {
                             // In-call phone icon
                             Image {
                                 visible: delegateItem.inCall
-                                source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
-                                sourceSize.width: 12
-                                sourceSize.height: 12
-                                width: 12
-                                height: 12
+                                source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg")
+                                sourceSize.width: Theme.iconPx(12)
+                                sourceSize.height: Theme.iconPx(12)
+                                width: Theme.iconPx(12)
+                                height: Theme.iconPx(12)
                                 fillMode: Image.PreserveAspectFit
                             }
                         }
@@ -338,13 +338,13 @@ Rectangle {
 
         MenuItem {
             text: "Start Call"
-            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
+            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg")
             onTriggered: root.startCallRequested(peerContextMenu.targetPeerId)
         }
 
         MenuItem {
             text: "Copy Peer ID"
-            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg"
+            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg")
             onTriggered: root.copyPeerIdRequested(peerContextMenu.targetPeerId)
         }
 
@@ -352,7 +352,7 @@ Rectangle {
 
         MenuItem {
             text: "Remove Peer"
-            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg"
+            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
             onTriggered: root.removePeerRequested(
                 peerContextMenu.targetPeerId, peerContextMenu.targetHandle)
         }
@@ -360,8 +360,8 @@ Rectangle {
         MenuItem {
             text: peerContextMenu.targetBlocked ? "Unblock Peer" : "Block Peer"
             icon.source: peerContextMenu.targetBlocked
-                ? "qrc:/qt/qml/DoubleSlash/Client/icons/person.svg"
-                : "qrc:/qt/qml/DoubleSlash/Client/icons/block.svg"
+                ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/person.svg")
+                : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/block.svg")
             onTriggered: {
                 if (peerContextMenu.targetBlocked)
                     root.unblockPeerRequested(peerContextMenu.targetPeerId)
@@ -374,7 +374,7 @@ Rectangle {
 
         MenuItem {
             text: "Clear Chat History"
-            icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/speech-off.svg"
+            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/speech-off.svg")
             onTriggered: root.clearHistoryRequested(peerContextMenu.targetPeerId)
         }
     }

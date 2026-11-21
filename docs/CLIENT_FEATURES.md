@@ -530,7 +530,10 @@ notification channels for unread state.
 The desktop persists settings (`ui/settings_model.rs`) covering
 audio devices and tuning, video codec/resolution/fps/bitrate, relay and UPnP,
 theme, notifications, tray and window geometry, Ollama, attestation policy,
-update checks, and onboarding state. Empty `audio_input_device` /
+update checks, onboarding state, and `icon_pack_dir` (a folder of replacement
+SVGs or PNGs named like those SVGs; the phone does not load it) and
+`icon_scale_percent` (desktop icon size, −50 to +200; the phone keeps its own
+sizes). Empty `audio_input_device` /
 `audio_output_device` follow the OS default, including when it changes during
 a call; a named device stays pinned.
 

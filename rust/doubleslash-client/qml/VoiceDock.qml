@@ -207,11 +207,11 @@ Rectangle {
 
         Image {
             anchors.centerIn: parent
-            source: dockButton.iconSource
-            sourceSize.width: 20
-            sourceSize.height: 20
-            width: 20
-            height: 20
+            source: Icons.resolve(dockButton.iconSource)
+            sourceSize.width: Theme.iconPx(20)
+            sourceSize.height: Theme.iconPx(20)
+            width: Theme.iconPx(20)
+            height: Theme.iconPx(20)
             fillMode: Image.PreserveAspectFit
         }
 
@@ -257,10 +257,10 @@ Rectangle {
             spacing: Theme.spacingXs
 
             Image {
-                source: "qrc:/qt/qml/DoubleSlash/Client/icons/video.svg"
-                sourceSize.width: 14; sourceSize.height: 14
-                Layout.preferredWidth: 14
-                Layout.preferredHeight: 14
+                source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/video.svg")
+                sourceSize.width: Theme.iconPx(14); sourceSize.height: Theme.iconPx(14)
+                Layout.preferredWidth: Theme.iconPx(14)
+                Layout.preferredHeight: Theme.iconPx(14)
                 Layout.alignment: Qt.AlignVCenter
             }
             Text {
@@ -377,8 +377,8 @@ Rectangle {
             spacing: Theme.spacingXs
 
             DockButton {
-                iconSource: root.muted ? "qrc:/qt/qml/DoubleSlash/Client/icons/mic-off.svg"
-                                       : "qrc:/qt/qml/DoubleSlash/Client/icons/mic.svg"
+                iconSource: root.muted ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/mic-off.svg")
+                                       : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/mic.svg")
                 fill: root.muted ? Theme.danger : Theme.bg3
                 tip: root.muted ? qsTr("Unmute microphone") : qsTr("Mute microphone")
                 onClicked: {
@@ -392,8 +392,8 @@ Rectangle {
             DockButton {
                 id: shareButton
                 iconSource: root.videoOn
-                    ? "qrc:/qt/qml/DoubleSlash/Client/icons/video.svg"
-                    : "qrc:/qt/qml/DoubleSlash/Client/icons/video-off.svg"
+                    ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/video.svg")
+                    : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/video-off.svg")
                 fill: root.videoOn ? Theme.accent : Theme.bg3
                 // Greyed out only when this build cannot encode at all; the
                 // menu re-enumerates, so a missing camera must not disable it.
@@ -418,7 +418,7 @@ Rectangle {
                 // share actually started.
                 Rectangle {
                     visible: root.videoOn && root.shareAudioOn
-                    width: 13; height: 13
+                    width: Theme.iconPx(13); height: Theme.iconPx(13)
                     anchors { right: parent.right; bottom: parent.bottom }
                     color: Theme.bg2
                     border.color: Theme.accent
@@ -426,9 +426,9 @@ Rectangle {
 
                     Image {
                         anchors.centerIn: parent
-                        source: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
-                        sourceSize.width: 9; sourceSize.height: 9
-                        width: 9; height: 9
+                        source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg")
+                        sourceSize.width: Theme.iconPx(9); sourceSize.height: Theme.iconPx(9)
+                        width: Theme.iconPx(9); height: Theme.iconPx(9)
                         fillMode: Image.PreserveAspectFit
                     }
                 }
@@ -454,7 +454,7 @@ Rectangle {
 
             // Leave / End
             DockButton {
-                iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg"
+                iconSource: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg")
                 fill: Theme.danger
                 tip: root.inRoom ? qsTr("Leave voice") : qsTr("End call")
                 onClicked: root.endCallRequested()
@@ -688,9 +688,9 @@ Rectangle {
                         // not reach.
                         Image {
                             anchors.verticalCenter: parent.verticalCenter
-                            source: "qrc:/qt/qml/DoubleSlash/Client/icons/check.svg"
-                            sourceSize.width: 12; sourceSize.height: 12
-                            width: 12; height: 12
+                            source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/check.svg")
+                            sourceSize.width: Theme.iconPx(12); sourceSize.height: Theme.iconPx(12)
+                            width: Theme.iconPx(12); height: Theme.iconPx(12)
                             opacity: audioOption.selected ? 1.0 : 0.0
                         }
                         Text {

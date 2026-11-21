@@ -83,9 +83,9 @@ Item {
                 }
 
                 IconButton {
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
-                    icon.width: 14
-                    icon.height: 14
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg")
+                    icon.width: Theme.iconPx(14)
+                    icon.height: Theme.iconPx(14)
                     icon.color: Theme.accent
                     flat: true
                     implicitWidth: Theme.controlHeight
@@ -96,9 +96,9 @@ Item {
                 }
 
                 IconButton {
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
-                    icon.width: 12
-                    icon.height: 12
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
+                    icon.width: Theme.iconPx(12)
+                    icon.height: Theme.iconPx(12)
                     icon.color: Theme.muted
                     flat: true
                     implicitHeight: Theme.controlHeight
@@ -131,7 +131,7 @@ Item {
 
                 EmptyState {
                     Layout.alignment: Qt.AlignHCenter
-                    iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/attach.svg"
+                    iconSource: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/attach.svg")
                     iconSize: 32
                     title: "No preview available"
                     subtitle: root._fileName

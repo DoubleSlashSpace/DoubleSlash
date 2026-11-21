@@ -25,6 +25,7 @@ pub mod feature_trust;
 pub mod file_transfer;
 pub mod github_updater;
 pub mod group_key;
+pub mod icon_pack;
 pub mod identity;
 pub mod logging;
 pub mod media_clock;

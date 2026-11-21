@@ -292,7 +292,9 @@ These are selected **desktop** defaults from [SettingsModel](rust/doubleslash-cl
 | `debug_logging` | `false` | Verbose diagnostics |
 | `theme` | `dark` | `system`, `dark` or `light` base palette |
 | `skin_json` | empty | Built-in palette; otherwise the portable skin JSON (`{"v":1,"name","base","colors":{…}}`) shared with Android |
+| `icon_pack_dir` | empty | Folder of SVG or PNG icons that replace the packaged desktop icons. A PNG uses the icon's name (`phone.png` for `phone.svg`); the SVG wins when both are present. Empty uses the packaged set. A missing file name keeps the built-in icon. Not part of `skin_json`. The phone keeps its own icons. `node scripts/export_icon_pack.mjs` writes a starter folder |
 | `font_scale_percent` | `0` | Text size adjustment, −50 to +200. 0 is the designed size. Not part of `theme` or `skin_json`. The phone stores the same range |
+| `icon_scale_percent` | `0` | Icon size adjustment, −50 to +200. 0 is the designed size. Not part of `theme`, `skin_json`, or the icon pack. The phone keeps its own icon sizes |
 | `time_format` | `ampm` | Chat date and time, using this device's clock. `ampm` is 12-hour with AM/PM (`Oct 9, 2026 3:45 PM`). `military` is the previous 24-hour stamp (`Oct 9, 2026 15:45`). Also `us` (`10/9/2026 3:45 PM`), `uk` (`09/10/2026 15:45`), `eu` (`09.10.2026 15:45`), `iso` (`2026-10-09 15:45`), and `east_asia` (`2026/10/09 15:45`). Not part of `theme` or `skin_json`. The phone stores the same id. An unknown id becomes `ampm` |
 | `room_list_order_json` | `{"mode":"name_asc","pinned":[],"manual":[]}` | Rooms list order: name or people count, either way, a manual order, rooms kept at the top of their group, which supernodes have their rooms folded (`collapsed`), and the supernode row order (`nodes`, name A–Z until a row is moved). The phone stores the same JSON |
 

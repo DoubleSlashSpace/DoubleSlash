@@ -76,7 +76,10 @@ Item {
         }
 
         function test_row_is_one_line_until_opened() {
-            compare(member.implicitHeight, member.rowHeight)
+            // Closing animates. A previous test leaves the row open, so the
+            // height is mid-animation until that finishes. The settled closed
+            // row is still exactly one line.
+            tryCompare(member, "implicitHeight", member.rowHeight)
             member.expanded = true
             tryVerify(function () { return member.implicitHeight > member.rowHeight })
         }

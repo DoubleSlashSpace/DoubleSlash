@@ -167,7 +167,7 @@ Item {
         root.pendingRevealId = ""
         if (roomChatModel.count > 0) {
             roomChat.pinnedToLatest = true
-            roomChat.positionViewAtEnd()
+            roomChat._followLatest()
         }
     }
 
@@ -310,7 +310,7 @@ Item {
         anchors.top: parent.top
         anchors.margins: Theme.spacingMd
         anchors.rightMargin: Theme.spacingMd
-        anchors.topMargin: Theme.touchTarget + Theme.spacingMd + Theme.spacingXs
+        anchors.topMargin: roomHeader.height + Theme.spacingMd
         visible: root._statsPanelOpen && root.roomId !== ""
         title: "Room Connection"
         modeText: {
@@ -434,8 +434,11 @@ Item {
         spacing: 0
 
         Rectangle {
+            id: roomHeader
             Layout.fillWidth: true
-            height: Theme.touchTarget + Theme.spacingXs
+            // 48 at the designed size. The join button is 26; anything past
+            // that is added, so a larger icon still fits the inset row.
+            height: Theme.touchTarget + Theme.spacingXs + Math.max(0, Theme.iconPx(26) - 26)
             color: Theme.bg2
 
             RowLayout {
@@ -475,13 +478,13 @@ Item {
                     readonly property color callColor: Theme.online
                     visible: !root.voiceActiveHere && !root.roomHidden
                         && root.roomId !== "" && root.supernodeId !== ""
-                    implicitWidth: 26
-                    implicitHeight: 26
+                    implicitWidth: Theme.iconPx(26)
+                    implicitHeight: Theme.iconPx(26)
                     padding: 0
                     Layout.alignment: Qt.AlignVCenter
-                    icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg"
-                    icon.width: 16
-                    icon.height: 16
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg")
+                    icon.width: Theme.iconPx(16)
+                    icon.height: Theme.iconPx(16)
                     icon.color: callColor
                     tileColor: Theme.semanticTint(callColor, 0.18)
                     tileBorder: callColor
@@ -496,7 +499,7 @@ Item {
                 // list in the Rooms tree, where the member actions are.
                 CountPill {
                     visible: root.voiceCount > 0
-                    iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg"
+                    iconSource: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg")
                     text: String(root.voiceCount)
                     tint: Theme.online
                     tip: qsTr("Show voice members")
@@ -508,7 +511,7 @@ Item {
                 }
                 CountPill {
                     visible: root.textCount > 0
-                    iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
+                    iconSource: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg")
                     text: String(root.textCount)
                     tint: Theme.accent
                     tip: root.textListsRoom
@@ -568,6 +571,10 @@ Item {
             */
             property bool pinnedToLatest: true
 
+            // True while `_followLatest` is moving the view, so the scroll it
+            // causes is not mistaken for the reader's.
+            property bool _following: false
+
             // Measured from `originY` rather than from zero, and through the
             // button so that following the newest message and offering a way
             // back to it cannot disagree about where it is - see
@@ -582,23 +589,36 @@ Item {
                     || (jumpToCurrent && jumpToCurrent.distanceFromLatest <= 24)
             }
 
-            // A delegate settling to its real height moves the end away from a
-            // stationary `contentY`, so scroll alone is not enough to ask on.
-            onContentYChanged: _restPosition()
-            onContentHeightChanged: _restPosition()
-            onOriginYChanged: _restPosition()
-            onHeightChanged: _restPosition()
+            function _followLatest() {
+                if (root.pendingRevealId !== "" || !pinnedToLatest)
+                    return
+                _following = true
+                positionViewAtEnd()
+                _following = false
+            }
+
+            // Only scrolling decides whether the reader has left the newest
+            // message. A geometry change - an image or link embed loading to
+            // its real height, a row settling from its estimate, the panel
+            // resizing - moves the end away from a stationary `contentY`;
+            // judging pinned-ness from that unpinned the view a few pixels
+            // short of the end, so it stopped following and Jump to current
+            // took two presses. While pinned, those changes are followed.
+            onContentYChanged: if (!_following) _restPosition()
+            onContentHeightChanged: _geometryChanged()
+            onOriginYChanged: _geometryChanged()
+            onHeightChanged: _geometryChanged()
+
+            function _geometryChanged() {
+                if (pinnedToLatest)
+                    Qt.callLater(roomChat._followLatest)
+                else
+                    _restPosition()
+            }
 
             onCountChanged: {
-                if (root.pendingRevealId !== "")
-                    return
                 if (pinnedToLatest)
-                    Qt.callLater(function() {
-                        if (root.pendingRevealId !== "")
-                            return
-                        if (roomChat.pinnedToLatest)
-                            roomChat.positionViewAtEnd()
-                    })
+                    Qt.callLater(roomChat._followLatest)
             }
 
             // A plain child of a ListView is parented to the view itself, not
@@ -620,7 +640,7 @@ Item {
                 anchors.centerIn: parent
                 visible: roomChatModel.count === 0
                 width: Math.min(parent.width - Theme.spacingXl, 200)
-                iconSource: "qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg"
+                iconSource: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg")
                 iconSize: 36
                 title: "Room chat"
                 subtitle: "Messages from room members appear here."

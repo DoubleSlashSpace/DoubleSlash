@@ -69,9 +69,9 @@ Item {
 
             IconButton {
                 id: _backBtn
-                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/connect.svg"
-                icon.width: 14
-                icon.height: 14
+                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/connect.svg")
+                icon.width: Theme.iconPx(14)
+                icon.height: Theme.iconPx(14)
                 icon.color: _webView.loading ? Theme.muted : Theme.text
                 flat: true
                 implicitWidth: Theme.controlHeight
@@ -84,9 +84,9 @@ Item {
 
             IconButton {
                 id: _fwdBtn
-                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/send.svg"
-                icon.width: 14
-                icon.height: 14
+                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/send.svg")
+                icon.width: Theme.iconPx(14)
+                icon.height: Theme.iconPx(14)
                 icon.color: _webView.loading ? Theme.muted : Theme.text
                 flat: true
                 implicitWidth: Theme.controlHeight
@@ -100,10 +100,10 @@ Item {
             IconButton {
                 id: _reloadBtn
                 icon.source: _webView.loading
-                    ? "qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg"
-                    : "qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg"
-                icon.width: 14
-                icon.height: 14
+                    ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg")
+                    : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/refresh.svg")
+                icon.width: Theme.iconPx(14)
+                icon.height: Theme.iconPx(14)
                 icon.color: Theme.text
                 flat: true
                 implicitWidth: Theme.controlHeight
@@ -134,9 +134,9 @@ Item {
             }
 
             IconButton {
-                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg"
-                icon.width: 14
-                icon.height: 14
+                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg")
+                icon.width: Theme.iconPx(14)
+                icon.height: Theme.iconPx(14)
                 icon.color: Theme.muted
                 flat: true
                 implicitWidth: Theme.controlHeight
@@ -184,11 +184,11 @@ Item {
             spacing: Theme.spacingSm
 
             Image {
-                source: "qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg"
-                sourceSize.width: 12
-                sourceSize.height: 12
-                Layout.preferredWidth: 12
-                Layout.preferredHeight: 12
+                source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg")
+                sourceSize.width: Theme.iconPx(12)
+                sourceSize.height: Theme.iconPx(12)
+                Layout.preferredWidth: Theme.iconPx(12)
+                Layout.preferredHeight: Theme.iconPx(12)
                 fillMode: Image.PreserveAspectFit
             }
             Label {
@@ -198,9 +198,9 @@ Item {
                 font.pixelSize: Theme.fontSizeCaption
             }
             IconButton {
-                icon.source: "qrc:/qt/qml/DoubleSlash/Client/icons/close.svg"
-                icon.width: 12
-                icon.height: 12
+                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
+                icon.width: Theme.iconPx(12)
+                icon.height: Theme.iconPx(12)
                 icon.color: Theme.muted
                 flat: true
                 implicitWidth: Theme.controlHeight

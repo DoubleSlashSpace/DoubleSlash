@@ -122,11 +122,22 @@ pub mod ffi {
         /// JSON both clients read (`{"v":1,"name":…,"base":…,"colors":{…}}`).
         /// Empty means the built-in palette.
         #[qproperty(QString, skin_json)]
+        /// Folder of SVG or PNG icons that replace the packaged desktop set.
+        /// Empty uses the packaged icons. A PNG uses the icon's name
+        /// (`phone.png` for `phone.svg`); the SVG wins when both are present.
+        /// A missing file name keeps that icon. Not part of the skin, and not
+        /// read by the phone.
+        #[qproperty(QString, icon_pack_dir)]
         /// Text size adjustment in percent, from −50 to +200. 0 is the
         /// designed size (−50 draws text at half, +200 at three times).
         /// Independent of `theme` and `skin_json`: a copied skin does not
         /// carry it.
         #[qproperty(i32, font_scale_percent)]
+        /// Icon size adjustment in percent, from −50 to +200. 0 is the
+        /// designed size. Independent of `theme`, `skin_json`, and the icon
+        /// pack: a copied skin does not carry it. The phone keeps its own
+        /// icon sizes.
+        #[qproperty(i32, icon_scale_percent)]
         /// Chat date and time layout. One of `ampm` (default, 12-hour),
         /// `military` (24-hour), `us`, `uk`, `eu`, `iso`, `east_asia`.
         /// Not part of the skin. The phone stores the same id.
@@ -221,6 +232,12 @@ pub mod ffi {
         #[qinvokable]
         #[rust_name = "share_folder_problem"]
         fn shareFolderProblem(self: Pin<&mut Self>, path: &QString) -> QString;
+
+        /// The icon pack in `path`, as JSON for `Icons.applyDescribed`.
+        /// An empty path is the packaged set. See `icon_pack::describe`.
+        #[qinvokable]
+        #[rust_name = "load_icon_pack"]
+        fn loadIconPack(self: Pin<&mut Self>, path: &QString) -> QString;
     }
 }
 
@@ -338,10 +355,18 @@ struct SettingsSnapshot {
     theme: String,
     #[serde(default)]
     skin_json: String,
+    /// See the `icon_pack_dir` qproperty. Missing on older files, so the
+    /// packaged icons stay in use.
+    #[serde(default)]
+    icon_pack_dir: String,
     /// See the `font_scale_percent` qproperty. Missing on older files, so
     /// text stays at the designed size.
     #[serde(default)]
     font_scale_percent: i32,
+    /// See the `icon_scale_percent` qproperty. Missing on older files, so
+    /// icons stay at the designed size.
+    #[serde(default)]
+    icon_scale_percent: i32,
     /// See the `time_format` qproperty. Missing on older files, so chat
     /// uses local 12-hour time with AM/PM.
     #[serde(default = "default_time_format")]
@@ -486,6 +511,14 @@ const FONT_SCALE_PERCENT_MAX: i32 = 200;
 fn clamp_font_scale_percent(value: i32) -> i32 {
     value.clamp(FONT_SCALE_PERCENT_MIN, FONT_SCALE_PERCENT_MAX)
 }
+
+/// Same offered range as text size. 0 is the designed icon size.
+const ICON_SCALE_PERCENT_MIN: i32 = -50;
+const ICON_SCALE_PERCENT_MAX: i32 = 200;
+
+fn clamp_icon_scale_percent(value: i32) -> i32 {
+    value.clamp(ICON_SCALE_PERCENT_MIN, ICON_SCALE_PERCENT_MAX)
+}
 fn default_room_list_order() -> String {
     r#"{"mode":"name_asc","pinned":[],"manual":[]}"#.to_string()
 }
@@ -546,7 +579,9 @@ impl Default for SettingsSnapshot {
             noise_strength: default_noise_strength(),
             theme: default_theme(),
             skin_json: String::new(),
+            icon_pack_dir: String::new(),
             font_scale_percent: 0,
+            icon_scale_percent: 0,
             time_format: default_time_format(),
             room_list_order_json: default_room_list_order(),
             room_message_alerts_json: default_room_message_alerts(),
@@ -628,7 +663,9 @@ pub struct SettingsModelRust {
     noise_strength: QString,
     theme: QString,
     skin_json: QString,
+    icon_pack_dir: QString,
     font_scale_percent: i32,
+    icon_scale_percent: i32,
     time_format: QString,
     room_list_order_json: QString,
     room_message_alerts_json: QString,
@@ -707,7 +744,9 @@ impl Default for SettingsModelRust {
             noise_strength: QString::from(s.noise_strength.as_str()),
             theme: QString::from(s.theme.as_str()),
             skin_json: QString::from(s.skin_json.as_str()),
+            icon_pack_dir: QString::from(s.icon_pack_dir.as_str()),
             font_scale_percent: s.font_scale_percent,
+            icon_scale_percent: s.icon_scale_percent,
             time_format: QString::from(s.time_format.as_str()),
             room_list_order_json: QString::from(s.room_list_order_json.as_str()),
             room_message_alerts_json: QString::from(s.room_message_alerts_json.as_str()),
@@ -878,7 +917,9 @@ impl ffi::SettingsModel {
             noise_strength: r.noise_strength.to_string(),
             theme: r.theme.to_string(),
             skin_json: r.skin_json.to_string(),
+            icon_pack_dir: r.icon_pack_dir.to_string(),
             font_scale_percent: clamp_font_scale_percent(r.font_scale_percent),
+            icon_scale_percent: clamp_icon_scale_percent(r.icon_scale_percent),
             time_format: normalize_time_format(&r.time_format.to_string()),
             room_list_order_json: r.room_list_order_json.to_string(),
             room_message_alerts_json: r.room_message_alerts_json.to_string(),
@@ -995,6 +1036,11 @@ impl ffi::SettingsModel {
             Ok(_) => QString::default(),
             Err(e) => QString::from(e.as_str()),
         }
+    }
+
+    fn load_icon_pack(self: Pin<&mut Self>, path: &QString) -> QString {
+        let _ = self.as_ref();
+        QString::from(crate::icon_pack::describe(&path.to_string()).as_str())
     }
 
     fn refresh_dirty(mut self: Pin<&mut Self>) {
@@ -1137,7 +1183,11 @@ impl ffi::SettingsModel {
         self.as_mut()
             .set_skin_json(QString::from(snap.skin_json.as_str()));
         self.as_mut()
+            .set_icon_pack_dir(QString::from(snap.icon_pack_dir.as_str()));
+        self.as_mut()
             .set_font_scale_percent(clamp_font_scale_percent(snap.font_scale_percent));
+        self.as_mut()
+            .set_icon_scale_percent(clamp_icon_scale_percent(snap.icon_scale_percent));
         self.as_mut().set_time_format(QString::from(
             normalize_time_format(&snap.time_format).as_str(),
         ));
@@ -1182,6 +1232,32 @@ mod tests {
         assert_eq!(clamp_font_scale_percent(0), 0);
         assert_eq!(clamp_font_scale_percent(200), FONT_SCALE_PERCENT_MAX);
         assert_eq!(clamp_font_scale_percent(900), FONT_SCALE_PERCENT_MAX);
+    }
+
+    #[test]
+    fn icon_scale_percent_defaults_to_the_designed_size_and_stays_in_range() {
+        assert_eq!(SettingsSnapshot::default().icon_scale_percent, 0);
+        match serde_json::to_string(&SettingsSnapshot::default()) {
+            Ok(stored) => assert!(stored.contains("\"icon_scale_percent\":0")),
+            Err(e) => panic!("snapshot serializes: {e}"),
+        }
+        match serde_json::from_str::<SettingsSnapshot>(r#"{"theme":"light"}"#) {
+            Ok(old) => assert_eq!(old.icon_scale_percent, 0),
+            Err(e) => panic!("old settings parse: {e}"),
+        }
+        assert_eq!(clamp_icon_scale_percent(-80), ICON_SCALE_PERCENT_MIN);
+        assert_eq!(clamp_icon_scale_percent(0), 0);
+        assert_eq!(clamp_icon_scale_percent(200), ICON_SCALE_PERCENT_MAX);
+        assert_eq!(clamp_icon_scale_percent(900), ICON_SCALE_PERCENT_MAX);
+    }
+
+    #[test]
+    fn icon_pack_dir_defaults_to_empty_and_old_files_stay_empty() {
+        assert_eq!(SettingsSnapshot::default().icon_pack_dir, "");
+        match serde_json::from_str::<SettingsSnapshot>(r#"{"theme":"light"}"#) {
+            Ok(old) => assert_eq!(old.icon_pack_dir, ""),
+            Err(e) => panic!("old settings parse: {e}"),
+        }
     }
 
     #[test]
