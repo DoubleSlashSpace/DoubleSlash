@@ -3,17 +3,17 @@
 //! One script serves both update modes the guided flow offers. A systemd timer
 //! runs it daily in [`UpdateMode::ServerTimer`]; in
 //! [`UpdateMode::ClientDriven`] the timer is off and it runs only when the
-//! client asks. Either way it downloads the release package, checks it against
-//! the published SHA-256 sidecar, installs it beside the running binary, flips
-//! the `current` link, restarts every instance on the host, and flips back if
-//! any instance fails to stay up.
+//! client pushes a package downloaded and verified locally. Timer runs download
+//! the package and its SHA-256 sidecar on the host. Both paths check the package,
+//! install it beside the running binary, flip `current`, restart the active or
+//! failed instances, and roll back if any checked instance fails to stay up.
 //!
 //! Only the binary changes: `identity.json`, peers, and every other file in a
 //! data directory are left alone.
 
 use anyhow::{bail, Context, Result};
 use snm_core::Defaults;
-use snm_transport::{shell_escape, SshTransport, Transport};
+use snm_transport::{SshTransport, Transport};
 
 use crate::layout::privilege_prefix;
 use crate::ops::{run_checked, upload_text_file};
@@ -459,66 +459,11 @@ pub async fn push_update(
     })
 }
 
-/// Whether a newer package than the one the updater last installed is out.
-/// A node installed without the updater reports available until its first
-/// update.
-pub async fn check_for_update(
-    transport: &SshTransport,
-    privilege: snm_core::PrivilegeMode,
-) -> Result<bool> {
-    let prefix = privilege_prefix(privilege);
-    let output = run_checked(transport, &format!("{prefix}{UPDATER_SCRIPT_PATH} check"))
-        .await
-        .context("check for a supernode update")?;
-    match output.stdout.trim() {
-        "update-available" => Ok(true),
-        "up-to-date" => Ok(false),
-        other => bail!("unexpected update check output: {other}"),
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateOutcome {
     pub succeeded: bool,
     /// The updater's own log lines from this run.
     pub log: Vec<String>,
-}
-
-/// Run the updater now through its unit, so a run started here and one
-/// started by the timer can never overlap. Returns when it has finished.
-pub async fn run_update_now(
-    transport: &SshTransport,
-    privilege: snm_core::PrivilegeMode,
-) -> Result<UpdateOutcome> {
-    let prefix = privilege_prefix(privilege);
-    let cursor = run_checked(
-        transport,
-        &format!("{prefix}journalctl -u {UPDATER_UNIT} -n 0 --show-cursor --no-pager"),
-    )
-    .await
-    .ok()
-    .and_then(|o| {
-        o.stdout
-            .lines()
-            .find_map(|l| l.strip_prefix("-- cursor: ").map(str::to_string))
-    });
-    let started = transport
-        .run(&format!("{prefix}systemctl start {UPDATER_UNIT}"))
-        .await?;
-    let since = cursor
-        .map(|c| format!("--after-cursor={}", shell_escape(&c)))
-        .unwrap_or_else(|| "-n 50".into());
-    let log = run_checked(
-        transport,
-        &format!("{prefix}journalctl -u {UPDATER_UNIT} {since} -o cat --no-pager"),
-    )
-    .await
-    .map(|o| o.stdout.lines().map(str::to_string).collect())
-    .unwrap_or_default();
-    Ok(UpdateOutcome {
-        succeeded: started.exit_code == 0,
-        log,
-    })
 }
 
 #[cfg(test)]
