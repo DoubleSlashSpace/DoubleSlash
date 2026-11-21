@@ -2,6 +2,8 @@
 
 **Effective date:** 2026-11-15
 
+**Documentation corrected:** 2026-11-20 (existing local logging, storage and Store-update behavior)
+
 This policy covers the DoubleSlash **desktop** and **Android** clients, the
 public website, and the optional paid **DoubleSlash DDNS (DDDNS)** service at
 `users.doubleslash.space` and lookup names under `doubleslash.space`.
@@ -122,8 +124,10 @@ the relevant privacy authority.
 
 ## Information stored on your device
 
-All persistent DoubleSlash data is written under `DOUBLESLASH_HOME`
-(default `~/.doubleslash/` on Linux/macOS). This data
+Desktop profile data is resolved through `DOUBLESLASH_KEY_DIR`, then
+`DOUBLESLASH_HOME`, otherwise `~/.doubleslash/`, with `active-profile` selecting
+a restored profile where present. Received files, OS keyring entries and
+platform-managed caches can live outside that directory. This data
 does not leave your device unless you explicitly connect to a peer or
 supernode and exchange it as part of normal operation, or you initiate an
 optional feature described below (updates, link previews, Ollama, and so on).
@@ -136,14 +140,19 @@ optional feature described below (updates, link previews, Ollama, and so on).
 | `chat_history.db` | Local chat history; message bodies and sender handles are AES-256-GCM encrypted at rest |
 | `settings.json` | App preferences (audio, video/capture choices, plugins, privacy toggles, window size, etc.) |
 | `my_rooms.dat` | Saved room invites (encrypted) |
+| `device-key.dat` / `device-trust.db` | Local endpoint key and accepted device registries, where present (encrypted); endpoint keys are not copied into backups |
 | `managed_supernodes.dat` | Only if you host or import a supernode from Settings › Network (encrypted): this profile's SSH login key, each server's address, login name and pinned host key, and its node identity. Server passwords are never stored. Not included in backups |
 | OS keyring (`doubleslash` service) | Optional cached AES unlock key so you are not prompted for your passphrase every launch |
 | OS **Downloads** folder | Files received from peers (saved by the desktop client on completion) |
 | `installer.log` | Installer/updater activity log (written when `doubleslash-installer` runs) |
+| `logs/doubleslash-client.log` | Desktop diagnostic session log in the active profile, truncated at startup |
 
-The desktop client logs to **stderr** via Rust `tracing` (controlled by the
-`RUST_LOG` environment variable). It does not write a persistent client log file
-by default.
+The desktop client writes diagnostic logs to the session file above and to its
+console output where available. Normal logging is enabled by default; the
+debug-logging setting increases detail, and `RUST_LOG` overrides the filter.
+Logs can contain connection addresses, peer/room identifiers, control state and
+errors. They are local files, not telemetry. Copy a log before restarting if you
+need to retain it, and review it before sharing it with anyone.
 
 ### Android
 
@@ -207,6 +216,10 @@ desktop client polls the GitHub Releases API at startup and once per hour while
 the app remains open to see whether a newer version is available. The Android
 client does not do this.
 
+The Microsoft Store edition is an exception: a Windows process with MSIX package
+identity skips GitHub update checks and standalone installer handoffs. Microsoft
+Store handles that package's updates through Windows.
+
 **Endpoint:** `https://api.github.com/repos/DoubleSlashSpace/DoubleSlash/releases/latest`
 
 **What is disclosed:** Your IP address is visible to GitHub (Microsoft Corp.) as
@@ -251,15 +264,16 @@ QUIC/WebSocket candidates and supernode relay when needed.
 **What:** Nothing is captured until you start it. Turning your camera on in a
 call, opening the local preview in **Settings → Video**, or choosing a source
 from the **Share video** control starts capture; stopping the share or the call
-ends it. DoubleSlash does not capture in the background and does not capture
-while idle.
+ends it. Starting the app alone does not start sharing. An explicitly started
+session can remain active while the app is in the background; stop the call or
+share to end its capture. A settings preview must be stopped or closed separately.
 
 Three kinds of source can be captured, and they differ in how much they expose:
 
 | Source | Platforms | What it captures |
 |---|---|---|
 | Camera | Windows, Linux, macOS, Android | The camera device you select |
-| Microphone (voice) | All platforms | The microphone only while a call or room voice session is active |
+| Microphone (voice) | All platforms | Active calls/room voice; desktop also offers an explicit local microphone test |
 | Screen or single window | **Windows only** (`Windows.Graphics.Capture`) | Everything visible on the chosen monitor, or the contents of the chosen window |
 | Audio shared with a video | **Windows only** (WASAPI loopback) | Either *all* sound this machine plays, or the sound of one application's process tree |
 
@@ -268,7 +282,7 @@ On **Android**, a call that you have answered or placed keeps the microphone
 in front. A persistent notification (“DoubleSlash is connected” / “call in
 progress”) is shown for as long as that is true. Disconnect from the
 notification, or lock the identity in the app, to stop it. DoubleSlash does
-not capture when you are not in a call.
+not start call capture merely because the session is connected.
 
 **Two things worth knowing before you share:**
 
@@ -289,7 +303,7 @@ flowing, its byte volume, and whether your camera is on or off — never the
 picture or the sound.
 
 **What is not done with it:** captured video and audio are not recorded, not
-written to disk, and not sent to any DoubleSlash service (there are none). Device
+written to disk, and not sent to the optional DoubleSlash DDNS service. Device
 enumeration for the settings list and the local preview stay on your machine.
 
 **How to disable:** turn the camera off, stop the share, or simply never start
@@ -313,8 +327,7 @@ YouTube (`youtube.com`, `googlevideo.com`, `ytimg.com`, …), Vimeo
 **not** use `yt-dlp` for this feature.
 
 **What is disclosed:** The video host sees a normal browser/embed request from
-your IP. No chat message text is sent to DoubleSlash-operated servers (there are
-none).
+your IP. No chat message text is sent to the optional DoubleSlash DDNS service.
 
 **How to disable:** Uncheck *Show YouTube preview cards in chat* in Settings
 (`youtube_preview_enabled` in `settings.json`). Opening links with *Open* still
@@ -478,6 +491,13 @@ When you use a volunteer **supernode** for relay or group voice:
   or session keys.
 - The operator can observe connection/relay activity and approximate traffic
   volumes, but not message or audio content.
+
+These private-content protections do not cover operator-hosted portal assets or
+unsealed `game.relay.v1` application datagrams. The game SDK provides authenticated
+transport and opaque forwarding, not payload encryption against the relay.
+Applications needing that confidentiality must supply it themselves. Signed
+signaling can expose routing/control metadata; plain `ws://` is not transport
+encryption, even when the node proves its identity.
 
 Supernodes are configured by you and run by peers or operators you choose to
 trust. DoubleSlash does not operate any supernodes.

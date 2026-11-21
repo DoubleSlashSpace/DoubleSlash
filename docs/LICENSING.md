@@ -54,8 +54,8 @@ Rust dependencies are handled automatically. Everything else a package bundles
 as plain text under `packaging/licenses/<target>/<product>/`. The generator
 finds that directory by target and product and copies it into the package as
 `licenses/<product>/supplement/`, so adding a file there ships it and no build
-needs to be told where to look. Android has no such components yet, so
-`packaging/licenses/<target>/android/` does not exist.
+needs to be told where to look. Android supplements cover the statically linked
+NDK C++ runtime and resolved JVM dependencies under the same target/product layout.
 
 Nothing checks that the set is complete. That judgement is yours, and it is
 worth making before a release:
@@ -126,9 +126,9 @@ Notices are generated from the resolved dependency graph and copied from
 `packaging/licenses/`, and `verify_artifact.mjs` confirms afterwards that they
 actually reached the built archive and are readable. That is the whole of it.
 
-There is no reviewer signature, no build-input binding, no per-binary hash
-inventory and no gate that refuses to package: none of that is a licence
-obligation, and all of it cost more than it caught. No tool verifies that the
+There is no reviewer-signature approval gate, build-input binding or required
+per-binary review inventory. Notice generation and final-artifact checks still
+fail packaging on their actual errors. No tool verifies that the
 component set is complete or that a conclusion about a licence is correct.
 
 These files are public distribution materials, not credentials.
@@ -137,8 +137,10 @@ These files are public distribution materials, not credentials.
 
 ## Notice Coverage and Gaps
 
-Everything below was checked against the tree on 2026-09-19. These are
-technical findings, not legal advice.
+The dated findings below preserve the 2026-09-19 review record. They do not
+establish notice completeness for every later package or dependency revision.
+Current generation/verification behavior is described above; refresh artifact
+evidence when the inputs change. These are technical findings, not legal advice.
 
 The two component sets that had no notice — the Chromium snapshot's
 third-party credits and the Android native and JVM dependencies — are closed,
@@ -245,13 +247,10 @@ Done on 2026-09-19:
 
 Still open:
 
-- **Desktop release archives.** `verify_artifact.mjs` runs automatically at
-  the end of `build_win64.ps1`, `build_linux.sh` and `build_macos.sh`, so this
-  is a matter of running each one and keeping the output. A Windows release
-  build on 2026-09-19 compiled, generated notices and deployed the Qt/WebEngine
-  runtime, then stopped at the publish step because a running client held
-  `dist\DoubleSlash`; the archive and verification steps come after publish and
-  did not run. Re-run with the client closed.
+- **Final desktop archives for each release.** `verify_artifact.mjs` runs at
+  the end of `build_win64.ps1`, `build_linux.sh`, `build_macos.sh` and MSIX
+  packaging. Retain its output for the actual archive being distributed;
+  successful staging or a historical build does not establish this result.
 - **Android device acceptance** of the Legal reader.
 - **Publication paths** (stable, nightly, signed, unsigned, SignPath restore,
   installer update, supernode deployment) against real installations.
@@ -290,7 +289,7 @@ correct.
 | Linux AppImage | `usr/share/doubleslash/licenses/` inside the AppDir |
 | macOS application | `Contents/Resources/licenses/` |
 | Supernode archive | `licenses/` |
-| Android APK/AAB | `assets/licenses/<target>/` plus preserved/merged upstream META-INF notices |
+| Android APK/AAB | `assets/licenses/<target>/`, including native/JVM supplements; do not rely on upstream META-INF notices surviving dex packaging |
 
 Keep the installer companion notice with standalone redistribution. The
 installer does not require it at run time: the release publishes it, and the

@@ -42,13 +42,16 @@ exploited, and we can agree a longer window when a fix needs it.
 ## Supported versions
 
 DoubleSlash is pre-release. Security fixes land on `develop` and ship in a
-later [GitHub Release](https://github.com/DoubleSlashSpace/DoubleSlash/releases).
+later build. The official Windows distribution receives updates through
+Microsoft Store; unpackaged builds use
+[GitHub Releases](https://github.com/DoubleSlashSpace/DoubleSlash/releases).
 Older releases are not maintained as their own line. Nightly builds are
 pre-release and are replaced by the next nightly.
 
 | Line | Security fixes |
 |---|---|
 | `develop` | Yes |
+| Microsoft Store Windows edition | Through a newer submitted and certified package |
 | Newest GitHub Release | Yes, by a newer release |
 | Older releases | No |
 | `nightly` | Only by a later nightly |

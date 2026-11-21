@@ -1,6 +1,6 @@
-# Manual acceptance: Phase 1
+# Manual acceptance and recorded results
 
-Scripts for the Phase 1 checks in [`backlog.md`](../backlog.md) that no unit or
+Procedures for the core manual checks in [`backlog.md`](../backlog.md) that no unit or
 harness test can stand in for. Each one lists its setup, the steps, what counts
 as a pass, and the log lines that serve as evidence. A check passes only when
 someone has run it on the stated build and recorded the result under
@@ -31,8 +31,10 @@ someone has run it on the stated build and recorded the result under
 - **Use a private two-party room**, not the public `default` room. Members of
   `default` run clients you do not control, and a single out-of-date client
   acting as a competing keyer looks exactly like a local bug.
-- **Record the build:** the `git rev-parse --short HEAD` of each client and the
-  supernode version reported by the manager.
+- **Record the build:** the commit and packaged version of each client, the
+  OS/device/network and profile arrangement, plus the supernode version/hash
+  reported by the manager. A current source checkout is not proof that an
+  installed binary came from it. Record skipped steps and partial results.
 
 ## 1. Group-key convergence (live)
 
@@ -104,6 +106,10 @@ Needs a phone with an APK built from the same commit, plus one desktop.
    `adb shell dumpsys deviceidle unforce`.
 4. **Handover:** during a direct 1:1 call, switch the phone from Wi-Fi to
    cellular, then back.
+5. Repeat the handover while voicing the private room. Check that the room stays
+   selected during the bounded handover window, its original node/relay is
+   recovered and media returns without manual rejoin. Separately leave that
+   node unreachable past the window and verify ordinary loss/cluster failover.
 
 **Pass:** Audio flows both ways before and after each step. The persistent
 connected notification stays up the whole time, and the session reconnects
@@ -118,8 +124,8 @@ you can. On one machine, two cameras (or one camera and screen share) will do.
 | # | Step | Pass |
 |---|---|---|
 | 3.1 | A calls B directly and both turn cameras on | Each side sees the other's camera, and the local preview shows the local camera, not the remote one |
-| 3.2 | Room with three members, two cameras on | Every member sees both cameras. A camera-off member shows a placeholder, not a frozen frame |
-| 3.3 | A fourth member joins mid-stream | The joiner sees video within about 2 s (keyframe recovery), not after the next scheduled keyframe |
+| 3.2 | Room with three members, two cameras on; opt in to watching both senders | Each opted-in member sees both cameras. Camera-off state does not leave a frozen frame; unwatched senders are not silently subscribed |
+| 3.3 | A fourth member joins mid-stream and opts in | The joiner sees video within about 2 s (keyframe recovery), not after the next scheduled keyframe |
 | 3.4 | Block direct UDP between A and B (firewall rule), then call | After about 5 s the log shows `No direct QUIC to … within fallback grace` then `Direct-call fallback for …: creating temp private room`, and **video** still flows over the fallback room |
 | 3.5 | Unplug the camera, or start with none | The UI shows the camera as unavailable. The log shows `[video] could not open camera source` or `[video] capture ended on its own`, with no crash or hang |
 | 3.6 | Open the camera in another app first | Same as 3.5 |
@@ -191,9 +197,14 @@ synchronised clocks, so skew between devices is a known demo limit.
 
 ## Results
 
-Add a row per run. Link logs and recordings instead of pasting them.
+Add a row per run. Link logs and recordings instead of pasting them. Historical
+rows below are retained from earlier project records; this documentation cleanup
+did not rerun those checks. A source comparison is not a live media pass, and a
+partial checklist does not close the remaining backlog item.
 
 | Date | Check | Client build(s) | Supernode | Result | Evidence / notes |
 |---|---|---|---|---|---|
 | 2026-09-22 | 4 (voice unchanged) | `bc366cce`+ | — | Pass | Source comparison against `3c2ceb5f^`; see §4 |
+| 2026-09-22 | Same-identity desktop/phone routing preview | Installed desktop normal profile + phone; exact builds not recorded here | Not recorded here | Partial | Connected, room-chat, reconnect, third-contact and relay checks reported by the user; [details and limits](DEVICES_AND_BACKUPS.md#simultaneous-identity-preview-testing). Call answering and restore edge cases remain open. |
+| 2026-10-27 | Guided administration library | `examples/supernode_admin_live.rs`; exact commit not recorded here | IPv6-only Debian 12 host | Partial | Existing backlog record: client-key and client-key-only setup, reachable SSH after firewall, key-only lockdown, sandboxed service/portal/invite, identity-preserving repeat setup, client-pushed update/no-op and forced rollback. Timer refused because the host could not reach GitHub; headless invite handshake used WebSocket. Packaged wizard, timer execution and IPv6-only QUIC relay media were not accepted. |
 | 2026-11-19 | Supernode identity proof: two-client room chat and voice | 1.0.501.0 (`0269e34`), desktop profiles A and B on one machine | 1.0.502.0 (`a2063226`), acdc a/b/c + ac1 | Pass | Both profiles logged `proved its identity` for all four nodes. Private room: chat both ways before and after a restart, voice heard both ways. B hard-killed and restarted with its QUIC stream still registered: all four proofs and relays within 0.1 s, then it fetched its key from keyer A (epoch 1, 1 ms). A rejoined voice at epoch 2 after B, alone, rotated to 3; A's first unopenable frame minted epoch 4, installed by B in the same millisecond. Not a full §1 run. The profiles first shared UDP 61045, which cost A its relays until B was moved; fixed in `quic_tls.rs` after this build. |

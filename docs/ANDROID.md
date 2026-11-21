@@ -3,7 +3,8 @@
 The Android client runs the **same Rust core as the desktop client** — the same
 transport, crypto, stores and feature registry — behind a native Kotlin/Compose
 UI. Nothing about the trust model changes: identity is generated on the device,
-keys never leave it, and there is still no first-party backend.
+with encrypted backup export available only at the user's request. There is no
+mandatory first-party identity, discovery or presence backend.
 
 ## Why not Qt/QML
 
@@ -55,12 +56,12 @@ Everything else rides a **JSON command/event channel**. Kotlin sends
 `{"cmd": "...", ...}` and gets `{"ok": true, ...}` or `{"ok": false, "error": "..."}`;
 the core pushes events as `{"event": "...", ...}` to `EventSink.onEvent`.
 
-This is deliberate. The desktop bridge exposes ~98 QML invokables; mirroring
+This is deliberate. The desktop bridge exposes many QML invokables; mirroring
 each as its own `external fun` would mean changing declarations on both sides of
 the boundary every time one moved. One channel means a new feature is a new
 `match` arm in `command.rs` and a new `when` branch in Kotlin.
 
-**Real-time media never crosses this boundary.** `SfuAudioReceived`,
+**Real-time payloads stay out of the JSON channel.** `SfuAudioReceived`,
 `DirectAudioReceived`, `VideoFrameReceived`, `ContentAudioReceived` and
 `PortalGameDatagram` are filtered out in `event.rs` — they arrive hundreds of
 times a second carrying raw payload bytes, and their pipelines live on the Rust
@@ -103,8 +104,8 @@ sdk.dir=C:/Users/you/AppData/Local/Android/Sdk
 
 Packaging also requires Node.js 20+ and `cargo-about` 0.8.4. Every variant gets
 the same notices: Rust dependency texts, the vendored Opus and libvpx notices,
-and anything under `packaging/licenses/<target>/android/` if that directory ever
-exists. See [dependency licensing](LICENSING.md).
+and the Android native/JVM supplements under
+`packaging/licenses/<target>/android/`. See [dependency licensing](LICENSING.md).
 
 ```powershell
 cd android
@@ -116,8 +117,10 @@ Gradle runs `cargo ndk` itself — `cargoBuildDebug` / `cargoBuildRelease` are
 wired ahead of `mergeDebugJniLibFolders`, so one command builds the whole thing.
 The Android debug build maps to cargo's dev profile and release to release; a
 release APK carrying a dev-profile core would be unusably slow through the Opus
-and VP8/VP9 paths, whose C (and NEON intrinsics) are only fast when optimised. AGP 8.9.3 (Gradle
-wrapper 8.11.1) is the floor that officially supports `compileSdk` 36.
+and VP8/VP9 paths, whose C (and NEON intrinsics) are only fast when optimised.
+The repository pins AGP 8.9.3, Gradle 8.11.1, NDK 28.2.13676358 and CameraX
+1.4.2. Read current values from `gradle/libs.versions.toml`, the Gradle wrapper
+and `app/build.gradle.kts`; these are build inputs, not store-policy guarantees.
 
 To build the core alone:
 
@@ -333,9 +336,9 @@ Disconnect action; `Service.onTimeout` stops the service rather than crashing.
 Play Console still needs a `specialUse` declaration (and a video of the
 notification) at upload time.
 
-`targetSdk` is 36, which Play requires of new apps as of 2026-08-31. Local-network
-access stays implicit until `targetSdk` 37; see
-[Phase 4 in the backlog](../backlog.md#access-local-network) before that bump.
+The repository uses `compileSdk` / `targetSdk` 36 and `minSdk` 26. Before raising
+the target, re-check platform local-network permission behavior and current Play
+submission requirements; see [Phase 4 in the backlog](../backlog.md#access-local-network).
 
 **Play policy surfaces in the client.** Terms of use (`TERMS.md`) must be
 accepted after unlock before the Home screen; the version is stored in

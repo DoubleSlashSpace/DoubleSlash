@@ -51,8 +51,10 @@ person's device or impose a network-wide ban through a central account service.
 Available controls may let you block direct contact, leave shared spaces,
 disconnect from nodes, or delete locally stored content. These actions affect
 your own participation or local data; they do not impose a network-wide ban or
-delete copies held by others. Hiding an item from view does not end your
-participation or remove remote content.
+delete copies held by others. Hiding does not remove remote content. Desktop
+Hide Room also leaves that room's voice and unsubscribes its chat; Android Hide
+Room only hides the local row. Remove Room leaves the room and syncs the removal
+to your other devices, while its history-deletion choice applies only locally.
 
 Reports can bring problems to the maintainers' attention, but do not grant
 them access to sealed conversations or guarantee removal of remote content.

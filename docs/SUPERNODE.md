@@ -2,6 +2,10 @@
 
 This guide covers running a production or volunteer `doubleslash-supernode`.
 
+For Linux SSH deployment, clusters and desktop **Your servers**, use the
+[manager guide](supernode-manager.md). This guide owns runtime and hosting
+behavior; the [backlog](../backlog.md) owns remaining acceptance work.
+
 The supernode provides optional transport assistance (QUIC relay, SFU rooms) and hosts opt-in feature modules including an **in-app portal** (`web.host.app.v1`). It is **never** an identity or trust authority — all trust comes from the invite + handshake between peers. There is no public WebTransport / HTTPS game surface.
 
 ## Quick Start
@@ -32,6 +36,7 @@ Official tagged releases and the rolling `nightly` prerelease ship standalone su
 ```bash
 tar -xzf doubleslash-supernode-<version>-linux-x86_64.tar.gz
 sudo install -m 755 doubleslash-supernode-<version>-linux-x86_64/doubleslash-supernode /usr/local/bin/
+sudo cp -R doubleslash-supernode-<version>-linux-x86_64/licenses /usr/local/bin/doubleslash-supernode.licenses
 ```
 
 **Linux ARM64** (Raspberry Pi, ARM VPS):
@@ -39,6 +44,7 @@ sudo install -m 755 doubleslash-supernode-<version>-linux-x86_64/doubleslash-sup
 ```bash
 tar -xzf doubleslash-supernode-<version>-linux-aarch64.tar.gz
 sudo install -m 755 doubleslash-supernode-<version>-linux-aarch64/doubleslash-supernode /usr/local/bin/
+sudo cp -R doubleslash-supernode-<version>-linux-aarch64/licenses /usr/local/bin/doubleslash-supernode.licenses
 ```
 
 **Windows x86_64**:
@@ -123,7 +129,8 @@ See `rust/doubleslash-supernode/src/manifest.rs` for the full schema. The exampl
 
 ### SFU Rooms (`room.audio.sfu` + `room.chat.v1` + `room.file.v1`)
 - Up to 32 participants per room.
-- Native desktop clients only (in-app portal games do not carry room voice/chat).
+- Native desktop and Android clients (in-app portal games do not carry room voice/chat).
+- Room definitions and participant payloads are not persisted by the node. Clients save encrypted definitions and rematerialize them on reconnect. User-created rooms expire after 900 seconds with no voice participants or text subscribers; `default` is retained.
 - Room file transfers use signed `SfuFile*` frames and are verified by recipients before saving. They are **advertised, then pulled**: `sfu_file_offer` carries metadata only, and chunks are sent only to members who answer with `sfu_file_request`. The supernode routes those chunks to the single peer named in the frame's `to` field and, as always, stores nothing — a member who accepts late is served by the original sender re-reading the file, not from any relay cache.
 - Updated clients accept files up to 4 GiB (4,294,967,296 bytes); older clients still enforce their own smaller limit. Anything over 8 MiB is streamed from and to disk, so neither client holds the file in memory. This is a client limit; supernode quotas and queues do not increase.
 - Offers remain available for one hour. An accepted transfer can continue past that deadline while it makes progress; an hour without progress expires it. Transfers are not resumed across client restarts.
@@ -132,7 +139,7 @@ See `rust/doubleslash-supernode/src/manifest.rs` for the full schema. The exampl
 - Operators can restrict which room types peers may **create** via `room.audio.sfu` manifest params:
   - `allow_public_rooms` (default `false`) — when `false`, new public room materialization is rejected. The built-in **Public Voice/Chat Room** (`room_id = "default"`) is always present on SFU-enabled nodes.
   - `allow_private_rooms` (default `true`) — when `false`, new private room materialization is rejected.
-  - Existing rooms may still be replayed/materialized by id; policy applies only to **new** room creation.
+  - Already hosted rooms can be returned without a new-create denial. An absent non-default room, including one lost to idle GC/restart, is subject to the creation policy even if the client supplies its ID.
   - Denied creates return `sfu_room_created` with `denied: true` and a `reason` (`public_rooms_disabled` / `private_rooms_disabled`).
 
 Example:
@@ -145,8 +152,9 @@ params = { allow_public_rooms = false, allow_private_rooms = true }
 ```
 
 ### In-app portal (`web.host.app.v1` + `game.relay.v1`)
-- `web.host.app.v1` ships enabled by default: portal pages for the desktop client's embedded browser (`d://` scheme over QUIC bidi streams).
+- `web.host.app.v1` ships enabled by default: portal pages for desktop Qt WebEngine and Android WebView (`d://` scheme over QUIC bidi streams).
 - `game.relay.v1`: opaque game-session datagram fan-out on the identity QUIC relay (fixed channel tag). Games open only from the native portal — **no public HTTP/WebTransport port, no TLS certs**.
+- Opaque forwarding does not provide application encryption. The SDK does not seal game payloads against the relay; an app needing that confidentiality must add it. Demo state lives in open pages, not a node cache. See the [portal app guide](../games/README.md).
 - Static assets live in `<data_dir>/web/` and `<data_dir>/games/<slug>/` (seeded by the binary).
 
 ### Plugin / Bespoke Modules (`x.<vendor>.*`)
@@ -190,8 +198,8 @@ Graceful shutdown is supported (closes QUIC endpoints cleanly).
 
 ## Security Notes
 
-- The supernode only sees encrypted traffic and metadata it needs for routing (peer indices, room membership).
-- All feature dispatch goes through `doubleslash-features` (auth tier + quota enforcement).
+- Participant chat, file contents and room media are sealed by clients. The node still sees routing/membership, control state, room names, file-offer metadata and traffic timing/volume. Operator portal assets and game datagrams have separate content boundaries.
+- Capability auth/quotas, dedicated transport checks and bounded queues constrain dispatch/fan-out. Ordered room-file chunk/completion forwarding observes quota refusal without dropping those frames; do not generalize that exception to offers, requests or other features.
 - Never trust the supernode for identity — only for transport assistance and opt-in hosting.
 
 ## Monitoring & Stats
@@ -200,7 +208,7 @@ The supernode exposes basic stats via:
 - `web.host.app.v1` portal endpoints (`/health`, `/api/stats`, `/api/metrics`, `/api/peers`, `/api/config`)
 - Internal `stats.rs` (exposed to plugins and the operator console)
 
-`/api/metrics` (P3) returns the same payload as `/api/stats` plus a `metrics_version` and `generated_uptime_seconds` field for easier scraping / dashboards.
+`/api/metrics` returns the same payload as `/api/stats` plus a `metrics_version` and `generated_uptime_seconds` field. These are in-app portal paths over QUIC, not an unauthenticated public HTTP metrics listener.
 
 ## Example Deployment
 
@@ -241,4 +249,7 @@ Improvements to the supernode (especially better observability, hot-reload for p
 
 ---
 
-*Maintained as part of the DoubleSlash project. Last updated for multi-platform release binaries (linux-x86_64, linux-aarch64, win64).*
+Runtime sources: [manifest](../rust/doubleslash-supernode/src/manifest.rs),
+[SFU](../rust/doubleslash-supernode/src/sfu.rs),
+[relay](../rust/doubleslash-supernode/src/relay.rs) and
+[startup/handlers](../rust/doubleslash-supernode/src/main.rs).

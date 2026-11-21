@@ -17,7 +17,7 @@ in [`README.md`](README.md) and on the website must have a home here.
 | Screen and shared-audio capture outside Windows | 3 |
 | WASM plugin sandbox | 7 |
 | Space Layer 2 cryptography | 7 |
-| Host a supernode from the desktop client | 5 |
+| Desktop supernode administration: remaining acceptance and editing/import gaps | 5 |
 
 ---
 
@@ -67,8 +67,9 @@ on both sides; voice during a maximum-size send and receive is still unverified.
 
 ### Unified room member list and trust invites
 
-The room member list now lives in the desktop `VoiceRail` and the Android
-Members sheet: in voice / text only, with a shared per-member menu.
+The room member list lives in the Rooms tree on both clients (`RoomTree` /
+`RoomTreeMember` on desktop, `RoomTree.kt` and the Members sheet on Android),
+with Voice / Text-only leaves and inline per-member actions.
 Room-member trust invites (`TrustRequest` sealed in `EncryptedSignal`) have
 unit, bridge and two-manager tests. **Not yet verified live:**
 
@@ -95,7 +96,10 @@ unit, bridge and two-manager tests. **Not yet verified live:**
 Election padding, catch-up minting, forward epoch jumps (`MAX_EPOCH_ADVANCE`),
 reseal-to-lagging-member, and a listen-only member asking the keyer when it
 hears an epoch it cannot open all have unit and manager-harness tests.
-**Not yet verified live** — run [acceptance §1](docs/ACCEPTANCE.md#1-group-key-convergence-live).
+The 2026-11-19 two-profile run exercised key recovery after a restart and a
+rotation mismatch ([result](docs/ACCEPTANCE.md#results)); it was not the full
+rotation/listener/network-cut checklist. Run
+[acceptance §1](docs/ACCEPTANCE.md#1-group-key-convergence-live).
 
 Still open:
 
@@ -121,8 +125,11 @@ Direct 1:1 voice is proven. Distinct-identity desktop/phone chat passed
    produced audible audio because a third un-upgraded participant fought for
    keyer. Retest after the group-key live capture above before drawing any
    conclusion about the room path itself.
-2. **Survive the background.** Nothing has been tested across doze, screen-off,
-   or a Wi-Fi/cellular handover — the three things a desktop never exercises.
+2. **Survive the background.** Doze, screen-off and Wi-Fi/cellular handover
+   still need recorded phone acceptance. Network-change handover is implemented:
+   WebSockets redial, QUIC probes on the same port, and a bounded handover window
+   retains room voice before ordinary failover resumes. Test both direct calls
+   and private-room voice, including an outage longer than that window.
 
 Both steps are scripted in [acceptance §2](docs/ACCEPTANCE.md#2-android-private-room-voice-and-the-background).
 
@@ -183,8 +190,8 @@ assumes synchronized device clocks; that is a demo limit, not a framework bug.
 
 ## Phase 2 — Advertised client gaps
 
-Items the website lists as in progress, and the device-routing preview that
-README/architecture already disclose as unfinished.
+Implemented receive/routing paths with remaining device acceptance, plus the
+media and device limits disclosed in the README and architecture guide.
 
 ### Android incoming video and shared audio
 
@@ -237,25 +244,11 @@ this, the shader included on WARP. Still to do:
 
 ### VP9 room default: live acceptance
 
-Rooms now send VP9, and VP8 takes over mid-call if a device cannot encode VP9
-in real time. The numbers behind that decision come from
-`rust/doubleslash-vpx/examples/encode_bench.rs`, run on the Xiph FourPeople
-conference clip (one encoder thread):
-
-| | VP8 | VP9 | Quality, same bitrate |
-|---|---|---|---|
-| Pixel 11, NEON, 360p | 1.7 ms | 1.2 ms | +0.9 dB |
-| Pixel 11, NEON, 720p | 6.9 ms | 4.5 ms | +0.6 dB |
-| x86 desktop, generic C, 720p | 16 ms | 28 ms (15 ms on 2 threads) | +1.5 dB |
-
-At equal quality VP9 needs about 15% fewer bits on the phone, and about 40%
-fewer at 720p on the desktop, where VP8 has less spare CPU to spend on quality.
-
-The desktop row is from the plain-C build. x86-64 now builds libvpx's SIMD with
-runtime CPU detection: on the bench's synthetic scene, 720p VP9 at speed 8 on
-one thread went from 47 ms to 8.3 ms per frame (5.3 ms on two), and decode from
-10.3 ms to 2.1 ms, at the same PSNR. Re-run the FourPeople row on a SIMD build
-before quoting a desktop figure.
+Rooms send VP9 and fall back to VP8 mid-call when encoding cannot keep up.
+The codec benchmark is `rust/doubleslash-vpx/examples/encode_bench.rs`.
+Historical plain-C and single-machine SIMD measurements are not acceptance for
+all desktop CPUs. Record hardware, build flags, scene and encode/decode timing
+when evaluating another machine.
 
 Still to do:
 
@@ -363,14 +356,14 @@ release hardening.
 2. **Release APK hardening.** R8 rules exist (`app/proguard-rules.pro`) but a
    minified release build has never been run. `bundleRelease` signs from
    `DOUBLESLASH_KEYSTORE` when set; a Play upload key has not been used.
-3. <a id="access-local-network"></a>**`ACCESS_LOCAL_NETWORK` before `targetSdk` 37.**
-   At 36 the grant is implicit from `INTERNET`. Declaring the permission early
-   *revokes* that grant. Raising to 37 without the request and a rationale
-   turns every direct LAN session into a relayed one with no error. Do not
-   declare it at 36.
-4. **Call UI polish.** No speaking indicators (the core does not surface
-   per-peer audio activity to this layer), no call duration, no reconnect
-   affordance when a call drops.
+3. <a id="access-local-network"></a>**Review local-network permissions before raising `targetSdk`.**
+   The tree currently targets API 36. Verify the next target's permission
+   behavior, implement the applicable request/rationale and test direct LAN
+   discovery/dialing on a physical device. Do not copy a dated policy deadline
+   into build requirements or add a permission without checking its effect.
+4. **Call reconnect UX acceptance.** Speaking state and call duration are
+   implemented in the voice dock. Verify reconnect/failure feedback during
+   network loss, rather than reopening those controls as missing.
 5. **Play Console (blocks a public listing, not more Kotlin):**
    - Signed AAB + Play App Signing. Package id `com.doubleslash.client` is
      frozen at first upload.
@@ -392,8 +385,9 @@ Public policy URLs (only after these files are on `develop`):
 **Not doing for Play:** `RECEIVE_BOOT_COMPLETED` autostart; in-app APK updater;
 a second HTML privacy page on `doubleslash.space`.
 
-Optional later: full Telecom `ConnectionService` / `phoneCall` FGS; a dedicated
-privacy email (GitHub issues is what `PRIVACY.md` lists today).
+Optional later: full Telecom `ConnectionService` / `phoneCall` FGS and support
+improvements. The policy already lists `admin@doubleslash.space` for DDDNS
+privacy/support requests; do not track that address as missing.
 
 Android already has: CameraX send, portal WebView, SAF file staging, Keystore
 stay-unlocked, Legal reader, backups. Do not re-open those as missing.
@@ -402,13 +396,15 @@ stay-unlocked, Legal reader, backups. Do not re-open those as missing.
 
 ## Phase 5 — Client polish
 
-### Supernode identity proof: deploy before clients
+### Supernode identity proof: transport boundary
 
 A client built from this tree refuses a supernode WebSocket that does not
 answer HELLO with `hello_proof`, signed by that node's identity key. Ship the
 supernode build first, or in the same step as the client. An old node makes
 the client log `sent no identity proof` and `may need an update`, then try the
-next address.
+next address. The 2026-11-19 result records successful proofs on the then-used
+acdc/ac1 builds; it is not a current fleet deployment report. Verify compatibility
+for each release rather than retaining that rollout as unfinished work.
 
 The proof stops an impostor. Over plain `ws://` a host that relays to the real
 node can still read signaling. Binding an encrypted channel to the node key is
@@ -417,14 +413,13 @@ design work; do not start it without a decision.
 ### DDDNS names
 
 The client lookup and the `dddns://` invite hint are in the tree
-([spec](docs/DDDNS.md)). Nothing has looked a live record up.
+([spec](docs/DDDNS.md)). A live moved-address recovery result is not recorded here.
 
-- **One moved address.** Public HTTPS for `*.doubleslash.space` is
-  Cloudflare's edge certificate. The origin stays plain HTTP for now (DDDNS
-  `AGENTS.md`). A supernode with `hostname_lookup = "dddns"` whose IP has
-  changed must be reached through `https://<name>/.well-known/doubleslash`.
-  The client log must show the lookup and the identity proof. Not run: the
-  service is not deployed behind the proxy.
+- **One moved address.** Against a deployed HTTPS lookup service, a supernode
+  with `hostname_lookup = "dddns"` whose IP changed must be reached through
+  `https://<name>/.well-known/doubleslash`. Record the client lookup and identity
+  proof. This repository does not establish the optional service's current
+  proxy/origin deployment state.
 - **Another zone.** Repeat with a name outside `doubleslash.space`, on a
   domain that has a wildcard record and certificate. Only parsing tests cover
   a foreign zone today.
@@ -454,15 +449,18 @@ The client lookup and the `dddns://` invite hint are in the tree
   `dddns_name` / `is_dddns_lookup_name` only if that request is worth
   avoiding.
 
-1. **Supernode rows in the Rooms list: live check.** Both clients head each
-   node's rooms with a foldable avatar row; unit tests only. Run with two
-   unrelated supernodes on desktop and phone: two separate `default` rooms,
-   folds survive a restart, portal and Create room from the row's menu, and
-   a cluster still shows as one row after a failover.
+### Supernode rows in the Rooms list: live acceptance
+
+Both clients head each node's rooms with a foldable avatar row. Run with two
+unrelated supernodes on desktop and phone: two separate `default` rooms,
+folds surviving restart, portal and Create room from the row menu, and one cluster
+row after failover. Verify local rename, saved node ordering and separate
+`default` histories for unrelated nodes.
 
 ### Host a supernode from the client
 
-Plan: [SUPERNODE_CLIENT_ADMIN_PLAN.md](docs/SUPERNODE_CLIENT_ADMIN_PLAN.md).
+Operator workflow: [supernode manager](docs/supernode-manager.md).
+Deferred client/provider design: [administration plan](docs/SUPERNODE_CLIENT_ADMIN_PLAN.md).
 The manager library has the guided flow, host hardening, SSH key install and
 lockdown, the unit sandbox, and the on-server updater with rollback. The
 desktop has the encrypted managed-node store, the wizard with the
@@ -473,26 +471,10 @@ and checks across every supernode), and accepts the node's invite after setup.
 Different supernodes run tasks side by side. The QML is only rendered against
 a mock backend.
 
-**Live result, 2026-10-27, IPv6-only Debian 12 (Vultr),** driven through
-`AdminService` by `examples/supernode_admin_live.rs`.
-
-Passed:
-- Setup with `client-key` and with `client-key-only`.
-- The firewall kept SSH reachable.
-- After lockdown, password login is refused (`publickey` only) and key login
-  works.
-- The sandboxed unit ran the node, including portal seeding and the invite.
-- Re-running setup kept the node identity and the single store entry.
-- Check-for-update and a pushed Update now.
-- A forced bad package rolled back.
-- Setup and the update-mode switch both refused the server timer, because the
-  host cannot reach GitHub.
-- A headless client completed the invite handshake over WebSocket.
-
-Fixed on the way:
-- `ufw limit` locked the installer out.
-- IPv4-only node binds.
-- IPv6 SSH targets.
+The library-driven 2026-10-27 IPv6-only Debian 12 run is recorded under
+[acceptance results](docs/ACCEPTANCE.md#results). It covered client-key setup,
+lockdown, client-pushed update/rollback and an invite handshake, not the
+packaged wizard or IPv6-only relay media.
 
 Remaining:
 
@@ -566,7 +548,7 @@ product:
    linking visibly; copying a seed cannot be the fallback.
 2. **Delegated live authorization.** `DeviceTrustStore` persists encrypted
    registries with predecessor/revocation/fork checks, but is not consumed by
-   live authentication. Current gated device routes require full root identity
+   live authentication. Current root-authorized device routes require full root identity
    authority. `open_with_key` separates data access from signing at the API
    boundary; it does not distribute storage keys to another device.
 3. **Idempotent history sync** with stable message IDs, deletion/block

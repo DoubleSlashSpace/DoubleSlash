@@ -1,410 +1,268 @@
-# supernode-manager
+# Supernode manager
 
-A standalone Rust CLI + TUI for deploying and operating fleets of `doubleslash-supernode` instances over SSH. Lives in this repo (`rust/doubleslash-supernode-manager/`); independent of the DoubleSlash application crates but targets the same supernode release artifacts.
+The manager deploys and operates `doubleslash-supernode` over SSH. Its
+independent Rust workspace provides a CLI/TUI and libraries embedded by desktop
+`supernode_admin::AdminService`. Remote install targets are Linux with systemd;
+Windows and macOS service backends are not implemented. The manager does not
+create client identities or establish contact trust. It reads the node's reusable
+invite; the client still performs the signed invite flow.
 
-> **Status (v0.1.0):** Working prototype. Linux remote hosts with systemd are supported end-to-end (multi-instance proven on production VPS). Default entry point is an interactive TUI; all operations are also available as CLI subcommands. Remote targets are **Linux + systemd only** — no launchd or Windows-service backends yet.
+This is the operator guide. The workspace [agent contract](../rust/doubleslash-supernode-manager/agents.md)
+constrains changes, and [DESIGN.md](../rust/doubleslash-supernode-manager/DESIGN.md)
+maps the implementation. Live acceptance gaps are in the
+[backlog](../backlog.md#host-a-supernode-from-the-client).
 
----
+## Build and start
 
-## 1. Goal
+From the repository root:
 
-Let one operator, from a laptop, manage many supernodes:
-
-- **Multiple instances on a single machine** (different ports + isolated data dirs).
-- **Many machines** (VPS, bare metal, ARM) reached over plain SSH.
-- A declarative `inventory.toml` plus commands for install, lifecycle, status, logs, config push, invite, and uninstall.
-- No agent pre-installed on hosts: bootstrap everything over SSH.
-
-**Non-goals:** not a DoubleSlash backend, identity authority, or discovery service. Only provisions and supervises the supernode process. Does not weaken the client-only, invite-only trust model — operates below DoubleSlash at the OS/process layer.
-
----
-
-## 2. What a supernode needs to run (host contract)
-
-Derived from `rust/doubleslash-supernode` in the DoubleSlash repo (`config.rs`, `manifest.rs`, `main.rs`) and `docs/SUPERNODE.md`. The manager must honor this contract; it does not import DoubleSlash application crates.
-
-### Binary
-
-- Executable: `doubleslash-supernode` (`.exe` on Windows builds).
-- Distributed via GitHub Releases (`DoubleSlashSpace/DoubleSlash`, overridable via `defaults.release_repo` or `SNM_SUPERNODE_RELEASE_REPO`):
-  - **Linux:** `doubleslash-supernode-<version>-<platform>.tar.gz` + `.sha256`
-  - **Windows x86_64:** `doubleslash-supernode-<version>-win64.zip` + `.sha256` (zip extraction **not implemented** in the manager yet)
-- Supported release platforms: `linux-x86_64`, `linux-aarch64`, `win64` (Linux only for remote install today).
-- On the host the manager stages `{install_root}/bin/doubleslash-supernode-{version}` and symlinks `{install_root}/bin/current` → that file.
-- `defaults.version` may be a release tag (`1.0.0`, `nightly`), or `"local"` with `defaults.binary_path` pointing at a local binary on the operator machine.
-
-### Data directory (per instance, isolated)
-
-Resolved from `DOUBLESLASH_HOME` (manager sets this per instance). Default layout: `{data_root}/{instance_id}` e.g. `/var/lib/doubleslash/a`.
-
-| File / dir | Purpose | Manager concern |
-|---|---|---|
-| `supernode.toml` | Typed feature manifest (`schema_version = 1`) | Manager renders and pushes via `install` / `config-push` |
-| `identity.json` | Ed25519 node identity (first run) | **Persistent — never clobber** |
-| `peers.json` | Known peers | Persistent |
-| `sfu_rooms.json` | Room persistence (when SFU not ephemeral) | Persistent; restart behavior depends on supernode build |
-| `supernode_endpoints.json` | Endpoint mailbox | Persistent |
-| `reusable_invite.json` | Invite payload | Read by `invite` command |
-| `web/`, `games/<slug>/` | In-app portal assets | Seeded by supernode binary |
-| `trusted_module_keys.txt` | Plugin signer keys | Not pushed by manager yet |
-
-### Configuration surface
-
-- **Preferred:** `<data_dir>/supernode.toml` — manager generates per instance via `snm-supernode::manifest::render_supernode_toml`.
-- **SFU room policy:** `[defaults.supernode]` / per-instance overrides for `allow_public_rooms` / `allow_private_rooms` are emitted as **inline** `params = { … }` on the `room.audio.sfu` feature row (not a separate `[feature.params]` table).
-- **Legacy env vars** (still written in systemd drop-ins): `supernode_host`, `supernode_port`, `supernode_signaling_port`. Manifest fields (`listen_addr`, `ws_listen_addr`) are authoritative. Portal is QUIC-only (`web.host.app.v1`) — no public HTTP/web port.
-- **Clustering:** an optional `[cluster]` section (with `[[cluster.member]]` rows) links several supernodes into one logical node. Additive to `schema_version = 1` — the manager renders and pushes the shared roster to every member. Full contract, provisioning flow, and firewalling in §8.
-- `DOUBLESLASH_BUILD_ID` is compiled into the binary; status probes it via `strings` when present.
-
-### Ports per instance
-
-Each instance binds at minimum:
-
-- QUIC relay (UDP): default `3478 + 100×index`
-- WS signaling (TCP): default `34935 + 100×index`
-- **Cluster QUIC link (UDP): only when the instance is part of a cluster** — dedicated port via `cluster_addr` (suggested `4478 + 100×index`). Member-to-member only.
-
-No public web/game port. In-app portal uses `web.host.app.v1` over QUIC.
-
-Omitted relay/ws/cluster ports are auto-allocated at resolve time.
-
-`public_host` on each instance must be the IP remote clients use for relay tickets. Optional `hostname` is a DNS name advertised beside that IP. It is not the ticket address. Clients dial the IP and resolve the name only after that connection fails. `hostname_lookup` says how: `dns`, or `dddns` for a DDDNS name in any zone, looked up over HTTPS (`docs/DDDNS.md` in the client repository). Unset, it is `dddns` under `*.doubleslash.space` and `dns` otherwise. When `hostname` is set, a deploy keeps the reusable invite id across an address change.
-
-### Process lifecycle
-
-- No hot-reload; config/binary changes need a **restart** (`config-push` restarts by default; `--no-restart` to skip).
-- Graceful shutdown on SIGTERM.
-- Supervisor: systemd templated unit `doubleslash-supernode@.service` + per-instance drop-in under `doubleslash-supernode@{id}.service.d/override.conf`.
-
-### Health / observability
-
-Status today comes from `systemctl is-active`, binary identity probe (SHA-256 + mtime + optional embedded build id), and `journalctl`.
-
----
-
-## 3. Architecture
-
-```mermaid
-flowchart LR
-    OP[Operator laptop\nsupernode-manager]
-    INV[(inventory.toml\nsecrets.local.ps1)]
-    OP --- INV
-    OP -- SSH --> H1[Host A\nlinux-x86_64]
-    OP -- SSH --> H2[Host B\nlinux-aarch64]
-    subgraph H1
-      S1A[supernode@a\n:3478/:34935/:8433]
-      S1B[supernode@b\n:3579/:35036/:8544]
-    end
+```powershell
+Set-Location rust/doubleslash-supernode-manager
+cargo build --release
+.\launch.ps1
 ```
 
-- **Control plane:** operator machine. Holds inventory + SSH credentials. Stateless beyond local config and a release download cache under the system temp dir.
-- **Transport:** SSH (port 22). Two backends behind `SshTransport` (see §4).
-- **Per host:** one or more instances — shared versioned binary, separate data dir, systemd unit instance, port triple.
+No subcommand opens the TUI. `launch.ps1` loads the optional gitignored
+`secrets.local.ps1` and runs the CLI/TUI. The executable is
+`supernode-manager`. Use `--inventory <path>` to select a fleet; otherwise
+it looks for `inventory.toml` in the working directory and above the executable.
 
-**Crate layout:**
+## Inventory and SSH
 
-```
-rust/doubleslash-supernode-manager/
-  Cargo.toml                 # workspace
-  inventory.toml             # operator fleet definition (not committed secrets)
-  launch.ps1                 # Windows launcher: loads SNM_SSH_PASSWORD, runs TUI/CLI
-  crates/
-    snm-cli/                 # clap binary `supernode-manager` + ratatui TUI
-    snm-core/                # inventory model, selector, supernode config resolution
-    snm-transport/           # Transport trait; embedded (russh) + openssh backends
-    snm-supernode/           # install/ops, manifest render, systemd, release download,
-                             #   firewall (ufw), invite, binary identity probe
-```
-
----
-
-## 4. SSH transport
-
-Both backends are implemented behind `snm_transport::SshTransport`:
-
-| Backend | Flag / env | Notes |
-|---|---|---|
-| **Embedded** (default) | `--ssh-backend embedded` | Pure Rust (`russh` + `russh-sftp`). Reads `~/.ssh` keys; falls back to `SNM_SSH_PASSWORD`, then interactive keyboard-interactive. Host keys via `known_hosts`. |
-| **OpenSSH** | `--ssh-backend openssh` | Wraps system `ssh`/`scp`; honors `~/.ssh/config`, agent, jump hosts. |
-
-`SNM_SSH_BACKEND=openssh` also selects OpenSSH. On Windows, `launch.ps1` loads `secrets.local.ps1` → `SNM_SSH_PASSWORD` for password auth.
-
-Capabilities used today: remote command + exit code, upload bytes/files (SFTP or scp), no streaming log follow over SSH in TUI (fetches journal snapshot).
-
----
-
-## 5. Inventory model
-
-Declarative TOML; edited by hand or via the TUI (add/edit nodes, settings panel).
+`init` scaffolds inventory and a secrets template. A minimal explicit-port
+inventory is:
 
 ```toml
 [defaults]
-version = "nightly"              # or "1.0.0", "local"
-access_mode = "open"
+version = "nightly"
 user = "doubleslash"
 install_root = "/opt/doubleslash"
 data_root = "/var/lib/doubleslash"
 release_repo = "DoubleSlashSpace/DoubleSlash"
-privilege = "root"               # sudo | root | rootless-systemd (last: not implemented)
-firewall = "ufw"                 # ufw | off | report
-# binary_path = "..."            # required when version = "local"
+privilege = "root" # sudo also works; rootless-systemd is a stub
+firewall = "ufw"   # report or off also accepted
 
 [defaults.supernode]
 listen_bind = "0.0.0.0"
-identity_file = "identity.json"
 allow_public_rooms = false
 allow_private_rooms = true
 
 [[host]]
-name = "acdc"
-ssh = "root@155.138.244.189"
-# arch = "linux-x86_64"          # optional; auto-detected via ping
+name = "east"
+ssh = "root@192.0.2.10"
 
-  [[host.instance]]
-  id = "a"
-  public_host = "155.138.244.189"
-  relay_port = 3478
-  ws_port = 34935
-  features = ["core.chat.v1", "room.audio.sfu", "web.host.app.v1", "game.relay.v1", ...]
+[[host.instance]]
+id = "a"
+public_host = "192.0.2.10"
+relay_port = 3478
+ws_port = 34935
 ```
 
-Rules:
+`(host.name, instance.id)` identifies one deployment. Omitted ports are
+allocated at resolution time with a 100-port step; pin ports for stable external
+rules. Optional per-instance settings include hostname/lookup mode, bind, access
+mode, room policy and feature entries. Features can be strings or objects with
+`id`, `enabled` and `params`. See
+[inventory.rs](../rust/doubleslash-supernode-manager/crates/snm-core/src/inventory.rs)
+and [supernode_config.rs](../rust/doubleslash-supernode-manager/crates/snm-core/src/supernode_config.rs).
 
-- `(host.name, instance.id)` is the unique deployment key.
-- `[[host.instance]]` in TOML deserializes to `host.instances` in Rust.
-- Per-instance overrides: `listen_bind`, `access_mode`, `identity_file`, `allow_public_rooms`, `allow_private_rooms`.
-- Features accept bare strings or `{ id, enabled, params }` objects.
-- `init` scaffolds `inventory.toml` and a `secrets.toml` template; live SSH passwords typically live in gitignored `secrets.local.ps1` on Windows.
+Embedded SSH (russh) is default; `--ssh-backend openssh` delegates to system
+SSH/scp. Embedded auth tries local keys, host-specific/global password variables,
+then interactive auth. `SNM_SSH_PASSWORD_<HOST>` / `SNM_SSH_USER_<HOST>`
+use the uppercase inventory name with non-alphanumeric characters replaced by
+underscores. Host-specific values override global values. Passwords cached for
+the process are scoped to the SSH target. OpenSSH uses its own authentication;
+only the user override is passed through. Known-host checks remain enabled;
+embedded desktop sessions require the explicitly pinned host key.
 
-**Clusters (proposed model, §8):** group instances that should act as one logical supernode.
+## Command surface
+
+```text
+supernode-manager [--inventory <path>] [--ssh-backend embedded|openssh] [command]
+
+init [--force]
+connect | ping | status | start | stop | restart
+install [--allow-decluster]
+config-push [--no-restart] [--allow-decluster]
+logs [-f] [-n <lines>]
+invite
+exec <remote-shell-command>
+remove [--yes]
+uninstall [--purge] [--yes]
+cluster-sync [--cluster <id>]
+build-deploy --source <package-dir> [--target <triple>]
+             [--build-tool cargo|zigbuild|cross] [--features <features>]
+             [--allow-decluster]
+tui
+```
+
+Host-scoped commands accept `--host`, `--instance` and `--all`.
+`exec` uses the first match. `remove` edits local inventory only;
+`uninstall` stops/disables the remote service, and `--purge` also deletes
+its data. The TUI offers fleet editing, room/feature configuration, lifecycle,
+build/deploy, cluster sync, logs and invite views. CLI `build-deploy` requires
+`--source` even if `defaults.build_source` is configured; the TUI reads
+that default. Build artifact discovery honors Cargo target directories and
+cross-target executable suffixes.
+
+There is no CLI `update` or `plan` command. The safe updater described
+below is a library/desktop flow, not the same operation as reinstalling.
+
+## Host contract
+
+Each instance gets `{data_root}/{id}` through `DOUBLESLASH_HOME`, a
+`doubleslash-supernode@{id}.service` unit and a per-instance systemd drop-in.
+Instances share `{install_root}/bin/current` pointing to a versioned binary.
+Install uploads distribution notices before promoting the executable, renders
+manifest/unit/drop-in files, reloads systemd, applies selected firewall rules,
+enables the unit and restarts it. It preserves identity, peer state and the
+endpoint mailbox. Reinstall is not a rollback-checked update.
+
+| State | Ownership / lifetime |
+|---|---|
+| `identity.json`, `peers.json`, `supernode_endpoints.json` | Node persistent state; preserve across redeploy |
+| `reusable_invite.json` | Node invite, read through the manager |
+| `supernode.toml` | Rendered configuration; runtime applies bind/access/feature/cluster settings |
+| `identity_file` inventory/manifest field | Descriptive only; runtime still loads `identity.json` |
+| `web/`, `games/` | Operator assets and seeded built-in portal apps |
+| SFU room definitions and participant payloads | Memory-only hosting; client-owned definitions/history; no `sfu_rooms.json` |
+
+Configuration and plugin changes require restart. The unit has no capabilities,
+read-only system paths and a writable data root. New runtime writes outside that
+root require a corresponding unit change. `root` and `sudo` privilege
+modes work; `rootless-systemd` install/uninstall does not.
+
+Public listeners are relay UDP (default 3478) and signaling TCP (34935). Cluster
+UDP (4478 base) is separate and member-restricted. There is no public web/game
+port. `ufw` mode manages tagged rules; `report` lists ports and `off`
+skips mutation. Host firewalls do not configure a provider's cloud firewall.
+
+Status reports systemd state and the selected binary's SHA-256, mtime and optional
+embedded build ID. The version pin alone does not identify the installed bytes.
+Logs use journalctl; the TUI fetches snapshots, while CLI `logs -f` follows.
+No public HTTP metrics scraper is implemented.
+
+## Clusters and redeployment
+
+Declare member instance keys in inventory:
 
 ```toml
 [[cluster]]
-id = "acme-us"                              # becomes cluster_id in every member's supernode.toml
-members = ["acdc/a", "acdc/b", "west/a"]    # host/instance keys
-cluster_port = 4478                         # base UDP port; per-instance offset like other ports
+id = "team"
+members = ["east/a", "west/a"] # both hosts/instances must exist in inventory
+cluster_port = 4478
 ```
 
-The manager resolves each member's `relay_addr` / `cluster_addr` / `ws_addr` from its `public_host` + port set, and its `identity_pub` (collected after first run — see §8), then renders the shared roster into every member.
-
----
-
-## 6. Command surface (implemented)
-
-```
-supernode-manager [global options] [subcommand]
-
-Global:
-  --inventory <path>     default: inventory.toml (also searched upward from exe)
-  --ssh-backend <embedded|openssh>
-
-  (no subcommand)        → TUI fleet dashboard (default)
-
-  init [--force]
-  connect [--host …] [--instance …] [--all]
-  ping    [--host …] [--instance …] [--all]
-  install [--host …] [--instance …] [--all]
-  config-push [--host …] [--instance …] [--all] [--no-restart]
-  start | stop | restart
-  status  [--host …] [--instance …] [--all]
-  logs    [--host …] [--instance …] [--all] [-f] [-n lines]
-  invite  [--host …] [--instance …] [--all]
-  exec    [--host …] [--instance …] <remote shell command>
-  remove  [--host …] [--instance …] [--yes]   # local inventory only
-  uninstall [--host …] [--instance …] [--purge] [--yes]
-  tui
-```
-
-**TUI** (ratatui): fleet table, node add/edit, per-node supernode config editor (features + SFU policy), settings (version/repo/privilege/firewall), install/start/stop/restart, config push, logs viewer, invite copy, uninstall with purge confirmation, auto-refresh.
-
-**Not implemented yet:** `plan` (dry-run diff), dedicated `update` (stage + symlink flip + health check + rollback), signed `releases_manifest.json` verification, audit log, HTTP metrics scrape.
-
----
-
-## 7. Multi-instance on one machine
-
-Each instance is independent:
-
-| Concern | Layout |
-|---|---|
-| Data dir | `{data_root}/{instance_id}` via `DOUBLESLASH_HOME` in systemd drop-in |
-| Binary | Shared `{install_root}/bin/doubleslash-supernode-{version}` + `current` symlink |
-| Unit | `doubleslash-supernode@{id}.service` from template `doubleslash-supernode@.service` |
-| Drop-in | `/etc/systemd/system/doubleslash-supernode@{id}.service.d/override.conf` — `DOUBLESLASH_HOME`, `supernode_host`, legacy port env vars |
-| Manifest | `{data_root}/{id}/supernode.toml` — listen addrs, access mode, features |
-
-Install flow (`snm-supernode::ops::install_instance`): ensure service user + dirs → upload binary → symlink `current` → push `supernode.toml` → push unit template + drop-in → `daemon-reload` → optional ufw rules → `enable` + `start`.
-
-Uninstall: stop/disable → remove drop-in → optional `--purge` of data dir → remove tagged ufw rules. Does not remove the shared unit template or binary.
-
-**Privilege modes:** `sudo` and `root` work. `rootless-systemd` is recognized in inventory/TUI but install/uninstall bail with "not implemented".
-
-**Firewall:** `firewall = "ufw"` adds idempotent tagged `ufw allow` rules on install and removes them on uninstall. `report` prints required ports only. `off` skips mutation.
-
----
-
-## 8. Clustering — logical supernodes
-
-> **Supernode side: implemented** (`doubleslash-supernode` `cluster.rs` / `cluster_link.rs`; client failover in `connection_manager`). **Manager side: implemented** — `cluster-sync` collects identities, renders the shared roster into every member's `supernode.toml`, applies restricted cluster-port firewall rules, and restarts members. See the manager CLI docs for `cluster-sync` and the testing workflow.
-
-Several supernodes can be **linked into a cluster** that presents as one logical supernode to clients. A client attaches to any member; members replicate room chat/audio and camera on/off state, durable **room existence** (`RoomRoster`), Space roots, and **client trust** (`PeerAuth` fire-and-forget on new trust plus bulk `PeerAuthRoster` on link-up and every ~15s so cold members converge without re-inviting each client) over a dedicated supernode↔supernode QUIC mesh — **not** per-peer private-room ACLs (cold-node admit is Space proof / local token rematerialize / creator self-admit). A client transparently **fails over to a sibling** if its member goes down. Members never see plaintext — clustering is a fan-out/replication fabric, **not** a trust escalation. One cluster hosts a given room; cross-operator sharing means linking those operators' supernodes into one cluster (there is no inter-cluster federation).
-
-### `[cluster]` manifest section
-
-The manager renders this into **every** member's `supernode.toml` (additive to `schema_version = 1`; older builds ignore it):
-
-```toml
-[cluster]
-cluster_id = "acme-us"                    # shared by every member
-
-[[cluster.member]]
-identity_pub = "BASE64URL_ED25519"        # the member node's public_id
-relay_addr   = "node-a.example:3478"      # client relay attach point
-cluster_addr = "node-a.example:4478"      # dedicated supernode↔supernode QUIC link
-ws_addr      = "node-a.example:34935"     # client signaling / failover attach point
-
-[[cluster.member]]
-identity_pub = "..."
-relay_addr   = "node-b.example:3478"
-cluster_addr = "node-b.example:4478"
-ws_addr      = "node-b.example:34935"
-```
-
-- Every member lists the **full roster, including itself**; the list is identical on every member.
-- A member whose own identity is **absent** from the roster logs a warning and **runs standalone** (fail-safe) — the manager must include each node in its own copy.
-- `cluster_addr` is a **new dedicated UDP/QUIC port** (see §2), separate from `relay_addr`. A member without a `cluster_addr` cannot be dialed for replication.
-- Members authenticate each other's links by cert CN against the roster and require every cluster message to be Ed25519-signed, so a spoofed identity cannot inject replication.
-- The roster is signed by each member and advertised to clients in `SUPERNODE_INFO`; clients verify the signature against the supernode they already trust before using siblings for failover.
-
-### Identity-first provisioning (two-phase)
-
-The roster needs each member's `identity_pub`, which only exists **after** the node's first run generates `identity.json`. Cluster provisioning is therefore two-phase:
-
-1. **Install** every member instance normally (first run generates `identity.json` → `public_id`).
-2. **Collect** each member's `public_id` by reading `identity.json`'s `public_key` over SSH (same mechanism the manager already uses to read `reusable_invite.json`).
-3. **Render** the `[cluster]` roster — all members with `relay_addr` / `cluster_addr` / `ws_addr` resolved from each instance's `public_host` + ports — into **every** member's `supernode.toml`.
-4. **`config-push`** (with restart) to all members.
-
-Adding or removing a member re-renders and re-pushes the roster to the whole cluster (a restart is required — no hot reload).
-
-### Firewall
-
-The `cluster_addr` UDP port must be reachable **between cluster members only**, never the public. The manager's ufw integration should open the cluster port **restricted to the member source IPs** (not `0.0.0.0`), tagged like the other rules for clean uninstall. Client-facing ports (relay/ws/web) stay publicly open as today.
-
-### Manager work required
-
-| Capability | Notes |
-|---|---|
-| Cluster declaration in inventory | `[[cluster]]` id + members + `cluster_port` (see §5) |
-| Cluster-port allocation | fourth port per instance; default `4478 + 100×index`, pin for stability |
-| Identity collection | read `identity.json` `public_key` per member over SSH |
-| Roster render into `supernode.toml` | shared `[cluster]` block pushed to every member |
-| Re-push on membership change | re-render + `config-push --restart` fleet-wide |
-| Restricted cluster-port firewall | ufw allow the cluster port from member IPs only |
-| Cluster-aware status | show cluster id + linked-member count per instance |
-
----
-
-## 9. Binary version identity (status)
-
-`status` and the TUI fleet table show more than the inventory pin so operators can compare builds across instances:
-
-| Field | Source |
-|---|---|
-| Inventory pin | `defaults.version` (`nightly`, `1.0.0`, …) |
-| SHA-256 short | First 12 hex chars of running binary behind `bin/current` |
-| Date suffix | Binary mtime `·MM-DD` |
-| Build id | Optional `DOUBLESLASH_BUILD_ID` / git sha from `strings` |
-
-**Display format:** `nightly@878696fcec9e·06-14` (CLI `version_detail()` also prints `build=…`, `mtime=…`, `bin=…`).
-
-Implementation: `snm-supernode::binary_probe` — remote `readlink`, `sha256sum`, `stat`, `strings`.
-
----
-
-## 10. Release download and updates
-
-**Implemented:**
-
-- Resolve GitHub release URL from `version` + detected/normalized platform (`linux-x86_64`, `linux-aarch64`).
-- Download archive + `.sha256` sidecar; verify SHA-256 before extract.
-- Cache extracted binary locally; upload on `install`.
-
-**Partial / gaps:**
-
-- Re-running `install` overwrites the versioned binary path and refreshes the `current` symlink — there is no separate `update` command with rollback.
-- No Ed25519 verification against DoubleSlash `releases_manifest.json`.
-- `version = "local"` skips download; operator must set `defaults.binary_path`.
-- Windows `.zip` artifacts are rejected at extract time.
-
-`identity.json` and other persistent state are never regenerated by install/config-push (manifest upload only touches `supernode.toml`).
-
----
-
-## 11. Security considerations
-
-- **SSH host-key verification** enabled for embedded backend (`known_hosts`); OpenSSH uses system `known_hosts`.
-- **Secrets:** `SNM_SSH_PASSWORD` via gitignored `secrets.local.ps1`; `secrets.toml` template for future access codes — not logged.
-- **Least privilege:** dedicated service user created on install; `sudo`/`root` for unit installation.
-- **Binary provenance:** SHA-256 sidecar verified on download; running binary SHA shown in status. Signed manifest verification not yet implemented.
-- **Destructive actions:** TUI confirm dialogs for remove/uninstall/purge; CLI `--yes` to skip prompts.
-- **No trust escalation into DoubleSlash:** manager never mints client identities or invites — only reads `reusable_invite.json` from the node data dir.
-- **Cluster links:** supernode↔supernode QUIC authenticates peers by cert CN against the signed roster and requires Ed25519-signed cluster messages, so a spoofed identity cannot inject replication. The manager must firewall `cluster_addr` to member IPs only (§8) — it is a trusted, intra-cluster surface, not a public one.
-
----
-
-## 12. Implementation status
-
-| Area | State |
-|---|---|
-| Single + multi-instance Linux deploy | Done |
-| Multi-host fleet | Done |
-| TUI dashboard | Done (default entry) |
-| Embedded + OpenSSH transport | Done |
-| GitHub release fetch + sha256 | Done |
-| `config-push` + SFU inline params | Done |
-| ufw firewall tagging | Done |
-| Binary identity in status/TUI | Done |
-| Supernode clustering (chat/ACL/trust replication + client failover) | Done — supernode + client sides |
-| Manager cluster provisioning (roster render, identity collection, cluster port + firewall) | Not started |
-| `plan`, `update` + rollback | Not started |
-| rootless systemd | Stub only |
-| Signed manifest verify | Not started |
-| Audit log | Not started |
-| macOS/Windows remote supervisors | Not started |
-| Plugin keys / asset sync | Not started |
-
-**Suggested next work:** manager cluster provisioning (inventory `[[cluster]]`, identity collection, roster render + fleet-wide re-push, restricted cluster-port firewall); dedicated `update` with symlink flip + health poll + rollback; `plan` diff; persist auto-allocated ports; rootless systemd; signed release verification.
-
----
-
-## 13. Operator quick reference (Windows)
+Install each member first to create its node identity, then run:
 
 ```powershell
-# Build
-cargo build --release
-
-# Launch TUI (loads password from secrets.local.ps1)
-.\launch.ps1
-
-# CLI examples
-.\launch.ps1 status --host acdc --all
-.\launch.ps1 config-push --host acdc --instance a
-.\launch.ps1 invite --host acdc --instance b
-.\launch.ps1 logs --host acdc --instance a -n 200
+.\launch.ps1 cluster-sync --cluster team
+.\launch.ps1 status --all
 ```
 
-Compare `VERSION` column hashes after deploy — matching `@` suffix means the same binary bytes even when both pins read `nightly`.
+`cluster-sync` collects public identities, renders the full roster including
+self into every manifest, updates the local `cluster_cache.toml`, restricts
+cluster firewall rules to member addresses and restarts members. Nodes
+authenticate cluster links against the roster and sign control messages. A
+verified roster lets clients fail over to siblings. Replication carries room
+existence, Space roots, peer trust and opaque room/game traffic, not private-room
+allowed sets or participant-content storage.
 
----
+Install/config-push/build-deploy resolve rosters from inventory membership and
+the local cache. They refuse to replace a deployed cluster section with no
+roster unless `--allow-decluster` is explicit. Keep the inventory and cache;
+run `cluster-sync` if the cache is missing or membership changes. Do not
+assume the manager copies arbitrary remote manifest edits back into inventory.
+Redeploy preserves member-restricted firewall rules; only cluster sync refreshes
+those rules. Uninstall removes the instance's rules.
 
-## 14. Open questions
+After redeploy, inspect each member's roster, binary hash, service state and
+client proof/reconnect logs. A fixed count of lines containing "cluster" is not
+an acceptance check. Do not restart the whole cluster when testing a client
+close/reopen: that can hide stale-session bugs.
 
-- Should auto-allocated ports be written back to `inventory.toml` or a sidecar lock file?
-- Should `update` replace `install` for binary-only changes, or remain separate?
-- macOS as a remote target (launchd) — needed?
-- Firewall: keep ufw-only, or add firewalld/cloud SG reporting?
-- Long-running reconciliation daemon vs strict invocation-based CLI?
-- Clusters: auto-collect member identities and re-push the roster on every membership change, or gate it behind an explicit `cluster sync` command?
-- Cluster port: restrict the ufw rule to member source IPs automatically, or leave the scoping to the operator?
-- Roster source of truth: derive it entirely from inventory each push, or persist the resolved roster (with collected identities) in a sidecar to avoid re-reading `identity.json` every time?
+## Release download and updates
+
+Release installs resolve Linux x86_64/aarch64 tarballs, verify the required
+SHA-256 sidecar and retain/upload `licenses/`. Missing notices fail the
+install. Local binaries need adjacent `<binary>.licenses/`; `build-deploy`
+generates it using Node.js and cargo-about 0.8.4. Windows zip extraction and
+project Ed25519 release-manifest verification are not implemented in the manager.
+
+The library updater supports client-pushed packages and a server timer. Both
+verify package hashes/notices, use a lock, stage a uniquely named build, retain
+the previous link and check service health after promotion. Active, activating,
+reloading and failed instances are restarted and checked; deliberately inactive
+services remain stopped. Restart and rollback clear systemd start limits. Failure
+to list units aborts promotion. A failed health check restores the previous binary;
+data directories are untouched. Update now refreshes the updater script even
+when the binary is already current.
+
+Server-timer mode is daily with a randomized delay and requires server access to
+GitHub. Client-driven checks/downloads/push work for hosts without that access.
+The guided probe refuses timer mode when GitHub is unreachable. See
+[autoupdate.rs](../rust/doubleslash-supernode-manager/crates/snm-supernode/src/autoupdate.rs)
+and the Linux fake-systemd regression suite:
+
+```sh
+# From rust/doubleslash-supernode-manager on Linux
+python3 -m unittest discover -s tests -p test_autoupdate.py -v
+```
+
+## Desktop administration
+
+Open **Settings > Network > Your servers**. New setup accepts a Linux SSH host,
+shows its fingerprint and responsibility notice, probes it and offers SSH-key,
+firewall, OS-security-update and supernode-update choices. Client-key mode must
+verify a fresh key-only login before optional password-login lockdown. Passwords
+are transient; the profile's SSH key, pinned hosts and managed metadata are in
+encrypted `managed_supernodes.dat`, excluded from portable backups.
+
+Each node groups its servers. Controls inspect status/logs, copy its invite,
+start/restart, check/push updates, select update mode, rename locally, add/remove
+cluster members, sync the roster, uninstall or forget. Different nodes can run
+operations concurrently; one node serializes its tasks. Start requires SSH,
+clears failed/start-limit state and starts the service; it cannot power on or
+repair an unresponsive VPS. Provider recovery is separate.
+
+**Import existing** is read-only discovery over pinned SSH. It needs Linux
+systemd units named `doubleslash-supernode@<id>.service`, Python 3, root or
+passwordless sudo, an absolute `DOUBLESLASH_HOME` and schema-1 manifest.
+Select instances from a public-only preview. Import changes no remote files,
+SSH keys, firewall or services and does not accept an invite. Import each VPS
+separately; matching normalized cluster rosters group instances. Other members
+remain informational until imported. Imported deployments retain their existing
+deploy/update/lifecycle/cluster tools; Forget removes the local entry only.
+
+**Set hostname** supports DNS or DDDNS and shows SSH-discovered IPv4/IPv6 route
+sources plus signaling/relay ports. Refresh is read-only, not an external
+reachability/NAT test. Managed setup/Apply upgrades wildcard binds to dual stack
+where available and preserves explicit binds. Imported Apply re-checks identity,
+paths, roster and manifest hash, edits only hostname fields, atomically preserves
+owner/mode and restarts exactly that instance; split binds/custom features remain.
+Changed, linked or shared manifests are refused. Password SSH requires re-entry
+for Apply/Refresh.
+
+For DDDNS, review the displayed HTTPS update endpoint and provide a masked,
+one-use token. After SSH configuration succeeds, the desktop publishes both
+address families and the signaling port, explicitly clearing missing families
+and excluding IPv6 on IPv4-only signaling. A matching service reply confirms
+publication. A failed publication is reported separately and can be retried;
+setup success does not imply publication success. Tokens are never saved or
+installed on the server. Applying a name to a different server replaces its
+record; clearing local hostname configuration does not delete the record. No
+continuous updater is installed. See [DDDNS](DDDNS.md) and [privacy](../PRIVACY.md).
+
+## Validation and open work
+
+A library-driven IPv6-only Debian 12 run on 2026-10-27 exercised setup,
+key/lockdown, client-pushed update and forced rollback. It did not validate the
+packaged wizard, timer mode or all cluster/import flows. Current pending checks,
+including Start, Ubuntu, IPv6-only relay and a reported small-VPS outage, live in
+the [backlog](../backlog.md#host-a-supernode-from-the-client).
+
+Android administration, inventory-file import, desktop feature/policy editing,
+provider API provisioning, CLI plan/update, rootless services, signed release
+manifests, audit logging and remote non-Linux supervisors remain unfinished.
+The [administration plan](SUPERNODE_CLIENT_ADMIN_PLAN.md) covers deferred client
+and provider work. Do not infer a live fleet's health from historical test hosts.

@@ -99,15 +99,19 @@ remains a developer helper for debug builds, not the recommended user flow.
 
 ## Remaining device-linking work
 
-The current development groundwork is in `src/device.rs`: independent Ed25519
-device keys, an identity-signed device registry, permanent revocation tombstones,
-monotonic version checks, same-version fork detection, and possession proofs bound
-to a challenge and handshake transcript. Session startup can load a distinct
-persistent endpoint key behind the disabled `DEVICE_ROUTING_READY` release gate.
-Delegated registry authentication is not wired into live sessions, and nothing
-advertises multi-device support yet. `DeviceKey::load_or_create` offers encrypted, atomic owner-profile
-persistence; `device-key.dat` is deliberately excluded from portable backups so
-restoring creates a distinct endpoint key.
+Device keys, root-authorized endpoint routing, signed registries and portable
+backups are implemented. `device-routing` is a default feature of
+`doubleslash-features`; `DEVICE_ROUTING_READY` follows that feature, and
+compatible builds advertise `core.devices.v1`. This is a routing preview,
+not completed pairing or delegated companion authorization. Every participating
+client and node must support device routing.
+
+`src/device.rs` supplies independent Ed25519 endpoint keys, identity-signed
+registries, revocation tombstones, monotonic versions, fork detection and
+challenge/transcript-bound possession proofs. Startup loads a persistent endpoint
+key. `device-key.dat` is excluded from backups so restore creates a distinct
+endpoint. Both devices still need the full root identity; delegated registry
+authentication is not wired into live sessions.
 
 `DeviceTrustStore` in `src/device/store.rs` now persists accepted registries in an
 encrypted `device-trust.db`. Immediate SQLite transactions check every update
@@ -161,8 +165,9 @@ An arriving sibling does not change an existing selected media path.
 Room membership now tracks voice and chat subscriptions per endpoint. Local and
 cluster-replicated room chat excludes only its originating endpoint, reaches other
 subscribed devices under the same identity, and charges outgoing quotas per copy.
-Desktop history marks messages received from another own device as sent by the
-user; they do not trigger automatic replies.
+Room messages from another own device are stored as inbound for unread and
+alert accounting, while bubbles derive authorship from the sender identity.
+They do not trigger automatic replies. Local sends never alert.
 
 Room-creation and restoration acknowledgements return only to the requesting
 endpoint, including denials. Broadcasting these replies to sibling devices could
@@ -180,7 +185,7 @@ handoff; late replies cannot reinstall a key after leaving the last host.
 Room definitions and Space trees are shared between own devices, so a room
 created on the phone appears on the desktop and the reverse. Each client sends a
 `DeviceRoomSync` snapshot of its non-hidden rooms and owned Space trees when it
-connects to a supernode and after it creates a room, and asks for one back. The
+connects to a supernode, after a create and after a Remove, and asks for one back. The
 snapshot is signed and sealed to our own identity, with no target device, so the
 supernode delivers it to every endpoint of the identity. A receiver accepts it
 only from another device of the same identity, and only sealed and fresh. The
@@ -219,8 +224,8 @@ Installed desktop/phone acceptance has partly passed; see
 Remaining work includes device endpoint discovery, device-scoped
 file/room-media/game state, and coordinated cluster device rosters.
 Room definitions sync between own devices (above); continuous history sync and delegated device revocation remain separate unfinished
-parts of the linking workflow. Do not enable the release gate on the strength of
-room-chat tests alone.
+parts of the linking workflow. Do not equate the enabled routing feature with
+completed product acceptance.
 
 Same-identity hardware acceptance uses the installed desktop app with the
 user's normal profile and the connected phone. Do not substitute the separate
@@ -233,24 +238,14 @@ overflow closes the affected connection. WebSocket cleanup also runs when its
 writer exits while the client is idle, and authenticated sockets cannot change
 their signing identity mid-connection.
 
-The subsequent protocol delivery needs:
+Remaining delivery work is tracked in [Phase 6 of the backlog](../backlog.md#phase-6--devices-as-a-product):
+QR pairing with approval on both devices, delegated live authorization and
+revocation, independent storage-key distribution, remaining endpoint-state
+integration and continuous history/attachment sync. Root-authorized call selection
+already exists; installed call-answer acceptance remains open.
 
-1. Identity-authorized device keys, a signed device registry, revocation and
-   monotonic registry versions. Preserve the contact-facing identity.
-2. Capability-negotiated device addressing in direct sessions, relay maps,
-   signaling, endpoint mailboxes and room key delivery. Old clients must reject
-   unsupported device linking visibly; copying a seed cannot be the fallback.
-3. Short-lived QR pairing, approval on both devices and a dedicated authenticated
-   capability with explicit device authorization and quotas. Supernodes forward
-   opaque bytes only.
-4. Idempotent history sync with stable message IDs, deletion/block tombstones,
-   resumable attachment transfer and deterministic offline conflict resolution.
-5. Multi-device call fan-out with one answering endpoint, per-device media keys,
-   explicit device removal, and tests for offline catch-up and revoked devices.
-
-Without a history-holding backend, catch-up requires another device holding the
-missing data to become reachable. Offline queueing, if later added to volunteer
-supernodes, must be opt-in, bounded and end-to-end encrypted.
+Without a history-holding backend, catch-up requires a reachable device holding
+the missing data. Supernodes do not queue private content for later delivery.
 
 ## Validation
 
@@ -266,41 +261,11 @@ challenge binding, malformed keys/names, bounded documents, concurrent key-file
 creation, encrypted persistence, and existing-store access after dropping the
 identity seed. Backup tests also verify that restore does not clone a device key.
 
-On 2026-09-13, the connected Windows desktop and Android phone completed direct
-chat and private-room chat round trips using their existing, distinct identities.
-This establishes the transport baseline before device routing changes; it does
-not validate same-identity sessions, backup restore, or voice. The installed apps
-used for that baseline predate the new routing groundwork. Updated shared-feature
-and supernode tests cover queue isolation, concurrent writers, reconnects, and
-idle WebSocket teardown; no updated application or supernode has been deployed
-for same-identity acceptance yet.
-
-The renamed-tree regression run passed 672 client tests (7 existing ignored),
-165 shared-feature tests, 280 supernode tests and 84 installer tests. Test
-inventories were re-derived with `cargo test -- --list`; the shared feature
-crate also has 3 existing ignored doctests. Strict feature/supernode lint and
-`scripts/ci_local.ps1 -SkipTests -SkipAudit -SkipOpusFetch` passed, including
-client and macOS cross-lint, formatting and the manifest-signing self-test.
-Release-mode whole-workspace tests and an advisory audit were not run in this
-pass. Rename-related single-item loops in client/installer lookup and cleanup
-code were simplified to satisfy the lint gate without suppressions.
-
-The subsequent durable-trust change passed 681 client tests (7 existing ignored;
-688 listed), strict client library/test lint and Android arm64 native lint.
-New tests cover persisted revocations, competing/stale writers, failed writes,
-wrong keys, corrupted or oversized rows, identity binding, missing/empty stores,
-WAL-backed registry recovery and rejection of malformed trust data before backup
-publication. These checks do not substitute for live device authentication or
-same-identity desktop/phone acceptance.
-
-The 2026-09-14 preview checks passed 695 client tests (7 existing ignored),
-165 shared-feature tests and 289 supernode tests, with strict library/test lint.
-Windows Qt/WebEngine and Android arm64 lint also passed. New coverage includes real
-QUIC device identity authentication and forgery rejection, independent direct
-routes, relay reconnects, per-device room membership and chat delivery, encrypted
-own-device room-key handoff, exact-once own-message reception, and rejection of
-late or malformed handoffs. These are automated development checks, not installed
-desktop/phone acceptance.
+The recorded distinct-identity desktop/phone chat baseline dates to 2026-09-13.
+The same-identity result below is a separate run. Historical test totals are
+omitted: enumerate the current workspace with `cargo test -- --list` and
+record commands/results for the revision being checked. Automated coverage is
+not evidence of installed call answering or physical-device restore acceptance.
 
 ### Simultaneous-identity preview testing
 
@@ -339,5 +304,5 @@ attachment, a missing attachment, a keyfile-protected source, a failed/cancelled
 document-picker copy and a restart after profile selection. Check actual history
 and files, not only the success banner. A plain desktop → phone → desktop round
 trip has been done (the current desktop profile was restored from the phone);
-the listed edge cases have not. Simultaneous device use is outside this
-delivery's acceptance scope.
+the listed edge cases have not. Simultaneous device acceptance remains limited to the checks recorded above;
+the open call-answer, room-sync and restore-edge-case checks stay in the backlog.

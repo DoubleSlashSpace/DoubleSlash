@@ -2,7 +2,13 @@
 
 A standalone Rust CLI + TUI for deploying and operating fleets of `doubleslash-supernode` instances over SSH. It lives at `rust/doubleslash-supernode-manager/` in the DoubleSlash repository, in its own Cargo workspace; it is independent of the application crates but targets the same supernode release artifacts.
 
-> **Status (v0.1.0):** Production-tested. Linux remote hosts with systemd are supported end-to-end; cluster provisioning is operational (acdc a/b/c three-node cluster used for live integration testing). Default entry point is an interactive TUI; all operations are also available as CLI subcommands. Remote targets are **Linux + systemd only** — no launchd or Windows-service backends yet.
+This is the contributor/operator contract. User instructions belong in the
+[manager guide](../../docs/supernode-manager.md), code structure in
+[DESIGN.md](DESIGN.md), and open acceptance work in the
+[backlog](../../backlog.md#host-a-supernode-from-the-client). Historical fleet
+runs do not establish current deployment health. Linux/systemd is the remote
+install target; no subcommand opens the TUI. Guided setup, import and the safe
+updater are embedding-library flows and are not all exposed by the CLI/TUI.
 
 ---
 
@@ -258,9 +264,9 @@ Each instance is independent:
 | Binary | Shared `{install_root}/bin/doubleslash-supernode-{version}` + `current` symlink |
 | Unit | `doubleslash-supernode@{id}.service` from template `doubleslash-supernode@.service` |
 | Drop-in | `/etc/systemd/system/doubleslash-supernode@{id}.service.d/override.conf` — `DOUBLESLASH_HOME`, `supernode_host`, legacy port env vars |
-| Manifest | `{data_root}/{id}/supernode.toml` — listen addresses, features, and optional cluster roster; generated access/identity fields are currently not applied by the runtime (see §2) |
+| Manifest | `{data_root}/{id}/supernode.toml` — listen addresses, access mode, features and optional cluster roster; `identity_file` remains descriptive only (see §2) |
 
-Install flow (`snm-supernode::ops::install_instance`): ensure service user + dirs → upload binary → symlink `current` → push `supernode.toml` → push unit template + drop-in → `daemon-reload` → optional ufw rules → `enable` + `start`.
+Install flow (`snm-supernode::ops::install_instance`): guard against accidental declustering → ensure service user + dirs → upload notices and binary → symlink `current` → push `supernode.toml` → push unit template + drop-in → `daemon-reload` → optional ufw rules → `enable` + `restart`. This is not the health-checked updater flow.
 
 Uninstall: stop/disable → remove drop-in → optional `--purge` of data dir → remove tagged ufw rules. Does not remove the shared unit template or binary.
 
@@ -276,7 +282,7 @@ Uninstall: stop/disable → remove drop-in → optional `--purge` of data dir �
 
 > **Supernode side: implemented** (`doubleslash-supernode` `cluster.rs` / `cluster_link.rs`; client failover in `connection_manager`). **Manager side: implemented** — `cluster-sync` collects identities, renders the shared roster into every member's `supernode.toml`, applies restricted cluster-port firewall rules, and restarts members. See §6 for the CLI and §13 for the testing workflow.
 
-Several supernodes can be **linked into a cluster** that presents as one logical supernode to clients. A client attaches to any member; members replicate room chat/audio and camera on/off state, durable **room existence** (`RoomRoster`), Space roots, and client trust (`PeerAuth`) over a dedicated supernode↔supernode QUIC mesh — **not** per-peer private-room ACLs (cold-node admit is Space proof / local token rematerialize / creator self-admit). A client transparently **fails over to a sibling** if its member goes down. Members never see plaintext — clustering is a fan-out/replication fabric, **not** a trust escalation. One cluster hosts a given room; cross-operator sharing means linking those operators' supernodes into one cluster (there is no inter-cluster federation).
+Several supernodes can be **linked into a cluster** that presents as one logical supernode to clients. A client attaches to any member; members replicate opaque room/game frames, camera on/off state, room existence (`RoomRoster`), Space roots and client trust (`PeerAuth`) over a dedicated supernode↔supernode QUIC mesh. Private-room allowed sets are not replicated (cold-node admission is Space proof / local token rematerialization / creator self-admission). A client fails over to a verified sibling if its member goes down. Private participant content remains sealed; game payloads are opaque forwarding without SDK-provided encryption against the relay. Room rosters remain in memory, not durable node storage. One cluster hosts a given room; cross-operator sharing means linking those operators' supernodes into one cluster (there is no inter-cluster federation).
 
 ### `[cluster]` manifest section
 
@@ -327,12 +333,12 @@ The `cluster_addr` UDP port must be reachable **between cluster members only**, 
 | Capability | Notes |
 |---|---|
 | Cluster declaration in inventory | `[[cluster]]` id + members + `cluster_port` (see §5) |
-| Cluster-port allocation | fourth port per instance; default `4478 + 100×index`, pin for stability |
+| Cluster-port allocation | Third listener (after relay and signaling); default `4478 + 100×index`, pin for stability |
 | Identity collection | read `identity.json` `public_key` per member over SSH |
 | Roster render into `supernode.toml` | shared `[cluster]` block pushed to every member |
 | Re-push on membership change | `cluster-sync` re-renders + restarts fleet-wide |
 | Restricted cluster-port firewall | ufw allows the cluster port from member IPs only |
-| Cluster section preservation | `install` and `config-push` read and re-append the existing `[cluster]` block so binary updates never wipe the cluster config |
+| Cluster section preservation | Resolve the roster from inventory membership and `cluster_cache.toml`. Refuse replacing a deployed cluster section with no roster unless `--allow-decluster` is explicit; run `cluster-sync` to rebuild a missing cache |
 
 ---
 
@@ -366,7 +372,7 @@ Implementation: `snm-supernode::binary_probe` — remote `readlink`, `sha256sum`
 **Partial / gaps:**
 
 - Re-running `install` overwrites the versioned binary path and refreshes the `current` symlink without a health check.
-- `autoupdate.rs` installs an on-server updater (`/usr/local/lib/doubleslash/update-supernode`, config in `/etc/doubleslash/update.env`, unit `doubleslash-supernode-update.service`). It downloads the release package over HTTPS, checks it against the `.sha256` sidecar and the notice files, installs it as `doubleslash-supernode-<channel>-<sha12>` beside the running binary, flips `current`, restarts every active, activating, reloading or failed instance on the host (leaving inactive services stopped), and flips back if an instance is not active, or has restarted, 23 seconds later. It keeps the running and previous builds and records the installed package hash under `/var/lib/doubleslash-update`. `UpdateMode::ServerTimer` enables a daily timer (randomised by two hours, persistent); `ClientDriven` leaves the timer off. The client's Check for update and Update now download and verify the release locally and push it (`published_release_sha256`, `installed_package`, `push_update`, script mode `local`), which also serves servers that cannot reach GitHub (it has no IPv6). A lock (`/run/doubleslash-update.lock`) keeps a timer run and a push from overlapping, and a rolled-back build is deleted. The probe records whether github.com:443 is reachable, and the server-timer mode is refused when it is not. Restart and rollback clear systemd start limits. Failure to list units aborts before promotion. Client-pushed updates refresh the updater script; the client also refreshes it when the binary is current. Explicit Start clears the failed/start-limit state for its exact instance. Linux regression tests run with `python3 -m unittest discover -s tests -p test_autoupdate.py -v` using fake systemd and no root or network. Data directories are never touched. The updater is reached only through the library (the guided client flow); the CLI and TUI do not install it.
+- `autoupdate.rs` installs an on-server updater (`/usr/local/lib/doubleslash/update-supernode`, config in `/etc/doubleslash/update.env`, unit `doubleslash-supernode-update.service`). It downloads the release package over HTTPS, checks it against the `.sha256` sidecar and the notice files, installs it as `doubleslash-supernode-<channel>-<sha12>` beside the running binary, flips `current`, restarts every active, activating, reloading or failed instance on the host (leaving inactive services stopped), and flips back if an instance is not active, or has restarted, 23 seconds later. It keeps the running and previous builds and records the installed package hash under `/var/lib/doubleslash-update`. `UpdateMode::ServerTimer` enables a daily timer (randomised by two hours, persistent); `ClientDriven` leaves the timer off. The client's Check for update and Update now download and verify the release locally and push it (`published_release_sha256`, `installed_package`, `push_update`, script mode `local`), which also serves servers that cannot reach GitHub (as in the recorded IPv6-only test host). A lock (`/run/doubleslash-update.lock`) keeps a timer run and a push from overlapping, and a rolled-back build is deleted. The probe records whether github.com:443 is reachable, and the server-timer mode is refused when it is not. Restart and rollback clear systemd start limits. Failure to list units aborts before promotion. Client-pushed updates refresh the updater script; the client also refreshes it when the binary is current. Explicit Start clears the failed/start-limit state for its exact instance. Linux regression tests run with `python3 -m unittest discover -s tests -p test_autoupdate.py -v` using fake systemd and no root or network. Data directories are never touched. The updater is reached only through the library (the guided client flow); the CLI and TUI do not install it.
 - No Ed25519 verification against DoubleSlash `releases_manifest.json`.
 - `version = "local"` skips download; operator must set `defaults.binary_path`
   and supply its adjacent `.licenses/` directory. `build-deploy` generates that
@@ -404,7 +410,7 @@ Implementation: `snm-supernode::binary_probe` — remote `readlink`, `sha256sum`
 | Manager-generated `identity_file` runtime application | Gap — runtime always loads `identity.json` |
 | ufw firewall tagging | Done |
 | Binary identity in status/TUI | Done |
-| Supernode clustering (chat/ACL/trust replication + client failover) | Done — supernode + client sides |
+| Supernode clustering (opaque room/game frames, rosters, Space roots, peer trust, client failover) | Implemented; private allowed sets are not replicated |
 | Manager cluster provisioning (roster render, identity collection, cluster port + firewall, cluster section preservation across redeploys) | Done |
 | Updater with rollback: client push (`push_update`) or server timer | Push, no-op and forced-rollback verified live on Debian 12 (2026-10-27); timer mode not yet run live |
 | Guided setup (`guided.rs`: probe, key install, hardening, install, updater, SSH lockdown, invite) | Verified live on IPv6-only Debian 12 (2026-10-27) with `client-key` and `client-key-only`; desktop UI in Settings › Network |
@@ -415,7 +421,7 @@ Implementation: `snm-supernode::binary_probe` — remote `readlink`, `sha256sum`
 | macOS/Windows remote supervisors | Not started |
 | Plugin keys / asset sync | Not started |
 
-**Suggested next work:** live-test the guided flow and updater on a disposable Debian and Ubuntu host; apply or remove the manager-generated `identity_file` field; `plan` diff; persist auto-allocated ports; rootless systemd; signed release verification.
+Open work and live-check criteria belong in the [backlog](../../backlog.md#host-a-supernode-from-the-client). The implementation table is descriptive, not a current test report. `identity_file`, CLI plan/update, rootless systemd and signed release verification remain gaps.
 
 ---
 
@@ -454,10 +460,9 @@ The manager is the primary integration-testing tool for the DoubleSlash supernod
 # 2. Provision cluster — collect identity keys, push shared roster, restart
 .\launch.ps1 cluster-sync
 
-# 3. Verify — each node should show 8 cluster-related lines
-.\launch.ps1 exec --host acdc --instance a "grep -c cluster /var/lib/doubleslash/a/supernode.toml"
-.\launch.ps1 exec --host acdc --instance b "grep -c cluster /var/lib/doubleslash/b/supernode.toml"
-.\launch.ps1 exec --host acdc --instance c "grep -c cluster /var/lib/doubleslash/c/supernode.toml"
+# 3. Inspect each roster, including self, and compare identities/addresses
+.\launch.ps1 exec --host acdc --instance a "cat /var/lib/doubleslash/a/supernode.toml"
+.\launch.ps1 status --host acdc --all
 ```
 
 ### Direct remote debugging via `exec`
@@ -483,7 +488,7 @@ The manager is the primary integration-testing tool for the DoubleSlash supernod
 
 ### Workflow: redeploy without losing cluster config
 
-`install` and `config-push` both preserve the existing `[cluster]` section when re-rendering `supernode.toml`. Only `cluster-sync` intentionally replaces the roster (with freshly collected identity keys). Safe redeploy sequence:
+`install`, `config-push` and `build-deploy` use the roster resolved from inventory membership and the local cluster cache. A missing roster refuses an accidental cluster removal unless `--allow-decluster` is explicit. `cluster-sync` collects fresh identities and rebuilds that cache. Keep inventory/cache together; arbitrary remote edits are not imported automatically. Redeploy sequence:
 
 ```powershell
 # Build and redeploy — cluster section is preserved, service restarted

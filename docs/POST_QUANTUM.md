@@ -1,6 +1,6 @@
 # Post-quantum crypto (ML-KEM / ML-DSA)
 
-Assessed 2026-07-11. Nothing here is built; this is the design reference for
+Historical assessment, 2026-07-11. Nothing here is built; this is a design reference for
 when the [backlog](../backlog.md#post-quantum-crypto) item is picked up.
 
 The codebase is fully classical (Ed25519 + X25519 + AES-256-GCM/HKDF-SHA256).
@@ -16,7 +16,7 @@ built: **ML-KEM-768** + **ML-DSA-65**, hybrid with classical.
 | Identity / signaling / invites / Space roots | Ed25519 | Dual-sign transition; high-rate envelopes stay Ed25519 early |
 | Release + module manifests | Offline Ed25519 | Cheap early dual-sign (long-lived, low rate) |
 | QUIC/WS TLS | rustls + `ring` | Hybrid group via `aws-lc-rs` provider swap (finding 1) |
-| Browser `web-sdk` | `@noble/ed25519` | After native wire freeze (JS/WASM PQ) |
+| Portal `web-sdk` | Native client's identity/channel bridge; no separate browser identity keypair | Reassess only after the native wire design; application-level crypto is separate |
 
 ## Findings
 

@@ -1,158 +1,182 @@
-# DoubleSlash Lightweight Threat Model (P3)
+# DoubleSlash threat model
 
-**Date:** 2026  
-**Scope:** Invite + handshake, direct/relay sessions, in-app portal games, capability negotiation, supernode surfaces.  
-**Style:** One-pager, asset-centric, per agents.md "formal lightweight threat model document".
+Scope: client identity and storage, invites, direct/relay signaling, rooms,
+media, portals, plugins and software delivery. This describes current boundaries,
+not a completed security audit. Implementation invariants live in the
+[agent contract](../agents.md); private reports follow [SECURITY.md](../SECURITY.md).
 
 ## Assets
-- Long-term Ed25519 identity (private seed)
-- Per-session forward-secret keys (X25519 + HKDF)
-- Signed invites and capability announcements
-- Feature payloads (chat, voice, video, audio shared with a video, files, room state)
-- Supernode relay/SFU forwarding (metadata only)
-- Local stores (encrypted chat history, peer trust graph)
 
-## Trust Boundaries & Assumptions
-- **Client-only trust model**: No first-party backend for identity, discovery, or presence.
-- Supernodes are untrusted for content (they see only encrypted traffic + routing metadata they need).
-- All cross-peer behavior is gated by `CAPABILITY_ANNOUNCE` intersection + per-feature `auth` tier + quotas.
-- Invites are the root of trust; successful Ed25519-signed handshake + transcript binding establishes a session.
+- Identity seeds, local endpoint keys and accepted device registries.
+- Peer trust, invite credentials, private-room admission and sender keys.
+- Participant chat, file contents, voice, camera/screen video and shared audio.
+- Backups, attachments, local histories and managed-server SSH credentials.
+- Software packages, native modules and operator configuration.
 
-## Threat Surfaces & Mitigations
+## Trust boundaries
 
-### 1. Invite Creation / Distribution (out-of-band)
-**Threats:**  
-- Attacker forges or replays an invite.  
-- Invite leaks long-term public key or allows tracking.
+Clients own identities and trust; there is no mandatory identity, discovery or
+presence service. A chosen supernode is a transport/hosting peer, not a content
+recipient or identity authority. It can observe peer/device IDs, room/session IDs,
+membership, message/control types, signatures, traffic timing and byte counts.
+Room names and file-offer/completion metadata can be visible.
 
-**Mitigations (current):**  
-- Ed25519 signature over canonical bytes (includes `expires_at`, `invite_id`, ephemeral pub, optional handle/relay hints).  
-- Timestamp + expiry check on accept.  
-- Ephemeral X25519 per-invite for forward secrecy.  
-- Optional `is_supernode` / supernode hints are advisory only.
+Portal assets are operator-provided content. Game payloads are opaque to the
+forwarder but the SDK does not seal them against it. An invited peer can retain
+or disclose anything it receives. A compromised endpoint can use its unlocked
+keys; network encryption does not protect against that endpoint.
 
-**Residual:** Social engineering or out-of-band channel compromise. (Out of scope for protocol.)
+## Threat surfaces and controls
 
-### 2. Handshake (INVITE_HANDSHAKE_INIT / ACCEPT)
-**Threats:**  
-- Man-in-the-middle on the initial exchange.  
-- Replay of old handshake messages.  
-- Transcript tampering leading to key mismatch.
+### Invites and admission
 
-**Mitigations (current):**  
-- Signed invites + ephemeral X25519 + HKDF transcript binding (`SESSION_KEY_INFO`).  
-- `transcript_hash` included in ACCEPT and used in key derivation.  
-- Both sides verify signatures and canonical bytes.  
-- Nonce + timestamp replay windows on the signaling layer.
+Personal invites are signed, expiring and carry ephemeral X25519 material.
+The inviter also requires a live, single-use issuance record or an already
+trusted peer; a valid joiner signature alone is not an invitation. Restart
+invalidates unredeemed personal links. Signatures, transcript binding and key
+confirmation protect handshake integrity. A sibling-device refusal waits for
+the minting device's accept before becoming a visible failure.
 
-**Residual:** None significant if invite is fresh and signatures verify.
+Room-member trust requests contain a personal invite sealed to the recipient.
+They require authoritative room membership, no existing sender record, a live
+sender-owned invite, sanitized names and rate limits. Receiving only prompts;
+acceptance establishes trust. Private-room admission separately requires Space
+proof/grant, local token/allowed state or creator admission. A room ID, roster
+or peer trust record alone is not a membership grant.
 
-### 3. Post-Handshake Signaling (direct QUIC or WebSocket)
-**Threats:**  
-- Replay of signed signaling messages (chat, call control, capability, endpoint updates).  
-- Injection of forged messages after session establishment.
+Residual risks include leaked bearer invitations, social engineering, and a
+malicious authorized member redistributing content or invitations within policy.
 
-**Mitigations (current):**  
-- Every signaling message is Ed25519-signed over canonical bytes by the sender's long-term key.  
-- `verify_inbound_signature` + timestamp freshness window (5-minute `MAX_MESSAGE_AGE_SECS` on the client; `is_fresh(300.0)` on the supernode WebSocket path).
-- Per-sender `doubleslash_features::ReplayGuard` rejects re-delivery of an already-seen message signature within the freshness window; real-time `SfuAudio` frames are exempt from dedup because they are high-rate and ephemeral.
-- Capability intersection enforced before any feature activation.
+### Signaling and endpoint discovery
 
-**Residual (documented):** A monotonic sequence-number bitmap would provide stricter ordering semantics for very long-lived sessions, but duplicate signed envelopes inside the active freshness window are already rejected.
+Before using a supernode WebSocket, the client verifies a fresh signed HELLO
+challenge against the expected node identity. Invites, DNS and DDDNS supply
+address hints only. Over plain `ws://` an observer forwarding to the genuine
+node can still inspect signaling; the proof is authentication, not encryption.
 
-### 4. QUIC Direct Sessions
-**Threats:**  
-- Traffic analysis or correlation via QUIC connection metadata.  
-- QUIC implementation bugs (quinn/rustls).
+Signed envelopes require valid sender signatures and timestamp freshness.
+Per-sender signature replay deduplication exempts high-rate SFU audio and
+idempotent file chunk/completion classes, but not their signatures or freshness.
+Foreign chat, call and file classes require mutual trust. Device fields are
+signature-bound; sealed own-device traffic requires our identity and another
+non-empty source device. Signaling queues have an identity-wide 8 MiB bound.
 
-**Mitigations:**  
-- Application messages are sent only after the signed invite/session handshake; no custom app-layer early-data path is used for trust establishment.
-- ALPN `doubleslash/1`; self-signed Ed25519 QUIC certificates carry the identity in the CN, with peer-id checks performed after certificate extraction.
-- Per-feature quotas applied at datagram/stream layer before delivery.
+Residual risks include traffic analysis, denial of service and wall-clock skew.
+Replay deduplication is not a total ordering protocol.
 
-**Residual:** QUIC fingerprinting (standard for any QUIC app).
+### Direct and relay transport
 
-### 5. QUIC Relay (supernode `QUICRelayServer`)
-**Threats:**  
-- Relay sees source/dest peer indices and byte volumes.  
-- Malicious or compromised supernode injects or drops traffic.  
-- Ticket forgery or replay.
+QUIC uses rustls/quinn and checks identity/device claims from authenticated
+certificates. Direct sessions have transport encryption. Relayed direct
+datagrams use `derive_pairwise_relay_key` from static identity keys; that
+construction does not provide forward secrecy. Ephemeral invite-handshake
+keys have a different scope and do not turn every relay payload into a
+forward-secret session.
 
-**Mitigations (current):**  
-- Tickets are Ed25519-signed by supernode with short TTL + renewal window.  
-- mTLS with client cert CN checked against `allowed` set (extracted from CN).  
-- No access to plaintext; all feature payloads are end-to-end signed/encrypted at the capability layer.  
-- `handle_datagram` enforces same-room for room-scoped traffic; cross-room injection dropped.
+Relay attachment uses signed tickets and authenticated identities. Scoped
+membership, indices, feature authorization, quotas and bounded queues constrain
+forwarding. The ordered room-file chunk/completion exception observes quota
+refusal without discarding those frames; pacing, frame limits, queues and
+integrity checks remain required. Nodes can still drop, delay or correlate
+traffic. A trusted relay does not authorize a foreign application sender.
 
-**Residual:** Traffic analysis by the relay operator (accepted trade-off for NAT traversal help). No content confidentiality from supernode.
+### Room keys and cluster replication
 
-### 6. In-app portal games (`web.host.app.v1` + `game.relay.v1`)
-**Threats:**  
-- Malicious portal page JS (XSS / compromised asset on a supernode).  
-- Injection of game datagrams into other sessions.
+Room chat, file contents and media require real distributed sender keys. Inbound
+cleartext or failed opens are rejected. Group-key installation checks normalized
+membership, elected keyer/device and bounded epoch advancement. Media AAD
+separates voice, video and shared audio. Key ACK/reseal retries and member-driven
+sealed key requests recover missed epochs; own-device handoff additionally binds
+a fresh challenge and roster. The low-level epoch-0 fallback is not permission
+to send private content.
 
-**Mitigations (current):**  
-- Portal pages load only inside the native client (`d://`); no external browser transport.  
-- Pages use the **native peer's** identity — no page-local keypair or TLS cert.  
-- Game fan-out is scoped to `GameRelayJoin` sessions on the QUIC relay; payloads are opaque.  
-- Navigation is locked to `d://` in portal mode; external links open outside the app.
+Cluster links authenticate roster members and sign control messages. Replicated
+participant frames remain opaque, deduplicated and non-recursive. Private-room
+allowed sets are not replicated. Nodes do not persist participant payloads or
+room definitions. Routing correctness and malicious-member denial of service
+remain risks; inspect both sender/keyer and receiver logs when diagnosing gaps.
 
-**Residual:** A compromised supernode can serve hostile portal HTML (same class as any untrusted web host). Peers should only open portals of supernodes they already trust via invite.
+### Portal pages and native modules
 
-### 7. Capability Negotiation & Feature Activation
-**Threats:**  
-- Downgrade to weaker feature set.  
-- Unauthorized invocation of high-privilege features (`x.*` bespoke modules).  
-- Quota exhaustion DoS.
+Portals load through native scheme handlers over authenticated QUIC, without a
+public HTTP/WebTransport listener. Game sessions are scoped by the native
+channel runtime. Guest IDs in demo state are not verified peer identities.
+Portal HTML is untrusted operator content, and demo state in open pages is
+neither durable nor an anti-cheat boundary.
 
-**Mitigations (current):**  
-- `CAPABILITY_ANNOUNCE` intersection computed on both sides.  
-- Per-feature `auth` tier (public / room-member / trusted-peer) enforced before any `on_invoke`/`on_message`.  
-- First-party namespaces bypass user prompt; `x.*` require explicit per-(feature,peer) consent (stored in `FeatureTrustStore`).  
-- Inbound + outbound token-bucket quotas per `(feature, peer)` with symmetric `clear_*` on disconnect.  
-- `gate_through_feature` called on all outbound paths (including audio).
+Navigation and bridge exposure are consumer-specific: Android restricts its
+portal WebView to native portal schemes, and desktop portal/game adapters expose
+only their channel API. A top-level navigation allowlist alone does not prove
+that every subresource is blocked. Keep external browsing and local previews
+separate from privileged bridges.
 
-**Residual:** Consent fatigue for many `x.*` features (mitigated by first-party preference).
+Native feature modules require signature/trusted-signer checks and client
+consent for bespoke features. They execute in-process. There is no native plugin
+sandbox or implemented WASM isolation. A trusted malicious binary can use the
+host process's authority.
 
-### 8. Local Persistence & Key Management
-**Threats:**  
-- Local DB / file theft (chat history, peer store).  
-- Keyring extraction on compromised OS.
+### Local storage, backups and device authority
 
-**Mitigations (current):**  
-- v2 identity: Argon2id + AES-GCM; optional OS keyring for passphrase.  
-- Chat history encrypted at rest with per-profile AES key derived from identity.  
-- `keyring_delete_aes_key` for "lock identity".  
-- Peer trust graph only populated after successful signed handshake.
+The v2 identity uses Argon2id and AES-256-GCM. Peer/room files and history fields
+are encrypted under identity-derived storage keys. OS keyrings/Android Keystore
+may cache a protected derived unlock key, never the passphrase. The derived key
+can unlock a copied matching identity file and must remain secret. Settings,
+attachments and diagnostic logs are not covered by message-field encryption.
 
-**Residual:** Physical access or OS compromise (standard for client-only apps).
+Backup export is explicit. Authenticated streaming frames, bounded extraction,
+path checks and staged verification precede a new-profile restore. Local device
+keys, keyring entries and native modules are not copied. Anyone holding an archive
+and its password can recover full identity authority; importing that identity
+is not revocable delegated pairing.
 
-### 9. Local media capture (camera, screen/window, shared audio)
-**Threats:**
-- A user shares more than they intended — a whole monitor exposes anything that pops up over it, and whole-machine audio capture picks up notifications or another call.
-- Per-application audio capture silently widens: it needs Windows build 20348+, and older builds fall back to **system** audio rather than to silence.
-- A supernode on the media path tries to read the picture, the sound, or their timing.
+Device registries persist predecessor, revocation, rollback and fork checks.
+They are not integrated into delegated live authentication. Restoring an entire
+old profile defeats purely local monotonic-version checks. `open_with_key`
+separates storage access from signing at an API boundary but does not distribute
+independent storage keys. Current device routes are root-authorized.
 
-**Mitigations (current):**
-- Capture starts only on an explicit user action (camera toggle, share start, settings preview) and stops with it; nothing captures in the background, and captured media is never written to disk.
-- Room video and room shared audio are E2E-sealed under the per-room sender key with `MediaKind` AAD domain separation before leaving the client; the supernode forwards `ROOM_VIDEO_TAG` / `ROOM_CONTENT_AUDIO_TAG` through the generic opaque relay path with no media arm and never parses the PTS.
-- Video PTS and codec are bound into the per-frame signature, so a relay cannot re-time or re-label a stream.
-- Both behaviours are disclosed in `PRIVACY.md` (*Camera, screen, and shared-audio capture*), including the pre-20348 fallback.
+### Capture and optional integrations
 
-**Residual:** The exposure is the user's own screen contents and machine audio — a disclosure and UX problem, not a crypto one. The supernode still sees that a media stream exists and its byte volume, plus camera on/off state via `SfuVideoState`.
+Capture starts through call/share/preview controls. Active capture can continue
+when the app is backgrounded, including Android foreground-service calls.
+Whole-screen sharing includes overlays and notifications. Windows application
+audio capture falls back to whole-machine audio before build 20348. Media is not
+recorded by the client. Recipients can still record their output.
 
-## Overall Residual Risk Summary
-- **Traffic analysis / metadata leakage** by relays or network observers (accepted for usability).  
-- **Social engineering** around invite distribution (out-of-band).  
-- **Supply-chain** attacks on the binary or browser (mitigated by code-signing, Sigstore, pinned actions).  
-- **Long-term session ordering** without full sequence numbers (duplicate envelopes within the freshness window are blocked; strict monotonic ordering remains a possible hardening item).
-- **Hostile portal assets** from an untrusted supernode (mitigated by invite-only supernode trust).
+Ollama receives the text/images/optional transcribed audio routed to its configured
+endpoint. Enabled tools can drive calls, chat and explicitly permitted file
+sharing; model decisions are not a separate authorization boundary. SSH setup
+controls a rented host with profile-held credentials and pinned host keys; its
+hardening is a baseline, not ongoing server administration. DDDNS publication
+uses a transient update token and makes address records public. See
+[PRIVACY.md](../PRIVACY.md) for disclosures and defaults.
 
-## Recommendations (aligned with P3)
-- Consider adding monotonic sequence numbers + sliding-window bitmap for all post-handshake signaling if strict ordering becomes necessary.
-- Formalize this document and keep it in sync with protocol changes.  
-- Add negative-path tests for the replay and consent boundaries (already partially present in P0/P1 work).
+### Software delivery
 
----
+The official Windows Store package is signed and updated by Microsoft.
+Unpackaged GitHub Windows builds remain unsigned pending SignPath acceptance.
+Workflow support for optional signing/attestations does not prove a particular
+artifact was signed or unmodified.
 
-*This document satisfies the P3 requirement for a "formal lightweight threat model document (one-pager)". It is intentionally concise and focused on the surfaces called out in agents.md.*
+Installer stable-release manifests, when supplied, require the project Ed25519
+signature and matching archive hash. A stable install can proceed without a
+manifest. Nightly requires a matching manifest hash but accepts an unsigned
+manifest. Sidecars are checked when supplied. The manager instead checks release
+SHA-256 sidecars and distribution notices; project signed-manifest verification
+is not implemented there. See [Updates](../README.md#updates) and the
+[manager guide](supernode-manager.md#release-download-and-updates).
+
+Residual supply-chain risk includes missing manifest enforcement, compromised
+build credentials or dependencies, hostile native modules and unverified
+platform builds. Peer build attestations are signed claims, not remote execution
+proof. The project uses pinned CI actions and supply-chain/license checks; those
+controls do not replace artifact and source review.
+
+## Validation and remaining work
+
+Negative-path tests must preserve signature/freshness/replay, trust and
+membership gates, failed key opens, device handoff/registry failures, quotas,
+path containment, update verification and restart isolation. Existing tests do
+not establish every manual scenario. Use [acceptance](ACCEPTANCE.md) for live
+results and the [backlog](../backlog.md) for pending device, media, platform,
+release and cryptography work. Post-quantum changes are [deferred design](POST_QUANTUM.md).

@@ -1,6 +1,6 @@
 # DoubleSlash
 
-[Website](https://doubleslash.space) · [Releases](https://github.com/DoubleSlashSpace/DoubleSlash/releases) · [Privacy policy](PRIVACY.md)
+[Website](https://doubleslash.space) · [Releases](https://github.com/DoubleSlashSpace/DoubleSlash/releases) · [Privacy policy](PRIVACY.md) · [Documentation](docs/README.md)
 
 DoubleSlash is an invite-only peer-connectivity framework with desktop and Android clients. It provides chat, voice, file transfers, rooms, and media sharing through negotiated features. Identity and trust are stored on the device; there is no central account, peer directory, or presence service.
 
@@ -10,7 +10,7 @@ Peers connect directly over QUIC or through chosen supernodes. Supernodes provid
 
 ### Chat, voice, and files
 
-- Direct and room chat with local history. Your own row is pinned at the top of the Peers page, outside its Online/Offline groups. It shows whether this device is online and how many of your other devices are connected. Opening it (**Message myself**) starts a dedicated text chat between your connected devices; it has local history but no offline delivery or history synchronization. Direct chat includes delivery states, typing indicators, and unread badges. Room text alerts are off until enabled from that room's menu, and muting the room clears them. Messages from your other devices can alert too. On desktop, text is read while visible in the foreground; switching to another page or minimizing keeps new messages unread. Clicking a room notification opens that room on the message. Saved room badges return after unlocking. Room history is keyed by room ID, so changing the hosting supernode does not create a new conversation.
+- Direct and room chat with local history. Your own row is pinned at the top of the Peers page, outside its Online/Offline groups. It shows whether this device is online and how many of your other devices are connected. Opening it (**Message myself**) starts a dedicated text chat between your connected devices; it has local history but no offline delivery or history synchronization. Direct chat includes delivery states, typing indicators, and unread badges. Room text alerts are off until enabled from that room's menu, and muting the room clears them. Messages from your other devices can alert too. On desktop, text is read while visible in the foreground; switching to another page or minimizing keeps new messages unread. Clicking a room notification opens that room on the message. Saved room badges return after unlocking. User-created room history follows the room ID across hosts. Each unrelated supernode or cluster has separate built-in `default` room history.
 - Opus voice calls with push-to-talk, voice activation, noise suppression, and jitter buffering. Desktop controls include device selection, per-peer volume, and mute.
 - File transfers up to 4 GiB. Files over 8 MiB stream from disk. Room files are advertised first and sent to members who request them; the sender must remain available. Revoking an offer stops further downloads but cannot remove copies already received.
 - Local peer blocking, identity-derived avatars, and encrypted peer and room stores.
@@ -34,7 +34,7 @@ Direct video negotiates a common codec. Rooms default to VP9, which every build 
 - Clients save room definitions in encrypted `my_rooms.dat` and replay them when reconnecting. Supernode room state is held in memory; user-created rooms are removed after about 15 minutes without voice participants or text subscribers. The built-in `default` room is retained.
 - Both clients have compact invite entry, accept and copy controls. Copy mints a new invite link. Icon buttons above each list show hidden entries, sort the list, and refresh it, and the one above Rooms creates a room. Hidden peers are blocked contacts; revealing them does not unblock them. Peer sorting offers name ascending/descending and online first for the current session. Room sorting retains the saved room order.
 - On both clients, each supernode heads its own rooms, a cluster counting as one: its avatar, green while connected, and its name. Tap or click the row to fold its rooms away; the fold is remembered. Its menu renames the node on this device only, opens its portal, and creates a room on it. A renamed node keeps that name until you reset it, which goes back to the name its operator set.
-- The Rooms sidebar supports nested rooms and private-room invitations, including a “Members can invite” option. Removing a room from the sidebar hides it locally. Leaving voice keeps the text room selected.
+- The Rooms sidebar supports nested rooms and private-room invitations, including a “Members can invite” option. **Hide Room** hides it on this device. **Remove Room** removes the saved room on your devices and optionally deletes this device's chat history; it does not delete anyone else's room or history. The built-in `default` room can only be hidden. Leaving voice keeps the text room selected.
 - A room's members are listed in the Rooms tree on both clients. Under each room come its Voice leaf and its Text-only leaf, then its sub-rooms; a folded room shows its voice and text counts. Android's room screen opens the same leaves as its Members sheet. Selecting a member opens their actions under their row. While you are in that room's voice, you can watch their video or set their volume and mute them for yourself. You can message them if they are a trusted peer, or, from a room you are in, invite them to become one. The invite is encrypted to that member, so the supernode cannot use it. They must accept before either side trusts the other.
 - A live call stays at the foot of the screen: under the sidebar on desktop, under every screen on Android. It shows the room, the connection and a timer, anyone sharing video you are not watching, and the mute, video and leave controls. Watched video sits above the room's chat; on Android it floats when you leave the room.
 - Public user-created rooms are disabled by default. The `room.audio.sfu` capability's room-creation policy controls this; operators can enable them.
@@ -83,7 +83,7 @@ The repository contains these packaging targets. Consult the [release assets](ht
 | macOS | `.app` / `.dmg` (`build_macos.sh`) |
 | Android | APK / AAB; Android 8.0+ (API 26), ARM64 by default |
 
-On Windows, run `doubleslash-installer.exe` or extract the portable archive and run `DoubleSlash.exe`. The installer supports `--silent` and `--uninstall`. On macOS, open the DMG and drag the app to Applications. On Linux, mark the AppImage executable and run it. Android build and signing instructions are in [docs/ANDROID.md](docs/ANDROID.md).
+The official Windows release is the [Microsoft Store app](https://apps.microsoft.com/detail/9N09Q23FW92M). For an unpackaged GitHub build, run `doubleslash-installer.exe` or extract the portable archive and run `DoubleSlash.exe`. The installer supports `--silent` and `--uninstall`. On macOS, open the DMG and drag the app to Applications. On Linux, mark the AppImage executable and run it. Android build and signing instructions are in [docs/ANDROID.md](docs/ANDROID.md).
 
 ### Uninstalling
 
@@ -108,21 +108,20 @@ Rooms require a supernode. Direct one-to-one sessions do not, provided the peers
 
 ## Running a Supernode
 
-The standalone supernode does not require Qt. Release workflows package Linux x86_64, Linux ARM64, and Windows x86_64 binaries with SHA-256 sidecars. Deployment, systemd configuration, portal templates, and clustering are covered in the [operator guide](docs/SUPERNODE.md). The [supernode manager](docs/supernode-manager.md) provides provisioning, deployment, cluster synchronization, and remote commands. The desktop client builds the same library in: Settings › Network › Your servers sets up a supernode on a Debian or Ubuntu server you rent, applies baseline hardening, keeps it updated, can add a cluster node so several servers act as that one supernode, and copies the supernode invite people accept to add that node. Each supernode is one row, in name order, whose second line says whether it is connected, how many of its servers are running, and whether an update is waiting. With several supernodes, one control checks the status of all of them, another checks them for updates, and a third updates the ones that have one; from five on, the list can be filtered by name, server or address. Different supernodes run tasks side by side; one supernode runs one task at a time. Open a supernode to see its numbered servers, with compact status, update, restart, and log controls for each. Each server shows selectable IPv4, IPv6, WebSocket signaling port (TCP), and relay port (UDP) readouts. Entering a hostname checks addresses over pinned SSH and shows them directly below the field; Refresh addresses checks again. Unchecked families say Not checked, and a successful check without a public address says No public address detected. DDDNS needs the available IP addresses and WebSocket signaling port. Hover a server or select its Info button for further details. Set hostname under a server adds or changes its optional fallback hostname, with Automatic, DNS or DDDNS lookup. DDDNS names ask for a masked update token and show the HTTPS update URL. Apply and update DDDNS saves and applies the hostname, then immediately publishes this server's signaling addresses and port from the desktop; assigning the same name to another server replaces the record. Missing address families are cleared, and IPv6 is excluded when signaling is configured for IPv4 only. Tokens are used once and never saved or installed on a server. DNS names use Apply and restart. Leave the hostname empty to remove its local configuration; that does not delete its DDDNS record. Setup offers the same fields and publishes after installation. Setup and hostname Apply select a dual-stack wildcard bind when the server has IPv6 enabled, with IPv4-only fallback when it is unavailable; applying to a server set up by this client upgrades its wildcard bind and preserves explicit interface or loopback binds. Register the name with its provider first. A publication failure is reported separately from successful server setup/configuration, with retry from Your servers. Shared controls check, update, or restart every server, and Sync cluster gives every server the member list again. A server can be taken out of a cluster, uninstalled or, when it can no longer be reached, dropped without contacting it; the remaining servers are relinked. Automatic updates, renaming and removal apply to the whole supernode. A room invite only opens that room. The server stays your responsibility. It has been live-tested on one Debian 12 server; the client now supports IPv6 QUIC, but relay traffic against an IPv6-only server still needs live acceptance (see the backlog).
+The standalone supernode does not require Qt. Release workflows package Linux x86_64, Linux ARM64, and Windows x86_64 binaries with SHA-256 sidecars. The [operator guide](docs/SUPERNODE.md) covers listeners, room policy, portal assets and persistent state. The [manager guide](docs/supernode-manager.md) covers Linux/systemd provisioning, CLI/TUI deployment and clustering.
 
-For servers set up by this client, the **Start** (play icon) control starts one server's supernode service, or every server in the expanded node. It clears systemd's failed/start-limit state before starting and refreshes the service status. Start requires SSH access; a powered-off or unresponsive VPS needs recovery through its hosting provider. Imported deployments retain their existing management tools. **Update now** also refreshes the server's updater script, even when the latest binary is already installed. New updates restart and health-check failed or restarting instances as well as running ones; deliberately stopped services remain stopped. Rollback clears the start limit before trying the previous binary.
+On desktop, **Settings > Network > Your servers** can set up a rented Debian or Ubuntu host over pinned SSH, apply selected baseline hardening, manage updates with rollback, start/restart services, inspect logs and add cluster members. **Import existing** discovers existing systemd instances without changing the server; imported deployments keep their existing lifecycle and update tools. Hostname edits and one-time DDDNS publication are available for both kinds of entry. See the [desktop administration guide](docs/supernode-manager.md#desktop-administration) for the workflow and restrictions. The server remains your responsibility. Android administration is unfinished.
 
-**Already running a supernode or cluster?** Choose **Settings > Network > Your servers > Import existing**. Enter the host's current SSH address and login, confirm its server fingerprint, scan, and select the instances to save. Import is read-only: it installs no key or software, changes no firewall or SSH settings, writes no server files, and restarts nothing. It supports Linux systemd units named `doubleslash-supernode@<id>.service`, Python 3, root or passwordless sudo, and an absolute `DOUBLESLASH_HOME` with a schema-1 `supernode.toml`. Multiple instances on one host retain their own ports and data directories. Import each VPS separately; matching cluster rosters group their instances into one entry. Other roster members are shown as informational addresses until their VPS is imported. Import does not accept an invite or join Rooms.
+Implementation and manual acceptance differ: a library-driven Debian 12 setup/update/rollback run is recorded in the [backlog](backlog.md#host-a-supernode-from-the-client). The packaged desktop wizard, additional hosts, imported deployments and IPv6-only relay flows still need the listed live checks.
 
-Under an imported instance, **Set hostname** changes only `hostname` and `hostname_lookup` in its existing manifest and restarts that one service when you choose Apply. All other manifest settings, including split IPv4/IPv6 binds, custom features and the full cluster roster, are retained. DDDNS Apply uses that instance's current signaling port and the one-time update token. For password-based SSH, enter the password for each Apply or Refresh addresses action; it is cleared after submission. Your existing tools continue to manage software updates and cluster membership. Forget removes only the local entry. Normal setup refuses an existing deployment before installing anything; use Import existing instead. Hostname edits refuse linked/shared manifest files or a changed identity, data directory or roster; re-import after resolving the change.
-
-Build from the repository root:
+Build from the outer Rust workspace:
 
 ```sh
-cargo build --manifest-path rust/Cargo.toml --release -p doubleslash-supernode
+cd rust
+cargo build --release -p doubleslash-supernode
 ```
 
-Run on Linux/macOS:
+From the repository root, run on Linux/macOS:
 
 ```sh
 export DOUBLESLASH_HOME="$HOME/.doubleslash-supernode"
@@ -369,14 +368,17 @@ Capture starts through call, share, or preview controls. Local preview stays on 
 
 ### Building from Source
 
-Run from the repository root:
+Run each command from its workspace so Cargo loads its local configuration,
+including the output directory and CMake compatibility settings:
 
 ```sh
-# Desktop; omit ,webengine if Qt WebEngine is unavailable
-cargo build --manifest-path rust/doubleslash-client/Cargo.toml --features qt-ui,webengine
+# From the repository root; omit ,webengine if Qt WebEngine is unavailable
+cd rust/doubleslash-client
+cargo build --features qt-ui,webengine
 
-# Server and installer
-cargo build --manifest-path rust/Cargo.toml --release -p doubleslash-supernode -p doubleslash-installer
+# From the repository root, in another shell
+cd rust
+cargo build --release -p doubleslash-supernode -p doubleslash-installer
 ```
 
 For Windows debug UI builds, put the matching Qt `bin` directory on `PATH` and run `rust\target\debug\doubleslash-client.exe`. `rust/doubleslash-client/.cargo/config.toml` sets `target-dir` to `../target`, so the binary is not under `rust/doubleslash-client/target/`. On Linux/macOS the corresponding binary has no `.exe` suffix.
@@ -417,13 +419,14 @@ $env:DOUBLESLASH_KEY_DIR = $env:DOUBLESLASH_HOME
 There are separate Cargo workspaces for the outer crates, client, Android bridge, and supernode manager. The client is a library plus a desktop binary; headless tests do not require Qt.
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml --workspace
-cargo test --manifest-path rust/doubleslash-client/Cargo.toml --no-default-features
-cargo test --manifest-path rust/doubleslash-android/Cargo.toml
-cargo test --manifest-path rust/doubleslash-supernode-manager/Cargo.toml --workspace
+# Each group starts at the repository root in a separate POSIX shell
+(cd rust && cargo test --workspace)
+(cd rust/doubleslash-client && cargo test --no-default-features)
+(cd rust/doubleslash-android && cargo test)
+(cd rust/doubleslash-supernode-manager && cargo test --workspace)
 ```
 
-Use `cargo test … -- --list` for current test inventories. [scripts/ci_local.ps1](scripts/ci_local.ps1) and [scripts/ci_local.sh](scripts/ci_local.sh) run host checks for all four workspaces, plus Gradle unit tests and an NDK clippy when those tools are installed. Device/APK steps remain in the [Android guide](docs/ANDROID.md). Automated tests do not replace two-client and physical-device media checks.
+In PowerShell, enter each workspace with `Set-Location`, then run its Cargo command. Use `cargo test … -- --list` for current test inventories. [scripts/ci_local.ps1](scripts/ci_local.ps1) and [scripts/ci_local.sh](scripts/ci_local.sh) run host checks for all four workspaces, plus Gradle unit tests and an NDK clippy when those tools are installed. Device/APK steps remain in the [Android guide](docs/ANDROID.md). Automated tests do not replace two-client and physical-device media checks.
 
 Run `cargo fmt --all -- --check` and targeted `cargo clippy … -- -D warnings` in affected workspaces. [Coverage scripts](scripts/coverage.ps1) produce LLVM line/region reports; the shell counterpart is [coverage.sh](scripts/coverage.sh).
 

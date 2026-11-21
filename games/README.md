@@ -42,6 +42,9 @@ to reopen the page; their old wire formats are intentionally isolated.
 - Guest IDs identify app instances. They are **not verified peer identities** or
   an anti-cheat boundary. Native identity/auth stays in the framework. Election
   is an example coordination mechanism, not distributed consensus.
+- The relay forwards game datagrams without application encryption. Transport
+  authentication does not hide their contents from the supernode; add payload
+  sealing in an app that needs confidentiality beyond that transport.
 - Round trip includes native bridge polling and peer response time. The graph
   counts encoded app bytes (including session messages), not QUIC overhead or
   link capacity. No RTT is shown until a peer actually answers.
@@ -55,7 +58,7 @@ to reopen the page; their old wire formats are intentionally isolated.
 - Canvas history is capped at 3,000 operations; clear frees it. Data lives in open
   pages only. Closing the last page loses the drawing. Delivery is not a durable
   document guarantee. Readiness is informational and does not block launch.
-- The four new demos use `web-sdk/demo-state.mjs`: bounded, last-writer-wins
+- Task Board, Focus Timer, Four in a Row and Memory Match use `web-sdk/demo-state.mjs`: bounded, last-writer-wins
   snapshots repeated every 400 ms, one register per tick. Task Board has eight
   registers (one per row), so a full catch-up takes about 3.2 seconds without
   loss. Clearing a row keeps its version so stale snapshots cannot restore it.

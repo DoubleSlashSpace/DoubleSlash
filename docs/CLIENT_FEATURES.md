@@ -16,7 +16,7 @@ Every feature area lists three things:
 | Field | Meaning |
 |---|---|
 | **Core** | The module in `rust/doubleslash-client/src/`. Shared by every client — if it is here, you do not reimplement it, you expose it. |
-| **Desktop** | The `#[qinvokable]` methods on `AppBridge` (`src/ui/bridge.rs`) and the QML that drives them. This is the full desktop surface: 98 invokables. |
+| **Desktop** | The `#[qinvokable]` methods on `AppBridge` (`src/ui/bridge.rs`) and the QML that drives them. Named entry points below are examples, not a frozen API inventory. |
 | **Android** | The command name in `rust/doubleslash-android/src/command.rs` (`KNOWN_COMMANDS`), or what is missing. |
 
 The core is the same Rust library in both clients. A feature missing on Android
@@ -29,7 +29,7 @@ That distinction is the point of this document, so it is called out per feature.
 
 Things every client must get right, regardless of platform.
 
-### Two identity forms, and they are not interchangeable
+### Identity forms are not interchangeable
 
 An identity is one Ed25519 keypair (`identity.rs`). It surfaces as three
 strings, and mixing them up is the most common cross-client bug:
@@ -58,20 +58,22 @@ rather than honoured.
 
 Two things follow for any client:
 
-* **Never store the passphrase.** To skip the prompt, store the *derived* key
-  (`load_with_passphrase_keyed` / `save_encrypted_keyed` hand it back). It opens
-  one file on one device, so a leaked copy is worthless elsewhere and a
-  passphrase the user reused is never written down.
+* **Never store the passphrase.** To skip the prompt, protect the *derived* key
+  (`load_with_passphrase_keyed` / `save_encrypted_keyed` hand it back) in the OS
+  keyring or Keystore. That key can unlock a copy of the matching identity file;
+  it remains sensitive recovery material even though it is not the passphrase.
 * **A keyfile can substitute for or augment the passphrase.**
   `crypto::build_passphrase_material` concatenates the text with SHA-256 of a
-  keyfile. Desktop exposes both; Android exposes only the text passphrase.
+  keyfile. Both clients expose passphrase and keyfile unlock.
 
 ### Local stores
 
-Three SQLite stores, all opened with the identity and all client-owned:
-`peer_store.rs`, `chat_store.rs`, `room_store.rs`. They resolve their paths
-through `Identity::default_key_dir()`, which reads `DOUBLESLASH_HOME` — Android
-must set that before opening anything, since it has no meaningful `HOME`.
+Peer and room records are encrypted files (`peers.dat`, `my_rooms.dat`);
+chat history is SQLite with encrypted message fields. Accepted device registries
+use a separate encrypted-row SQLite database, `device-trust.db`. These are
+client-owned stores. `Identity::default_key_dir()` resolves `DOUBLESLASH_KEY_DIR`,
+then `DOUBLESLASH_HOME`, then `~/.doubleslash`, and applies `active-profile`.
+Android must select its app-private collection root before opening stores.
 The desktop keeps one process for that directory. A second launch of the same
 profile exits; another profile directory can run beside it.
 
@@ -113,13 +115,14 @@ The peer list is the client's own record of who it trusts.
   `applyPeerAudioPrefs`. Right-click context menu in `PeerList.qml`.
 * **Android** — `peer.list`, `peer.block`, `peer.unblock`, `peer.remove`.
   Long-press a peer row for Copy peer ID / Block / Remove; removal confirms
-  first, and blocked peers are labelled in the list. No display-name editing
-  and no per-peer audio preferences.
+  first, and blocked peers are labelled in the list. `audio.peer_pref` supplies
+  per-member voice mute/volume. Peer display-name editing is not exposed.
 
 ### 3. Invites
 
-The only way a peer relationship starts. A `d://` URL carrying an
-ephemeral X25519 key; the handshake completes over the supernode.
+The only way a peer relationship starts. Shareable HTTPS fragment links wrap
+the native `d://` / `doubleslash://` invite carrying ephemeral X25519 material.
+The signed handshake can use direct or supernode signaling paths.
 
 The manager records every personal invite it mints (`issued_invites`). The
 inviter side of the handshake admits a joiner only by redeeming one of those
@@ -170,6 +173,14 @@ with the carried URL.
   purge and age trimming. `chat.trim` folds the desktop's two trim invokables
   into one command with `days` and `keep_per_peer` bounds.
 
+Both clients pin **Message myself** above trusted contacts. It uses `core.chat.v1`
+to send live text to other connected devices of the same root identity. Own-chat
+frames must be sealed, signed, fresh, targeted at our identity and from another
+non-empty device; acknowledgements target the source device. Own-device presence
+supplies the other-device count and never feeds contact presence. Local history
+is separate from contacts; this entry has no calls, file sending, offline delivery,
+history synchronization or automatic replies.
+
 ### 5. Rooms
 
 Multi-party chat and voice hosted by a supernode. End-to-end encrypted with
@@ -194,17 +205,18 @@ read.
   this device's list. Remove room deletes it here and on our other devices,
   and asks whether to also delete this device's chat history for it. The built-in default room has no Remove item.
 
-  Creation was not just a missing command. Nothing else on Android writes to
-  the room store — the rooms a phone lists were persisted by a desktop client
-  and travelled with the identity — so `persist_if_room_created` in
-  `session.rs` had to be added alongside it, mirroring `bridge.rs`: skip rooms
-  already known (cluster replay re-announces them), persist the entry, then
-  adopt it into the Space tree and announce the signed root. **A client that
-  creates rooms without the Space adoption produces rooms that cannot be
-  admitted to by proof**, so they behave differently from desktop-created ones.
+  `persist_if_room_created` in `session.rs` persists a newly created room,
+  adopts it into its Space tree and announces the signed root. Room-list
+  arrivals also persist definitions through `RoomStore::sync_from_room_list`;
+  own-device sync merges definitions and removals. These paths must retain
+  hidden state and must not turn a reconnect replay into an explicit re-add.
 
 Hiding is local-only and exists on both clients — the room stays on the
-supernode and other members are unaffected.
+supernode and other members are unaffected. Desktop Hide also leaves that
+room's voice and unsubscribes its chat; Android Hide only writes the local
+tombstone. Remove leaves/unsubscribes on both clients and syncs the removal
+to own devices. Room history uses `chat_store::room_history_id`: user-created
+rooms follow the room ID; `default` is scoped to its node/cluster representative.
 
 ### 6. Spaces
 
@@ -322,7 +334,11 @@ meet it.
   `content_playout.rs`, `media_clock.rs`, `media_sync.rs`.
 * **Desktop** — `setContentAudioEnabled`, `setContentAudioPref`,
   `setContentAudioViewers`. Capture is WASAPI loopback, Windows-only.
-* **Android** — **nothing**. No capture source and no playout anchor.
+* **Android** — no capture source. Incoming shared audio goes directly from
+  `session.rs` to `CallController::ContentAudioInbound`, preserving sequence
+  and PTS for reordering, mixing and the per-sender video playout anchor.
+  Gain follows the watched-peer set independently of voice mute. Video and
+  shared-audio playback still need physical-device acceptance.
 
 ### 11. File transfer
 
@@ -362,11 +378,16 @@ member must resolve to the same place, and sessions fail over between members.
 
 * **Core** — `cluster.rs`, `quic_relay_client.rs`, `connection_fallback.rs`.
 * **Desktop** — `isKnownSupernode`, `removeSupernode`, `resolveSupernodeNodeId`,
-  `clusterRepresentative`, `configureDirectP2p`, `openNodePortal`.
-* **Android** — `supernode.list` and `supernode.remove`, surfaced in Settings
+  `clusterRepresentative`, `configureDirectP2p`, `openNodePortal`,
+  `renameSupernode`. Settings > Network > Your servers embeds SSH deployment,
+  updates, lifecycle, clustering and existing-deployment import through
+  `supernode_admin::AdminService`; see [the manager guide](supernode-manager.md).
+* **Android** — `supernode.list`, `supernode.rename` and `supernode.remove`, surfaced in Settings
   with the cluster size beside each node. Adding one is still done by accepting
   its invite, as on the desktop. Removing leaves the rooms it hosted in the
-  store so re-adding finds them again.
+  store so re-adding finds them again. Both clients group rooms per node/cluster,
+  keep unrelated nodes' rooms separate even when IDs match, and support local
+  node names, folds and saved node order. Android SSH administration is unfinished.
 
 ### 13. Connection state
 
@@ -487,7 +508,8 @@ hosting an image.
 
 * **Core** — `github_updater.rs`, polling GitHub Releases.
 * **Desktop** — `applyUpdate`, `setAutomaticUpdateChecks`; hands off to
-  `doubleslash-installer`.
+  `doubleslash-installer` when unpackaged. An MSIX process skips GitHub checks
+  and installer handoffs; Microsoft Store delivers its updates.
 * **Android** — not applicable in this form; distribution is the store or a
   sideloaded APK.
 
@@ -505,15 +527,17 @@ notification channels for unread state.
 
 ### 20. Settings
 
-The desktop persists roughly sixty settings (`ui/settings_model.rs`) covering
+The desktop persists settings (`ui/settings_model.rs`) covering
 audio devices and tuning, video codec/resolution/fps/bitrate, relay and UPnP,
 theme, notifications, tray and window geometry, Ollama, attestation policy,
 update checks, and onboarding state. Empty `audio_input_device` /
 `audio_output_device` follow the OS default, including when it changes during
 a call; a named device stays pinned.
 
-**Android persists a deliberate handful.** `AppSettings` (SharedPreferences)
-holds camera facing, voice activation, theme and skin; the display name is *not*
+**Android uses separate device preferences.** `AppSettings` (SharedPreferences)
+holds camera facing, speaker routing, input/output gain, voice activation,
+noise strength, bitrate, decoder complexity, theme/skin, text scale, date format,
+room ordering and opt-in room alerts; the display name is *not*
 there — it lives on the identity's own peer record via `identity.set_handle`,
 because peers cache their copy of it and every outbound message already reads
 the sender handle from that record. The rest of the desktop's list is device
@@ -521,8 +545,9 @@ pickers, window geometry and tray behaviour that a phone either decides for
 itself or does not have.
 
 A client adding more should check whether the setting needs a core command
-(volumes, noise strength, jitter depth, bitrates all do — none are exposed to
-Android yet) or is purely local (theme, camera choice).
+(`audio.tune` already exposes gain, noise, bitrate and decoder complexity), a
+platform route (`AudioRouter`), or only local UI state. Android still has no
+desktop-style device picker, PTT or jitter-depth control.
 
 ---
 
@@ -537,24 +562,27 @@ Android yet) or is purely local (theme, camera choice).
 | Peer remove | Yes | Yes |
 | Invites generate / accept | Yes | Yes |
 | Direct chat | Full | Full, minus per-peer clear |
+| Message myself | Live text, local history | Live text, local history |
+| Backup / restore | Encrypted archive, selectable profiles | Same archive through document picker |
+| Own-device rooms / removals | Sealed sync; hide stays local | Sealed sync; hide stays local |
 | Rooms join / leave / chat | Yes | Yes |
 | Room create | Yes | Yes |
 | Sub-rooms | Yes | Yes |
-| Room invites | Link + per-peer grant | Link only |
+| Room invites | Link + per-peer grant | Link + per-peer grant |
 | Room hide | Yes | Yes |
 | Spaces (nested, proof admission) | Yes | Nested list, sub-rooms, proof joins |
 | Direct voice | Full stack + tuning | Call, mute, gain/noise/bitrate |
 | Room voice | Yes | Yes |
 | Video send | Camera + screen share | Camera only |
-| Video receive | Yes | **No** |
-| Content audio / A/V sync | Windows only | **No** |
+| Video receive | Implemented; media acceptance pending | Opt-in VP9/VP8; device acceptance pending |
+| Content audio / A/V sync | Windows capture; shared receive/sync pipeline | Receive/sync implemented; device acceptance pending; no capture |
 | File transfer | Direct + room | Direct + room |
-| Supernode / cluster management | Yes | List and remove |
+| Supernode / cluster management | List, rename, remove; SSH administration | List, rename and remove; no SSH administration |
 | Portal / web apps | Yes | Pages + game channel |
 | Plugins (`x.*`) | Yes | **No** |
 | Ollama | Yes | **No** |
 | Avatars / handles | Yes, editable | Yes, editable |
-| Settings | ~60 persisted | Name, avatar, camera, voice tuning, history, theme, skin |
+| Settings | Desktop preferences | Camera, routing, voice tuning, history, theme/skin, text, room order/alerts |
 
 ---
 
@@ -564,15 +592,17 @@ Android yet) or is purely local (theme, camera choice).
    ephemeral keys. Decode leniently, emit exactly.
 2. **`DOUBLESLASH_HOME` before any store.** The stores resolve their own paths;
    set it first or they land somewhere unwritable.
-3. **Cluster fan-out duplicates rooms.** The same room arrives from every
-   member of a cluster. Fold on the delivering node before showing a list.
+3. **Cluster fan-out duplicates rooms.** Group by the canonical node/cluster
+   representative, then deduplicate room IDs within that group. Keep routing
+   hosts separate from sidebar identity and history keys.
 4. **Room frames arrive N times in a multi-homed session.** Deduplicate rather
    than rendering each copy.
 5. **Signed manifests are version-gated.** `MANIFEST_SCHEMA_VERSION` mismatches
    are rejected outright, not negotiated.
-6. **Never drop on a chunk path.** Rate limiting a file-transfer chunk stream is
-   data loss, not backpressure — use a token bucket and a byte ceiling that
-   blocks instead.
+6. **Preserve ordered file delivery.** Supernode forwarding of room file
+   chunk/completion frames observes quota refusal without dropping those frames.
+   Keep sender pacing, frame limits, bounded queues and retries. This exception
+   does not permit blocking the manager loop or bypassing other feature quotas.
 
 ---
 
@@ -589,6 +619,8 @@ grep -A2 '#\[qinvokable\]' rust/doubleslash-client/src/ui/bridge.rs \
 sed -n '/KNOWN_COMMANDS/,/];/p' rust/doubleslash-android/src/command.rs
 ```
 
-`KNOWN_COMMANDS` is enforced by a test — every entry must have a match arm — so
-the Android column cannot silently rot. The desktop column has no such test;
-when you add an invokable, add it here.
+`KNOWN_COMMANDS` has a test requiring a match arm for each entry. That checks
+dispatch coverage, not feature behavior, UI reachability or this document's
+accuracy. When an entry point changes, inspect its caller and update the
+relevant feature area here. Keep manual results in [acceptance](ACCEPTANCE.md)
+and unfinished work in the [backlog](../backlog.md).
