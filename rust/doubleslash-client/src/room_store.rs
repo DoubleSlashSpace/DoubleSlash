@@ -767,10 +767,8 @@ impl RoomStore {
 
     /// Un-hide a room, restoring it to the local Rooms list.
     ///
-    /// The persisting counterpart to [`Self::hide_from_sidebar`]. Use this
-    /// rather than [`Self::undelete`] for anything user-driven: `undelete`
-    /// only mutates memory, so a restart would resurrect the tombstone and the
-    /// room would silently vanish again.
+    /// The persisting counterpart to [`Self::hide_from_sidebar`], so a restart
+    /// does not restore the tombstone and silently hide the room again.
     pub fn unhide_from_sidebar(&mut self, supernode_id: &str, room_id: &str) -> Result<()> {
         let key = Self::sidebar_hide_key(supernode_id, room_id);
         if !self.deleted_ids.remove(&key) {
@@ -785,15 +783,6 @@ impl RoomStore {
             &supernode_id[..supernode_id.len().min(12)]
         );
         self.save()
-    }
-
-    /// Remove a room from the deleted set in memory only (e.g. re-invited).
-    ///
-    /// Does **not** persist — see [`Self::unhide_from_sidebar`] for the
-    /// user-facing operation.
-    pub fn undelete(&mut self, supernode_id: &str, room_id: &str) {
-        self.deleted_ids
-            .remove(&Self::entry_key(supernode_id, room_id));
     }
 
     // -- Queries ------------------------------------------------------------

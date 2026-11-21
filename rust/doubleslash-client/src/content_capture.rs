@@ -73,7 +73,7 @@ pub trait ContentAudioSource: Send {
     fn next_frame(&mut self) -> anyhow::Result<ContentFrame>;
 }
 
-/// Forward the trait through a box, so [`open_default`]'s
+/// Forward the trait through a box, so [`open_for`]'s
 /// `Box<dyn ContentAudioSource>` satisfies the generic `S: ContentAudioSource`
 /// bound that [`ContentAudioSender::start`](crate::content_sender::ContentAudioSender::start)
 /// takes. Without this only callers willing to name a concrete backend could
@@ -201,11 +201,6 @@ pub fn open_for(spec: ContentAudioSpec) -> anyhow::Result<Box<dyn ContentAudioSo
              virtual device or ScreenCaptureKit)"
         ),
     }
-}
-
-/// Open whole-system loopback.
-pub fn open_default() -> anyhow::Result<Box<dyn ContentAudioSource>> {
-    open_for(ContentAudioSpec::System)
 }
 
 #[cfg(target_os = "windows")]

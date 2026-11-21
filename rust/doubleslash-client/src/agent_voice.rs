@@ -11,10 +11,8 @@
 use std::collections::HashMap;
 
 use serde_json::json;
-use tokio::sync::mpsc;
-use tracing::{info, warn};
 
-use crate::call_controller::{CallCommand, FADE_SAMPLES, SAMPLES_PER_FRAME, SAMPLE_RATE};
+use crate::call_controller::{FADE_SAMPLES, SAMPLES_PER_FRAME, SAMPLE_RATE};
 use crate::content_capture::{f32_to_i16, resample_linear};
 use crate::ollama_module::normalize_ollama_base_url;
 
@@ -341,7 +339,7 @@ fn windows_synthesize(text: &str) -> Result<Vec<i16>, String> {
         .ReadBytes(&mut bytes)
         .map_err(|e| format!("tts bytes: {e}"))?;
     let _ = Interface::cast::<windows::core::IUnknown>(&stream);
-    info!("[voice] TTS produced {} bytes", bytes.len());
+    tracing::info!("[voice] TTS produced {} bytes", bytes.len());
     pcm16_from_wav(&bytes)
 }
 
@@ -357,27 +355,6 @@ pub fn speak_status_json(pcm: &[i16]) -> serde_json::Value {
         "seconds": (pcm_seconds(pcm) * 10.0).round() / 10.0,
         "samples": pcm.len(),
     })
-}
-
-/// Synthesize `text` on a blocking thread and inject it into the live call.
-pub fn spawn_speak(call_tx: mpsc::Sender<CallCommand>, text: String) {
-    if text.trim().is_empty() {
-        return;
-    }
-    let settings = crate::ollama_module::read_assistant_settings();
-    if !settings.voice_enabled {
-        return;
-    }
-    info!("[voice] speaking {} chars", text.chars().count());
-    tokio::task::spawn_blocking(move || match synthesize_pcm(&text) {
-        Ok(pcm) => {
-            let _ = call_tx.blocking_send(CallCommand::SetAgentVoice(true));
-            if let Err(e) = call_tx.blocking_send(CallCommand::EnqueueSpeakPcm { pcm }) {
-                warn!("[voice] enqueue TTS failed: {e}");
-            }
-        }
-        Err(e) => warn!("[voice] TTS failed: {e}"),
-    });
 }
 
 #[cfg(test)]

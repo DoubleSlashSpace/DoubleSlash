@@ -126,13 +126,6 @@ ApplicationWindow {
         return -1
     }
 
-    function supernodeHandleFor(nodeId) {
-        var idx = findNodeIndex(nodeId)
-        if (idx < 0) return ""
-        var node = nodeListModel.get(idx)
-        return root.supernodeName(node.local_name, node.title, "")
-    }
-
     /// What a supernode is called here: this device's name for it, then the
     /// operator's title, then the start of its id.
     function supernodeName(localName, title, nodeId) {
@@ -1344,10 +1337,6 @@ ApplicationWindow {
         backend.setVideoSubscriptions(json)
     }
 
-
-    function isVideoExpanded(peerId) {
-        return root.expandedVideoPeers.indexOf(peerId) !== -1
-    }
 
     /// Toggle a peer in the shared region.
     ///

@@ -390,7 +390,7 @@ fn default_direct_p2p_port() -> i32 {
 }
 fn default_ollama_url() -> String {
     // Prefer 127.0.0.1 over localhost (Windows can resolve localhost → ::1 while
-    // Ollama typically binds IPv4 only). fetch_model_list also rewrites localhost.
+    // Ollama typically binds IPv4 only). fetch_model_catalog also rewrites localhost.
     "http://127.0.0.1:11434".to_string()
 }
 fn default_ollama_model() -> String {

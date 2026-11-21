@@ -378,7 +378,6 @@ fn build_qt_ui() {
         QmlFile::from("qml/ChatPanel.qml"),
         QmlFile::from("qml/ChatRichMessageDelegate.qml"),
         QmlFile::from("qml/RichChatComposer.qml"),
-        QmlFile::from("qml/CallPanel.qml"),
         QmlFile::from("qml/PassphraseDialog.qml"),
         QmlFile::from("qml/IncomingCallDialog.qml"),
         QmlFile::from("qml/JoinRoomDialog.qml"),

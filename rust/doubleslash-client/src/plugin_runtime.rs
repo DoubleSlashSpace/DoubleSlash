@@ -7,7 +7,7 @@
 //!    `CAPABILITY_ANNOUNCE` payloads, and
 //! 2. prepares the plugin's owning task future and command/event channels
 //!    without spawning — the caller is responsible for spawning the future
-//!    inside a tokio runtime context via [`StartedPlugins::spawn_all`].
+//!    inside a tokio runtime context after taking the command/event handles.
 //!
 //! Today only `x.ollama.v1` is supported; new plugin ids are added by
 //! extending the `prepare_*` helpers and the `start` dispatcher.
@@ -40,29 +40,17 @@ pub struct OllamaHandles {
 ///
 /// Returned by [`PluginRuntime::start`] so the application layer can:
 /// - extract `cmd_tx` / `event_rx` *before* entering the tokio runtime, then
-/// - call [`Self::spawn_all`] inside the runtime to launch the tasks.
+/// - spawn each extracted task inside the runtime.
 #[derive(Default)]
 pub struct StartedPlugins {
     pub ollama: Option<OllamaHandles>,
-}
-
-impl StartedPlugins {
-    /// Spawn every prepared plugin task. Must be called from inside a tokio
-    /// runtime (e.g. within `rt.block_on`). Plugin events should be consumed
-    /// via the `event_rx` handles before calling this, or they will accumulate.
-    pub fn spawn_tasks(self) {
-        if let Some(h) = self.ollama {
-            tokio::spawn(h.task);
-            info!("[plugins] x.ollama.v1 task spawned");
-        }
-    }
 }
 
 /// One-shot starter that walks [`PluginManager::enabled_plugins`] and
 /// prepares each enabled plugin (registers descriptor + builds channels).
 ///
 /// **Does not spawn any tasks.** The caller extracts command/event handles,
-/// then calls [`StartedPlugins::spawn_tasks`] inside a tokio runtime.
+/// then spawns each extracted task inside a tokio runtime.
 pub struct PluginRuntime;
 
 impl PluginRuntime {

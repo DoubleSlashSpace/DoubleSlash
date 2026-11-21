@@ -828,17 +828,6 @@ struct PsModel {
     size_vram: u64,
 }
 
-/// Fetch sorted model names from `GET <base_url>/api/tags` (8 s timeout).
-pub async fn fetch_model_list(client: &Client, base_url: &str) -> Result<Vec<String>, String> {
-    let mut names: Vec<String> = fetch_model_catalog(client, base_url)
-        .await?
-        .into_iter()
-        .map(|m| m.name)
-        .collect();
-    names.sort();
-    Ok(names)
-}
-
 /// Fetch installed models with size, context, capabilities, and live GPU tier.
 pub async fn fetch_model_catalog(
     client: &Client,

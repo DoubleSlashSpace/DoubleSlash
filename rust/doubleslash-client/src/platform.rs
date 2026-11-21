@@ -1,4 +1,4 @@
-//! Platform integration helpers — uri_scheme, taskbar badge, ringtone, UPnP.
+//! Platform integration helpers — package identity, URI scheme, taskbar badge, ringtone, and shortcuts.
 
 use tracing::{info, warn};
 
@@ -881,131 +881,12 @@ fn show_notification_macos(title: &str, body: &str) {
         .spawn();
 }
 
-// ---------------------------------------------------------------------------
-// UPnP port mapping
-// ---------------------------------------------------------------------------
-
-/// Request a UPnP port mapping for the local QUIC listener.
-///
-/// Returns `Some(external_port)` on success or `None` if UPnP is unavailable.
-pub async fn request_upnp_mapping(local_port: u16) -> Option<u16> {
-    use futures_util::{pin_mut, StreamExt};
-    use rupnp::ssdp::{SearchTarget, URN};
-
-    info!("UPnP: searching for IGD gateway...");
-
-    let search_target = SearchTarget::RootDevice;
-    let devices = match rupnp::discover(&search_target, std::time::Duration::from_secs(3)).await {
-        Ok(d) => d,
-        Err(e) => {
-            info!("UPnP: SSDP search failed: {}", e);
-            return None;
-        }
-    };
-    pin_mut!(devices);
-
-    let wan_ip_urn = URN::service("schemas-upnp-org", "WANIPConnection", 1);
-    let wan_ppp_urn = URN::service("schemas-upnp-org", "WANPPPConnection", 1);
-
-    while let Some(device) = devices.next().await {
-        match device {
-            Ok(dev) => {
-                if let Some(external) =
-                    try_add_port_mapping(&dev, &wan_ip_urn, &wan_ppp_urn, local_port).await
-                {
-                    info!("UPnP: successfully mapped {} -> {}", external, local_port);
-                    return Some(external);
-                }
-            }
-            Err(e) => warn!("UPnP: device discovery error: {}", e),
-        }
-    }
-
-    info!("UPnP: no suitable IGD found");
-    None
-}
-
-async fn try_add_port_mapping(
-    device: &rupnp::Device,
-    wan_ip_urn: &rupnp::ssdp::URN,
-    wan_ppp_urn: &rupnp::ssdp::URN,
-    local_port: u16,
-) -> Option<u16> {
-    let service = device
-        .find_service(wan_ip_urn)
-        .or_else(|| device.find_service(wan_ppp_urn))?;
-
-    let description = "DoubleSlash QUIC";
-    let internal_client = local_ip().unwrap_or_default();
-
-    match add_port_mapping(
-        service,
-        device.url(),
-        local_port,
-        local_port,
-        &internal_client,
-        description,
-    )
-    .await
-    {
-        Ok(_) => Some(local_port),
-        Err(e) => {
-            warn!("UPnP: AddPortMapping failed on first try: {}", e);
-            for offset in 1..10 {
-                let Some(try_port) = local_port.checked_add(offset) else {
-                    continue;
-                };
-                if add_port_mapping(
-                    service,
-                    device.url(),
-                    local_port,
-                    try_port,
-                    &internal_client,
-                    description,
-                )
-                .await
-                .is_ok()
-                {
-                    return Some(try_port);
-                }
-            }
-            None
-        }
-    }
-}
-
-async fn add_port_mapping(
-    service: &rupnp::Service,
-    device_url: &rupnp::http::Uri,
-    local_port: u16,
-    external_port: u16,
-    internal_client: &str,
-    description: &str,
-) -> Result<std::collections::HashMap<String, String>, rupnp::Error> {
-    let payload = format!(
-        "<NewRemoteHost></NewRemoteHost>\
-         <NewExternalPort>{external_port}</NewExternalPort>\
-         <NewProtocol>UDP</NewProtocol>\
-         <NewInternalPort>{local_port}</NewInternalPort>\
-         <NewInternalClient>{internal_client}</NewInternalClient>\
-         <NewEnabled>1</NewEnabled>\
-         <NewPortMappingDescription>{description}</NewPortMappingDescription>\
-         <NewLeaseDuration>0</NewLeaseDuration>"
-    );
-    service.action(device_url, "AddPortMapping", &payload).await
-}
-
+/// Best-effort local address for advertising the direct QUIC listener.
 pub(crate) fn local_ip() -> Option<String> {
-    // Simple best-effort local IP (for UPnP internal client)
     use std::net::UdpSocket;
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
     socket.local_addr().ok().map(|a| a.ip().to_string())
-}
-
-/// Release a UPnP port mapping previously obtained with [`request_upnp_mapping`].
-pub async fn release_upnp_mapping(external_port: u16) {
-    info!("UPnP: releasing mapping for port {} (stub)", external_port);
 }
 
 // ---------------------------------------------------------------------------

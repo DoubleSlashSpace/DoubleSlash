@@ -516,23 +516,9 @@ impl ConnectionManager {
         (cmd_tx, event_rx, fut)
     }
 
-    /// Like [`Self::split`] but reuses an externally constructed feature
-    /// registry so callers (e.g. the Qt bridge) can register additional
-    /// plugin descriptors after construction. The registry MUST already
-    /// have the first-party `core.*` modules registered (call
-    /// [`register_client_modules`] before passing it in).
-    pub fn split_with_registry(
-        identity: Arc<Identity>,
-        peer_store: Arc<RwLock<PeerStore>>,
-        feature_registry: Arc<FeatureRegistry>,
-    ) -> (
-        mpsc::Sender<ConnectionCommand>,
-        mpsc::Receiver<ConnectionEvent>,
-        impl std::future::Future<Output = ()> + Send,
-    ) {
-        Self::split_with_registry_and_device(identity, peer_store, feature_registry, None)
-    }
-
+    /// Reuse an externally constructed feature registry with an explicit
+    /// endpoint identity. The registry must already contain the first-party
+    /// modules from [`register_client_modules`].
     pub fn split_with_registry_and_device(
         identity: Arc<Identity>,
         peer_store: Arc<RwLock<PeerStore>>,
@@ -549,7 +535,7 @@ impl ConnectionManager {
     }
 
     /// Build a manager plus its command/event channel endpoints. Shared by
-    /// [`Self::split_with_registry`] (which spawns `run_inner`) and the test
+    /// [`Self::split_with_registry_and_device`] (which returns `run_inner`) and the test
     /// harness (which drives the manager's methods directly).
     fn construct(
         identity: Arc<Identity>,
