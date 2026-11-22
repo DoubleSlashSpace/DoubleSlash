@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Controls.Material
 import QtQuick.Layouts
 import QtQuick.Dialogs
 import DoubleSlash.Client 1.0
@@ -14,6 +15,9 @@ Dialog {
     height: Math.min(660, parent.height - 32)
     modal: true
     closePolicy: Popup.NoAutoClose
+    // Square corners. A Dialog parented to the overlay takes Material's
+    // 28 px dialog radius; the main window's setting does not reach it.
+    Material.roundedScale: Material.NotRounded
     title: "Devices & Backups"
     property string page: "choose"
     property string operation: ""
@@ -71,6 +75,8 @@ Dialog {
     }
     contentItem: ScrollView {
         clip: true
+        // Wrap to the dialog's width rather than scroll sideways.
+        contentWidth: availableWidth
         ColumnLayout {
             width: root.availableWidth
             spacing: 16
@@ -81,20 +87,20 @@ Dialog {
             ColumnLayout {
                 visible: root.page === "choose"
                 Layout.fillWidth: true
-                Button { text: "Create encrypted backup"; enabled: root.unlocked && !root.busy; onClicked: exportPicker.open() }
-                Button { text: "Restore from backup"; enabled: !root.unlocked && !root.busy; onClicked: importPicker.open() }
+                StyledButton { text: "Create encrypted backup"; enabled: root.unlocked && !root.busy; onClicked: exportPicker.open() }
+                StyledButton { text: "Restore from backup"; enabled: !root.unlocked && !root.busy; onClicked: importPicker.open() }
                 Label {
                     Layout.fillWidth: true; wrapMode: Text.WordWrap
                     text: root.unlocked ? "To restore or switch identities, lock and quit, reopen DoubleSlash, then choose Restore backup on the unlock screen." : "Restoring creates a separate profile. Your existing identities remain available below."
                 }
-                Button { visible: root.unlocked; text: "Lock and quit"; enabled: !root.busy; onClicked: root.appBackend.lockIdentityAndQuit() }
+                StyledButton { visible: root.unlocked; text: "Lock and quit"; enabled: !root.busy; onClicked: root.appBackend.lockIdentityAndQuit() }
                 Label {
                     Layout.fillWidth: true; wrapMode: Text.WordWrap
                     text: "Move to your phone: create a backup, transfer the file, then restore it in the Android app. Quit this device before connecting the other. Simultaneous use and ongoing sync are not supported yet."
                 }
                 Repeater {
                     model: root.unlocked ? [] : root.profiles
-                    Button {
+                    StyledButton {
                         required property var modelData
                         text: "Load " + (modelData.profile === "original" ? "original identity " : "restored identity ") + String(modelData.public_id).slice(0, 12) + "…"
                         enabled: !root.busy
@@ -103,27 +109,27 @@ Dialog {
                 }
             }
             Label { visible: root.page === "export" || root.page === "import"; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere; text: root.filePath }
-            CheckBox { id: attachments; visible: root.page === "export"; checked: true; text: "Include available attachment files"; enabled: !root.busy }
+            SquareCheckBox { id: attachments; visible: root.page === "export"; checked: true; text: "Include available attachment files"; enabled: !root.busy }
             Label {
                 visible: root.page === "preview"
                 Layout.fillWidth: true; wrapMode: Text.WordWrap
                 text: "Verified identity: " + (root.summary.public_id || "") + "\nMessages: " + (root.summary.messages || 0) + "\nAttachments: " + (root.summary.attachments || 0) + "\nMissing attachments: " + (root.summary.missing_attachments || 0) + "\n\nChoose a new passphrase for unlocking this device. Your original password and keyfile are not required."
             }
-            TextField {
+            StyledTextField {
                 id: password; Layout.fillWidth: true
                 objectName: "backupPassword"
                 visible: ["export", "import", "preview"].indexOf(root.page) >= 0
                 enabled: !root.busy; echoMode: TextInput.Password
                 placeholderText: root.page === "preview" ? "New local passphrase (at least 12 characters)" : "Backup password"
             }
-            TextField {
+            StyledTextField {
                 id: confirmPassword; Layout.fillWidth: true
                 objectName: "backupConfirmation"
                 visible: root.page === "export" || root.page === "preview"
                 enabled: !root.busy; echoMode: TextInput.Password
                 placeholderText: "Confirm passphrase"
             }
-            Button {
+            StyledButton {
                 visible: root.page === "export" || root.page === "import" || root.page === "preview"
                 objectName: "backupPrimaryAction"
                 text: root.page === "export" ? "Create and verify backup" : root.page === "import" ? "Verify and preview" : "Restore into new profile"
@@ -143,7 +149,7 @@ Dialog {
             SquareBusyIndicator { running: root.busy; visible: running }
             Label { visible: root.busy; text: "Processing and verifying… Large backups can take a few minutes."; Layout.fillWidth: true; wrapMode: Text.WordWrap }
             Label { text: root.errorText; visible: text !== ""; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.danger }
-            Button {
+            StyledButton {
                 enabled: !root.busy
                 text: root.page === "done" && root.operation !== "backup.export" ? "Close DoubleSlash" : "Close"
                 onClicked: {

@@ -49,7 +49,10 @@ Rectangle {
         Label {
             anchors.verticalCenter: parent.verticalCenter
             text: root.text
-            color: root.active ? root.tint : Theme.muted
+            // The border and icon carry the tint. The number in the tint on
+            // its own tinted fill is 2.3:1 (online, light) to 2.6:1 (accent,
+            // dark); the text colour reads in every palette.
+            color: root.active ? Theme.text : Theme.muted
             font.pixelSize: Theme.fontSizeCaption
             font.bold: root.active
         }

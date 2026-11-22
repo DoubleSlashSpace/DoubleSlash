@@ -1071,6 +1071,11 @@ ApplicationWindow {
         // Invite / peer-ID paste field
         StyledTextField {
             id: inviteField
+            // Gives way first when the bar is tight (a narrow window, large
+            // text) so the window buttons are never pushed off the edge.
+            Layout.fillWidth: true
+            Layout.minimumWidth: Theme.controlHeight * 2
+            Layout.maximumWidth: Math.max(160, Theme.fontSizeBody * 12)
             Layout.preferredWidth: 160
             Layout.preferredHeight: Theme.controlHeight
             Layout.maximumHeight: Theme.controlHeight
@@ -2036,6 +2041,47 @@ ApplicationWindow {
         appBackend: backend
     }
 
+    // ── UI audit: only with --ui-audit=<dir> (scripts/test_ui_audit.ps1) ──
+    function uiAuditArg(name) {
+        var args = Qt.application.arguments
+        for (var i = 0; i < args.length; i++) {
+            if (args[i].indexOf(name + "=") === 0)
+                return args[i].substring(name.length + 1)
+        }
+        return ""
+    }
+    readonly property string uiAuditDir: uiAuditArg("--ui-audit")
+
+    Loader {
+        active: root.uiAuditDir !== ""
+        sourceComponent: Component {
+            UiAudit {
+                app: root
+                outDir: root.uiAuditDir
+                matrix: root.uiAuditArg("--ui-audit-matrix") || "quick"
+                onlyPattern: root.uiAuditArg("--ui-audit-only")
+                allowPath: root.uiAuditArg("--ui-audit-allow")
+                probe: root.uiAuditArg("--ui-audit-probe")
+                refs: ({
+                    backend: backend,
+                    settingsModel: settingsModel,
+                    chatModel: chatModel,
+                    nodeListModel: nodeListModel,
+                    chatPanel: chatPanel,
+                    roomPanel: roomPanel,
+                    settingsPage: settingsPage,
+                    passphraseDialog: passphraseDialog,
+                    onboardingWizard: onboardingWizard,
+                    backupWizard: backupWizard,
+                    hostSupernodeWizard: hostSupernodeWizard,
+                    createRoomDialog: createRoomDialog,
+                    acceptInviteDialog: acceptInviteDialog,
+                    invitePopup: invitePopup
+                })
+            }
+        }
+    }
+
     // Listen for "Incorrect passphrase" banner to re-show dialog with error
     Connections {
         target: backend
@@ -2221,6 +2267,10 @@ ApplicationWindow {
             open()
         }
 
+        footer: StyledButtonBox {
+            standardButtons: renameNodeDialog.standardButtons
+        }
+
         onAboutToShow: renameNodeField.forceActiveFocus()
         onAccepted: backend.renameSupernode(nodeId, renameNodeField.text)
         onReset: {
@@ -2237,8 +2287,9 @@ ApplicationWindow {
 
         header: Rectangle {
             color: Theme.bg0
-            height: 48
+            implicitHeight: Math.max(48, renameNodeDialogTitle.implicitHeight + Theme.spacingMd * 2)
             Text {
+                id: renameNodeDialogTitle
                 anchors.centerIn: parent
                 text: renameNodeDialog.title
                 color: Theme.text
@@ -2300,8 +2351,9 @@ ApplicationWindow {
 
         header: Rectangle {
             color: Theme.bg0
-            height: 48
+            implicitHeight: Math.max(48, acceptInviteDialogTitle.implicitHeight + Theme.spacingMd * 2)
             Text {
+                id: acceptInviteDialogTitle
                 anchors.centerIn: parent
                 text: acceptInviteDialog.title
                 color: Theme.text
@@ -2319,7 +2371,9 @@ ApplicationWindow {
                 font.pixelSize: Theme.fontSizeCaption
             }
 
-            TextField {
+            // StyledTextField keeps the placeholder in the field instead of
+            // floating it onto the border.
+            StyledTextField {
                 id: acceptInviteField
                 Layout.fillWidth: true
                 Layout.preferredHeight: Theme.controlHeight * 2
@@ -2337,13 +2391,9 @@ ApplicationWindow {
             }
         }
 
-        footer: DialogButtonBox {
+        footer: StyledButtonBox {
             standardButtons: acceptInviteDialog.standardButtons
-            background: Rectangle { color: Theme.bg0 }
-            delegate: Button {
-                enabled: DialogButtonBox.buttonRole !== DialogButtonBox.AcceptRole
-                      || acceptInviteField.text.trim() !== ""
-            }
+            acceptEnabled: acceptInviteField.text.trim() !== ""
         }
     }
 
@@ -2422,8 +2472,9 @@ ApplicationWindow {
         header: Rectangle {
             id: headerBar
             color: Theme.bg0
-            height: 48
+            implicitHeight: Math.max(48, confirmRemoveDialogTitle.implicitHeight + Theme.spacingMd * 2)
             Text {
+                id: confirmRemoveDialogTitle
                 anchors.centerIn: parent
                 text: confirmRemoveDialog.title
                 color: Theme.text
@@ -2503,8 +2554,12 @@ ApplicationWindow {
         readonly property string qrRows: showQr ? backend.qrRows(backend.invite_url) : ""
         x: parent.width / 2 - width / 2
         y: customTitleBar.height + 8
-        width: 460
+        // Wider with larger text, within the window. The column's own 12 px
+        // margins are the padding; Material's would be added on top and push
+        // the last row out of the box.
+        width: Math.min(parent.width - Theme.spacingLg * 2, Math.max(460, Theme.fontSizeBody * 36))
         height: popupColumn.implicitHeight + 24
+        padding: 0
         modal: false
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         z: 200
@@ -2529,6 +2584,8 @@ ApplicationWindow {
                 text: "Invite link copied to clipboard:"
                 color: Theme.text
                 font.pixelSize: Theme.fontSizeCaption
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
             }
 
             RowLayout {
@@ -2541,15 +2598,13 @@ ApplicationWindow {
                     readOnly: true
                 }
 
-                Button {
+                IconButton {
                     icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg")
-                    icon.width: Theme.iconPx(30)
-                    icon.height: Theme.iconPx(30)
+                    icon.width: Theme.iconPx(18)
+                    icon.height: Theme.iconPx(18)
                     icon.color: Theme.text
-                    implicitHeight: Theme.iconPx(30)
-                    implicitWidth: Theme.iconPx(30)
-                    flat: true
-                    Material.foreground: Theme.text
+                    Layout.preferredWidth: Theme.controlHeight
+                    Layout.preferredHeight: Theme.controlHeight
                     ToolTip.text: "Copy to clipboard"
                     ToolTip.visible: hovered
                     onClicked: {

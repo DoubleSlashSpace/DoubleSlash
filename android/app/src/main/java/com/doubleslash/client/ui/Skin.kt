@@ -142,14 +142,14 @@ val SKIN_PRESETS = listOf(
         "slate", "Slate", "dark",
         mapOf(
             "bg0" to "#0F141A", "bg1" to "#151C24", "bg2" to "#1D2630", "bg3" to "#2A3542",
-            "border" to "#151C24", "divider" to "#2A3542", "accent" to "#3B82F6", "linkPeer" to "#7FB0FF",
+            "border" to "#151C24", "divider" to "#2A3542", "accent" to "#2563EB", "linkPeer" to "#7FB0FF",
         ),
     ),
     SkinPreset(
         "forest", "Forest", "dark",
         mapOf(
             "bg0" to "#0E1411", "bg1" to "#141D18", "bg2" to "#1C2821", "bg3" to "#28372E",
-            "border" to "#141D18", "divider" to "#28372E", "accent" to "#2F9E6E", "linkPeer" to "#7FD1A8",
+            "border" to "#141D18", "divider" to "#28372E", "accent" to "#1E7A52", "linkPeer" to "#7FD1A8",
         ),
     ),
     SkinPreset(
@@ -157,7 +157,8 @@ val SKIN_PRESETS = listOf(
         mapOf(
             "bg0" to "#000000", "bg1" to "#000000", "bg2" to "#0D0D0D", "bg3" to "#262626",
             "text" to "#FFFFFF", "muted" to "#D6D6D6", "border" to "#8A8A8A", "divider" to "#8A8A8A",
-            "accent" to "#8C9BFF", "linkPeer" to "#AFC0FF",
+            // The accent is light, so text on it is black (8.2:1; white is 2.5:1).
+            "accent" to "#8C9BFF", "textInv" to "#000000", "linkPeer" to "#AFC0FF",
         ),
     ),
     SkinPreset(

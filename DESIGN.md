@@ -95,7 +95,8 @@ menu visible and disabled while Show in list and Remove remain enabled.
 | Component | Pattern |
 |---|---|
 | `TitleBar` | Desktop drag/maximize/window controls; close has destructive-colored hover |
-| `StyledButton` / `StyledTextField` | Shared compact controls, aligned icons/labels, focus/hover/disabled states and tooltips |
+| `StyledButton` / `StyledTextField` | Shared compact controls, aligned icons/labels, focus/hover/disabled states and tooltips; the field's placeholder stays inside it rather than floating over a label |
+| `StyledButtonBox` / `SquareCheckBox` | Square dialog footer (accept button filled) and checkbox, in place of Material's pill buttons and rounded indicator |
 | `Avatar` / `SupernodeAvatar` | Identity-derived artwork generated locally; speaking/connection rings consume model state |
 | `ConnectionStatsChip` / `StatsPanel` | Per-peer or node path/latency and detailed diagnostics |
 | `ChatPanel` / `RoomPanel` | Local history, transfer cards, visible read state, optional inline link playback |
@@ -141,6 +142,16 @@ On Windows with Qt installed:
 
 Those scripts stage production QML with fixtures/mocked backends. They cover
 specific controls/wizard states, not full two-client or hardware acceptance.
+
+`.\scripts\test_ui_audit.ps1 [-Build] [-Matrix full]` runs the built client
+itself on a throwaway profile. It walks the Peers and Rooms lists, sample
+conversations, every Settings section and the dialogs and wizards in dark,
+light, large-text and minimum-window variants (`full` adds the other text
+sizes and every skin). On each screen it checks every visible item for text
+overflow, clipping, overlap, contrast, items escaping a dialog, small or
+unlabeled controls and the angular rule. It writes an annotated `report.html`
+under `rust/target/ui-audit/` and fails on errors. The script's help lists the
+rules, the allowlist format and what the tour cannot reach.
 UI changes also need a Qt-enabled build and the relevant Android checks.
 Record packaged-client results in [acceptance](docs/ACCEPTANCE.md) or the owning
 guide and keep remaining work in [backlog.md](backlog.md).

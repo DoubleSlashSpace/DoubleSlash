@@ -438,10 +438,14 @@ Item {
             Layout.fillWidth: true
             // 48 at the designed size. The join button is 26; anything past
             // that is added, so a larger icon still fits the inset row.
-            height: Theme.touchTarget + Theme.spacingXs + Math.max(0, Theme.iconPx(26) - 26)
+            // At large text the title line outgrows that, so the row's own
+            // height wins.
+            implicitHeight: Math.max(Theme.touchTarget + Theme.spacingXs + Math.max(0, Theme.iconPx(26) - 26),
+                             roomHeaderRow.implicitHeight + Theme.spacingMd * 2)
             color: Theme.bg2
 
             RowLayout {
+                id: roomHeaderRow
                 anchors.fill: parent
                 anchors.margins: Theme.spacingMd
                 spacing: Theme.spacingSm
@@ -505,6 +509,8 @@ Item {
                     tip: qsTr("Show voice members")
                     MouseArea {
                         anchors.fill: parent
+                        // A little past the 21 px badge, so it is not a small target.
+                        anchors.margins: -2
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.membersRequested()
                     }
@@ -519,6 +525,7 @@ Item {
                         : qsTr("Show text members")
                     MouseArea {
                         anchors.fill: parent
+                        anchors.margins: -2
                         cursorShape: Qt.PointingHandCursor
                         onClicked: root.textMembersRequested()
                     }

@@ -602,7 +602,8 @@ Item {
                                     color: root.xferState === "failed"
                                            ? Theme.danger
                                            : (root.mine ? Theme.textInv : Theme.muted)
-                                    opacity: 0.8
+                                    // Muted is already the secondary colour;
+                                    // fading it further fell under 4.5:1.
                                     font.pixelSize: Theme.fontSizeCaption
                                     elide: Text.ElideRight
                                     Layout.fillWidth: true
@@ -1044,8 +1045,8 @@ Item {
                 icon.width: Theme.iconPx(14)
                 icon.height: Theme.iconPx(14)
                 icon.color: Theme.muted
-                implicitWidth: Theme.iconPx(22)
-                implicitHeight: Theme.iconPx(22)
+                implicitWidth: Theme.iconPx(24)
+                implicitHeight: Theme.iconPx(24)
                 padding: 4
                 ToolTip.text: "Copy message"
                 ToolTip.visible: hovered
@@ -1058,8 +1059,8 @@ Item {
                 icon.width: Theme.iconPx(14)
                 icon.height: Theme.iconPx(14)
                 icon.color: Theme.muted
-                implicitWidth: Theme.iconPx(22)
-                implicitHeight: Theme.iconPx(22)
+                implicitWidth: Theme.iconPx(24)
+                implicitHeight: Theme.iconPx(24)
                 padding: 4
                 ToolTip.text: "Retry"
                 ToolTip.visible: hovered
@@ -1072,8 +1073,8 @@ Item {
                 icon.width: Theme.iconPx(14)
                 icon.height: Theme.iconPx(14)
                 icon.color: Theme.danger
-                implicitWidth: Theme.iconPx(22)
-                implicitHeight: Theme.iconPx(22)
+                implicitWidth: Theme.iconPx(24)
+                implicitHeight: Theme.iconPx(24)
                 padding: 4
                 ToolTip.text: "Delete"
                 ToolTip.visible: hovered
@@ -1091,6 +1092,12 @@ Item {
         title: "Inline Preview"
         modal: true
         standardButtons: Dialog.Ok | Dialog.Cancel
+        // Parented to the overlay, so Material's 28 px dialog radius applies
+        // unless set here.
+        Material.roundedScale: Material.NotRounded
+        footer: StyledButtonBox {
+            standardButtons: disclosure.standardButtons
+        }
 
         property var _pendingPreview: null
 

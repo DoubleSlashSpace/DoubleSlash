@@ -150,9 +150,10 @@ Dialog {
 
     header: Rectangle {
         color: Theme.bg0
-        height: 48
+        implicitHeight: Math.max(48, titleText.implicitHeight + Theme.spacingMd * 2)
         radius: 0
         Text {
+            id: titleText
             anchors.centerIn: parent
             text: root.title
             color: Theme.text
@@ -201,6 +202,7 @@ Dialog {
 
             SquareSwitch {
                 id: privateSwitch
+                Accessible.name: qsTr("Private")
                 checked: false
             }
         }
@@ -239,6 +241,7 @@ Dialog {
 
             SquareSwitch {
                 id: membersCanInviteSwitch
+                Accessible.name: qsTr("Members can invite")
                 checked: false
             }
         }
@@ -253,7 +256,9 @@ Dialog {
                 font.pixelSize: Theme.fontSizeCaption
             }
 
-            TextField {
+            // StyledTextField keeps the placeholder in the field: Material's
+            // floats onto the border over the "Room name" label above.
+            StyledTextField {
                 id: roomNameField
                 Layout.fillWidth: true
                 Layout.preferredHeight: Theme.controlHeight
@@ -401,21 +406,9 @@ Dialog {
         }
     }
 
-    footer: DialogButtonBox {
+    footer: StyledButtonBox {
         id: buttonBox
         standardButtons: root.standardButtons
-        background: Rectangle {
-            color: Theme.bg0
-            radius: 0
-            Rectangle {
-                anchors { left: parent.left; right: parent.right; top: parent.top }
-                height: 10
-                color: Theme.bg0
-            }
-        }
-        delegate: Button {
-            enabled: DialogButtonBox.buttonRole !== DialogButtonBox.AcceptRole
-                  || (roomNameField.text.trim() !== "" && root.resolvedSupernodeId !== "")
-        }
+        acceptEnabled: roomNameField.text.trim() !== "" && root.resolvedSupernodeId !== ""
     }
 }

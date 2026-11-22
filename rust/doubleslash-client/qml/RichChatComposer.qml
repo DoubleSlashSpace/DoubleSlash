@@ -115,8 +115,9 @@ Rectangle {
         font.pixelSize: Theme.fontSizeTitle
         icon.width: Theme.iconPx(18)
         icon.height: Theme.iconPx(18)
-        icon.color: Theme.muted
-        Material.foreground: Theme.muted
+        // Muted on the button's tile is 3.7:1; the text colour reads.
+        icon.color: enabled ? Theme.text : Theme.muted
+        Material.foreground: enabled ? Theme.text : Theme.muted
         Accessible.name: tip
         ToolTip.text: tip
         ToolTip.visible: hovered

@@ -168,6 +168,17 @@ Item {
         return idx >= 0 ? idx : fallback
     }
 
+    /// Label-and-control grids stack into one column when a row would not
+    /// fit: with large text or a narrow window the label column took most of
+    /// the card and squeezed the controls to a few characters. Measured in
+    /// body text, so the break moves with the font-size setting.
+    function settingsGridColumns(width) {
+        return width >= Theme.fontSizeBody * 30 ? 2 : 1
+    }
+
+    /// Room for "200%" beside a volume slider at any text size.
+    readonly property int percentLabelWidth: Math.ceil(Theme.fontSizeBody * 3.4)
+
     // ── Skin ────────────────────────────────────────────────────────────────
     //
     // The skin is stored as the portable JSON Theme.qml documents, so what the
@@ -391,7 +402,7 @@ Item {
                             property bool capturing: false
                             property bool readyToCapture: false
                             Layout.preferredWidth: 180
-                            height: Theme.controlHeight
+                            implicitHeight: Theme.controlHeight
 
                             Timer {
                                 id: captureReady
@@ -471,11 +482,11 @@ Item {
 
                     GridLayout {
                         Layout.fillWidth: true
-                        columns: 2
+                        columns: root.settingsGridColumns(width)
                         columnSpacing: Theme.spacingXl
                         rowSpacing: Theme.spacingMd
 
-                        Label { text: "Noise suppression"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Noise suppression"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             id: noiseCombo
                             Layout.fillWidth: true
@@ -491,7 +502,7 @@ Item {
                             }
                         }
 
-                        Label { text: "Outgoing bitrate"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Outgoing bitrate"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             id: bitrateCombo
                             Layout.fillWidth: true
@@ -506,7 +517,7 @@ Item {
                             }
                         }
 
-                        Label { text: "Decode quality"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Decode quality"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         RowLayout {
                             Layout.fillWidth: true
                             SpinBox {
@@ -524,11 +535,14 @@ Item {
                                 text: root.decoderComplexityCaption(complexitySpin.value)
                                 color: Theme.muted
                                 font.pixelSize: Theme.fontSizeCaption
+                                // Wraps rather than running off a narrow card.
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
                             }
                         }
 
                         Label {
-                            Layout.columnSpan: 2
+                            Layout.columnSpan: parent.columns
                             Layout.fillWidth: true
                             text: "How hard this device works to conceal gaps in voice. 5 is Deep PLC. Other people decode the same packets."
                             color: Theme.muted
@@ -536,7 +550,7 @@ Item {
                             wrapMode: Text.WordWrap
                         }
 
-                        Label { text: "Jitter buffer"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Jitter buffer"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         RowLayout {
                             Layout.fillWidth: true
                             SpinBox {
@@ -549,7 +563,7 @@ Item {
                                     if (backend) backend.setJitterDepth(value)
                                 }
                             }
-                            Label { text: "packets"; color: Theme.muted; font.pixelSize: Theme.fontSizeCaption }
+                            Label { text: "packets"; color: Theme.muted; font.pixelSize: Theme.fontSizeCaption; Layout.fillWidth: true; Layout.maximumWidth: implicitWidth; wrapMode: Text.WordWrap }
                         }
                     }
                 }
@@ -563,7 +577,7 @@ Item {
                         columnSpacing: Theme.spacingLg
                         rowSpacing: Theme.spacingMd
 
-                        Label { text: "Microphone"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Microphone"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         SquareSlider {
                             Layout.fillWidth: true
                             from: 0
@@ -576,9 +590,9 @@ Item {
                                 if (backend) backend.setInputVolume(root.settings.input_volume)
                             }
                         }
-                        Label { text: (root.settings ? root.settings.input_volume : 100) + "%"; color: Theme.muted; Layout.preferredWidth: 44 }
+                        Label { text: (root.settings ? root.settings.input_volume : 100) + "%"; color: Theme.muted; Layout.preferredWidth: root.percentLabelWidth }
 
-                        Label { text: "Speaker"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Speaker"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         SquareSlider {
                             Layout.fillWidth: true
                             from: 0
@@ -591,9 +605,9 @@ Item {
                                 if (backend) backend.setOutputVolume(root.settings.output_volume)
                             }
                         }
-                        Label { text: (root.settings ? root.settings.output_volume : 100) + "%"; color: Theme.muted; Layout.preferredWidth: 44 }
+                        Label { text: (root.settings ? root.settings.output_volume : 100) + "%"; color: Theme.muted; Layout.preferredWidth: root.percentLabelWidth }
 
-                        Label { text: "Input device"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Input device"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             id: inputDeviceCombo
                             Layout.columnSpan: 2
@@ -607,7 +621,7 @@ Item {
                             }
                         }
 
-                        Label { text: "Output device"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Output device"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             id: outputDeviceCombo
                             Layout.columnSpan: 2
@@ -791,11 +805,11 @@ Item {
 
                     GridLayout {
                         Layout.fillWidth: true
-                        columns: 2
+                        columns: root.settingsGridColumns(width)
                         columnSpacing: Theme.spacingLg
                         rowSpacing: Theme.spacingMd
 
-                        Label { text: "Source"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Source"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             id: cameraCombo
                             Layout.fillWidth: true
@@ -810,7 +824,7 @@ Item {
                             }
                         }
 
-                        Label { text: "Audio"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Audio"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         // The share button asks about audio each time it starts
                         // a share, and writes the answer back here — so this is
                         // the pre-selected default rather than a separate
@@ -840,7 +854,7 @@ Item {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             color: Theme.muted
-                            font.pixelSize: Theme.fontSizeMicro
+                            font.pixelSize: Theme.fontSizeCaption
                             text: {
                                 var dev = root.settings ? root.settings.video_input_device : ""
                                 var isScreen = dev.indexOf("window:") === 0
@@ -1125,11 +1139,11 @@ Item {
 
                     GridLayout {
                         Layout.fillWidth: true
-                        columns: 2
+                        columns: root.settingsGridColumns(width)
                         columnSpacing: Theme.spacingLg
                         rowSpacing: Theme.spacingMd
 
-                        Label { text: "Quality"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Quality"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             id: qualityCombo
                             Layout.fillWidth: true
@@ -1143,7 +1157,7 @@ Item {
                             }
                         }
 
-                        Label { text: "Resolution"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Resolution"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             id: resolutionCombo
                             Layout.fillWidth: true
@@ -1160,7 +1174,7 @@ Item {
                             }
                         }
 
-                        Label { text: "Frame rate"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Frame rate"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             id: fpsCombo
                             Layout.fillWidth: true
@@ -1175,7 +1189,7 @@ Item {
                             }
                         }
 
-                        Label { text: "Bitrate"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Bitrate"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             id: bitrateVideoCombo
                             Layout.fillWidth: true
@@ -1198,7 +1212,7 @@ Item {
                             }
                         }
 
-                        Label { text: "Keyframe every"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Keyframe every"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             id: keyframeCombo
                             Layout.fillWidth: true
@@ -1218,13 +1232,13 @@ Item {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             color: Theme.muted
-                            font.pixelSize: Theme.fontSizeMicro
+                            font.pixelSize: Theme.fontSizeCaption
                             text: qsTr("Shorter means someone joining sees a picture sooner and "
                                        + "costs more of the bitrate; longer is cheaper but leaves "
                                        + "a late joiner waiting.")
                         }
 
-                        Label { text: "Codec"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Codec"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             id: codecCombo
                             Layout.fillWidth: true
@@ -1242,7 +1256,7 @@ Item {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             color: Theme.muted
-                            font.pixelSize: Theme.fontSizeMicro
+                            font.pixelSize: Theme.fontSizeCaption
                             text: {
                                 if (!root.settings || root.settings.video_codec === "auto")
                                     return qsTr("Each peer is sent the best codec you both have.")
@@ -1528,6 +1542,7 @@ Item {
                         text: "No overlays — the main source fills the frame."
                         color: Theme.muted
                         font.pixelSize: Theme.fontSizeCaption
+                        wrapMode: Text.WordWrap
                     }
 
                     Repeater {
@@ -1787,11 +1802,11 @@ Item {
 
                     GridLayout {
                         Layout.fillWidth: true
-                        columns: 2
+                        columns: root.settingsGridColumns(width)
                         columnSpacing: Theme.spacingXl
                         rowSpacing: Theme.spacingMd
 
-                        Label { text: "Grid size"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Grid size"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             Layout.fillWidth: true
                             model: root.avatarGridSizes
@@ -1799,7 +1814,7 @@ Item {
                             onActivated: root.setAvatarValue("grid", parseInt(currentText))
                         }
 
-                        Label { text: "Saturation"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Saturation"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         SquareSlider {
                             Layout.fillWidth: true
                             from: 0.1; to: 1.0; stepSize: 0.01
@@ -1808,7 +1823,7 @@ Item {
                             onPressedChanged: if (!pressed) root.commitAvatarSlider("sat", value)
                         }
 
-                        Label { text: "Lightness"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Lightness"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         SquareSlider {
                             Layout.fillWidth: true
                             from: 0.1; to: 0.9; stepSize: 0.01
@@ -1817,7 +1832,7 @@ Item {
                             onPressedChanged: if (!pressed) root.commitAvatarSlider("lig", value)
                         }
 
-                        Label { text: "Hue spread"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Hue spread"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         SquareSlider {
                             Layout.fillWidth: true
                             from: 0.0; to: 0.5; stepSize: 0.01
@@ -1826,8 +1841,9 @@ Item {
                             onPressedChanged: if (!pressed) root.commitAvatarSlider("spread", value)
                         }
 
-                        Label { text: "Background tint"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Background tint"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         SquareSwitch {
+                            Accessible.name: "Background tint"
                             checked: root.avatarValue("bg_tint", true)
                             onToggled: root.setAvatarValue("bg_tint", checked)
                         }
@@ -1835,7 +1851,7 @@ Item {
                         Label {
                             text: "Background lightness"
                             color: Theme.muted
-                            Layout.alignment: Qt.AlignRight
+                            Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight
                             visible: root.avatarValue("bg_tint", true)
                         }
                         SquareSlider {
@@ -1848,7 +1864,7 @@ Item {
                             onPressedChanged: if (!pressed) root.commitAvatarSlider("bg_lig", value)
                         }
 
-                        Label { text: "Shade levels"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Shade levels"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             Layout.fillWidth: true
                             model: ["flat", "2-level", "3-level"]
@@ -1856,8 +1872,9 @@ Item {
                             onActivated: root.setAvatarValue("shade_mode", currentIndex + 1)
                         }
 
-                        Label { text: "Dual hue"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Dual hue"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         SquareSwitch {
+                            Accessible.name: "Dual hue"
                             checked: root.avatarValue("dual_hue", false)
                             onToggled: root.setAvatarValue("dual_hue", checked)
                         }
@@ -1865,7 +1882,7 @@ Item {
                         Label {
                             text: "Dual hue mode"
                             color: Theme.muted
-                            Layout.alignment: Qt.AlignRight
+                            Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight
                             visible: root.avatarValue("dual_hue", false)
                         }
                         ComboBox {
@@ -1880,8 +1897,9 @@ Item {
                             onActivated: root.setAvatarValue("dual_hue_mode", currentText)
                         }
 
-                        Label { text: "Islands"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Islands"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         SquareSwitch {
+                            Accessible.name: "Islands"
                             checked: root.avatarValue("islands", true)
                             onToggled: root.setAvatarValue("islands", checked)
                         }
@@ -1889,7 +1907,7 @@ Item {
                         Label {
                             text: "Island connectivity"
                             color: Theme.muted
-                            Layout.alignment: Qt.AlignRight
+                            Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight
                             visible: root.avatarValue("islands", true)
                         }
                         ComboBox {
@@ -1904,7 +1922,7 @@ Item {
                         Label {
                             text: "Island hue step"
                             color: Theme.muted
-                            Layout.alignment: Qt.AlignRight
+                            Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight
                             visible: root.avatarValue("islands", true)
                         }
                         SquareSlider {
@@ -1920,24 +1938,27 @@ Item {
                         Label {
                             text: "Island saturation variance"
                             color: Theme.muted
-                            Layout.alignment: Qt.AlignRight
+                            Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight
                             visible: root.avatarValue("islands", true)
                         }
                         SquareSwitch {
                             visible: root.avatarValue("islands", true)
                             enabled: root.avatarValue("islands", true)
+                            Accessible.name: "Island saturation variance"
                             checked: root.avatarValue("island_varsat", true)
                             onToggled: root.setAvatarValue("island_varsat", checked)
                         }
 
-                        Label { text: "Crisp edges"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Crisp edges"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         SquareSwitch {
+                            Accessible.name: "Crisp edges"
                             checked: root.avatarValue("svg_crisp", true)
                             onToggled: root.setAvatarValue("svg_crisp", checked)
                         }
 
-                        Label { text: "Rounded cells"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Rounded cells"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         SquareSwitch {
+                            Accessible.name: "Rounded cells"
                             checked: root.avatarValue("svg_round_cells", false)
                             onToggled: root.setAvatarValue("svg_round_cells", checked)
                         }
@@ -2050,11 +2071,11 @@ Item {
 
                     GridLayout {
                         Layout.fillWidth: true
-                        columns: 2
+                        columns: root.settingsGridColumns(width)
                         columnSpacing: Theme.spacingXl
                         rowSpacing: Theme.spacingMd
 
-                        Label { text: qsTr("Format"); color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: qsTr("Format"); color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             Layout.fillWidth: true
                             // String rows, not object roles: a JS object model
@@ -2081,11 +2102,11 @@ Item {
 
                     GridLayout {
                         Layout.fillWidth: true
-                        columns: 2
+                        columns: root.settingsGridColumns(width)
                         columnSpacing: Theme.spacingXl
                         rowSpacing: Theme.spacingMd
 
-                        Label { text: qsTr("Theme"); color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: qsTr("Theme"); color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             Layout.fillWidth: true
                             model: [qsTr("System"), qsTr("Dark"), qsTr("Light")]
@@ -2094,7 +2115,7 @@ Item {
                             onActivated: root.setTheme(values[currentIndex])
                         }
 
-                        Label { text: qsTr("Skin"); color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: qsTr("Skin"); color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             id: skinCombo
                             Layout.fillWidth: true
@@ -2130,11 +2151,15 @@ Item {
                                 readonly property string token: modelData
                                 readonly property bool overridden:
                                     Theme.skinColors[swatchCell.token] !== undefined
-                                width: 150
-                                height: 36
+                                // Grows with the text: a fixed 150×36 let
+                                // labels and hex values run into the next
+                                // row and cell at larger text sizes.
+                                width: Math.max(150, swatchRow.implicitWidth + Theme.spacingXs * 2 + Theme.spacingSm)
+                                height: Math.max(36, swatchRow.implicitHeight + Theme.spacingXs * 2)
                                 color: swatchHover.hovered ? Theme.bg3 : "transparent"
 
                                 Row {
+                                    id: swatchRow
                                     anchors.verticalCenter: parent.verticalCenter
                                     x: Theme.spacingXs
                                     spacing: Theme.spacingSm
@@ -2523,13 +2548,13 @@ Item {
 
                     GridLayout {
                         Layout.fillWidth: true
-                        columns: 2
+                        columns: root.settingsGridColumns(width)
                         columnSpacing: Theme.spacingXl
                         rowSpacing: Theme.spacingMd
                         enabled: ollamaEnabledSwitch.checked
                         opacity: enabled ? 1.0 : 0.5
 
-                        Label { text: "Base URL"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Base URL"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         TextField {
                             Layout.fillWidth: true
                             text: root.settings ? root.settings.ollama_base_url : "http://127.0.0.1:11434"
@@ -2543,7 +2568,7 @@ Item {
                             }
                         }
 
-                        Label { text: "Model"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Model"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         RowLayout {
                             Layout.fillWidth: true
                             ComboBox {
@@ -2750,7 +2775,7 @@ Item {
                             }
                         }
 
-                        Label { text: "Speech-to-text model"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Speech-to-text model"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         TextField {
                             Layout.fillWidth: true
                             text: root.settings ? root.settings.ollama_stt_model : ""
@@ -2763,7 +2788,7 @@ Item {
                             }
                         }
 
-                        Label { text: "System prompt"; color: Theme.muted; Layout.alignment: Qt.AlignRight | Qt.AlignTop }
+                        Label { text: "System prompt"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignTop }
                         TextArea {
                             Layout.fillWidth: true
                             implicitHeight: 96
@@ -2844,7 +2869,10 @@ Item {
                                                                            : "None — only chat attachments can be sent"
                                         color: shareFolderRow.folder !== "" ? Theme.text : Theme.muted
                                         font.pixelSize: Theme.fontSizeCaption
-                                        elide: Text.ElideMiddle
+                                        // A path keeps both ends; the sentence
+                                        // shown without one wraps instead.
+                                        elide: shareFolderRow.folder !== "" ? Text.ElideMiddle : Text.ElideNone
+                                        wrapMode: shareFolderRow.folder !== "" ? Text.NoWrap : Text.WordWrap
                                     }
                                     SettingsIcon {
                                         tip: "Choose folder"
@@ -3009,7 +3037,7 @@ Item {
                                             nodeRow.node_id, nodeRow.connected)
                                         color: Theme.muted
                                         font.pixelSize: Theme.fontSizeCaption
-                                        elide: Text.ElideRight
+                                        wrapMode: Text.WordWrap
                                     }
                                 }
 
@@ -3116,10 +3144,10 @@ Item {
 
                     GridLayout {
                         Layout.fillWidth: true
-                        columns: 2
+                        columns: root.settingsGridColumns(width)
                         columnSpacing: Theme.spacingXl
 
-                        Label { text: "UDP listener port"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "UDP listener port"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         StyledTextField {
                             Layout.preferredWidth: 120
                             enabled: root.settings ? root.settings.direct_p2p_enabled : true
@@ -3169,10 +3197,10 @@ Item {
 
                     GridLayout {
                         Layout.fillWidth: true
-                        columns: 2
+                        columns: root.settingsGridColumns(width)
                         columnSpacing: Theme.spacingXl
 
-                        Label { text: "Build attestation"; color: Theme.muted; Layout.alignment: Qt.AlignRight }
+                        Label { text: "Build attestation"; color: Theme.muted; Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight }
                         ComboBox {
                             Layout.fillWidth: true
                             model: ["Off", "Warn", "Strict"]
@@ -3228,11 +3256,14 @@ Item {
                         font.pixelSize: Theme.fontSizeBody
                     }
 
-                    RowLayout {
+                    // Flows, so a narrow card or large text moves the spin box
+                    // and action to the next line instead of squeezing the
+                    // words. Labels take the spin box's height to stay level.
+                    Flow {
                         Layout.fillWidth: true
                         spacing: Theme.spacingMd
 
-                        Label { text: "Trim messages older than"; color: Theme.muted }
+                        Label { text: "Trim messages older than"; color: Theme.muted; height: trimAgeSpin.height; verticalAlignment: Text.AlignVCenter }
                         SpinBox { id: trimAgeSpin; from: 1; to: 3650; value: 30; textFromValue: function(v) { return v + " days" }; valueFromText: function(t) { return parseInt(t) || 30 } }
                         SettingsIcon {
                             tip: "Trim by Age"
@@ -3242,16 +3273,15 @@ Item {
                                 privacyBox.storedCount = backend ? backend.getStoredMessageCount() : 0
                             }
                         }
-                        Item { Layout.fillWidth: true }
                     }
 
-                    RowLayout {
+                    Flow {
                         Layout.fillWidth: true
                         spacing: Theme.spacingMd
 
-                        Label { text: "Keep most recent"; color: Theme.muted }
+                        Label { text: "Keep most recent"; color: Theme.muted; height: trimCountSpin.height; verticalAlignment: Text.AlignVCenter }
                         SpinBox { id: trimCountSpin; from: 1; to: 100000; value: 500; textFromValue: function(v) { return v + " msgs" }; valueFromText: function(t) { return parseInt(t) || 500 } }
-                        Label { text: "per conversation"; color: Theme.muted }
+                        Label { text: "per conversation"; color: Theme.muted; height: trimCountSpin.height; verticalAlignment: Text.AlignVCenter }
                         SettingsIcon {
                             tip: "Trim to Limit"
                             icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trim-count.svg")
@@ -3260,7 +3290,6 @@ Item {
                                 privacyBox.storedCount = backend ? backend.getStoredMessageCount() : 0
                             }
                         }
-                        Item { Layout.fillWidth: true }
                     }
                 }
 
@@ -3442,7 +3471,7 @@ Item {
                 SettingsCard {
                     title: "About"
 
-                    Label { text: "DoubleSlash - Privacy-first peer connectivity"; color: Theme.muted }
+                    Label { text: "DoubleSlash - Privacy-first peer connectivity"; color: Theme.muted; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                     Label { text: "Version " + Qt.application.version; color: Theme.muted }
 
                     RowLayout {
@@ -3474,7 +3503,7 @@ Item {
                         visible: !(backend && backend.windows_package)
                         property bool hasShortcuts: backend ? backend.hasDesktopShortcuts() : false
                         text: hasShortcuts ? "Status: Shortcuts exist" : "Status: No shortcuts found"
-                        color: hasShortcuts ? Theme.online : Theme.muted
+                        color: hasShortcuts ? Theme.text : Theme.muted
                         font.pixelSize: Theme.fontSizeCaption
                     }
                 }

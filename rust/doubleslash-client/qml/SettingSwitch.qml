@@ -34,7 +34,9 @@ Item {
                 text: root.title
                 color: Theme.text
                 font.pixelSize: Theme.fontSizeBody
-                elide: Text.ElideRight
+                // Wrapped, not elided: with large text or a narrow window an
+                // ellipsis hid what the switch does.
+                wrapMode: Text.WordWrap
             }
 
             Label {
@@ -50,6 +52,10 @@ Item {
         SquareSwitch {
             checked: root.checked
             enabled: root.enabled
+            // The switch is what takes focus, so it carries the name a
+            // screen reader announces.
+            Accessible.name: root.title
+            Accessible.description: root.description
             Layout.alignment: Qt.AlignVCenter
             onToggled: root.changed(checked)
         }

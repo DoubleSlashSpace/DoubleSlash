@@ -18,7 +18,8 @@ try {
                              "VoiceDock", "SidebarToggle", "Avatar",
                              "SquareSlider", "SquareSwitch", "IconButton",
                              "SquareBusyIndicator", "SettingsCard", "SettingSwitch",
-                             "SupernodeAdminCard", "HostSupernodeWizard", "SettingsSectionHeader")) {
+                             "SupernodeAdminCard", "HostSupernodeWizard", "SettingsSectionHeader",
+                             "SquareCheckBox", "StyledButtonBox")) {
         Copy-Item (Join-Path $clientRoot "qml/$component.qml") $moduleRoot
     }
     $env:QT_QUICK_CONTROLS_STYLE = "Material"

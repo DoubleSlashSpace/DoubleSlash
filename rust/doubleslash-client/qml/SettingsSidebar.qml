@@ -27,7 +27,7 @@ Rectangle {
         Rectangle {
             Layout.fillWidth: true
             // 44 at the designed size. The back button's tile grows with the icon.
-            height: Math.max(Theme.touchTarget, Theme.barActionSize)
+            implicitHeight: Math.max(Theme.touchTarget, Theme.barActionSize)
             color: Theme.bg2
 
             IconButton {
@@ -154,7 +154,7 @@ Rectangle {
 
         Rectangle {
             Layout.fillWidth: true
-            height: Math.max(Theme.touchTarget, Theme.barActionSize)
+            implicitHeight: Math.max(Theme.touchTarget, Theme.barActionSize)
             color: Theme.bg0
 
             IconButton {

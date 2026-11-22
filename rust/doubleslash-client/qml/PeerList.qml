@@ -44,7 +44,7 @@ Rectangle {
         Rectangle {
             id: selfRow
             Layout.fillWidth: true
-            Layout.preferredHeight: Math.max(56, Theme.fontSizeBody + Theme.fontSizeCaption + Theme.spacingLg)
+            Layout.preferredHeight: Math.max(56, Math.ceil((Theme.fontSizeBody + Theme.fontSizeCaption) * 1.34) + Theme.spacingSm)
             readonly property bool selected: root.selfPeerId !== "" && root.selfPeerId === root.selectedPeerId
             color: selfRow.selected
                 ? Theme.selectedFill()
@@ -172,7 +172,11 @@ Rectangle {
             }
 
             EmptyState {
-                anchors.centerIn: parent
+                // Centred while it fits; with large text it is taller than
+                // the list and centring pushed it up over the self row.
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: Math.max(0, (parent.height - height) / 2)
+                availableHeight: parent.height
                 readonly property bool allHidden: !root.showBlocked
                     && peerListView.count > 0 && root.blockedCount >= peerListView.count
                 visible: peerListView.count === 0 || allHidden
@@ -189,8 +193,9 @@ Rectangle {
                 width: ListView.view.width
                 // Blocked peers leave the list until "Show blocked" is on.
                 visible: !delegateItem.blocked || root.showBlocked
-                // 56 at the designed size: name plus preview. Grows with those two lines.
-                height: visible ? Math.max(56, Theme.fontSizeBody + Theme.fontSizeCaption + Theme.spacingLg) : 0
+                // 56 at the designed size: name plus preview. Grows with those two
+                // lines, each about 1.34 times its font size.
+                height: visible ? Math.max(56, Math.ceil((Theme.fontSizeBody + Theme.fontSizeCaption) * 1.34) + Theme.spacingSm) : 0
                 color: delegateItem.selected
                     ? Theme.selectedFill()
                     : (mouseArea.containsMouse ? Theme.bg3 : "transparent")

@@ -22,3 +22,5 @@ SettingSwitch 1.0 SettingSwitch.qml
 SupernodeAdminCard 1.0 SupernodeAdminCard.qml
 HostSupernodeWizard 1.0 HostSupernodeWizard.qml
 SettingsSectionHeader 1.0 SettingsSectionHeader.qml
+SquareCheckBox 1.0 SquareCheckBox.qml
+StyledButtonBox 1.0 StyledButtonBox.qml

@@ -417,6 +417,10 @@ fn build_qt_ui() {
         QmlFile::from("qml/SquareSwitch.qml"),
         QmlFile::from("qml/SquareSlider.qml"),
         QmlFile::from("qml/SquareBusyIndicator.qml"),
+        QmlFile::from("qml/SquareCheckBox.qml"),
+        QmlFile::from("qml/StyledButtonBox.qml"),
+        // Loaded only with --ui-audit=<dir>; see scripts/test_ui_audit.ps1.
+        QmlFile::from("qml/UiAudit.qml"),
     ];
     #[cfg(feature = "webengine")]
     let qml_files: Vec<QmlFile> = {

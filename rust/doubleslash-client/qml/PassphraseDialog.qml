@@ -158,7 +158,7 @@ Item {
                 Layout.fillWidth: true
                 spacing: Theme.spacingXs
 
-                CheckBox {
+                SquareCheckBox {
                     id: rememberBox
                     text: "Stay unlocked on this device (optional)"
                     checked: false

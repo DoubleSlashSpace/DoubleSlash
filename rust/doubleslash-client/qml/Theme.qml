@@ -70,14 +70,16 @@ QtObject {
             border: "#08090B", divider: "#1E2127" } },
         { id: "slate", name: qsTr("Slate"), base: "dark", colors: {
             bg0: "#0F141A", bg1: "#151C24", bg2: "#1D2630", bg3: "#2A3542",
-            border: "#151C24", divider: "#2A3542", accent: "#3B82F6", linkPeer: "#7FB0FF" } },
+            border: "#151C24", divider: "#2A3542", accent: "#2563EB", linkPeer: "#7FB0FF" } },
         { id: "forest", name: qsTr("Forest"), base: "dark", colors: {
             bg0: "#0E1411", bg1: "#141D18", bg2: "#1C2821", bg3: "#28372E",
-            border: "#141D18", divider: "#28372E", accent: "#2F9E6E", linkPeer: "#7FD1A8" } },
+            border: "#141D18", divider: "#28372E", accent: "#1E7A52", linkPeer: "#7FD1A8" } },
         { id: "contrast", name: qsTr("High contrast"), base: "dark", colors: {
             bg0: "#000000", bg1: "#000000", bg2: "#0D0D0D", bg3: "#262626",
             text: "#FFFFFF", muted: "#D6D6D6", border: "#8A8A8A", divider: "#8A8A8A",
-            accent: "#8C9BFF", linkPeer: "#AFC0FF" } },
+            // The accent is light, so text on it is black: white on #8C9BFF
+            // is 2.5:1, black is 8.2:1.
+            accent: "#8C9BFF", textInv: "#000000", linkPeer: "#AFC0FF" } },
         { id: "paper", name: qsTr("Paper"), base: "light", colors: {
             bg0: "#E9E4DA", bg1: "#FBF8F2", bg2: "#F1ECE3", bg3: "#E0D9CC",
             text: "#2B2620", muted: "#625A4F", border: "#E0D9CC", divider: "#CFC6B6",
@@ -262,7 +264,9 @@ QtObject {
     readonly property int barPadding: spacingSm
     readonly property int barRowGap: spacingXs
     /// Formatting buttons; call status.
-    readonly property int barTopRowHeight: controlHeight
+    // At least one line of title text (the composer's B / I / U use that
+    // size): from about +150% text, a body-sized control is shorter than it.
+    readonly property int barTopRowHeight: Math.max(controlHeight, Math.ceil(fontSizeTitle * 1.34))
     /// Attach and send; mute, share and leave. Grows with the text and with
     /// the icon size. At the designed size this stays 36.
     readonly property int barActionSize: Math.max(controlHeight + spacingXs, iconPx(20) + spacingSm)

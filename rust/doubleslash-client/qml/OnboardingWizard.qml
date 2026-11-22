@@ -27,8 +27,12 @@ Dialog {
     title: "Welcome to DoubleSlash"
     modal: true
     closePolicy: Dialog.NoAutoClose
-    width: 600
-    height: 480
+    // Sized for the text, within the window. A fixed 600×480 spilled the
+    // steps' text and buttons out of the box at larger text sizes.
+    readonly property real _room: parent ? parent.height - Theme.spacingLg * 2 : 480
+    width: Math.min(parent ? parent.width - Theme.spacingLg * 2 : 600,
+                    Math.max(600, Theme.fontSizeBody * 46))
+    height: Math.min(_room, Math.max(480, implicitHeight))
     padding: 0
 
     function saveHandle() {
@@ -74,10 +78,11 @@ Dialog {
 
         Rectangle {
             Layout.fillWidth: true
-            height: 64
+            Layout.preferredHeight: Math.max(64, headerRow.implicitHeight + Theme.spacingMd * 2)
             color: Theme.bg0
 
             RowLayout {
+                id: headerRow
                 anchors.fill: parent
                 anchors.leftMargin: Theme.spacingLg
                 anchors.rightMargin: Theme.spacingLg
@@ -110,9 +115,21 @@ Dialog {
             }
         }
 
-        StackLayout {
+        // Scrolls only when the window is too small for the step; otherwise
+        // the step fills the box and its spacers centre it as before.
+        ScrollView {
+            id: stepScroll
             Layout.fillWidth: true
             Layout.fillHeight: true
+            implicitHeight: steps.implicitHeight
+            contentWidth: availableWidth
+            contentHeight: steps.height
+            clip: true
+
+        StackLayout {
+            id: steps
+            width: stepScroll.availableWidth
+            height: Math.max(implicitHeight, stepScroll.availableHeight)
             currentIndex: root.step
 
             // Step 0: Welcome and display name.
@@ -153,7 +170,8 @@ Dialog {
 
                 ColumnLayout {
                     Layout.alignment: Qt.AlignHCenter
-                    Layout.preferredWidth: 320
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: Math.max(320, Theme.fontSizeBody * 25)
                     spacing: Theme.spacingXs
 
                     Text {
@@ -333,7 +351,7 @@ Dialog {
                     Layout.fillWidth: true
                 }
 
-                CheckBox {
+                SquareCheckBox {
                     id: uriOption
                     text: "Open DoubleSlash invite links in the app"
                     checked: root.isWindows
@@ -341,7 +359,7 @@ Dialog {
                     Material.foreground: Theme.text
                 }
 
-                CheckBox {
+                SquareCheckBox {
                     id: shortcutOption
                     text: "Create Desktop and Start Menu shortcuts"
                     checked: root.isWindows
@@ -351,6 +369,7 @@ Dialog {
 
                 Item { Layout.fillHeight: true }
             }
+        }
         }
     }
 

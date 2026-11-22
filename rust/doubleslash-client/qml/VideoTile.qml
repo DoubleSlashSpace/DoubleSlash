@@ -164,7 +164,9 @@ Item {
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: root.streaming ? qsTr("Waiting for video…") : qsTr("Camera off")
-                color: Theme.muted
+                // The tile is black in every palette, so the light theme's
+                // dark muted colour cannot be used here.
+                color: "#A6A9B0"
                 font.pixelSize: Theme.fontSizeCaption
             }
         }
@@ -342,7 +344,7 @@ Item {
                         Label {
                             text: qsTr("Shared audio: %1%").arg(root.contentVolume)
                             color: Theme.muted
-                            font.pixelSize: Theme.fontTiny
+                            font.pixelSize: Theme.fontSizeCaption
                         }
                         SquareSlider {
                             Layout.fillWidth: true

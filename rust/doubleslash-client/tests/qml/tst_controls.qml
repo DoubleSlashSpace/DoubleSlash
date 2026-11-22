@@ -151,7 +151,17 @@ Item {
             for (var mode = 0; mode < 2; mode++) {
                 Theme.isDark = mode === 0
                 compare(field.background.color, Theme.bg2)
-                compare(field.placeholderTextColor, Theme.muted)
+                // Material's floating placeholder is hidden; the hint drawn in
+                // its place stays in the field, in the muted colour.
+                compare(field.placeholderTextColor.a, 0)
+                var hint = findChild(field, "placeholderHint")
+                verify(hint !== null)
+                compare(hint.color, Theme.muted)
+                compare(hint.text, field.placeholderText)
+                field.text = "typed"
+                verify(!hint.visible)
+                field.text = ""
+                verify(hint.visible)
                 compare(field.selectionColor, Theme.accent)
                 field.enabled = false
                 compare(field.background.color, Theme.bg1)

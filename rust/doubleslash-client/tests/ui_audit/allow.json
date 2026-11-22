@@ -1,0 +1,30 @@
+[
+  {
+    "rule": "text-elided",
+    "path": "RoomPanel › Text$",
+    "reason": "A long room name elides in the room header; the header row also carries the join and member controls."
+  },
+  {
+    "rule": "text-elided",
+    "path": "ChatRichMessageDelegate",
+    "text": "^Maximiliana ",
+    "reason": "A long sender name elides above its message (the audit's sample name is deliberately long)."
+  },
+  {
+    "rule": "text-elided",
+    "path": "ChatRichMessageDelegate",
+    "text": "^quarterly-report-",
+    "reason": "A long file name elides in the middle, so the extension stays visible."
+  },
+  {
+    "rule": "text-elided",
+    "path": "SettingsPage › .*ColumnLayout › Label$",
+    "text": "^Sample supernode ",
+    "reason": "A supernode's name elides in its Settings row; it is user content of any length."
+  },
+  {
+    "rule": "text-elided",
+    "path": "(StyledTextField|TextField) › ",
+    "reason": "A placeholder hint may elide in a narrow field; the field's label says what it is for."
+  }
+]

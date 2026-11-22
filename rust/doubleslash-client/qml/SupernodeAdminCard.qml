@@ -524,20 +524,31 @@ SettingsCard {
         Layout.fillWidth: true
         spacing: Theme.spacingXs
 
-        StyledButton {
-            objectName: "host-supernode"
-            text: "Host a supernode"
-            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg")
-            enabled: !card.setupRunning
-            onClicked: card.hostRequested("", "")
+        // Side by side when they fit, stacked on a narrow card or with large
+        // text; demanding both widths at once pushed the card past the window.
+        Flow {
+            Layout.fillWidth: true
+            // A Flow's implicitWidth is both buttons in a row; asking only for
+            // the wider one lets the row get narrower than that.
+            Layout.preferredWidth: Math.max(hostButton.implicitWidth, importButton.implicitWidth)
+            spacing: Theme.spacingXs
+
+            StyledButton {
+                id: hostButton
+                objectName: "host-supernode"
+                text: "Host a supernode"
+                icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/plus.svg")
+                enabled: !card.setupRunning
+                onClicked: card.hostRequested("", "")
+            }
+            StyledButton {
+                id: importButton
+                objectName: "import-existing-supernode"
+                text: "Import existing"
+                enabled: !card.setupRunning
+                onClicked: card.importRequested()
+            }
         }
-        StyledButton {
-            objectName: "import-existing-supernode"
-            text: "Import existing"
-            enabled: !card.setupRunning
-            onClicked: card.importRequested()
-        }
-        Item { Layout.fillWidth: true }
         // Across every listed supernode; a single one has its own controls.
         ServerButton {
             objectName: "check-all"
@@ -1393,9 +1404,10 @@ SettingsCard {
             wrapMode: Text.WordWrap
             textFormat: Text.RichText
             font.pixelSize: Theme.fontSizeCaption
-            color: Theme.accent
+            // The accent on a panel is 3:1; the underline marks the link.
+            color: Theme.muted
             text: "Help: <a href=\"https://doubleslash.space/support.html\"><font color=\""
-                + Theme.accent + "\">doubleslash.space/support</font></a>"
+                + Theme.toHex(Theme.text) + "\">doubleslash.space/support</font></a>"
             onLinkActivated: (link) => Qt.openUrlExternally(link)
             HoverHandler { cursorShape: Qt.PointingHandCursor }
         }

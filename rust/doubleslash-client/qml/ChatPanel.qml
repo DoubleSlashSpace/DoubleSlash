@@ -120,11 +120,15 @@ Item {
         Rectangle {
             id: chatHeader
             Layout.fillWidth: true
-            // 48 at the designed size. The call button's tile grows with the icon.
-            height: Math.max(Theme.touchTarget + Theme.spacingXs, Theme.barActionSize)
+            // 48 at the designed size. The call button's tile grows with the
+            // icon, and the name and status line with the text size; at large
+            // text they outgrew a fixed height and spilled under the title bar.
+            implicitHeight: Math.max(Theme.touchTarget + Theme.spacingXs, Theme.barActionSize,
+                             chatHeaderRow.implicitHeight + Theme.spacingSm * 2)
             color: Theme.bg2
 
             RowLayout {
+                id: chatHeaderRow
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.left: parent.left
                 anchors.right: parent.right
@@ -213,7 +217,7 @@ Item {
 
         Rectangle {
             Layout.fillWidth: true
-            height: root._searchOpen ? Theme.controlHeight + Theme.spacingXs : 0
+            implicitHeight: root._searchOpen ? Theme.controlHeight + Theme.spacingXs : 0
             clip: true
             color: Theme.bg3
             Behavior on height { NumberAnimation { duration: Theme.animFast } }
@@ -361,8 +365,12 @@ Item {
             }
 
             ColumnLayout {
-                anchors.centerIn: parent
-                width: Math.min(parent.width - 48, 260)
+                // Wider with larger text, so the line count stays about the
+                // same; centred while it fits, from the top when it does not
+                // (centring a taller block put its top under the header).
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: Math.max(0, (parent.height - height) / 2)
+                width: Math.min(parent.width - 48, Math.max(260, Theme.fontSizeBody * 20))
                 spacing: 10
                 visible: root.selectedPeerId === "" || msgList.count === 0
 
@@ -385,6 +393,7 @@ Item {
                     font.pixelSize: Theme.fontSizeTitle
                     font.bold: true
                     horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
                     Layout.fillWidth: true
                 }
 
