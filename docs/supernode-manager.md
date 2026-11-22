@@ -165,8 +165,8 @@ self into every manifest, updates the local `cluster_cache.toml`, restricts
 cluster firewall rules to member addresses and restarts members. Nodes
 authenticate cluster links against the roster and sign control messages. A
 verified roster lets clients fail over to siblings. Replication carries room
-existence, Space roots, peer trust and opaque room/game traffic, not private-room
-allowed sets or participant-content storage.
+existence and room certificates, Space roots, peer trust and opaque room/game
+traffic, not private-room allowed sets or participant-content storage.
 
 Install/config-push/build-deploy resolve rosters from inventory membership and
 the local cache. They refuse to replace a deployed cluster section with no

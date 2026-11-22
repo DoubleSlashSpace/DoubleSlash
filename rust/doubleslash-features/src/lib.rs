@@ -30,6 +30,7 @@ pub mod qr;
 pub mod quota;
 pub mod registry;
 pub mod replay;
+pub mod room_cert;
 pub mod signing;
 pub mod video_codec;
 pub mod web_app;
@@ -63,6 +64,7 @@ pub use qr::qr_rows;
 pub use quota::{QuotaParams, QuotaRegistry, DEFAULT_BYTES_PER_SEC, DEFAULT_DATAGRAMS_PER_SEC};
 pub use registry::FeatureRegistry;
 pub use replay::{ReplayGuard, DEFAULT_REPLAY_WINDOW_SECS};
+pub use room_cert::{RoomCertError, RoomCertificate};
 pub use signing::{
     sign_manifest, ManifestCapability, ModuleManifest, SigningError, TrustedKeyStore,
     MANIFEST_SCHEMA_VERSION,

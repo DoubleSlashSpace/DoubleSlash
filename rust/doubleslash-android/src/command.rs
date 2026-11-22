@@ -1003,6 +1003,7 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                 materialize_only: false,
                 invite_policy: "owner".to_owned(),
                 invite_token: String::new(),
+                room_cert: String::new(),
             }))
         }
         // Share a room. A shareable link has no known grantee, so it carries a
@@ -1936,6 +1937,11 @@ fn resubscribe_rooms(session: &Session, supernode_id: &str) -> Value {
             materialize_only: true,
             invite_policy: entry.invite_policy.clone(),
             invite_token: entry.invite_token.clone(),
+            room_cert: entry
+                .room_cert
+                .as_ref()
+                .map(|c| c.to_json())
+                .unwrap_or_default(),
         });
         if subscribed.insert(entry.room_id.clone()) {
             sent &= session.send(ConnectionCommand::SubscribeRoomChat {

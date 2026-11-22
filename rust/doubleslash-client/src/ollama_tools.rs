@@ -695,6 +695,7 @@ impl OllamaToolHost {
             materialize_only: false,
             invite_policy: "owner".into(),
             invite_token: String::new(),
+            room_cert: String::new(),
         })?;
         Ok(json!({
             "ok": true,
@@ -2123,6 +2124,7 @@ mod tests {
                 space_id: String::new(),
                 parent_id: String::new(),
                 invite_policy: String::new(),
+                room_cert: None,
             })
             .unwrap();
         save_message(&host, dir.path(), "xfer-1", "a.png");

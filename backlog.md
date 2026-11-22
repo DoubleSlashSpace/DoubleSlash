@@ -449,6 +449,24 @@ The client lookup and the `dddns://` invite hint are in the tree
   `dddns_name` / `is_dddns_lookup_name` only if that request is worth
   avoiding.
 
+### Room certificates: live acceptance and rotation
+
+Members carry the owner-signed room certificate on every room request, and a
+supernode recreates a forgotten room from it. Unit tests cover the node, the
+manager and the store. Still to do:
+
+- Live run on 2026-11-22 ([acceptance results](docs/ACCEPTANCE.md#results)):
+  B restored the room with A offline and a stranger's made-up token was
+  refused. Still to confirm: chat and voice actually flowing between A and B in
+  the restored room, and the same on the phone.
+- Rooms stored before certificates: the owner's next replay signs one. Until
+  the owner connects, members of those rooms still depend on the room being
+  held somewhere in the cluster.
+- A hidden room's certificate reaches the manager only from a room list or a
+  replay, so opening a hidden room before either does not bring it back.
+- Secret rotation: the node accepts a later certificate with a new secret, but
+  no client offers it. Removing a member from a private room needs it.
+
 ### Supernode rows in the Rooms list: live acceptance
 
 Both clients head each node's rooms with a foldable avatar row. Run with two

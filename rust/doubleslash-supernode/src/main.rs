@@ -43,6 +43,7 @@ use crate::ticket::RelayTicket;
 use doubleslash_features::device::DeviceId;
 use doubleslash_features::wellknown;
 use doubleslash_features::FeatureRegistry;
+use doubleslash_features::RoomCertificate;
 use doubleslash_features::{NativeModuleLoader, TrustedKeyStore};
 
 /// Product version. The same `{major}.{minor}.{build}.0` stamp as the client.
@@ -649,7 +650,8 @@ impl SupernodeState {
 
     /// Local-only room admit: materialize the room if absent and authorize
     /// `peer` on *this* node. Does **not** cluster-replicate membership —
-    /// cold members admit via Space proof (or creator / rematerialized token).
+    /// cold members admit via Space proof, creator, or the secret the room
+    /// certificate commits to.
     fn local_allow_room_peer(&self, room_id: &str, room_name: &str, room_type: &str, peer: &str) {
         let Some(ref sfu) = self.sfu else {
             return;
@@ -669,12 +671,22 @@ impl SupernodeState {
     /// member can accept a failed-over join for it. Idempotent — `create_room`
     /// leaves an existing room untouched. Preserves the advertised `creator_id`
     /// so the room owner retains self-admit/invite authority on any member.
-    /// Non-owner private members re-admit via Space proof on join (or local
-    /// invite-token rematerialize) — not via cluster ACL push.
+    /// Non-owner private members re-admit via Space proof on join, or the
+    /// secret the room certificate commits to — not via cluster ACL push.
     fn apply_room_roster(&self, desc: &cluster_link::RoomDescriptor) {
         let Some(ref sfu) = self.sfu else {
             return;
         };
+        // A certificate describes the room on its owner's word; a sibling's
+        // signature over the roster says only that the sibling holds it.
+        if let Some(cert) = desc
+            .room_cert
+            .as_ref()
+            .filter(|c| c.room_id == desc.room_id && c.verify().is_ok())
+        {
+            sfu.write().apply_certificate(cert);
+            return;
+        }
         let rtype = match desc.room_type.as_str() {
             "public" => sfu::RoomType::Public,
             _ => sfu::RoomType::Private,
@@ -701,6 +713,68 @@ impl SupernodeState {
             }
         }
         accepted
+    }
+
+    /// Create or confirm `room_id` from the owner-signed certificate a member
+    /// carried in `payload` (`room_cert`). Returns the certificate when it
+    /// verifies, names this room and now describes it.
+    ///
+    /// This is how any member, not only the owner, brings back a room this
+    /// node has forgotten. The node's creation policy still applies to a room
+    /// it does not hold.
+    fn apply_carried_room_cert(
+        &self,
+        room_id: &str,
+        payload: &serde_json::Value,
+    ) -> Option<RoomCertificate> {
+        let sfu = self.sfu.as_ref()?;
+        let cert = payload
+            .get("room_cert")
+            .and_then(RoomCertificate::from_value_verified)?;
+        if cert.room_id != room_id {
+            return None;
+        }
+        let exists = sfu.read().get_room(room_id).is_some();
+        if !exists {
+            if let Some(reason) = self
+                .sfu_room_policy
+                .deny_reason_for_new_room(!cert.is_private())
+            {
+                warn!(
+                    "Not recreating room {} from its certificate: {reason}",
+                    &room_id[..12.min(room_id.len())]
+                );
+                return None;
+            }
+        }
+        match sfu.write().apply_certificate(&cert) {
+            sfu::CertApplied::Conflict => {
+                warn!(
+                    "Room {} belongs to another owner; ignored a certificate for it",
+                    &room_id[..12.min(room_id.len())]
+                );
+                None
+            }
+            _ => Some(cert),
+        }
+    }
+
+    /// Admit `sender` to `room_id` with the `invite_token` in `payload`: the
+    /// secret the room's certificate commits to, or a token this node minted.
+    fn admit_carried_token(
+        &self,
+        sender: &str,
+        room_id: &str,
+        payload: &serde_json::Value,
+    ) -> bool {
+        let Some(ref sfu) = self.sfu else {
+            return false;
+        };
+        payload
+            .get("invite_token")
+            .and_then(|v| v.as_str())
+            .filter(|t| !t.is_empty())
+            .is_some_and(|token| sfu.write().validate_room_invite(room_id, token, sender))
     }
 
     /// Proof-based Space admission. If `payload` carries space fields that
@@ -2278,6 +2352,48 @@ async fn handle_relay_signaling_stream(
 }
 
 /// Implements SignalingHandler for the supernode.
+/// The room a create request names, and whether that request may create it
+/// when this node does not hold it.
+#[derive(Debug, PartialEq, Eq)]
+struct RoomCreateTarget {
+    room_id: String,
+    may_create: bool,
+}
+
+/// Resolve a `SfuRoomCreate`. With a verified certificate the room is the one
+/// the certificate names, and any member may create it. Without one a request
+/// creates only the sender's own room: the id the sender's key and the name
+/// derive, or a temporary direct-call room. Anything else would let a member
+/// recreate someone else's room with whatever type and owner it claimed.
+fn resolve_room_create(
+    sender: &str,
+    room_name: &str,
+    requested_id: Option<&str>,
+    claimed_creator: Option<&str>,
+    cert: Option<&RoomCertificate>,
+) -> Result<RoomCreateTarget, &'static str> {
+    if let Some(cert) = cert {
+        if requested_id.is_some_and(|id| id != cert.room_id) {
+            return Err("certificate_mismatch");
+        }
+        return Ok(RoomCreateTarget {
+            room_id: cert.room_id.clone(),
+            may_create: true,
+        });
+    }
+    let own_id = crate::crypto::derive_room_id(sender, room_name);
+    let room_id = requested_id.map_or_else(|| own_id.clone(), str::to_owned);
+    // A creator other than the sender is a claim this request cannot prove.
+    let sender_is_creator =
+        claimed_creator.is_none_or(|c| c.trim_end_matches('=') == sender.trim_end_matches('='));
+    let may_create =
+        sender_is_creator && (room_id == own_id || room_id.starts_with(sfu::TEMP_ROOM_PREFIX));
+    Ok(RoomCreateTarget {
+        room_id,
+        may_create,
+    })
+}
+
 struct SupernodeHandler {
     state: Arc<SupernodeState>,
 }
@@ -2782,32 +2898,12 @@ impl SupernodeHandler {
         self.state
             .try_space_admission(&msg.sender, room_id, &msg.payload);
 
-        // Optional client-held invite token on the join itself (cluster cold
-        // node / post-GC). Re-seeds the durable credential and admits before
-        // the ACL check — same as SfuRoomInvite rematerialize.
-        if let Some(token) = msg
-            .payload
-            .get("invite_token")
-            .and_then(|v| v.as_str())
-            .filter(|t| !t.is_empty())
-        {
-            let creator = sfu
-                .read()
-                .get_room(room_id)
-                .map(|r| r.creator_id.clone())
-                .unwrap_or_default();
-            let created_by = if creator.is_empty() {
-                msg.sender.as_str()
-            } else {
-                creator.as_str()
-            };
-            if sfu
-                .write()
-                .reregister_invite_token(room_id, token, created_by)
-            {
-                let _ = sfu.write().allow_peer(room_id, &msg.sender);
-            }
-        }
+        // A member's copy of the room certificate brings back a room this
+        // node forgot; the invite token, checked against that certificate's
+        // commitment or this node's minted tokens, admits to a private one.
+        self.state.apply_carried_room_cert(room_id, &msg.payload);
+        self.state
+            .admit_carried_token(&msg.sender, room_id, &msg.payload);
 
         let (ok, members) = if msg.source_device.is_some() {
             sfu.write()
@@ -3311,12 +3407,25 @@ impl SupernodeHandler {
         if room_id.is_empty() {
             return;
         }
+        // Text-only members bring a forgotten room back the same way voice
+        // members do.
+        self.state.apply_carried_room_cert(room_id, &msg.payload);
+        self.state
+            .admit_carried_token(&msg.sender, room_id, &msg.payload);
         let ok = if msg.source_device.is_some() {
             sfu.write()
                 .subscribe_endpoint(&msg.sender, msg.source_device, room_id)
         } else {
             sfu.write().subscribe(&msg.sender, room_id)
         };
+        if !ok {
+            debug!(
+                "Peer {} not subscribed to room {}: {}",
+                &msg.sender[..12.min(msg.sender.len())],
+                &room_id[..12.min(room_id.len())],
+                sfu.read().classify_join_denial(&msg.sender, room_id)
+            );
+        }
         if ok {
             debug!(
                 "Peer {} subscribed to room {} text chat",
@@ -3372,59 +3481,28 @@ impl SupernodeHandler {
             .get("room_type")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or(sfu::RoomType::Public);
-        let room_id = msg.payload.get("room_id").and_then(|v| v.as_str());
-        let creator_id = msg
+        let requested_id = msg
             .payload
-            .get("creator_id")
+            .get("room_id")
             .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or(&msg.sender);
-        // Client-supplied invite policy (`"owner"` | `"members"`); absent or
-        // unrecognized values normalize to the safe `"owner"` default inside
-        // `create_room_with_policy`. The client is the authority on a room's
-        // Space-linked `invite_policy` (same trust level as `room_name`/
-        // `room_type`, which are also client-supplied here and unverified).
+            .filter(|s| !s.is_empty());
+        // `"owner"` | `"members"`; anything else normalizes to `"owner"`
+        // inside `create_room_with_policy`. Used only for a room made without
+        // a certificate, which is necessarily the sender's own.
         let invite_policy = msg
             .payload
             .get("invite_policy")
             .and_then(|v| v.as_str())
             .unwrap_or("owner");
-
-        let resolved_id = room_id
-            .map(String::from)
-            .unwrap_or_else(|| crate::crypto::derive_room_id(creator_id, room_name));
-        let is_default = resolved_id == sfu::DEFAULT_ROOM_ID;
-        let exists = sfu.read().get_room(&resolved_id).is_some();
-        if !exists && !is_default {
-            let policy = self.state.sfu_room_policy;
-            let is_public = matches!(room_type, sfu::RoomType::Public);
-            if let Some(reason) = policy.deny_reason_for_new_room(is_public) {
-                warn!(
-                    "Denied SFU room create from {}: {} ({})",
-                    &msg.sender[..12.min(msg.sender.len())],
-                    reason,
-                    room_name
-                );
-                self.state.signaling.send_signed_reply(
-                    &self.state.identity,
-                    msg,
-                    MessageType::SfuRoomCreated,
-                    json!({
-                        "room_id": "",
-                        "room_name": room_name,
-                        "room_type": room_type,
-                        "denied": true,
-                        "reason": reason,
-                    }),
-                );
-                return;
-            }
-        }
-
-        // Optional durable invite credential the client kept in RoomStore.
-        // After idle GC the supernode's token map is empty; replaying a saved
-        // definition re-seeds the credential so members can rejoin without a
-        // brand-new share link.
+        let claimed_creator = msg
+            .payload
+            .get("creator_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+        let cert = msg
+            .payload
+            .get("room_cert")
+            .and_then(RoomCertificate::from_value_verified);
         let client_invite_token = msg
             .payload
             .get("invite_token")
@@ -3432,61 +3510,110 @@ impl SupernodeHandler {
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
 
-        let mut sfu_lock = sfu.write();
-        let Some((room, created_new)) = sfu_lock.create_room_with_policy(
-            room_id,
+        let deny = |reason: &str| {
+            warn!(
+                "Denied SFU room create from {}: {} ({})",
+                &msg.sender[..12.min(msg.sender.len())],
+                reason,
+                room_name
+            );
+            self.state.signaling.send_signed_reply(
+                &self.state.identity,
+                msg,
+                MessageType::SfuRoomCreated,
+                json!({
+                    "room_id": requested_id.unwrap_or(""),
+                    "room_name": room_name,
+                    "room_type": room_type,
+                    "denied": true,
+                    "reason": reason,
+                }),
+            );
+        };
+
+        let target = match resolve_room_create(
+            &msg.sender,
             room_name,
-            room_type,
-            creator_id,
-            invite_policy,
-        ) else {
+            requested_id,
+            claimed_creator,
+            cert.as_ref(),
+        ) {
+            Ok(target) => target,
+            Err(reason) => {
+                deny(reason);
+                return;
+            }
+        };
+        let resolved_id = target.room_id;
+        let exists = sfu.read().get_room(&resolved_id).is_some();
+        if !exists && resolved_id != sfu::DEFAULT_ROOM_ID {
+            if !target.may_create {
+                deny("room_absent");
+                return;
+            }
+            let is_public = cert
+                .as_ref()
+                .map_or(room_type == sfu::RoomType::Public, |c| !c.is_private());
+            if let Some(reason) = self
+                .state
+                .sfu_room_policy
+                .deny_reason_for_new_room(is_public)
+            {
+                deny(reason);
+                return;
+            }
+        }
+
+        if let Some(ref cert) = cert {
+            if sfu.write().apply_certificate(cert) == sfu::CertApplied::Conflict {
+                warn!(
+                    "Room {} belongs to another owner; ignored a certificate for it",
+                    &resolved_id[..12.min(resolved_id.len())]
+                );
+            }
+        } else if !exists {
+            sfu.write().create_room_with_policy(
+                Some(&resolved_id),
+                room_name,
+                room_type,
+                &msg.sender,
+                invite_policy,
+            );
+        }
+        let Some((room_id_out, room_name_out, room_type_out, room_creator)) =
+            sfu.read().get_room(&resolved_id).map(|r| {
+                (
+                    r.room_id.clone(),
+                    r.room_name.clone(),
+                    r.room_type,
+                    r.creator_id.clone(),
+                )
+            })
+        else {
             return;
         };
-        let room_id_out = room.room_id.clone();
-        let room_name_out = room.room_name.clone();
-        let room_creator = room.creator_id.clone();
-        let is_private = room_type == sfu::RoomType::Private;
-        drop(sfu_lock);
 
-        // Private-room re-admit after rematerialize (client-owned defs, ephemeral
-        // SFU). Trust rules:
-        //   * creator (payload or room record) is always re-allowed;
-        //   * any peer presenting a non-empty invite_token re-seeds that token
-        //     as a multi-use credential and is allowed (possession of the saved
-        //     RoomStore entry + token is the membership proof after GC);
-        //   * first create without a client token mints a fresh single-use
-        //     shareable invite for the creator to distribute.
-        // Room-id alone is NOT enough — non-creators without a token are not
-        // admitted on a bare materialize of an already-existing room.
+        // Private-room admission on a create or a reconnect replay:
+        //   * the owner is always allowed;
+        //   * anyone else needs the secret the room's certificate commits to,
+        //     or a token this node minted. A token is never stored on a
+        //     client's say-so;
+        //   * a room its owner made without a certificate has no secret, so
+        //     the node mints a single-use token for the owner to share.
         let mut invite_token: Option<String> = None;
-        if is_private {
-            let is_creator = msg.sender == room_creator || msg.sender == creator_id;
-            let mut admitted = false;
-
+        if room_type_out == sfu::RoomType::Private {
             if let Some(ref tok) = client_invite_token {
-                let reseeded = sfu.write().reregister_invite_token(
-                    &room_id_out,
-                    tok,
-                    if room_creator.is_empty() {
-                        creator_id
-                    } else {
-                        &room_creator
-                    },
-                );
-                if reseeded {
-                    let _ = sfu.write().allow_peer(&room_id_out, &msg.sender);
+                if sfu
+                    .write()
+                    .validate_room_invite(&room_id_out, tok, &msg.sender)
+                {
                     invite_token = Some(tok.clone());
-                    admitted = true;
                 }
             }
-
-            if !admitted && (is_creator || created_new) {
-                // Creator (or first materializer creating a brand-new room)
-                // self-admits without a token. Local allow only — cold cluster
-                // members re-admit via Space proof or rematerialize + token re-seed.
+            if crate::crypto::normalize_public_id(&msg.sender) == room_creator {
                 let _ = sfu.write().allow_peer(&room_id_out, &msg.sender);
-                if created_new && invite_token.is_none() {
-                    invite_token = sfu.write().generate_invite_token(&room_id_out, creator_id);
+                if !exists && cert.is_none() && invite_token.is_none() {
+                    invite_token = sfu.write().generate_invite_token(&room_id_out, &msg.sender);
                 }
             }
         }
@@ -3498,7 +3625,7 @@ impl SupernodeHandler {
             json!({
                 "room_id": room_id_out,
                 "room_name": room_name_out,
-                "room_type": room_type,
+                "room_type": room_type_out,
                 "invite_token": invite_token,
             }),
         );
@@ -3524,14 +3651,19 @@ impl SupernodeHandler {
             .unwrap_or("");
 
         // Proof-based admission first (cluster-portable). Otherwise fall back
-        // to the local invite token or already-allowed re-entry on this node.
+        // to the invite token or already-allowed re-entry on this node. A
+        // carried certificate first brings back a room this node forgot.
         let has_proof = msg.payload.get("space_proof").is_some();
+        let has_cert = self
+            .state
+            .apply_carried_room_cert(room_id, &msg.payload)
+            .is_some();
         let room_exists = sfu.read().get_room(room_id).is_some();
         // Re-entry: a peer previously admitted on *this* node is still in its
         // local `allowed` set. The single-use invite token is consumed on first
         // use, so subsequent re-entry re-sends a spent token — admit already-
         // allowed peers directly (same node only; cold nodes need Space proof
-        // or token rematerialize).
+        // or the certificate's secret).
         let already_member = sfu
             .read()
             .get_room(room_id)
@@ -3539,77 +3671,77 @@ impl SupernodeHandler {
         let by_proof = self
             .state
             .try_space_admission(&msg.sender, room_id, &msg.payload);
-        // Cold-cluster / post-GC path: RoomRoster materializes room *existence*
-        // without the invite-token map. A client-held RoomStore token is the
-        // durable membership credential — re-seed it as multi-use before
-        // validate (same contract as SfuRoomCreate rematerialize). Without
-        // this, non-creators can only rejoin the node they first admitted on.
-        let by_token = if !by_proof && !token.is_empty() {
-            {
-                let creator = sfu
-                    .read()
-                    .get_room(room_id)
-                    .map(|r| r.creator_id.clone())
-                    .unwrap_or_default();
-                let created_by = if creator.is_empty() {
-                    msg.sender.as_str()
-                } else {
-                    creator.as_str()
-                };
-                let _ = sfu
-                    .write()
-                    .reregister_invite_token(room_id, token, created_by);
-            }
-            sfu.write()
-                .validate_room_invite(room_id, token, &msg.sender)
-        } else {
-            false
-        };
+        // The token is the secret the room's certificate commits to, or a
+        // single-use token this node minted. Nothing else admits: a node that
+        // took any string as a credential let room id + "x" into a private
+        // room.
+        let by_token = !by_proof
+            && self
+                .state
+                .admit_carried_token(&msg.sender, room_id, &msg.payload);
         let valid = by_proof || by_token || already_member;
-        tracing::warn!(
-            "SfuRoomInvite peer={} room={} exists={} has_proof={} token_len={} by_proof={} by_token={} already_member={} => valid={}",
+        tracing::info!(
+            "SfuRoomInvite peer={} room={} exists={} has_proof={} has_cert={} token_len={} by_proof={} by_token={} already_member={} => valid={}",
             &msg.sender[..12.min(msg.sender.len())],
             room_id,
             room_exists,
             has_proof,
+            has_cert,
             token.len(),
             by_proof,
             by_token,
             already_member,
             valid
         );
-        let room_info = sfu
-            .read()
-            .get_room(room_id)
-            .map(|r| (r.room_name.clone(), r.room_type, r.participant_count()));
+        let room_info = sfu.read().get_room(room_id).map(|r| {
+            (
+                r.room_name.clone(),
+                r.room_type,
+                r.participant_count(),
+                r.certificate.as_ref().map(RoomCertificate::to_value),
+            )
+        });
 
-        if let Some((name, rtype, count)) = room_info {
+        let Some((name, rtype, count, cert)) = room_info else {
+            // Say so rather than stay silent: the member's client otherwise
+            // waits on an answer that never comes.
             self.state.send_signed(
                 &msg.sender,
                 MessageType::SfuRoomInviteResult,
                 json!({
                     "room_id": room_id,
-                    "accepted": valid,
-                    "room_name": name,
-                    "room_type": rtype,
-                    "member_count": count,
-                    "reason": if valid { "" } else { "invalid_token" },
+                    "accepted": false,
+                    "reason": "room_absent",
                 }),
             );
+            return;
+        };
+        self.state.send_signed(
+            &msg.sender,
+            MessageType::SfuRoomInviteResult,
+            json!({
+                "room_id": room_id,
+                "accepted": valid,
+                "room_name": name,
+                "room_type": rtype,
+                "member_count": count,
+                "room_cert": cert,
+                "reason": if valid { "" } else { "invalid_token" },
+            }),
+        );
 
-            // A validated room invite is enough authorization for portal /
-            // room-audio relay tickets (the peer is on the room ACL even before
-            // the follow-up SfuJoin). Without this, room-invite-only guests
-            // open the portal and get "Portal unavailable".
-            if valid {
-                self.state.ensure_relay_for_room_guest(&msg.sender);
-            }
-
-            // Room visibility + counts arrive via the client's pending SfuJoin
-            // (SfuMembers sidebar patch + post-join broadcast_room_list). A
-            // pre-join SfuRoomList here races that path and resets private-room
-            // voice bubbles to the pre-join participant count.
+        // A validated room invite is enough authorization for portal /
+        // room-audio relay tickets (the peer is on the room ACL even before
+        // the follow-up SfuJoin). Without this, room-invite-only guests
+        // open the portal and get "Portal unavailable".
+        if valid {
+            self.state.ensure_relay_for_room_guest(&msg.sender);
         }
+
+        // Room visibility + counts arrive via the client's pending SfuJoin
+        // (SfuMembers sidebar patch + post-join broadcast_room_list). A
+        // pre-join SfuRoomList here races that path and resets private-room
+        // voice bubbles to the pre-join participant count.
     }
 
     fn handle_sfu_invite_generate(&self, msg: &SignalingMessage) {
@@ -3942,23 +4074,20 @@ async fn main() -> anyhow::Result<()> {
                 let Some(ref sfu) = state.sfu else {
                     return Vec::new();
                 };
-                let descriptors = sfu.read().durable_room_descriptors();
-                descriptors
+                let sfu = sfu.read();
+                sfu.durable_room_descriptors()
                     .into_iter()
-                    .map(
-                        |(room_id, room_name, room_type, creator_id, invite_policy)| {
-                            cluster_link::RoomDescriptor {
-                                room_id,
-                                room_name,
-                                room_type: match room_type {
-                                    sfu::RoomType::Public => "public".to_owned(),
-                                    sfu::RoomType::Private => "private".to_owned(),
-                                },
-                                creator_id,
-                                invite_policy,
-                            }
+                    .map(|room| cluster_link::RoomDescriptor {
+                        room_id: room.room_id.clone(),
+                        room_name: room.room_name.clone(),
+                        room_type: match room.room_type {
+                            sfu::RoomType::Public => "public".to_owned(),
+                            sfu::RoomType::Private => "private".to_owned(),
                         },
-                    )
+                        creator_id: room.creator_id.clone(),
+                        invite_policy: room.invite_policy.clone(),
+                        room_cert: room.certificate.clone(),
+                    })
                     .collect()
             })
         };
@@ -5481,6 +5610,70 @@ mod space_admission_tests {
         let mut proof = sp.prove(&rid).unwrap();
         proof.node.name = "Renamed".to_owned(); // leaf no longer matches the root
         assert!(!space_admission_ok(&root, &proof, None, "peer", &rid, 0));
+    }
+}
+
+#[cfg(test)]
+mod room_create_tests {
+    use super::*;
+    use base64::engine::general_purpose::URL_SAFE;
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    fn signed(owner_key: &SigningKey, name: &str, room_type: &str) -> RoomCertificate {
+        let owner = URL_SAFE.encode(owner_key.verifying_key().as_bytes());
+        RoomCertificate::new(&owner, name, room_type, "owner", "secret", 1)
+            .signed(|b| owner_key.sign(b).to_bytes().to_vec())
+    }
+
+    #[test]
+    fn a_sender_creates_its_own_room_without_a_certificate() {
+        let own = crypto::derive_room_id("alice", "Den");
+        let target = resolve_room_create("alice", "Den", None, None, None).unwrap();
+        assert_eq!(
+            target,
+            RoomCreateTarget {
+                room_id: own.clone(),
+                may_create: true
+            }
+        );
+        let replay = resolve_room_create("alice", "Den", Some(&own), Some("alice"), None).unwrap();
+        assert!(replay.may_create);
+        let call = resolve_room_create("alice", "Direct call", Some("direct-a-b-1"), None, None);
+        assert!(call.unwrap().may_create);
+    }
+
+    /// The old hole: a member replaying someone else's room recreated it with
+    /// whatever creator and type it claimed.
+    #[test]
+    fn without_a_certificate_no_one_recreates_another_owners_room() {
+        let bobs = crypto::derive_room_id("bob", "Den");
+        let claimed = resolve_room_create("alice", "Den", Some(&bobs), Some("bob"), None).unwrap();
+        assert!(!claimed.may_create);
+        let unclaimed = resolve_room_create("alice", "Den", Some(&bobs), None, None).unwrap();
+        assert!(!unclaimed.may_create);
+        let other_id = resolve_room_create("alice", "Den", Some("0123456789abcdef"), None, None);
+        assert!(!other_id.unwrap().may_create);
+    }
+
+    #[test]
+    fn any_member_recreates_a_room_from_its_certificate() {
+        let owner = SigningKey::generate(&mut rand::rngs::OsRng);
+        let cert = signed(&owner, "Den", "private");
+        let target = resolve_room_create(
+            "member",
+            "ignored",
+            Some(&cert.room_id),
+            Some("anyone"),
+            Some(&cert),
+        )
+        .unwrap();
+        assert_eq!(target.room_id, cert.room_id);
+        assert!(target.may_create);
+        assert_eq!(
+            resolve_room_create("member", "Den", Some("0123456789abcdef"), None, Some(&cert)),
+            Err("certificate_mismatch")
+        );
     }
 }
 

@@ -9,6 +9,7 @@ use tracing::{debug, info};
 
 use crate::crypto::generate_nonce_hex;
 use doubleslash_features::device::{DeviceId, MAX_LIVE_DEVICE_ROUTES};
+use doubleslash_features::RoomCertificate;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct DeviceMembership {
@@ -22,6 +23,9 @@ pub const MAX_ROOM_SIZE: usize = 32;
 pub const DEFAULT_ROOM_ID: &str = "default";
 /// Display name for [`DEFAULT_ROOM_ID`] — created on every SFU-enabled node at startup.
 pub const DEFAULT_ROOM_NAME: &str = "Public Voice/Chat Room";
+/// Id prefix of the temporary rooms clients create for a direct call that
+/// cannot connect peer to peer. Such a room needs no certificate.
+pub const TEMP_ROOM_PREFIX: &str = "direct-";
 /// Remove user-created SFU rooms after this many seconds with no voice or chat subscribers.
 pub const IDLE_ROOM_GC_SECS: f64 = 900.0;
 
@@ -105,8 +109,12 @@ pub struct SFURoom {
     device_members: HashMap<(String, Option<DeviceId>), DeviceMembership>,
     /// Allowed peers for private rooms
     allowed: std::collections::HashSet<String>,
-    /// Invite tokens: token → InviteToken
+    /// Single-use tokens this node minted: token → InviteToken
     invite_tokens: HashMap<String, InviteToken>,
+    /// The owner-signed description this room was created from or matched,
+    /// if any member has presented one. Its secret commitment admits members
+    /// on any node; see [`SFURoomManager::apply_certificate`].
+    pub certificate: Option<RoomCertificate>,
     /// When the room last had zero voice participants and zero chat subscribers.
     /// `None` while the room is in use. Used for idle GC of peer-materialized rooms.
     empty_since: Option<f64>,
@@ -116,8 +124,8 @@ pub struct SFURoom {
 #[derive(Debug, Clone)]
 struct InviteToken {
     /// Identity that minted this token. Retained as invite provenance and
-    /// threaded through `generate_invite_token` / `reregister_invite_token`;
-    /// no audit consumer reads it yet.
+    /// threaded through `generate_invite_token`; no audit consumer reads it
+    /// yet.
     #[expect(dead_code, reason = "invite provenance, no reader yet")]
     created_by: String,
     uses: u32,
@@ -151,6 +159,7 @@ impl SFURoom {
             device_members: HashMap::new(),
             allowed: std::collections::HashSet::new(),
             invite_tokens: HashMap::new(),
+            certificate: None,
             empty_since: None,
             next_index: 1,
         }
@@ -469,37 +478,21 @@ impl SFURoom {
         token
     }
 
-    /// Re-seed a client-held invite credential after idle-GC / rematerialize.
-    ///
-    /// Room invite maps are in-memory only; GC wipes them. Clients keep the
-    /// original token in their encrypted `RoomStore` and re-present it on
-    /// materialize so returning members can rejoin without a fresh share.
-    /// `max_uses = 0` means unlimited re-entry uses (the room definition is the
-    /// trust root; rotate by minting a new invite / new room).
-    ///
-    /// Idempotent: re-registering the same token refreshes `created_by` and
-    /// resets use counts so a previously single-use token becomes durable.
-    pub fn reregister_invite_token(&mut self, token: &str, created_by: &str) -> bool {
-        if token.is_empty() {
-            return false;
-        }
-        self.invite_tokens.insert(
-            token.to_string(),
-            InviteToken {
-                created_by: created_by.to_string(),
-                uses: 0,
-                // 0 = unlimited — post-GC rejoin must not burn the credential.
-                max_uses: 0,
-            },
-        );
-        true
-    }
-
+    /// Admit `peer_id` if `token` is the secret the room's certificate
+    /// commits to, or a token this node minted that has uses left.
     pub fn validate_and_consume_token(&mut self, token: &str, peer_id: &str) -> bool {
+        if self
+            .certificate
+            .as_ref()
+            .is_some_and(|cert| cert.admits_secret(token))
+        {
+            self.allowed.insert(normalize_peer_id(peer_id));
+            return true;
+        }
         let Some(it) = self.invite_tokens.get_mut(token) else {
             return false;
         };
-        // max_uses == 0 means unlimited (durable re-entry / re-seeded token).
+        // max_uses == 0 means unlimited.
         if it.max_uses > 0 && it.uses >= it.max_uses {
             return false;
         }
@@ -766,24 +759,23 @@ impl SFURoomManager {
             .collect()
     }
 
-    /// Descriptors for **durable** rooms — those with a creator (client-owned,
-    /// not anonymous GC-able rooms) and not the always-present `default` lobby.
-    /// Gossiped to cluster peers so any member can materialize them and accept a
-    /// failed-over join, independent of whether the client pre-seeded that node.
-    /// Returns `(room_id, room_name, room_type, creator_id, invite_policy)`.
-    pub fn durable_room_descriptors(&self) -> Vec<(String, String, RoomType, String, String)> {
+    /// Descriptors for **durable** rooms in use here — rooms with a creator
+    /// (client-owned, not anonymous GC-able rooms), other than the
+    /// always-present `default` lobby, that have someone in voice or text chat
+    /// on this node. Gossiped to cluster peers so any member can materialize
+    /// them and accept a failed-over join. Each room is returned whole; its
+    /// certificate, when it has one, lets a sibling admit members by the
+    /// room's secret.
+    ///
+    /// An idle room is left out. Every node advertised its rooms every 15 s
+    /// whether used or not, and a sibling recreated any it lacked with a fresh
+    /// idle timer, so the nodes handed an empty room back and forth and it
+    /// never expired. Unadvertised, each node's copy expires on its own; a
+    /// member who comes back brings the room with its certificate.
+    pub fn durable_room_descriptors(&self) -> Vec<&SFURoom> {
         self.rooms
             .values()
-            .filter(|r| r.room_id != DEFAULT_ROOM_ID && !r.creator_id.is_empty())
-            .map(|r| {
-                (
-                    r.room_id.clone(),
-                    r.room_name.clone(),
-                    r.room_type,
-                    r.creator_id.clone(),
-                    r.invite_policy.clone(),
-                )
-            })
+            .filter(|r| r.room_id != DEFAULT_ROOM_ID && !r.creator_id.is_empty() && !r.is_unused())
             .collect()
     }
 
@@ -868,12 +860,17 @@ impl SFURoomManager {
                     "room_type": r.room_type,
                     "creator_id": r.creator_id,
                     "is_default": r.room_id == DEFAULT_ROOM_ID,
+                    // Members keep the certificate so they can bring the room
+                    // back after this node forgets it. It carries no secret.
+                    "room_cert": r.certificate.as_ref().map(RoomCertificate::to_value),
                 })
             })
             .collect()
     }
 
-    /// Validate and consume a room invite token.
+    /// Admit `peer_id` with `token`: the room certificate's committed secret,
+    /// or a single-use token this node minted. A string the owner never
+    /// committed to and this node never minted admits no one.
     pub fn validate_room_invite(&mut self, room_id: &str, token: &str, peer_id: &str) -> bool {
         let Some(room) = self.rooms.get_mut(room_id) else {
             return false;
@@ -911,30 +908,66 @@ impl SFURoomManager {
         }
     }
 
+    /// Create or confirm a room from its owner-signed certificate, which the
+    /// caller has verified ([`RoomCertificate::verify`]).
+    ///
+    /// An absent room is created with the certificate's name, type, invite
+    /// policy and owner; nothing a request claims about the room is used. A
+    /// room that exists under the same owner, or under none, takes the
+    /// certificate and, when it had none or an earlier one, its description.
+    /// A room that belongs to someone else keeps what it has.
+    pub fn apply_certificate(&mut self, cert: &RoomCertificate) -> CertApplied {
+        if cert.room_id == DEFAULT_ROOM_ID {
+            return CertApplied::Conflict;
+        }
+        let room_type = if cert.is_private() {
+            RoomType::Private
+        } else {
+            RoomType::Public
+        };
+        let Some(room) = self.rooms.get_mut(&cert.room_id) else {
+            let mut room = SFURoom::new(&cert.room_id, &cert.room_name, room_type, &cert.owner_pub);
+            room.invite_policy = normalize_invite_policy(&cert.invite_policy);
+            room.certificate = Some(cert.clone());
+            room.mark_unused_if_empty();
+            info!(
+                "Materialized SFU room from its certificate: {} ({})",
+                cert.room_name, cert.room_id
+            );
+            self.rooms.insert(cert.room_id.clone(), room);
+            return CertApplied::Created;
+        };
+        if !room.creator_id.is_empty() && !cert.is_owner(&room.creator_id) {
+            return CertApplied::Conflict;
+        }
+        if room
+            .certificate
+            .as_ref()
+            .is_some_and(|held| !cert.supersedes(held))
+        {
+            return CertApplied::Unchanged;
+        }
+        // The owner's signed word replaces whatever an unsigned create or an
+        // earlier certificate said.
+        room.room_name = cert.room_name.clone();
+        room.room_type = room_type;
+        room.invite_policy = normalize_invite_policy(&cert.invite_policy);
+        if room.creator_id.is_empty() {
+            room.creator_id = normalize_peer_id(&cert.owner_pub);
+        }
+        room.certificate = Some(cert.clone());
+        CertApplied::Attached
+    }
+
     /// Generate an invite token for a room.
     ///
-    /// New shareable invites remain single-use (`max_uses = 1`). Returning
-    /// members rejoin via the `allowed` set (or a client re-seeded multi-use
-    /// token after idle GC — see [`SFURoom::reregister_invite_token`]).
+    /// Node-minted invites are single-use (`max_uses = 1`) and live only on
+    /// this node. Returning members rejoin via the `allowed` set or, after the
+    /// room was forgotten, the secret its certificate commits to.
     pub fn generate_invite_token(&mut self, room_id: &str, created_by: &str) -> Option<String> {
         self.rooms
             .get_mut(room_id)
             .map(|r| r.generate_invite_token(created_by, 1))
-    }
-
-    /// Re-seed a client-held invite token into an existing room (post-GC
-    /// materialize). Returns `false` if the room is missing or the token is
-    /// empty.
-    pub fn reregister_invite_token(
-        &mut self,
-        room_id: &str,
-        token: &str,
-        created_by: &str,
-    ) -> bool {
-        let Some(room) = self.rooms.get_mut(room_id) else {
-            return false;
-        };
-        room.reregister_invite_token(token, created_by)
     }
 
     /// Generate an invite token if `requester` is authorized under the room's
@@ -978,6 +1011,19 @@ impl SFURoomManager {
                 .collect(),
         }
     }
+}
+
+/// Outcome of [`SFURoomManager::apply_certificate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertApplied {
+    /// The room was absent and now exists as the certificate describes it.
+    Created,
+    /// The room existed under this owner and now holds this certificate.
+    Attached,
+    /// The room already held this certificate or a later one.
+    Unchanged,
+    /// The room belongs to another owner; the certificate was ignored.
+    Conflict,
 }
 
 /// Outcome of an owner-checked invite-mint request
@@ -1158,7 +1204,7 @@ mod tests {
     #[test]
     fn durable_descriptors_skip_default_and_anonymous_rooms() {
         let mut mgr = SFURoomManager::new();
-        // A client-owned room — durable, should be advertised to the cluster.
+        // A client-owned room in use — durable, should be advertised.
         mgr.create_room_with_policy(
             Some("owned"),
             "We Gamin?",
@@ -1167,19 +1213,59 @@ mod tests {
             "members",
         )
         .expect("room");
+        assert!(mgr.subscribe("OWNER", "owned"));
         // The always-present default lobby has no creator — not advertised.
         mgr.create_room(Some(DEFAULT_ROOM_ID), "Lobby", RoomType::Public, "");
+        mgr.join_room("someone", DEFAULT_ROOM_ID);
         // An anonymous (creatorless, GC-able) room — not advertised.
         mgr.create_room(Some("anon"), "Anon", RoomType::Public, "");
+        mgr.join_room("someone", "anon");
 
         let descs = mgr.durable_room_descriptors();
         assert_eq!(descs.len(), 1, "only the client-owned room is durable");
-        let (id, name, rtype, creator, policy) = &descs[0];
-        assert_eq!(id, "owned");
-        assert_eq!(name, "We Gamin?");
-        assert_eq!(*rtype, RoomType::Private);
-        assert_eq!(creator, "OWNER");
-        assert_eq!(policy, "members");
+        let room = descs[0];
+        assert_eq!(room.room_id, "owned");
+        assert_eq!(room.room_name, "We Gamin?");
+        assert_eq!(room.room_type, RoomType::Private);
+        assert_eq!(room.creator_id, "OWNER");
+        assert_eq!(room.invite_policy, "members");
+    }
+
+    /// An idle room is not advertised, so siblings stop recreating it and it
+    /// expires cluster-wide. Before, two nodes handed an empty room back and
+    /// forth through the roster and it never expired.
+    #[test]
+    fn idle_rooms_are_not_advertised_and_expire_on_every_node() {
+        let mut a = SFURoomManager::new();
+        let mut b = SFURoomManager::new();
+        a.create_room(Some("r"), "Room", RoomType::Public, "OWNER");
+        assert!(a.subscribe("member", "r"));
+        // In use on a: advertised, and b materializes it from the roster.
+        let roster: Vec<(String, String)> = a
+            .durable_room_descriptors()
+            .iter()
+            .map(|r| (r.room_id.clone(), r.room_name.clone()))
+            .collect();
+        assert_eq!(roster.len(), 1);
+        for (id, name) in &roster {
+            b.create_room(Some(id), name, RoomType::Public, "OWNER");
+        }
+        assert!(b.durable_room_descriptors().is_empty(), "idle on b");
+
+        // The member leaves; both copies go idle and stop being advertised.
+        a.unsubscribe("member", "r");
+        assert!(a.durable_room_descriptors().is_empty());
+
+        let later = SFURoom::now_secs() + IDLE_ROOM_GC_SECS + 1.0;
+        assert_eq!(
+            a.gc_idle_rooms(later, IDLE_ROOM_GC_SECS),
+            vec!["r".to_owned()]
+        );
+        assert_eq!(
+            b.gc_idle_rooms(later, IDLE_ROOM_GC_SECS),
+            vec!["r".to_owned()]
+        );
+        assert!(a.get_room("r").is_none() && b.get_room("r").is_none());
     }
 
     #[test]
@@ -1472,67 +1558,135 @@ mod tests {
         assert!(mgr.get_room(DEFAULT_ROOM_ID).is_some());
     }
 
-    /// After idle GC the invite map is gone. Clients re-seed their stored
-    /// invite token on rematerialize; that credential must admit returning
-    /// members (including multi-use re-entry) without a fresh share.
+    /// A signed certificate for `name`, owned by a fresh key. Returns the
+    /// owner's id with the certificate.
+    fn signed_cert(name: &str, room_type: &str, secret: &str) -> (String, RoomCertificate) {
+        use base64::engine::general_purpose::URL_SAFE;
+        use base64::Engine as _;
+        use ed25519_dalek::{Signer, SigningKey};
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let owner = URL_SAFE.encode(key.verifying_key().as_bytes());
+        let cert = RoomCertificate::new(&owner, name, room_type, "owner", secret, 100)
+            .signed(|b| key.sign(b).to_bytes().to_vec());
+        assert_eq!(cert.verify(), Ok(()));
+        (owner, cert)
+    }
+
+    /// A forgotten room comes back from its certificate, as its owner made
+    /// it, and the committed secret admits a member any number of times.
     #[test]
-    fn reregister_invite_token_survives_gc_and_readmits_member() {
+    fn certificate_recreates_a_forgotten_room_and_its_secret_admits() {
+        let mut mgr = SFURoomManager::new();
+        let (owner, cert) = signed_cert("Greens Place", "private", "room-secret");
+        assert_eq!(mgr.apply_certificate(&cert), CertApplied::Created);
+        let room = mgr.get_room(&cert.room_id).expect("room");
+        assert_eq!(room.room_type, RoomType::Private);
+        assert_eq!(room.room_name, "Greens Place");
+        assert_eq!(room.creator_id, owner);
+
+        assert!(mgr.join_room(&owner, &cert.room_id).0, "owner self-admits");
+        assert!(!mgr.join_room("member", &cert.room_id).0);
+        assert!(mgr.validate_room_invite(&cert.room_id, "room-secret", "member"));
+        assert!(mgr.validate_room_invite(&cert.room_id, "room-secret", "member2"));
+        assert!(mgr.join_room("member", &cert.room_id).0);
+        assert!(mgr.subscribe("member2", &cert.room_id));
+    }
+
+    /// The room-id-plus-any-string hole: a string nobody committed to never
+    /// admits, whether or not the room has a certificate.
+    #[test]
+    fn an_uncommitted_token_admits_no_one() {
+        let mut mgr = SFURoomManager::new();
+        mgr.create_room(Some("priv"), "Private", RoomType::Private, "creator");
+        assert!(!mgr.validate_room_invite("priv", "x", "stranger"));
+        assert!(!mgr.validate_room_invite("priv", "", "stranger"));
+        assert!(!mgr.validate_room_invite("missing", "tok", "stranger"));
+        assert!(!mgr.join_room("stranger", "priv").0);
+
+        let (_, cert) = signed_cert("Locked", "private", "real-secret");
+        mgr.apply_certificate(&cert);
+        assert!(!mgr.validate_room_invite(&cert.room_id, "x", "stranger"));
+        assert!(!mgr.subscribe("stranger", &cert.room_id));
+    }
+
+    /// Node-minted tokens stay single-use.
+    #[test]
+    fn node_minted_tokens_stay_single_use() {
         let mut mgr = SFURoomManager::new();
         mgr.create_room(Some("priv"), "Private", RoomType::Private, "creator");
         let token = mgr.generate_invite_token("priv", "creator").unwrap();
         assert!(mgr.validate_room_invite("priv", &token, "friend"));
-        // Single-use mint: second consume fails while the room still exists.
         assert!(!mgr.validate_room_invite("priv", &token, "other"));
-        // Friend is allowed and can join.
-        assert!(mgr.join_room("friend", "priv").0);
-
-        // Idle-GC the empty room (friend leaves first so empty_since is set).
-        mgr.leave_room("friend", "priv");
-        let now = SFURoom::now_secs();
-        // Force empty_since into the past via GC clock.
-        let removed = mgr.gc_idle_rooms(now + IDLE_ROOM_GC_SECS + 1.0, IDLE_ROOM_GC_SECS);
-        assert!(removed.contains(&"priv".to_string()));
-        assert!(mgr.get_room("priv").is_none());
-
-        // Rematerialize (as after client RoomStore replay).
-        let (_, created) = mgr
-            .create_room(Some("priv"), "Private", RoomType::Private, "creator")
-            .unwrap();
-        assert!(created);
-        // Creator is always allowed; friend is not until re-seed.
-        assert!(!mgr.join_room("friend", "priv").0);
-        assert!(mgr.reregister_invite_token("priv", &token, "creator"));
-        assert!(mgr.allow_peer("priv", "friend"));
-        // Multi-use re-seeded token admits again (and a third time).
-        assert!(mgr.validate_room_invite("priv", &token, "friend"));
-        assert!(mgr.validate_room_invite("priv", &token, "friend"));
         assert!(mgr.join_room("friend", "priv").0);
     }
 
+    /// A certificate never takes over a room another owner holds.
     #[test]
-    fn reregister_empty_token_is_rejected() {
+    fn certificate_does_not_take_over_another_owners_room() {
         let mut mgr = SFURoomManager::new();
-        mgr.create_room(Some("priv"), "Private", RoomType::Private, "creator");
-        assert!(!mgr.reregister_invite_token("priv", "", "creator"));
-        assert!(!mgr.reregister_invite_token("missing", "tok", "creator"));
+        let (_, cert) = signed_cert("Mine", "private", "s");
+        mgr.create_room(
+            Some(&cert.room_id),
+            "Mine",
+            RoomType::Private,
+            "someone-else",
+        );
+        assert_eq!(mgr.apply_certificate(&cert), CertApplied::Conflict);
+        assert!(mgr.get_room(&cert.room_id).unwrap().certificate.is_none());
+        assert!(!mgr.validate_room_invite(&cert.room_id, "s", "member"));
     }
 
-    /// Cold cluster member: room exists via roster (creator only, no ACL / no
-    /// token map). Presenting a client-held RoomStore token re-seeds + admits —
-    /// same path `handle_sfu_room_invite` uses after RoomRoster materialize.
+    /// The owner rotates a secret by signing a later certificate; the earlier
+    /// one neither replaces it nor admits with its old secret.
     #[test]
-    fn cold_node_roster_room_admits_via_reregistered_token() {
+    fn a_later_certificate_rotates_the_secret() {
+        use base64::engine::general_purpose::URL_SAFE;
+        use base64::Engine as _;
+        use ed25519_dalek::{Signer, SigningKey};
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let owner = URL_SAFE.encode(key.verifying_key().as_bytes());
+        let sign = |c: RoomCertificate| c.signed(|b| key.sign(b).to_bytes().to_vec());
+        let first = sign(RoomCertificate::new(
+            &owner, "R", "private", "owner", "old", 1,
+        ));
+        let second = sign(RoomCertificate::new(
+            &owner, "R", "private", "owner", "new", 2,
+        ));
+
         let mut mgr = SFURoomManager::new();
-        // RoomRoster shape: existence + creator, empty allowed/token map.
-        mgr.create_room(Some("greens"), "Greens Place", RoomType::Private, "owner");
-        assert!(!mgr.join_room("member", "greens").0);
-        let token = "client-held-roomstore-token";
-        assert!(mgr.reregister_invite_token("greens", token, "owner"));
-        assert!(mgr.validate_room_invite("greens", token, "member"));
-        assert!(mgr.join_room("member", "greens").0);
-        // Durable multi-use: second presentation still works.
-        assert!(mgr.validate_room_invite("greens", token, "member2"));
-        assert!(mgr.join_room("member2", "greens").0);
+        assert_eq!(mgr.apply_certificate(&first), CertApplied::Created);
+        assert_eq!(mgr.apply_certificate(&second), CertApplied::Attached);
+        assert_eq!(mgr.apply_certificate(&first), CertApplied::Unchanged);
+        assert!(!mgr.validate_room_invite(&first.room_id, "old", "member"));
+        assert!(mgr.validate_room_invite(&first.room_id, "new", "member"));
+    }
+
+    /// A room the owner created without a certificate takes it, and the
+    /// certificate's description, when a member presents it.
+    #[test]
+    fn certificate_attaches_to_the_owners_unsigned_room() {
+        let mut mgr = SFURoomManager::new();
+        let (owner, cert) = signed_cert("Den", "private", "s");
+        mgr.create_room(Some(&cert.room_id), "Den", RoomType::Public, &owner);
+        assert_eq!(mgr.apply_certificate(&cert), CertApplied::Attached);
+        let room = mgr.get_room(&cert.room_id).unwrap();
+        assert_eq!(room.room_type, RoomType::Private);
+        assert!(room.certificate.is_some());
+    }
+
+    /// Room lists carry the certificate so members can keep it.
+    #[test]
+    fn room_list_carries_the_certificate() {
+        let mut mgr = SFURoomManager::new();
+        let (owner, cert) = signed_cert("Listed", "public", "");
+        mgr.apply_certificate(&cert);
+        let rooms = mgr.get_rooms_for_peer(&owner);
+        let listed = rooms
+            .iter()
+            .find(|r| r["room_id"] == cert.room_id.as_str())
+            .expect("listed");
+        let carried = RoomCertificate::from_value_verified(&listed["room_cert"]);
+        assert_eq!(carried, Some(cert));
     }
 
     /// Private room: creator is admitted via creator_id without a prior

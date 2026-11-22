@@ -225,6 +225,18 @@ fn fill_missing(existing: &mut RoomEntry, incoming: &RoomEntry) -> bool {
         existing.is_creator = true;
         changed = true;
     }
+    // A sibling's certificate is checked like any other, and replaces ours
+    // only when the owner signed it later.
+    let cert = super::newer_room_cert(
+        &existing.room_id,
+        existing.room_cert.clone(),
+        incoming.room_cert.clone(),
+    );
+    if cert != existing.room_cert {
+        existing.room_cert = cert;
+        super::apply_room_cert(existing);
+        changed = true;
+    }
     changed
 }
 
@@ -796,6 +808,52 @@ mod tests {
         assert!(desktop.get(HOST, "hidden-there").is_none());
         // Hidden against a sibling member of the same cluster.
         assert!(desktop.get(HOST, "hidden-here").is_none());
+    }
+
+    /// A room certificate reaches our other devices with the room, on a room
+    /// they hold already as well as a new one, and a forged one does not.
+    #[test]
+    fn room_certificates_travel_to_our_other_devices() {
+        use doubleslash_features::RoomCertificate;
+        let dir = tempdir().unwrap();
+        let identity = Identity::generate();
+        let owner = Identity::generate();
+        let cert = RoomCertificate::new(&owner.public_id(), "Den", "private", "owner", "s", 1)
+            .signed(|b| owner.sign(b));
+        let mut phone = store(&identity, &dir, "phone.dat");
+        let mut desktop = store(&identity, &dir, "desktop.dat");
+        for s in [&mut phone, &mut desktop] {
+            s.upsert(
+                RoomEntry::new(cert.room_id.clone(), "Den")
+                    .with_type("private")
+                    .with_supernode(HOST),
+            )
+            .unwrap();
+        }
+        phone.set_room_cert(&cert, "s").unwrap();
+        merge(&mut desktop, &phone, &identity);
+        let got = desktop.get(HOST, &cert.room_id).unwrap();
+        assert_eq!(got.room_cert.as_ref(), Some(&cert));
+
+        let mut forged = cert.clone();
+        forged.issued_at = 9;
+        let tampered = OwnRoomSnapshot {
+            v: 1,
+            rooms: vec![RoomEntry::new(cert.room_id.clone(), "Den")
+                .with_supernode(HOST)
+                .with_room_cert(Some(forged))],
+            spaces: vec![],
+            ..Default::default()
+        };
+        let me = identity.public_id();
+        desktop
+            .merge_own_device_snapshot(&tampered, &me, known, cluster, 3, |b| identity.sign(b))
+            .unwrap();
+        assert_eq!(
+            desktop.get(HOST, &cert.room_id).unwrap().room_cert.as_ref(),
+            Some(&cert),
+            "a certificate that does not verify never replaces ours"
+        );
     }
 
     #[test]

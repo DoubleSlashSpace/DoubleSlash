@@ -204,6 +204,7 @@ fn room_invite_url_round_trips() {
         "",
         "",
         "",
+        "",
     );
     assert!(
         url.starts_with("https://doubleslash.space/r#"),
@@ -223,6 +224,7 @@ fn room_invite_url_round_trips() {
             space_root: String::new(),
             space_proof: String::new(),
             space_grant: String::new(),
+            room_cert: String::new(),
         }
     );
 }
@@ -245,6 +247,7 @@ fn room_invite_carries_space_fields() {
         root,
         proof,
         grant,
+        "",
     );
     let encoded = room_payload(&url);
     let got = parse_room_invite(&encoded).unwrap();
@@ -264,6 +267,7 @@ fn room_invite_carries_space_fields() {
         "public",
         "tok",
         0,
+        "",
         "",
         "",
         "",
@@ -298,6 +302,7 @@ fn room_invite_wire_fields_are_stable() {
         "private",
         "tok",
         42,
+        "",
         "",
         "",
         "",
@@ -3508,4 +3513,91 @@ mod network_handover {
             );
         }
     }
+}
+
+/// A trusted supernode with a live (fake) session, for room signaling tests.
+fn trusted_supernode(
+    t: &mut harness::TestCm,
+) -> (
+    crate::identity::Identity,
+    tokio::sync::mpsc::Receiver<tokio_tungstenite::tungstenite::Message>,
+) {
+    use crate::identity::Identity;
+    use crate::peer_store::PeerRecord;
+
+    let sn_identity = Identity::generate();
+    t.store.write().upsert(PeerRecord {
+        peer_id: sn_identity.peer_id(),
+        identity_pub: sn_identity.public_id(),
+        is_supernode: true,
+        ..Default::default()
+    });
+    let rx = t.cm.test_add_supernode_session(&sn_identity.public_id());
+    (sn_identity, rx)
+}
+
+/// Accepting a private room invite opens the room's text chat only: the token
+/// is presented, and its acceptance subscribes to chat rather than joining
+/// voice.
+#[tokio::test]
+async fn text_only_room_invite_subscribes_without_joining_voice() {
+    use crate::protocol::{MessageType, SignalingMessage};
+    use serde_json::Value;
+
+    let mut t = harness::test_cm();
+    let (sn_identity, mut sn) = trusted_supernode(&mut t);
+    let sn_id = sn_identity.public_id();
+
+    t.cm.subscribe_room_chat(&sn_id, "room-x", "tok-1").await;
+    let sent = harness::drain_ws(&mut sn);
+    let kinds: Vec<_> = sent.iter().map(|m| m.msg_type.clone()).collect();
+    assert_eq!(kinds, vec![MessageType::SfuRoomInvite], "got {kinds:?}");
+    assert_eq!(sent[0].payload["room_id"], "room-x");
+    assert_eq!(sent[0].payload["invite_token"], "tok-1");
+
+    let mut result = SignalingMessage::new(MessageType::SfuRoomInviteResult, sn_id.clone());
+    result
+        .payload
+        .insert("room_id".to_owned(), Value::String("room-x".to_owned()));
+    result
+        .payload
+        .insert("accepted".to_owned(), Value::Bool(true));
+    harness::sign(&sn_identity, &mut result);
+    t.cm.handle_inbound_from_supernode(sn_id.clone(), result)
+        .await;
+
+    let kinds: Vec<_> = harness::drain_ws(&mut sn)
+        .iter()
+        .map(|m| m.msg_type.clone())
+        .collect();
+    assert!(
+        kinds.contains(&MessageType::SfuSubscribe),
+        "admission must subscribe to chat, got {kinds:?}"
+    );
+    assert!(
+        !kinds.contains(&MessageType::SfuJoin),
+        "a text-only admission must not join voice, got {kinds:?}"
+    );
+}
+
+/// A room with no credential to present subscribes at once.
+#[tokio::test]
+async fn text_only_room_without_a_credential_subscribes_at_once() {
+    use crate::protocol::MessageType;
+
+    let mut t = harness::test_cm();
+    let (sn_identity, mut sn) = trusted_supernode(&mut t);
+
+    t.cm.subscribe_room_chat(&sn_identity.public_id(), "room-y", "")
+        .await;
+    let kinds: Vec<_> = harness::drain_ws(&mut sn)
+        .iter()
+        .map(|m| m.msg_type.clone())
+        .collect();
+    assert!(kinds.contains(&MessageType::SfuSubscribe), "got {kinds:?}");
+    assert!(
+        !kinds.contains(&MessageType::SfuRoomInvite),
+        "got {kinds:?}"
+    );
+    assert!(!kinds.contains(&MessageType::SfuJoin), "got {kinds:?}");
 }

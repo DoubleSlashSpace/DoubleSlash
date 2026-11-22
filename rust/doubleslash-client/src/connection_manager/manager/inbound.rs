@@ -1332,6 +1332,7 @@ impl ConnectionManager {
                 }
             }
             MessageType::SfuRoomList => {
+                self.learn_room_certs_from_list(msg.payload.get("rooms"));
                 let rooms_json = msg
                     .payload
                     .get("rooms")
@@ -1403,6 +1404,7 @@ impl ConnectionManager {
                 if !should_auto_join_on_room_created(denied, room_id.is_empty(), materialize_only) {
                     // Materialize-only replay: refresh sidebar counts, do not join,
                     // and do **not** emit RoomCreated (that drives tray spam).
+                    self.emit_signed_room_cert(&room_id);
                     self.send_room_list_request(&supernode_id).await;
                     // Private rooms stay text-active while connected: subscribe
                     // *after* the room exists on the supernode so SfuChat is
@@ -1444,11 +1446,13 @@ impl ConnectionManager {
                     // publish a pre-join participant_count to the sidebar bubble.
                     self.emit_event(ConnectionEvent::RoomCreated {
                         supernode_id,
-                        room_id,
+                        room_id: room_id.clone(),
                         room_name,
                         room_type,
                         invite_token,
                     });
+                    // After RoomCreated, so the store has the room to keep it on.
+                    self.emit_signed_room_cert(&room_id);
                 }
             }
             MessageType::SfuRoomInviteResult => {
@@ -1472,8 +1476,28 @@ impl ConnectionManager {
                 // pending entry for this room_id, else we never SfuJoin after a
                 // successful B/C invite (Greens Place stuck after valid=true).
                 let was_pending = self.take_pending_private_room_join(&supernode_id, &room_id);
+                let was_subscribe_pending = Self::take_pending_scoped_key(
+                    &mut self.pending_private_room_subscribes,
+                    &supernode_id,
+                    &room_id,
+                );
+                if let Some(cert) = msg
+                    .payload
+                    .get("room_cert")
+                    .and_then(doubleslash_features::RoomCertificate::from_value_verified)
+                    .filter(|c| c.room_id == room_id)
+                {
+                    if self.learn_room_cert(cert, "") {
+                        self.emit_room_cert(&room_id);
+                    }
+                }
                 if accepted {
-                    if was_pending || self.current_room_id == room_id {
+                    if !was_pending && was_subscribe_pending && self.current_room_id != room_id {
+                        // Admitted for text only. The invite's Space proof was
+                        // spent on this admission, as an `SfuJoin` spends it.
+                        self.pending_join_space_creds.remove(&room_id);
+                        self.send_room_subscribe(&supernode_id, &room_id).await;
+                    } else if was_pending || self.current_room_id == room_id {
                         self.current_supernode_id = supernode_id.clone();
                         self.current_room_id = room_id.clone();
                         self.send_room_join(&supernode_id, &room_id).await;

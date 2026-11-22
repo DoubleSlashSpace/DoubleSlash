@@ -2171,12 +2171,9 @@ ApplicationWindow {
             }
         }
         function onRoomInviteReady(supernodeId, roomId, roomName) {
-            roomPanel.switchToRoom(roomName, roomId, supernodeId)
-            backend.joinRoomWithVoice(supernodeId, roomId)
-            root.voiceRoomName = roomName
-            root.voiceSupernodeId = supernodeId
-            root.voiceRoomId = roomId
-            navIndex = 1
+            // Accepting a room invite opens its text chat. Voice is a separate
+            // choice: the room's call icon.
+            root.openRoomFromTree(supernodeId, roomId, roomName)
         }
     }
 
@@ -2485,25 +2482,6 @@ ApplicationWindow {
                     onClicked: confirmRemoveDialog.applyRemoval()
                 }
             }
-        }
-    }
-
-    // ── Join Room dialog ──────────────────────────────────────────────────
-    JoinRoomDialog {
-        id: joinRoomDialog
-        anchors.centerIn: parent
-        z: 100
-        onJoinRequested: function(supernodeId, roomId, inviteToken) {
-            roomPanel.switchToRoom(roomId, roomId, supernodeId)
-            // Persist + validate the invite token before joinRoomWithVoice runs
-            // join_room (which reads the token from the room store).
-            if ((inviteToken || "").trim() !== "")
-                backend.joinRoomWithInvite(supernodeId, roomId, inviteToken)
-            backend.joinRoomWithVoice(supernodeId, roomId)
-            root.voiceRoomName = roomId
-            root.voiceSupernodeId = supernodeId
-            root.voiceRoomId = roomId
-            navIndex = 1
         }
     }
 

@@ -41,6 +41,10 @@ pub struct RoomInvitePayload {
     pub space_root: String,
     pub space_proof: String,
     pub space_grant: String,
+    /// The room's owner-signed certificate as JSON text; empty when the
+    /// inviter held none. The joiner keeps it, so it can bring the room back
+    /// on a node that forgot it.
+    pub room_cert: String,
 }
 
 /// A pasted room invite awaiting its host supernode's WebSocket to connect.
@@ -73,6 +77,7 @@ pub fn build_room_invite_url(
     space_root: &str,
     space_proof: &str,
     space_grant: &str,
+    room_cert: &str,
 ) -> String {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
@@ -94,6 +99,7 @@ pub fn build_room_invite_url(
             ("space_root", space_root),
             ("space_proof", space_proof),
             ("space_grant", space_grant),
+            ("room_cert", room_cert),
         ] {
             if !text.is_empty() {
                 if let Ok(v) = serde_json::from_str::<Value>(text) {
@@ -171,6 +177,7 @@ pub fn parse_room_invite(encoded: &str) -> Result<RoomInvitePayload, String> {
         space_root: get_obj("space_root"),
         space_proof: get_obj("space_proof"),
         space_grant: get_obj("space_grant"),
+        room_cert: get_obj("room_cert"),
     })
 }
 
@@ -348,6 +355,13 @@ impl ConnectionManager {
             .map(|d| d.as_secs())
             .unwrap_or(0)
             + ROOM_INVITE_TTL_SECS;
+        // Every link carries the certificate, whoever made it, so a joiner can
+        // bring the room back without its owner.
+        let room_cert = self
+            .room_creds
+            .get(room_id)
+            .map(|held| held.cert.to_json())
+            .unwrap_or_default();
         Some(build_room_invite_url(
             supernode_id,
             &supernode_hint,
@@ -359,6 +373,7 @@ impl ConnectionManager {
             space_root,
             space_proof,
             space_grant,
+            &room_cert,
         ))
     }
 
@@ -470,8 +485,18 @@ impl ConnectionManager {
             space_root,
             space_proof,
             space_grant,
+            room_cert,
             ..
         } = payload;
+
+        // Keep the room's certificate and the secret it commits to. One that
+        // does not verify, or names another room, is dropped; the token still
+        // works where the node knows the room.
+        if let Some(cert) = doubleslash_features::RoomCertificate::from_json_verified(&room_cert)
+            .filter(|c| c.room_id == room_id)
+        {
+            self.learn_room_cert(cert, &invite_token);
+        }
 
         // Pull the Space-tree linkage out of the proof/root before they're moved
         // into the pending join creds, so the joiner's sidebar can nest the room:
@@ -567,6 +592,8 @@ impl ConnectionManager {
             parent_id: entry.parent_id.clone(),
             space_id: entry.space_id.clone(),
         });
+        // After RoomInviteReady, so the store has the room to keep it on.
+        self.emit_room_cert(&entry.room_id);
     }
 
     pub(in crate::connection_manager) async fn handle_accept_invite(&mut self, invite_url: String) {

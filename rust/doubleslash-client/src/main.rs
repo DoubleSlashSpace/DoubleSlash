@@ -879,6 +879,11 @@ fn headless_rematerialize_and_subscribe(
             materialize_only: true,
             invite_policy: entry.invite_policy.clone(),
             invite_token: entry.invite_token.clone(),
+            room_cert: entry
+                .room_cert
+                .as_ref()
+                .map(|c| c.to_json())
+                .unwrap_or_default(),
         });
         if subscribed.insert(entry.room_id.clone()) {
             let _ = cmd_tx.try_send(ConnectionCommand::SubscribeRoomChat {
@@ -955,6 +960,18 @@ async fn handle_event(
                 warn!("Another device on this identity needs an update; room {room_id} chat is paused");
             } else {
                 info!("Room {room_id} is no longer paused on an outdated device");
+            }
+        }
+        ConnectionEvent::RoomCertificateLearned {
+            room_cert,
+            invite_token,
+            ..
+        } => {
+            if let Err(e) = room_store
+                .write()
+                .keep_reported_room_cert(&room_cert, &invite_token)
+            {
+                warn!("[headless] could not keep a room certificate: {e}");
             }
         }
         ConnectionEvent::OwnRoomsReceived { snapshot, .. } => {

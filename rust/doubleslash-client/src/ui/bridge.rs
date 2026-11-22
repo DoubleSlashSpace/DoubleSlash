@@ -338,16 +338,6 @@ pub mod ffi {
         #[rust_name = "join_room"]
         fn joinRoom(self: Pin<&mut AppBridge>, supernode_id: &QString, room_id: &QString);
 
-        /// Validate a private-room invite token and join the SFU room.
-        #[qinvokable]
-        #[rust_name = "join_room_with_invite"]
-        fn joinRoomWithInvite(
-            self: Pin<&mut AppBridge>,
-            supernode_id: &QString,
-            room_id: &QString,
-            invite_token: &QString,
-        );
-
         /// Subscribe to an SFU room's text chat without joining voice or
         /// leaving the current voice room. Single-clicking a room in the sidebar
         /// calls this so the user can browse chat across rooms freely.
@@ -4688,66 +4678,6 @@ impl ffi::AppBridge {
         self.as_mut().set_in_room(true);
     }
 
-    fn join_room_with_invite(
-        mut self: Pin<&mut Self>,
-        supernode_id: &QString,
-        room_id: &QString,
-        invite_token: &QString,
-    ) {
-        let Some(sid) = self
-            .rust()
-            .resolve_supernode_node_id_str(&supernode_id.to_string())
-        else {
-            warn!(
-                "[bridge] joinRoomWithInvite: unknown supernode {}",
-                supernode_id.to_string()
-            );
-            return;
-        };
-        let rid = room_id.to_string();
-        let token = invite_token.to_string();
-        if sid.is_empty() || rid.is_empty() || token.is_empty() {
-            return;
-        }
-
-        // Do not leave other chat-active rooms — multi-room text stays live.
-
-        if let Some(ref tx) = self.rust().conn_cmd_tx {
-            let _ = tx.try_send(ConnectionCommand::JoinRoomWithInvite {
-                supernode_id: sid.clone(),
-                room_id: rid.clone(),
-                invite_token: token.clone(),
-            });
-        }
-        {
-            let mut r = self.as_mut().rust_mut();
-            r.current_supernode_id = sid.clone();
-            r.current_room_id = rid.clone();
-        }
-        remember_room_in_store(
-            &self.rust().room_store,
-            &sid,
-            &rid,
-            "",
-            "private",
-            "",
-            false,
-            &token,
-            "",
-        );
-
-        seed_text_members_self(&mut self.as_mut());
-        let voicing_elsewhere = {
-            let r = self.rust();
-            !r.voice_room_id.is_empty() && (r.voice_room_id != rid || r.voice_supernode_id != sid)
-        };
-        if !voicing_elsewhere {
-            seed_voice_participants_self(&mut self.as_mut());
-        }
-
-        self.as_mut().set_in_room(true);
-    }
-
     fn join_room_with_voice(mut self: Pin<&mut Self>, supernode_id: &QString, room_id: &QString) {
         let Some(new_sid) = self
             .rust()
@@ -4852,13 +4782,40 @@ impl ffi::AppBridge {
         if sid.is_empty() || rid.is_empty() {
             return;
         }
+        let stored = self
+            .rust()
+            .room_store
+            .as_ref()
+            .and_then(|rs| rs.read().get(&sid, &rid).cloned());
+        // A private room we did not create presents its stored invite token
+        // first, as `join_room` does: a node that has not admitted us (a cold
+        // cluster sibling, or one restarted since) refuses a bare subscribe.
+        let already_admitted = self.rust().admitted_rooms.contains(&format!("{sid}:{rid}"));
+        let invite_token = stored
+            .as_ref()
+            .filter(|e| {
+                crate::connection_manager::should_use_private_room_invite(
+                    already_admitted,
+                    e.room_type == "private",
+                    e.is_creator,
+                    !e.invite_token.is_empty(),
+                )
+            })
+            .map(|e| e.invite_token.clone());
         // Send SfuSubscribe so the supernode delivers chat messages to us
         // without making us a voice participant or leaving the current voice room.
         if let Some(ref tx) = self.rust().conn_cmd_tx {
-            let _ = tx.try_send(ConnectionCommand::SubscribeRoomChat {
-                supernode_id: sid.clone(),
-                room_id: rid.clone(),
-            });
+            let _ = match invite_token {
+                Some(invite_token) => tx.try_send(ConnectionCommand::SubscribeRoomChatWithInvite {
+                    supernode_id: sid.clone(),
+                    room_id: rid.clone(),
+                    invite_token,
+                }),
+                None => tx.try_send(ConnectionCommand::SubscribeRoomChat {
+                    supernode_id: sid.clone(),
+                    room_id: rid.clone(),
+                }),
+            };
         }
         // Point send_room_chat at the newly-selected chat room.
         {
@@ -4866,14 +4823,9 @@ impl ffi::AppBridge {
             r.current_supernode_id = sid.clone();
             r.current_room_id = rid.clone();
         }
-        let room_type = match self.rust().room_store.as_ref() {
-            Some(rs) => rs
-                .read()
-                .get(&sid, &rid)
-                .map(|e| e.room_type.clone())
-                .unwrap_or_else(|| "public".to_owned()),
-            None => "public".to_owned(),
-        };
+        let room_type = stored
+            .map(|e| e.room_type)
+            .unwrap_or_else(|| "public".to_owned());
         remember_room_in_store(
             &self.rust().room_store,
             &sid,
@@ -5123,6 +5075,7 @@ impl ffi::AppBridge {
                 materialize_only: false,
                 invite_policy: policy.to_owned(),
                 invite_token: String::new(),
+                room_cert: String::new(),
             });
         }
     }
@@ -8349,8 +8302,14 @@ fn replay_saved_rooms_on_supernode_connect(
             creator_id: Some(creator_id),
             materialize_only: true,
             invite_policy: entry.invite_policy.clone(),
-            // Re-seed after idle GC / cold-node start so private rejoin works.
+            // The certificate brings the room back on a node that forgot it,
+            // whoever owns it; the token admits us to a private one there.
             invite_token: entry.invite_token.clone(),
+            room_cert: entry
+                .room_cert
+                .as_ref()
+                .map(|c| c.to_json())
+                .unwrap_or_default(),
         });
         // Every room on our own list is a room we're a member of — stay
         // subscribed to its text chat regardless of which room is currently
@@ -9856,6 +9815,24 @@ fn dispatch_event(
                     QString::from(room_type.as_str()),
                     QString::from(invite_token.as_str()),
                 );
+            });
+        }
+        ConnectionEvent::RoomCertificateLearned {
+            room_cert,
+            invite_token,
+            ..
+        } => {
+            // Queued behind the RoomCreated or RoomInviteReady that stored
+            // the room, so the store has the room to keep the certificate on.
+            let _ = qt_thread.queue(move |bridge: Pin<&mut ffi::AppBridge>| {
+                if let Some(ref rs) = bridge.rust().room_store {
+                    if let Err(e) = rs
+                        .write()
+                        .keep_reported_room_cert(&room_cert, &invite_token)
+                    {
+                        warn!("room_store could not keep a room certificate: {e}");
+                    }
+                }
             });
         }
         ConnectionEvent::RoomInviteReady {

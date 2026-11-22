@@ -14,6 +14,7 @@ mod handover;
 mod inbound;
 mod invite;
 mod peer_session;
+mod room_cert;
 mod room_session;
 mod routing;
 mod trust_invite;
@@ -284,6 +285,9 @@ pub struct ConnectionManager {
     /// `supernode_id:room_id` keys waiting for private-room invite validation
     /// before sending the count-producing `SfuJoin`.
     pending_private_room_joins: HashSet<String>,
+    /// `supernode_id:room_id` keys waiting for the same validation before an
+    /// `SfuSubscribe`: text chat only, no voice.
+    pending_private_room_subscribes: HashSet<String>,
     /// Pasted room invites (`doubleslash://room#…`) whose host supernode is still
     /// connecting. Keyed by supernode identity_pub; drained on `WsConnected`
     /// to emit [`ConnectionEvent::RoomInviteReady`] once the link is up.
@@ -379,6 +383,13 @@ pub struct ConnectionManager {
     /// by `room_id`, attached to the next `SfuJoin` for that room. JSON text
     /// `(space_root, space_proof, space_grant)`; `""` for any absent field.
     pending_join_space_creds: HashMap<String, (String, String, String)>,
+    /// Room certificates by room id, with the secret each commits to when we
+    /// know it. Attached to every create, join, subscribe and invite for the
+    /// room, so any member can bring it back on a node that forgot it.
+    room_creds: HashMap<String, room_cert::RoomCredential>,
+    /// Rooms whose certificate we signed and the room store has not been told
+    /// about yet; reported once the node confirms the room.
+    unpersisted_room_certs: HashSet<String>,
     /// Outstanding group-key distributions awaiting `SfuGroupKeyAck` from the
     /// member. Keyed by `(room_id, member_public_id)`. Cleared on ACK, leave,
     /// or max attempts. The elected keyer reseals on a short timer until ACK.
@@ -602,6 +613,7 @@ impl ConnectionManager {
             supernode_ping: HashMap::new(),
             pending_materialize: HashMap::new(),
             pending_private_room_joins: HashSet::new(),
+            pending_private_room_subscribes: HashSet::new(),
             pending_room_invite_entries: HashMap::new(),
             relay_signaling_tx,
             relay_signaling_rx,
@@ -626,6 +638,8 @@ impl ConnectionManager {
             video_subscriptions: None,
             local_video_active: false,
             pending_join_space_creds: HashMap::new(),
+            room_creds: HashMap::new(),
+            unpersisted_room_certs: HashSet::new(),
             pending_group_key_acks: HashMap::new(),
             group_key_requests: HashMap::new(),
             trust_invites_sent: HashMap::new(),
@@ -1265,9 +1279,15 @@ impl ConnectionManager {
                             self.handle_network_changed();
                         }
                         ConnectionCommand::SubscribeRoomChat { supernode_id, room_id } => {
-                            self.chat_active_rooms
-                                .insert(room_scope_key(&supernode_id, &room_id));
-                            self.send_room_subscribe(&supernode_id, &room_id).await;
+                            self.subscribe_room_chat(&supernode_id, &room_id, "").await;
+                        }
+                        ConnectionCommand::SubscribeRoomChatWithInvite {
+                            supernode_id,
+                            room_id,
+                            invite_token,
+                        } => {
+                            self.subscribe_room_chat(&supernode_id, &room_id, &invite_token)
+                                .await;
                         }
                         ConnectionCommand::UnsubscribeRoomChat { supernode_id, room_id } => {
                             let room_key = room_scope_key(&supernode_id, &room_id);
@@ -1546,6 +1566,7 @@ impl ConnectionManager {
                             materialize_only,
                             invite_policy,
                             invite_token,
+                            room_cert,
                         } => {
                             self.send_room_create(RoomCreateRequest {
                                 supernode_id: &supernode_id,
@@ -1556,6 +1577,7 @@ impl ConnectionManager {
                                 materialize_only,
                                 invite_policy: &invite_policy,
                                 invite_token: &invite_token,
+                                room_cert: &room_cert,
                             })
                             .await;
                         }

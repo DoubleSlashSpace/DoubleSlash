@@ -18,6 +18,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
+use doubleslash_features::RoomCertificate;
+
 use crate::crypto::{decrypt_blob, encrypt_blob};
 use crate::error::Result;
 use crate::identity::Identity;
@@ -66,10 +68,45 @@ pub struct RoomEntry {
     /// Owner-controlled invite policy: `""` (inherit) | `"owner"` | `"members"`.
     #[serde(default)]
     pub invite_policy: String,
+    /// The owner-signed certificate for this room. Any member presents it to
+    /// bring the room back on a node that has forgotten it; see
+    /// [`doubleslash_features::room_cert`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_cert: Option<RoomCertificate>,
 }
 
 fn default_room_type() -> String {
     "public".to_string()
+}
+
+/// The certificate to keep for `room_id`: `incoming` when it verifies, names
+/// this room and is newer than `held` from the same owner; otherwise `held`.
+fn newer_room_cert(
+    room_id: &str,
+    held: Option<RoomCertificate>,
+    incoming: Option<RoomCertificate>,
+) -> Option<RoomCertificate> {
+    let Some(incoming) = incoming.filter(|c| c.room_id == room_id && c.verify().is_ok()) else {
+        return held;
+    };
+    match held {
+        Some(held) if held == incoming || !incoming.supersedes(&held) => Some(held),
+        _ => Some(incoming),
+    }
+}
+
+/// Take the owner-signed description over whatever the entry held: the
+/// certificate is the owner's word on the room's name, type and policy.
+fn apply_room_cert(entry: &mut RoomEntry) {
+    let Some(cert) = entry.room_cert.as_ref() else {
+        return;
+    };
+    entry.room_name = cert.room_name.clone();
+    entry.room_type = cert.room_type.clone();
+    entry.invite_policy = cert.invite_policy.clone();
+    if entry.creator_id.is_empty() {
+        entry.creator_id = cert.owner_pub.clone();
+    }
 }
 
 impl RoomEntry {
@@ -85,7 +122,13 @@ impl RoomEntry {
             space_id: String::new(),
             parent_id: String::new(),
             invite_policy: String::new(),
+            room_cert: None,
         }
+    }
+
+    pub fn with_room_cert(mut self, cert: Option<RoomCertificate>) -> Self {
+        self.room_cert = cert;
+        self
     }
 
     pub fn with_type(mut self, room_type: impl Into<String>) -> Self {
@@ -506,9 +549,14 @@ impl RoomStore {
                 m.invite_policy = existing.invite_policy.clone();
             }
             m.is_creator = m.is_creator || existing.is_creator;
+            m.room_cert = newer_room_cert(&m.room_id, existing.room_cert.clone(), m.room_cert);
+            apply_room_cert(&mut m);
             m
         } else {
-            entry
+            let mut m = entry;
+            m.room_cert = newer_room_cert(&m.room_id, None, m.room_cert);
+            apply_room_cert(&mut m);
+            m
         };
 
         let hide_key = Self::sidebar_hide_key(&merged.supernode_id, &merged.room_id);
@@ -620,7 +668,13 @@ impl RoomStore {
                 .unwrap_or("");
             let is_creator = existing.map(|e| e.is_creator).unwrap_or(false);
             let invite_token = existing.map(|e| e.invite_token.as_str()).unwrap_or("");
+            // The node hands out the certificate so members can keep it; it is
+            // checked before it is stored.
+            let room_cert = room
+                .get("room_cert")
+                .and_then(RoomCertificate::from_value_verified);
             let entry = RoomEntry::new(room_id, room_name)
+                .with_room_cert(room_cert)
                 .with_type(&room_type)
                 .with_supernode(supernode_id)
                 .with_creator(
@@ -660,6 +714,54 @@ impl RoomStore {
             self.save()?;
         }
         Ok(())
+    }
+
+    /// Keep `cert` on every stored copy of its room, and `secret` as the
+    /// invite token when the certificate commits to it. Returns whether
+    /// anything changed. A certificate that does not verify, or is older than
+    /// the one held, changes nothing.
+    pub fn set_room_cert(&mut self, cert: &RoomCertificate, secret: &str) -> Result<bool> {
+        if cert.verify().is_err() {
+            return Ok(false);
+        }
+        let mut changed = false;
+        for entry in self
+            .rooms
+            .values_mut()
+            .filter(|e| e.room_id == cert.room_id)
+        {
+            let before = entry.clone();
+            entry.room_cert =
+                newer_room_cert(&cert.room_id, entry.room_cert.take(), Some(cert.clone()));
+            apply_room_cert(entry);
+            if entry.room_cert.as_ref() == Some(cert) && cert.admits_secret(secret) {
+                entry.invite_token = secret.to_owned();
+            }
+            changed |= *entry != before;
+        }
+        if changed {
+            self.save()?;
+        }
+        Ok(changed)
+    }
+
+    /// Keep a certificate the connection manager reports
+    /// (`ConnectionEvent::RoomCertificateLearned`): its JSON, and the secret
+    /// it commits to, or empty.
+    pub fn keep_reported_room_cert(&mut self, room_cert: &str, invite_token: &str) -> Result<bool> {
+        match RoomCertificate::from_json_verified(room_cert) {
+            Some(cert) => self.set_room_cert(&cert, invite_token),
+            None => Ok(false),
+        }
+    }
+
+    /// The newest certificate stored for `room_id` on any node.
+    pub fn room_cert_for(&self, room_id: &str) -> Option<RoomCertificate> {
+        self.rooms
+            .values()
+            .filter(|e| e.room_id == room_id)
+            .filter_map(|e| e.room_cert.clone())
+            .reduce(|a, b| if b.supersedes(&a) { b } else { a })
     }
 
     /// Drop every local copy of a room and tombstone each host.
@@ -1525,6 +1627,7 @@ mod tests {
             space_id: "space-abc".into(),
             parent_id: "parent-abc".into(),
             invite_policy: "owner".into(),
+            room_cert: None,
         };
         let json = serde_json::to_value(&entry).unwrap();
         let obj = json.as_object().unwrap();
@@ -1686,5 +1789,102 @@ mod tests {
             Some(1),
             "StoreData must carry schema version 1"
         );
+    }
+
+    fn owners_cert(
+        owner: &Identity,
+        name: &str,
+        room_type: &str,
+        secret: &str,
+        at: u64,
+    ) -> RoomCertificate {
+        RoomCertificate::new(&owner.public_id(), name, room_type, "owner", secret, at)
+            .signed(|b| owner.sign(b))
+    }
+
+    /// A certificate lands on every copy of its room, with the secret it
+    /// commits to, and its signed description wins over a stored one.
+    #[test]
+    fn set_room_cert_keeps_it_on_every_copy_with_its_secret() {
+        let dir = tempdir().unwrap();
+        let id = make_identity();
+        let path = dir.path().join(ROOM_STORE_FILE);
+        let mut store = RoomStore::open(&id, Some(&path)).unwrap();
+        let owner = make_identity();
+        let cert = owners_cert(&owner, "Den", "private", "sec", 1);
+        for node in ["sn-a", "sn-b"] {
+            store
+                .upsert(
+                    RoomEntry::new(cert.room_id.clone(), "Den")
+                        .with_type("public")
+                        .with_supernode(node),
+                )
+                .unwrap();
+        }
+        assert!(store.set_room_cert(&cert, "sec").unwrap());
+        for node in ["sn-a", "sn-b"] {
+            let e = store.get(node, &cert.room_id).unwrap();
+            assert_eq!(e.room_cert.as_ref(), Some(&cert));
+            assert_eq!(e.invite_token, "sec");
+            assert_eq!(e.room_type, "private", "the signed type wins");
+        }
+        assert!(!store.set_room_cert(&cert, "sec").unwrap(), "unchanged");
+
+        // A secret the certificate does not commit to is not stored, and a
+        // forgery changes nothing.
+        let mut forged = cert.clone();
+        forged.room_type = "public".into();
+        assert!(!store.set_room_cert(&forged, "").unwrap());
+        let reopened = RoomStore::open(&id, Some(&path)).unwrap();
+        assert_eq!(reopened.room_cert_for(&cert.room_id), Some(cert));
+    }
+
+    #[test]
+    fn a_later_certificate_replaces_an_earlier_one() {
+        let dir = tempdir().unwrap();
+        let id = make_identity();
+        let mut store = RoomStore::open(&id, Some(&dir.path().join(ROOM_STORE_FILE))).unwrap();
+        let owner = make_identity();
+        let first = owners_cert(&owner, "Den", "private", "a", 1);
+        let second = owners_cert(&owner, "Den", "private", "b", 2);
+        store
+            .upsert(RoomEntry::new(first.room_id.clone(), "Den").with_supernode("sn-a"))
+            .unwrap();
+        store.set_room_cert(&second, "b").unwrap();
+        assert!(
+            !store.set_room_cert(&first, "a").unwrap(),
+            "older one ignored"
+        );
+        let e = store.get("sn-a", &first.room_id).unwrap();
+        assert_eq!(e.room_cert.as_ref(), Some(&second));
+        assert_eq!(e.invite_token, "b");
+    }
+
+    /// A node's room list hands out certificates; members keep them.
+    #[test]
+    fn room_lists_hand_members_the_certificate() {
+        let dir = tempdir().unwrap();
+        let id = make_identity();
+        let mut store = RoomStore::open(&id, Some(&dir.path().join(ROOM_STORE_FILE))).unwrap();
+        let owner = make_identity();
+        let cert = owners_cert(&owner, "Den", "private", "sec", 1);
+        let mut forged = owners_cert(&owner, "Other", "private", "x", 1);
+        forged.room_name = "Renamed".into();
+        let list = serde_json::json!([
+            {"room_id": cert.room_id, "name": "Den", "room_type": "private",
+             "room_cert": cert.to_value()},
+            {"room_id": forged.room_id, "name": "Other", "room_type": "private",
+             "room_cert": forged.to_value()},
+        ]);
+        store.sync_from_room_list("sn-a", &list).unwrap();
+        assert_eq!(
+            store.get("sn-a", &cert.room_id).unwrap().room_cert.as_ref(),
+            Some(&cert)
+        );
+        assert!(store
+            .get("sn-a", &forged.room_id)
+            .unwrap()
+            .room_cert
+            .is_none());
     }
 }

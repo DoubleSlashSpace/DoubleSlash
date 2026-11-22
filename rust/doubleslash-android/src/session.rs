@@ -440,6 +440,7 @@ fn spawn_event_pump(
                     &ev,
                 );
                 persist_if_room_invite_ready(&room_store, &ev);
+                persist_if_room_cert(&room_store, &ev);
                 persist_if_room_list(&room_store, &peer_store, &cluster_members, &ev);
                 if let ConnectionEvent::RoomInviteReady { supernode_id, .. } = &ev {
                     // Joining doesn't reliably push a fresh roster back to the
@@ -1118,6 +1119,26 @@ fn persist_if_room_invite_ready(room_store: &Arc<RwLock<RoomStore>>, event: &Con
         {
             warn!("room_store set_space_linkage error: {e}");
         }
+    }
+}
+
+/// Keep a room certificate the manager reports, with the secret it commits
+/// to. The manager sends it after the `RoomCreated` or `RoomInviteReady` that
+/// stored the room, so the room is there to keep it on.
+fn persist_if_room_cert(room_store: &Arc<RwLock<RoomStore>>, event: &ConnectionEvent) {
+    let ConnectionEvent::RoomCertificateLearned {
+        room_cert,
+        invite_token,
+        ..
+    } = event
+    else {
+        return;
+    };
+    if let Err(e) = room_store
+        .write()
+        .keep_reported_room_cert(room_cert, invite_token)
+    {
+        warn!("could not keep a room certificate: {e}");
     }
 }
 

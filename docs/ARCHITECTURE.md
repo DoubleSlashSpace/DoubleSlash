@@ -252,21 +252,33 @@ Sources: [routing.rs](../rust/doubleslash-client/src/connection_manager/manager/
 Saved rooms use `(supernode_id, room_id)` keys. Node SFU rooms are memory-only:
 user-created rooms expire after 900 seconds without voice/text subscribers;
 `default` remains. Reconnect materializes saved non-hidden definitions with
-the original creator/credential; `materialize_only` does not join voice.
+the room's certificate and stored token; `materialize_only` does not join voice.
 Creation policy comes from `room.audio.sfu`, defaulting public off/private on.
 Absent non-default rooms must satisfy that policy even on replay.
 
+A room's owner signs a room certificate: id, name, type, invite policy, owner
+and, for a private room, a hash of its join secret. The id derives from the
+owner key and the name, so only the owner can certify it. Every member keeps
+it: invite links, room lists, invite results and cluster rosters carry it, and
+the client attaches it to each create, join, subscribe and invite. A node that
+has forgotten the room recreates it from the certificate, whoever presents it,
+with the certificate's type and owner rather than the request's. The secret
+then admits any member on any node; a string the owner never committed to
+admits no one. Without a certificate a node creates only the sender's own
+room.
+
 Space Layer 1 represents nested rooms as a signed Merkle tree with parent IDs,
 signed roots, inclusion proofs and owner-signed grants. Private admission needs
-validated proof/grant, local allowed/token state or creator admission. Room ID,
+validated proof/grant, the certificate's secret, a single-use node token, local
+allowed state or creator admission. Room ID,
 existence roster and contact trust alone are not membership grants. Invite policy
 controls member invitations. Reserved key-hierarchy fields do not implement
 Space Layer 2 cryptography.
 
 Clusters link nodes through an including-self roster, authenticated QUIC and
 signed control. Clients verify the trusted node's signed roster before using
-sibling failover routes. Links carry room existence, Space roots, peer trust and
-opaque room/game frames; private-room allowed sets are not replicated. Copies
+sibling failover routes. Links carry the existence and certificates of rooms in
+use, Space roots, peer trust and opaque room/game frames; private-room allowed sets are not replicated. Copies
 are deduplicated and never re-replicated. Room video stays an opaque datagram
 for room endpoints watching that sender, without a WebSocket media wrapper.
 

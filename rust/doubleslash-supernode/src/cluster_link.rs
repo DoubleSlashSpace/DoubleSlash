@@ -74,12 +74,13 @@ pub enum ClusterMsgKind {
         message_id: String,
         raw: String,
     },
-    /// The full set of durable (client-owned) rooms the sender currently hosts.
+    /// The durable (client-owned) rooms the sender hosts that are in use there.
     /// Sent on link-up and periodically so every member can materialize the same
-    /// rooms and accept a failed-over join. Existence + creator only —
-    /// per-peer private-room ACLs are *not* cluster-replicated; cold members
-    /// admit via Space proof (or local invite-token rematerialize / creator
-    /// self-admit).
+    /// rooms and accept a failed-over join. Idle rooms are left out so they
+    /// expire cluster-wide instead of being recreated by each other's rosters. Existence, creator and the room's
+    /// certificate only — per-peer private-room ACLs are *not*
+    /// cluster-replicated; cold members admit via Space proof, the secret the
+    /// certificate commits to, or creator self-admit.
     RoomRoster { rooms: Vec<RoomDescriptor> },
     /// A client-authorization grant: trust `identity_pub` (add to the peer store,
     /// relay allow-list, and access grants) so any member accepts the client's
@@ -142,6 +143,10 @@ pub struct RoomDescriptor {
     /// are not advertised). Preserved so the owner can rejoin on any member.
     pub creator_id: String,
     pub invite_policy: String,
+    /// The owner-signed certificate the room holds, so a sibling admits
+    /// members by the room's secret too. Absent for rooms created without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_cert: Option<doubleslash_features::RoomCertificate>,
 }
 
 impl ClusterMsg {
@@ -688,7 +693,7 @@ impl ClusterLink {
             let _ = send.write_all(&subs.encode_frame()).await;
         }
 
-        // Advertise our durable rooms immediately so a member that just came up
+        // Advertise our durable rooms in use immediately so a member that just came up
         // (or reconnected) materializes them without waiting for the periodic
         // refresh — existence self-heal for cold members (no per-peer ACL push).
         let local_room_roster = self.local_room_roster.read().clone();
@@ -1291,6 +1296,7 @@ mod tests {
                 room_type: "public".into(),
                 creator_id: "OWNER".into(),
                 invite_policy: "owner".into(),
+                room_cert: None,
             }]
         });
 

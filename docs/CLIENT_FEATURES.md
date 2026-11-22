@@ -188,10 +188,15 @@ sender keys (`group_key.rs`), so the supernode fans out ciphertext it cannot
 read.
 
 * **Core** — `room_store.rs`, `group_key.rs`, `sfu_client.rs`.
-* **Desktop** — `createRoom`, `createSubRoom`, `joinRoom`, `joinRoomWithInvite`,
+* **Desktop** — `createRoom`, `createSubRoom`, `joinRoom`,
   `joinRoomWithVoice`, `leaveRoom`, `removeRoom`, `deleteRoom`, `subscribeRoomChat`,
   `sendRoomChat`, `loadRoomChatHistory`, `generateRoomInvite`,
-  `generateRoomInviteForPeer`.
+  `generateRoomInviteForPeer`. Accepting a room invite opens the room's text
+  chat; voice starts from the room's call icon. `subscribeRoomChat` presents a
+  private room's stored invite token before it subscribes.
+* **Room certificates** — the owner's client signs one for each room it
+  creates; both clients store it with the room and attach it to every room
+  request, so any member brings back a room a supernode has forgotten.
 * **Android** — `room.list`, `room.create`, `room.join`, `room.leave`,
   `room.hide`, `room.unhide`, `room.delete`, `room.chat.subscribe`, `room.chat.unsubscribe`,
   `room.chat.send`, `room.history`, `room.request_list`, `room.voice.join`,

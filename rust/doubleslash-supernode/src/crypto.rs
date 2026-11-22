@@ -83,10 +83,10 @@ pub fn derive_peer_id(pub_key_bytes: &[u8]) -> String {
     sha256_hex(pub_key_bytes)
 }
 
-/// Derive room_id from creator public_id and room name (first 16 chars of SHA-256 hex).
+/// Derive room_id from creator public_id and room name (first 16 chars of
+/// SHA-256 hex). Shared with clients, which sign room certificates over it.
 pub fn derive_room_id(creator_pub_id: &str, room_name: &str) -> String {
-    let input = format!("{creator_pub_id}:{room_name}");
-    sha256_hex(input.as_bytes())[..16].to_string()
+    doubleslash_features::room_cert::derive_room_id(creator_pub_id, room_name)
 }
 
 /// Generate random bytes.

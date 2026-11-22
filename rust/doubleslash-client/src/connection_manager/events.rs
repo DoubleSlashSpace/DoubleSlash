@@ -231,6 +231,17 @@ pub enum ConnectionEvent {
         room_type: String,
         invite_token: String,
     },
+    /// The manager holds a room certificate the room store should keep: one
+    /// it signed for a room we own, or one a node or an invite handed it.
+    /// `invite_token`, when non-empty, is the secret the certificate commits
+    /// to. Store both on every copy of the room
+    /// ([`crate::room_store::RoomStore::set_room_cert`]).
+    RoomCertificateLearned {
+        room_id: String,
+        /// The certificate as JSON.
+        room_cert: String,
+        invite_token: String,
+    },
     /// A self-contained room invite (`doubleslash://room#…`) was pasted and its
     /// host supernode is now connected — the UI should enter the room. The
     /// `invite_token` has already been persisted to the room store so the
@@ -430,6 +441,13 @@ pub enum ConnectionCommand {
         supernode_id: String,
         room_id: String,
     },
+    /// Present a private room's invite token, then subscribe to its text chat
+    /// once admitted. Never joins voice.
+    SubscribeRoomChatWithInvite {
+        supernode_id: String,
+        room_id: String,
+        invite_token: String,
+    },
     /// Stop receiving text chat for a room (sends `SfuUnsubscribe`). Does not
     /// leave voice if still joined; drops local group-key material only when
     /// we are not voicing this room.
@@ -619,10 +637,13 @@ pub enum ConnectionCommand {
         /// Invite-mint policy: `"owner"` (default) or `"members"`. Empty is
         /// treated as unset (supernode defaults to `"owner"`).
         invite_policy: String,
-        /// Durable invite credential from `RoomStore` (empty on first create).
-        /// Replayed on rematerialize so the supernode can re-seed its in-memory
-        /// token map after idle GC and re-admit returning members.
+        /// The room's join secret from `RoomStore` (empty on first create).
+        /// Admits us to a private room whose certificate commits to it.
         invite_token: String,
+        /// The room's certificate from `RoomStore` as JSON, or empty. Lets
+        /// this replay, and every later join, bring the room back on a node
+        /// that forgot it, whoever owns the room.
+        room_cert: String,
     },
     /// Tear down a trusted supernode session and stop WS auto-reconnect.
     RemoveSupernode {

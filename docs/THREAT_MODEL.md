@@ -41,8 +41,17 @@ Room-member trust requests contain a personal invite sealed to the recipient.
 They require authoritative room membership, no existing sender record, a live
 sender-owned invite, sanitized names and rate limits. Receiving only prompts;
 acceptance establishes trust. Private-room admission separately requires Space
-proof/grant, local token/allowed state or creator admission. A room ID, roster
-or peer trust record alone is not a membership grant.
+proof/grant, the join secret the owner's room certificate commits to, a
+single-use node token, local allowed state or creator admission. A room ID,
+roster, certificate or peer trust record alone is not a membership grant.
+
+A room certificate lets any member recreate a room a node has forgotten, but
+only as the owner signed it: a member cannot change its type, policy or owner,
+and no other key can certify the owner's room id. The join secret is a bearer
+credential shared by every invite link for the room. Removing someone means
+rotating it under a later certificate, and no client offers that yet. A member
+can also bring back a room its owner removed, as Remove only removes it on the
+owner's devices.
 
 Residual risks include leaked bearer invitations, social engineering, and a
 malicious authorized member redistributing content or invitations within policy.

@@ -189,10 +189,11 @@ pub fn should_auto_join_on_room_created(
 /// (`JoinRoomWithInvite`) instead of a plain `SfuJoin`.
 ///
 /// Creators self-admit via `creator_id` on any cluster member (RoomRoster).
-/// Non-creators must present their RoomStore invite token so cold members can
-/// rematerialize membership — even if this session already admitted them on
-/// *another* cluster node (`already_admitted` is not host-scoped). Skipping the
-/// token after admit-on-A breaks join-on-B/C.
+/// Non-creators present their RoomStore invite token, the secret the room's
+/// certificate commits to, so a cold member admits them — even if this
+/// session already admitted them on *another* cluster node (`already_admitted`
+/// is not host-scoped). Skipping the token after admit-on-A breaks
+/// join-on-B/C.
 ///
 /// Shared with the Qt bridge so UI and CM cannot diverge on this policy.
 pub fn should_use_private_room_invite(
@@ -248,8 +249,10 @@ pub(super) struct RoomCreateRequest<'a> {
     pub(super) creator_id: Option<&'a str>,
     pub(super) materialize_only: bool,
     pub(super) invite_policy: &'a str,
-    /// Client-held invite credential to re-seed post-GC (empty on first create).
+    /// The room's join secret from the room store (empty on first create).
     pub(super) invite_token: &'a str,
+    /// The room's certificate from the room store as JSON, or empty.
+    pub(super) room_cert: &'a str,
 }
 
 /// What to do with a room whose hosting supernode was just lost, given the
@@ -1373,6 +1376,9 @@ impl ConnectionManager {
             .insert("room_id".to_owned(), Value::String(room_id.to_owned()));
         msg.payload
             .insert("peer_id".to_owned(), Value::String(sender));
+        // The room's certificate brings it back on a node that forgot it; its
+        // secret admits us to a private one there.
+        self.attach_room_credentials(room_id, &mut msg.payload, true);
         // Attach Space proof-based admission creds carried by the invite we used
         // to reach this room (single-use), so the supernode can admit + materialize
         // it by proof on any cluster member. Absent → legacy ACL applies.
@@ -1491,7 +1497,41 @@ impl ConnectionManager {
         msg.target = Some(route);
         msg.payload
             .insert("room_id".to_owned(), Value::String(room_id.to_owned()));
+        // A text-only member brings a forgotten room back as a voice member
+        // does.
+        self.attach_room_credentials(room_id, &mut msg.payload, true);
         self.dispatch_outbound(msg).await;
+    }
+
+    /// Open `room_id`'s text chat without joining its voice.
+    ///
+    /// A node refuses `SfuSubscribe` from a peer it has not admitted to a
+    /// private room, so a room that still needs its credential presents it
+    /// first: the invite token, or the Space proof a room invite carried, goes
+    /// in an `SfuRoomInvite`, and its acceptance sends the subscribe
+    /// (`SfuRoomInviteResult`), never an `SfuJoin`. A public room, or one with
+    /// neither credential, subscribes at once.
+    pub(in crate::connection_manager) async fn subscribe_room_chat(
+        &mut self,
+        supernode_id: &str,
+        room_id: &str,
+        invite_token: &str,
+    ) {
+        self.learn_room_secret(room_id, invite_token);
+        self.chat_active_rooms
+            .insert(room_scope_key(supernode_id, room_id));
+        if invite_token.is_empty() && !self.pending_join_space_creds.contains_key(room_id) {
+            self.send_room_subscribe(supernode_id, room_id).await;
+            return;
+        }
+        let route = self.live_room_route(supernode_id);
+        self.pending_private_room_subscribes
+            .insert(format!("{route}:{room_id}"));
+        if route != supernode_id {
+            self.pending_private_room_subscribes
+                .insert(format!("{supernode_id}:{room_id}"));
+        }
+        self.send_room_invite(&route, room_id, invite_token).await;
     }
 
     pub(super) async fn send_room_unsubscribe(&mut self, supernode_id: &str, room_id: &str) {
@@ -1510,11 +1550,9 @@ impl ConnectionManager {
         room_id: &str,
         invite_token: &str,
     ) {
+        // The voice room (`current_*`) is the caller's to set: a text-only
+        // admission must not make this room the one an accepted invite joins.
         let route = self.live_room_route(supernode_id);
-        if self.current_room_id == room_id || self.current_room_id.is_empty() {
-            self.current_supernode_id = route.clone();
-            self.current_room_id = room_id.to_owned();
-        }
         let sender = self.identity.public_id();
         let mut msg = SignalingMessage::new(MessageType::SfuRoomInvite, sender.clone());
         msg.target = Some(route);
@@ -1524,6 +1562,8 @@ impl ConnectionManager {
             "invite_token".to_owned(),
             Value::String(invite_token.to_owned()),
         );
+        self.learn_room_secret(room_id, invite_token);
+        self.attach_room_credentials(room_id, &mut msg.payload, true);
         // Attach the Space proof-based admission creds carried by the invite link
         // (mirrors `send_room_join`) so the supernode can verify the proof,
         // materialize the room, and adopt its proven owner on any cluster member
@@ -1555,8 +1595,33 @@ impl ConnectionManager {
             materialize_only,
             invite_policy,
             invite_token,
+            room_cert,
         } = req;
         let normalized = normalize_room_type(room_type);
+        if let Some(cert) = doubleslash_features::RoomCertificate::from_json_verified(room_cert) {
+            self.learn_room_cert(cert, invite_token);
+        }
+        // Our own room carries a certificate we sign, once; a member's replay
+        // carries the owner's, from the room store.
+        let me = self.identity.public_id();
+        let ours = creator_id
+            .filter(|c| !c.is_empty())
+            .is_none_or(|c| c.trim_end_matches('=') == me.trim_end_matches('='));
+        let own_cert = if ours {
+            self.sign_own_room_cert(
+                room_id.filter(|s| !s.is_empty()),
+                room_name,
+                normalized,
+                invite_policy,
+                invite_token,
+            )
+        } else {
+            None
+        };
+        let cert_room_id = room_id
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .or_else(|| own_cert.map(|c| c.room_id));
         // Prefer a live cluster session when the invite host is offline so
         // rematerialize of private rooms still lands on B/C.
         let route = self.live_room_route(supernode_id);
@@ -1590,19 +1655,23 @@ impl ConnectionManager {
                 Value::String(invite_policy.to_owned()),
             );
         }
-        // Re-seed the durable invite credential after idle GC so the supernode
-        // can re-admit this peer (and validate SfuRoomInvite with the same
-        // token). Empty on first create — the supernode mints a fresh token.
+        // The room's secret admits us to a private room we do not own; the
+        // node checks it against the certificate, never stores it on our
+        // word. Without a certificate, a node mints a token for a new room.
         if !invite_token.is_empty() {
             msg.payload.insert(
                 "invite_token".to_owned(),
                 Value::String(invite_token.to_owned()),
             );
         }
+        if let Some(ref id) = cert_room_id {
+            self.attach_room_credentials(id, &mut msg.payload, true);
+        }
         info!(
-            "[cm] SfuRoomCreate: supernode={} name={room_name} type={normalized} materialize_only={materialize_only} has_token={}",
+            "[cm] SfuRoomCreate: supernode={} name={room_name} type={normalized} materialize_only={materialize_only} has_token={} has_cert={}",
             &route[..8.min(route.len())],
-            !invite_token.is_empty()
+            msg.payload.contains_key("invite_token"),
+            msg.payload.contains_key("room_cert")
         );
         self.dispatch_outbound(msg).await;
     }
@@ -2306,6 +2375,7 @@ impl ConnectionManager {
             materialize_only: false,
             invite_policy: "owner",
             invite_token: "",
+            room_cert: "",
         })
         .await;
     }

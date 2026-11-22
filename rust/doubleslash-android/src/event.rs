@@ -30,6 +30,8 @@ pub fn to_json(event: &ConnectionEvent) -> Option<Value> {
         // `rooms_synced` if the list changed. The snapshot itself carries
         // invite credentials the UI has no use for.
         E::OwnRoomsReceived { .. } => return None,
+        // Kept in the room store by the pump; it carries a room's secret.
+        E::RoomCertificateLearned { .. } => return None,
 
         // ── Peers and sessions ────────────────────────────────────────────
         E::PeerConnected(peer_id) => json!({ "event": "peer_connected", "peer_id": peer_id }),
