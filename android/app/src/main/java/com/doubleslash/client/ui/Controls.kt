@@ -32,9 +32,15 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.PaintingStyle
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -105,6 +111,51 @@ internal fun SquareTextButton(
         ),
         content = content,
     )
+}
+
+/**
+ * Leave / end call: a solid danger square with the X cut out of it.
+ *
+ * The hole is the mark, so the surface behind the control shows through.
+ * The same square is the voice dock's Leave and the hang-up on the live
+ * voice room. Centerline inset is 0.22 of the side and the stroke is 0.18,
+ * with square caps — the same fractions as the desktop's `HangupSquare.qml`.
+ */
+@Composable
+internal fun HangupSquare(
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier) {
+        val side = size.minDimension
+        if (side <= 0f) return@Canvas
+        val ox = (size.width - side) / 2f
+        val oy = (size.height - side) / 2f
+        val inset = side * 0.22f
+        val stroke = side * 0.18f
+        drawIntoCanvas { canvas ->
+            canvas.saveLayer(Rect(Offset.Zero, size), Paint())
+            canvas.drawRect(Rect(Offset.Zero, size), Paint().apply { this.color = color })
+            val cut = Paint().apply {
+                blendMode = BlendMode.Clear
+                style = PaintingStyle.Stroke
+                strokeWidth = stroke
+                strokeCap = StrokeCap.Square
+                isAntiAlias = true
+            }
+            canvas.drawLine(
+                Offset(ox + inset, oy + inset),
+                Offset(ox + side - inset, oy + side - inset),
+                cut,
+            )
+            canvas.drawLine(
+                Offset(ox + side - inset, oy + inset),
+                Offset(ox + inset, oy + side - inset),
+                cut,
+            )
+            canvas.restore()
+        }
+    }
 }
 
 /** Material's filled Button with square corners: its own is a pill. */

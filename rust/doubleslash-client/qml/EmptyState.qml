@@ -24,7 +24,7 @@ ColumnLayout {
 
     visible: title.length > 0 || subtitle.length > 0
 
-    Image {
+    Glyph {
         visible: root.iconSource !== "" && root._showIcon
         source: Icons.resolve(root.iconSource)
         sourceSize.width: Theme.iconPx(root.iconSize)
@@ -32,7 +32,6 @@ ColumnLayout {
         Layout.preferredWidth: Theme.iconPx(root.iconSize)
         Layout.preferredHeight: Theme.iconPx(root.iconSize)
         Layout.alignment: Qt.AlignHCenter
-        fillMode: Image.PreserveAspectFit
         opacity: 0.72
     }
 

@@ -374,7 +374,7 @@ Item {
                 spacing: 10
                 visible: root.selectedPeerId === "" || msgList.count === 0
 
-                Image {
+                Glyph {
                     source: root.selectedPeerId === ""
                         ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/speech.svg")
                         : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/send.svg")
@@ -383,7 +383,6 @@ Item {
                     Layout.preferredWidth: Theme.iconPx(40)
                     Layout.preferredHeight: Theme.iconPx(40)
                     Layout.alignment: Qt.AlignHCenter
-                    fillMode: Image.PreserveAspectFit
                     opacity: 0.72
                 }
 

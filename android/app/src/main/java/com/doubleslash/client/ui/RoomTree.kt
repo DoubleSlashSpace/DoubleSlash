@@ -1247,7 +1247,7 @@ private fun Chevron(open: Boolean, size: Dp, tint: Color) {
     )
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, actions: RoomTreeActions) {
     val ds = LocalDsColors.current
@@ -1362,18 +1362,32 @@ private fun RoomNodeRow(row: TreeRow.RoomNode, state: AppState, fold: TreeFold, 
                 (row.inVoice || (reading && !room.hidden))
             ) {
                 Spacer(Modifier.width(4.dp))
-                // Solid green on a green square, so joining stands out. In the
-                // voice room we are in it turns into hang-up: the handset
-                // inverted, in red, leaving as the voice dock's Leave does.
-                val callColor = if (row.inVoice) ds.danger else ds.online
-                TreeIcon(
-                    if (row.inVoice) R.drawable.ds_phone_hangup else R.drawable.ds_phone,
-                    if (row.inVoice) "Leave voice" else "Join voice",
-                    tint = callColor,
-                    tile = callColor.copy(alpha = 0.18f),
-                    border = callColor,
-                ) {
-                    if (row.inVoice) actions.onLeaveVoice() else actions.onJoinVoice(room)
+                if (row.inVoice) {
+                    // The same solid square, with the X cut out of it, as the
+                    // voice dock's Leave.
+                    TooltipBox(
+                        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                        tooltip = { PlainTooltip { Text("Leave voice") } },
+                        state = rememberTooltipState(),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clickable(onClick = actions.onLeaveVoice)
+                                .semantics { contentDescription = "Leave voice" },
+                        ) {
+                            HangupSquare(ds.danger, Modifier.matchParentSize())
+                        }
+                    }
+                } else {
+                    // Solid green on a green square, so joining stands out.
+                    TreeIcon(
+                        R.drawable.ds_phone,
+                        "Join voice",
+                        tint = ds.online,
+                        tile = ds.online.copy(alpha = 0.18f),
+                        border = ds.online,
+                    ) { actions.onJoinVoice(room) }
                 }
             }
         }

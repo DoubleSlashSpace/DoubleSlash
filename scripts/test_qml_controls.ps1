@@ -15,7 +15,7 @@ try {
     foreach ($component in @("Theme", "Icons", "StyledButton", "StyledTextField",
                              "JumpToCurrentButton", "HistoryAnchor", "BackupWizard",
                              "RoomTree", "RoomTreeMember", "TreeGuides", "CountPill",
-                             "VoiceDock", "SidebarToggle", "Avatar",
+                             "VoiceDock", "HangupSquare", "Glyph", "SidebarToggle", "Avatar",
                              "SquareSlider", "SquareSwitch", "IconButton",
                              "SquareBusyIndicator", "SettingsCard", "SettingSwitch",
                              "SupernodeAdminCard", "HostSupernodeWizard", "SettingsSectionHeader",

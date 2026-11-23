@@ -74,12 +74,13 @@ SettingsCard {
                 anchors.fill: parent
                 anchors.margins: Theme.spacingSm
                 spacing: Theme.spacingSm
-                Image {
+                Glyph {
                     Layout.preferredWidth: Theme.iconPx(18)
                     Layout.preferredHeight: Theme.iconPx(18)
                     Layout.alignment: Qt.AlignTop
                     sourceSize.width: Theme.iconPx(36)
                     sourceSize.height: Theme.iconPx(36)
+                    color: outputNotice.noticeColor
                     source: outputNotice.warning
                         ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/warning.svg")
                         : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/info.svg")
@@ -656,7 +657,7 @@ SettingsCard {
                     onClicked: card.toggleNode(nodeColumn.node.id)
                     contentItem: RowLayout {
                         spacing: Theme.spacingSm
-                        Image {
+                        Glyph {
                             Layout.preferredWidth: Theme.iconPx(10)
                             Layout.preferredHeight: Theme.iconPx(10)
                             sourceSize.width: Theme.iconPx(20)

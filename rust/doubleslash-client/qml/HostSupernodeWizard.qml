@@ -607,13 +607,14 @@ Dialog {
                                 running: stepRow.modelData.state === "running"
                                 visible: running
                             }
-                            Image {
+                            Glyph {
                                 anchors.fill: parent
                                 visible: stepRow.modelData.state === "done"
                                     || stepRow.modelData.state === "failed"
                                 source: stepRow.modelData.state === "done"
                                     ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/check.svg")
                                     : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg")
+                                color: stepRow.modelData.state === "done" ? Theme.online : Theme.danger
                                 sourceSize: Qt.size(18, 18)
                             }
                         }

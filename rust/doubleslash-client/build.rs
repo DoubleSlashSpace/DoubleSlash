@@ -411,6 +411,8 @@ fn build_qt_ui() {
         QmlFile::from("qml/StatsPanel.qml"),
         QmlFile::from("qml/ConnectionStatsChip.qml"),
         QmlFile::from("qml/VoiceDock.qml"),
+        QmlFile::from("qml/HangupSquare.qml"),
+        QmlFile::from("qml/Glyph.qml"),
         QmlFile::from("qml/Avatar.qml"),
         // Angular stand-ins for Material's round controls.
         QmlFile::from("qml/IconButton.qml"),

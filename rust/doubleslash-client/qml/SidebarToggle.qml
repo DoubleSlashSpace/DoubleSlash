@@ -126,9 +126,10 @@ Item {
                         ((segment.first ? segment.depth : 0) - (segment.last ? segment.depth : 0)) / 2
                     spacing: Theme.spacingXs
 
-                    Image {
+                    Glyph {
                         anchors.verticalCenter: parent.verticalCenter
                         source: Icons.resolve(segment.modelData.icon)
+                        color: segment.selected ? Theme.textInv : Theme.text
                         sourceSize.width: Theme.iconPx(16); sourceSize.height: Theme.iconPx(16)
                         width: Theme.iconPx(16); height: Theme.iconPx(16)
                         opacity: segment.selected ? 1.0 : 0.75

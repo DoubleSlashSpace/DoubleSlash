@@ -292,7 +292,8 @@ peer-to-peer, sealed under the room sender key.
   reveals that list in the tree. On the rooms list the green join handset is
   drawn while the pointer is over that room or while that room is the open
   one; the hang-up on the live voice room stays visible and is the marker
-  that this room is the one we are voicing. Supernode rows start in name
+  that this room is the one we are voicing. That hang-up is a solid danger
+  square with the X cut out of it, the same mark as the voice dock's Leave. Supernode rows start in name
   order. Move up and Move down on a node's menu save that order in the shared
   room-list JSON (`nodes`); the rooms under a node keep their own sort. The live session's
   leaf is drawn from `roomModel`, so it
@@ -304,8 +305,9 @@ peer-to-peer, sealed under the room sender key.
   text-only, the text count stays and lists who is in the room. The room screen joins voice with the same green call icon and
   shows the same two counts; each count opens the Members sheet on that list.
   The rooms list draws the green join handset only for the open room and keeps
-  the hang-up on the live voice room. That hang-up is the marker that this
-  room is the one we are voicing. A supernode row's long-press moves that
+  the hang-up on the live voice room. That hang-up is a solid danger square
+  with the X cut out of it, the same mark as the voice dock's Leave, and it
+  is the marker that this room is the one we are voicing. A supernode row's long-press moves that
   node up or down, saved as `nodes` in the same room-list JSON the desktop
   uses. Long-press still offers Join Voice Room.
   The sheet shows that room's two leaves

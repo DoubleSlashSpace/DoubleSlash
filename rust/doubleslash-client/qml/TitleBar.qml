@@ -124,11 +124,14 @@ Item {
 
         Behavior on color { ColorAnimation { duration: Theme.animMicro } }
 
-        Image {
+        Glyph {
             anchors.centerIn: parent
             source: Icons.resolve(btnRoot.iconSource)
+            // Close turns red. The glyph flips to the colour used on a
+            // saturated fill so it stays readable on that red.
+            color: hoverArea.containsMouse && btnRoot.hoverColor == Theme.danger
+                ? Theme.textInv : Theme.text
             width: Theme.iconPx(12); height: Theme.iconPx(12)
-            fillMode: Image.PreserveAspectFit
         }
 
         MouseArea {

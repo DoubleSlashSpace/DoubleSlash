@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+  <!-- Retained for icon packs. The live hang-up is HangupSquare, a danger square with the X cut out. -->
   <g transform="translate(0 20) scale(1 -1)">
     <polygon points="2.5,2.5 8.5,2.5 10,7.5 8,9.5 10.5,12 12.5,10 17.5,11.5 17.5,17.5 12.5,17.5 2.5,7.5" fill="#C8C8C8"/>
   </g>

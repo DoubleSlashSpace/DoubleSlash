@@ -509,7 +509,7 @@ Item {
                     Column {
                         anchors.centerIn: parent
                         spacing: 8
-                        Image {
+                        Glyph {
                             anchors.horizontalCenter: parent.horizontalCenter
                             source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/play.svg")
                             sourceSize.width: Theme.iconPx(28)
@@ -578,8 +578,9 @@ Item {
                             Layout.fillWidth: true
                             spacing: 8
 
-                            Image {
+                            Glyph {
                                 source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/attach.svg")
+                                color: root.mine ? Theme.textInv : Theme.text
                                 sourceSize.width: Theme.iconPx(16)
                                 sourceSize.height: Theme.iconPx(16)
                                 width: Theme.iconPx(16)
@@ -754,16 +755,16 @@ Item {
                                 border.color: root.mine ? Qt.rgba(255, 255, 255, 0.08) : Theme.bg3
                                 border.width: 1
 
-                                Image {
+                                Glyph {
                                     anchors.centerIn: parent
                                     source: root.inviteKind === "room"
                                         ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/handshake.svg")
                                         : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/invite.svg")
+                                    color: root.mine ? Theme.textInv : Theme.text
                                     sourceSize.width: Theme.iconPx(18)
                                     sourceSize.height: Theme.iconPx(18)
                                     width: Theme.iconPx(18)
                                     height: Theme.iconPx(18)
-                                    fillMode: Image.PreserveAspectFit
                                     opacity: 0.95
                                 }
                             }
@@ -935,16 +936,16 @@ Item {
                     Layout.preferredHeight: 24
                     radius: 0
                     color: preview.kindName === "youtube" ? Theme.danger : Theme.bg3
-                    Image {
+                    Glyph {
                         anchors.centerIn: parent
                         source: preview.kindName === "link"
                             ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/globe.svg")
                             : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/play.svg")
+                        color: preview.kindName === "youtube" ? Theme.textInv : Theme.text
                         sourceSize.width: Theme.iconPx(13)
                         sourceSize.height: Theme.iconPx(13)
                         width: Theme.iconPx(13)
                         height: Theme.iconPx(13)
-                        fillMode: Image.PreserveAspectFit
                     }
                 }
 

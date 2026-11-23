@@ -2282,14 +2282,13 @@ Item {
                         Repeater {
                             model: ["phone.svg", "mic.svg", "speech.svg", "gear.svg", "trash.svg"]
 
-                            Image {
+                            Glyph {
                                 required property string modelData
                                 source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/" + modelData)
                                 sourceSize.width: Theme.iconPx(20)
                                 sourceSize.height: Theme.iconPx(20)
                                 width: Theme.iconPx(20)
                                 height: Theme.iconPx(20)
-                                fillMode: Image.PreserveAspectFit
                             }
                         }
                     }

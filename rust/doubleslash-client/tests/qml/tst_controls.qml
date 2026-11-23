@@ -71,6 +71,15 @@ Item {
             var image = row.children[0]
             var label = row.children[1]
             tryCompare(image, "status", Image.Ready)
+            // The glyph is tinted to the text colour, including on the light skin.
+            // The file itself stays the baked grey.
+            Theme.isDark = true
+            compare(image.color, Theme.text)
+            Theme.isDark = false
+            compare(image.color, Theme.text)
+            button.primary = true
+            compare(image.color, Theme.textInv)
+            button.primary = false
             tryVerify(function() { return label.x >= image.x + image.width })
             verify(label.x + label.width <= row.width)
             button.text = ""

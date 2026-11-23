@@ -38,13 +38,14 @@ Rectangle {
         anchors.centerIn: parent
         spacing: 4
 
-        Image {
+        Glyph {
             anchors.verticalCenter: parent.verticalCenter
             source: Icons.resolve(root.iconSource)
+            // The border and this mark carry the tint. Inactive is the muted
+            // text colour, same as the number beside it.
+            color: root.active ? root.tint : Theme.muted
             sourceSize.width: Theme.iconPx(11); sourceSize.height: Theme.iconPx(11)
             width: Theme.iconPx(11); height: Theme.iconPx(11)
-            fillMode: Image.PreserveAspectFit
-            opacity: root.active ? 1.0 : 0.55
         }
         Label {
             anchors.verticalCenter: parent.verticalCenter

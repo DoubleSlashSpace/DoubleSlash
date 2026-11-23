@@ -216,14 +216,13 @@ Item {
             spacing: Theme.spacingMd
             width: Math.min(parent.width - Theme.spacingXl * 2, 300)
 
-            Image {
+            Glyph {
                 source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/warning.svg")
                 sourceSize.width: Theme.iconPx(28)
                 sourceSize.height: Theme.iconPx(28)
                 Layout.preferredWidth: Theme.iconPx(28)
                 Layout.preferredHeight: Theme.iconPx(28)
                 Layout.alignment: Qt.AlignHCenter
-                fillMode: Image.PreserveAspectFit
             }
             Label {
                 Layout.alignment: Qt.AlignHCenter

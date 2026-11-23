@@ -192,27 +192,48 @@ Rectangle {
         property string iconSource: ""
         property string tip: ""
         property color fill: Theme.bg3
+        /// Glyph colour. Text on a surface; text-on-accent on a saturated fill.
+        property color glyph: Theme.text
         property bool showTip: true
+        /// The control is a solid danger square with the X cut out of it.
+        property bool cutout: false
         readonly property alias hovered: dockButtonHover.hovered
         signal clicked()
 
         Layout.preferredWidth: Theme.barActionSize
         Layout.preferredHeight: Theme.barActionSize
         Layout.alignment: Qt.AlignVCenter
-        color: dockButton.fill
-        border.width: dockButtonHover.hovered ? 1 : 0
-        border.color: Theme.text
+        // A cutout button is the HangupSquare itself. A filled rectangle
+        // behind it would show through the X and hide the hole.
+        color: dockButton.cutout ? "transparent" : dockButton.fill
 
         Behavior on color { ColorAnimation { duration: Theme.animFast } }
 
-        Image {
+        Glyph {
+            visible: !dockButton.cutout && dockButton.iconSource !== ""
             anchors.centerIn: parent
-            source: Icons.resolve(dockButton.iconSource)
+            source: visible ? Icons.resolve(dockButton.iconSource) : ""
+            color: dockButton.glyph
             sourceSize.width: Theme.iconPx(20)
             sourceSize.height: Theme.iconPx(20)
             width: Theme.iconPx(20)
             height: Theme.iconPx(20)
-            fillMode: Image.PreserveAspectFit
+        }
+
+        HangupSquare {
+            visible: dockButton.cutout
+            anchors.fill: parent
+            fill: dockButtonHover.hovered ? Qt.lighter(Theme.danger, 1.12) : Theme.danger
+        }
+
+        // On top of a full-bleed cutout, which would otherwise cover a
+        // border drawn by the button rectangle itself. It does not take
+        // the click: the handlers below sit on this button.
+        Rectangle {
+            anchors.fill: parent
+            color: "transparent"
+            border.width: dockButtonHover.hovered ? 1 : 0
+            border.color: Theme.text
         }
 
         HoverHandler { id: dockButtonHover; cursorShape: Qt.PointingHandCursor }
@@ -256,7 +277,7 @@ Rectangle {
             Layout.fillWidth: true
             spacing: Theme.spacingXs
 
-            Image {
+            Glyph {
                 source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/video.svg")
                 sourceSize.width: Theme.iconPx(14); sourceSize.height: Theme.iconPx(14)
                 Layout.preferredWidth: Theme.iconPx(14)
@@ -380,6 +401,7 @@ Rectangle {
                 iconSource: root.muted ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/mic-off.svg")
                                        : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/mic.svg")
                 fill: root.muted ? Theme.danger : Theme.bg3
+                glyph: root.muted ? Theme.textInv : Theme.text
                 tip: root.muted ? qsTr("Unmute microphone") : qsTr("Mute microphone")
                 onClicked: {
                     root.muted = !root.muted
@@ -395,6 +417,7 @@ Rectangle {
                     ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/video.svg")
                     : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/video-off.svg")
                 fill: root.videoOn ? Theme.accent : Theme.bg3
+                glyph: root.videoOn ? Theme.textInv : Theme.text
                 // Greyed out only when this build cannot encode at all; the
                 // menu re-enumerates, so a missing camera must not disable it.
                 opacity: root.videoEncoderMissing ? 0.4 : 1.0
@@ -424,12 +447,11 @@ Rectangle {
                     border.color: Theme.accent
                     border.width: 1
 
-                    Image {
+                    Glyph {
                         anchors.centerIn: parent
                         source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg")
                         sourceSize.width: Theme.iconPx(9); sourceSize.height: Theme.iconPx(9)
                         width: Theme.iconPx(9); height: Theme.iconPx(9)
-                        fillMode: Image.PreserveAspectFit
                     }
                 }
             }
@@ -452,10 +474,10 @@ Rectangle {
                 ToolTip.delay: 500
             }
 
-            // Leave / End
+            // Leave / End. The same solid square with a cut-out X as the
+            // hang-up on the live voice room.
             DockButton {
-                iconSource: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/x-circle.svg")
-                fill: Theme.danger
+                cutout: true
                 tip: root.inRoom ? qsTr("Leave voice") : qsTr("End call")
                 onClicked: root.endCallRequested()
             }
@@ -686,9 +708,10 @@ Rectangle {
                         // The check carries the same meaning as
                         // the fill, for anyone the blue does
                         // not reach.
-                        Image {
+                        Glyph {
                             anchors.verticalCenter: parent.verticalCenter
                             source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/check.svg")
+                            color: Theme.textInv
                             sourceSize.width: Theme.iconPx(12); sourceSize.height: Theme.iconPx(12)
                             width: Theme.iconPx(12); height: Theme.iconPx(12)
                             opacity: audioOption.selected ? 1.0 : 0.0

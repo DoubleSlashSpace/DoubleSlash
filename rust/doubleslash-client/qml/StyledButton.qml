@@ -56,9 +56,10 @@ Button {
             anchors.fill: parent
             spacing: control.hasIcon && control.text.length > 0 ? Theme.spacingSm : 0
 
-            Image {
+            Glyph {
                 visible: control.hasIcon
                 source: Icons.resolve(control.icon.source)
+                color: control.icon.color
                 sourceSize.width: control.icon.width
                 sourceSize.height: control.icon.height
                 width: control.icon.width
@@ -66,8 +67,6 @@ Button {
                 Layout.preferredWidth: control.icon.width
                 Layout.preferredHeight: control.icon.height
                 Layout.alignment: Qt.AlignCenter
-                fillMode: Image.PreserveAspectFit
-                opacity: control.enabled ? 1.0 : 0.5
             }
 
             Text {

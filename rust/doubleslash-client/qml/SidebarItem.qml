@@ -47,14 +47,13 @@ ItemDelegate {
         anchors { fill: parent; leftMargin: Theme.spacingMd; rightMargin: Theme.spacingSm }
         spacing: Theme.spacingSm
 
-        Image {
+        Glyph {
             source: Icons.resolve(root.iconSource)
             visible: root.iconSource !== ""
             sourceSize.width: Theme.iconPx(18)
             sourceSize.height: Theme.iconPx(18)
             Layout.preferredWidth: Theme.iconPx(18)
             Layout.preferredHeight: Theme.iconPx(18)
-            fillMode: Image.PreserveAspectFit
             opacity: root.selected ? 1.0 : 0.72
         }
 

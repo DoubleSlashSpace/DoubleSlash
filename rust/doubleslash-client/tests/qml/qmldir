@@ -11,6 +11,8 @@ RoomTreeMember 1.0 RoomTreeMember.qml
 TreeGuides 1.0 TreeGuides.qml
 CountPill 1.0 CountPill.qml
 VoiceDock 1.0 VoiceDock.qml
+HangupSquare 1.0 HangupSquare.qml
+Glyph 1.0 Glyph.qml
 SidebarToggle 1.0 SidebarToggle.qml
 Avatar 1.0 Avatar.qml
 SquareSlider 1.0 SquareSlider.qml

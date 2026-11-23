@@ -112,13 +112,12 @@ Rectangle {
                     anchors.rightMargin: Theme.spacingSm
                     spacing: Theme.spacingSm
 
-                    Image {
+                    Glyph {
                         source: Icons.resolve(model.icon)
                         sourceSize.width: Theme.iconPx(20)
                         sourceSize.height: Theme.iconPx(20)
                         Layout.preferredWidth: Theme.iconPx(20)
                         Layout.preferredHeight: Theme.iconPx(20)
-                        fillMode: Image.PreserveAspectFit
                         opacity: navItem.highlighted ? 1.0 : 0.72
                     }
 

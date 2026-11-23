@@ -237,12 +237,12 @@ Item {
                     width: Theme.iconPx(12); height: Theme.iconPx(12)
                     color: Theme.danger
 
-                    Image {
+                    Glyph {
                         anchors.centerIn: parent
                         source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/mic-off.svg")
+                        color: Theme.textInv
                         sourceSize.width: Theme.iconPx(8); sourceSize.height: Theme.iconPx(8)
                         width: Theme.iconPx(8); height: Theme.iconPx(8)
-                        fillMode: Image.PreserveAspectFit
                     }
                 }
             }
@@ -269,12 +269,12 @@ Item {
                 border.width: 1
                 opacity: root.videoActive ? 1.0 : 0.5
 
-                Image {
+                Glyph {
                     anchors.centerIn: parent
                     source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/video.svg")
+                    color: root.watching ? Theme.textInv : Theme.accent
                     sourceSize.width: Theme.iconPx(11); sourceSize.height: Theme.iconPx(11)
                     width: Theme.iconPx(11); height: Theme.iconPx(11)
-                    fillMode: Image.PreserveAspectFit
                 }
 
                 // A MouseArea, not a TapHandler: it takes the press, so the row
@@ -297,7 +297,7 @@ Item {
 
             // Expand state: points right while shut, down while open. Shown
             // on hover too, so a row reads as something that opens.
-            Image {
+            Glyph {
                 visible: !root.isSelf
                 source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg")
                 sourceSize.width: Theme.iconPx(20); sourceSize.height: Theme.iconPx(20)

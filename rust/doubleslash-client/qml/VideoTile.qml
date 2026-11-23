@@ -246,11 +246,13 @@ Item {
                 visible: root.showFullscreenButton
                 width: Theme.iconPx(26); height: Theme.iconPx(26); radius: Theme.radiusSm
                 color: fullscreenMouse.containsMouse ? Qt.rgba(0, 0, 0, 0.85) : Qt.rgba(0, 0, 0, 0.6)
-                Image {
+                // The scrim is black in every skin, so the glyph stays white.
+                Glyph {
                     anchors.centerIn: parent
                     source: root.fullscreen
                         ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/wm-restore.svg")
                         : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/expand.svg")
+                    color: "#ffffff"
                     sourceSize.width: Theme.iconPx(14); sourceSize.height: Theme.iconPx(14)
                     width: Theme.iconPx(14); height: Theme.iconPx(14)
                 }
@@ -270,9 +272,10 @@ Item {
                 visible: root.showPopoutButton
                 width: Theme.iconPx(26); height: Theme.iconPx(26); radius: Theme.radiusSm
                 color: popoutMouse.containsMouse ? Qt.rgba(0, 0, 0, 0.85) : Qt.rgba(0, 0, 0, 0.6)
-                Image {
+                Glyph {
                     anchors.centerIn: parent
                     source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/popout.svg")
+                    color: "#ffffff"
                     sourceSize.width: Theme.iconPx(14); sourceSize.height: Theme.iconPx(14)
                     width: Theme.iconPx(14); height: Theme.iconPx(14)
                 }
@@ -300,9 +303,12 @@ Item {
                     : (audioHover.hovered ? Theme.bg3 : Qt.rgba(0, 0, 0, 0.6))
                 Behavior on color { ColorAnimation { duration: Theme.animMicro } }
 
-                Image {
+                Glyph {
                     anchors.centerIn: parent
                     source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/headphone.svg")
+                    // Idle and muted sit on black or danger. Hover uses the
+                    // panel colour, which is light in the light skin.
+                    color: !root.contentMuted && audioHover.hovered ? Theme.text : "#ffffff"
                     sourceSize.width: Theme.iconPx(14); sourceSize.height: Theme.iconPx(14)
                     width: Theme.iconPx(14); height: Theme.iconPx(14)
                     opacity: root.contentMuted ? 0.5 : 1.0
@@ -373,9 +379,10 @@ Item {
                 color: closeHover.hovered ? Theme.danger : Qt.rgba(0, 0, 0, 0.6)
                 Behavior on color { ColorAnimation { duration: Theme.animMicro } }
 
-                Image {
+                Glyph {
                     anchors.centerIn: parent
                     source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/close.svg")
+                    color: "#ffffff"
                     sourceSize.width: Theme.iconPx(14); sourceSize.height: Theme.iconPx(14)
                     width: Theme.iconPx(14); height: Theme.iconPx(14)
                 }

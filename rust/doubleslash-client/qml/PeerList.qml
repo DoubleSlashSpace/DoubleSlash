@@ -267,14 +267,14 @@ Rectangle {
                             }
 
                             // In-call phone icon
-                            Image {
+                            Glyph {
                                 visible: delegateItem.inCall
                                 source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg")
+                                color: Theme.online
                                 sourceSize.width: Theme.iconPx(12)
                                 sourceSize.height: Theme.iconPx(12)
                                 width: Theme.iconPx(12)
                                 height: Theme.iconPx(12)
-                                fillMode: Image.PreserveAspectFit
                             }
                         }
 

@@ -171,14 +171,15 @@ internal fun VoiceDock(
                 onClick = { if (videoActive) onStopVideo() else requestCamera() },
             )
             Box(
-                contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .size(44.dp)
-                    .background(ds.danger)
                     .clickable(onClick = onLeave)
                     .semantics { contentDescription = "Leave voice" },
             ) {
-                Icon(painterResource(R.drawable.ds_leave), contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                // The same solid square, with the X cut out of it, as the
+                // hang-up on the live voice room. No fill behind it: that
+                // would show through the hole.
+                HangupSquare(ds.danger, Modifier.matchParentSize())
             }
         }
         if (unwatchedStreamers.isNotEmpty()) {

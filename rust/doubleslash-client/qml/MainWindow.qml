@@ -1175,15 +1175,15 @@ ApplicationWindow {
             }
 
             contentItem: Item {
-                Image {
+                Glyph {
                     anchors.centerIn: parent
                     visible: !updateIndicator.installing
                     source: Icons.resolve(updateIndicator.icon.source)
+                    color: Theme.textInv
                     sourceSize.width: Theme.iconPx(18)
                     sourceSize.height: Theme.iconPx(18)
                     width: Theme.iconPx(18)
                     height: Theme.iconPx(18)
-                    fillMode: Image.PreserveAspectFit
                 }
                 SquareBusyIndicator {
                     anchors.centerIn: parent
@@ -3284,13 +3284,12 @@ ApplicationWindow {
                                             Layout.preferredHeight: Theme.iconPx(18)
                                             Layout.alignment: Qt.AlignVCenter
 
-                                            Image {
+                                            Glyph {
                                                 anchors.centerIn: parent
                                                 width: Theme.iconPx(10)
                                                 height: Theme.iconPx(10)
                                                 sourceSize.width: Theme.iconPx(20)
                                                 sourceSize.height: Theme.iconPx(20)
-                                                fillMode: Image.PreserveAspectFit
                                                 smooth: true
                                                 source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg")
                                                 rotation: roomGroup.collapsed ? 0 : 90
@@ -3546,13 +3545,12 @@ ApplicationWindow {
                                                             color: Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, 0.12)
                                                         }
 
-                                                        Image {
+                                                        Glyph {
                                                             anchors.centerIn: parent
                                                             width: Theme.iconPx(10)
                                                             height: Theme.iconPx(10)
                                                             sourceSize.width: Theme.iconPx(20)
                                                             sourceSize.height: Theme.iconPx(20)
-                                                            fillMode: Image.PreserveAspectFit
                                                             smooth: true
                                                             visible: row.has_children
                                                             source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/chevron.svg")
@@ -3576,7 +3574,7 @@ ApplicationWindow {
                                                         }
                                                     }
 
-                                                    Image {
+                                                    Glyph {
                                                         visible: roomDelegate.isPrivate
                                                         source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg")
                                                         sourceSize.width: Theme.iconPx(12); sourceSize.height: Theme.iconPx(12)
@@ -3686,45 +3684,71 @@ ApplicationWindow {
                                                     // The green handset shows while the pointer is
                                                     // on this room, or while this room is the open
                                                     // one. In the voice room we are in it is hang-up
-                                                    // instead: the handset inverted, in red, and that
-                                                    // one stays visible, leaving as the voice dock's
-                                                    // Leave does.
+                                                    // instead: the same solid red square, with the
+                                                    // X cut out of it, as the voice dock's Leave.
+                                                    // That one stays visible.
                                                     IconButton {
-                                                        readonly property bool endsCall: row.voice_here === true
-                                                        readonly property color callColor:
-                                                            endsCall ? Theme.danger : Theme.online
-                                                        visible: endsCall || (row.hidden !== true
+                                                        readonly property color callColor: Theme.online
+                                                        visible: row.voice_here !== true
+                                                            && row.hidden !== true
                                                             && row.show_call === true
                                                             && (roomHover.hovered
                                                                 || roomDelegate.hovered
-                                                                || roomDelegate.roomSelected))
+                                                                || roomDelegate.roomSelected)
                                                         implicitWidth: Theme.iconPx(26)
                                                         implicitHeight: Theme.iconPx(26)
                                                         padding: 0
                                                         Layout.alignment: Qt.AlignVCenter
                                                         Layout.minimumWidth: implicitWidth
                                                         Layout.maximumWidth: implicitWidth
-                                                        icon.source: endsCall
-                                                            ? Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/phone-hangup.svg")
-                                                            : Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg")
+                                                        icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/phone.svg")
                                                         icon.width: Theme.iconPx(16)
                                                         icon.height: Theme.iconPx(16)
                                                         icon.color: callColor
                                                         tileColor: Theme.semanticTint(callColor, 0.18)
                                                         tileBorder: callColor
-                                                        Accessible.name: endsCall ? qsTr("Leave voice") : qsTr("Join voice")
-                                                        ToolTip.text: endsCall
-                                                            ? qsTr("Leave voice")
-                                                            : qsTr("Join voice — or double-click the room")
+                                                        Accessible.name: qsTr("Join voice")
+                                                        ToolTip.text: qsTr("Join voice — or double-click the room")
                                                         ToolTip.visible: hovered
                                                         ToolTip.delay: 400
-                                                        onClicked: {
-                                                            if (endsCall)
-                                                                voiceDock.endCallRequested()
-                                                            else
-                                                                root.joinVoiceFromTree(
-                                                                    roomGroup.node_id, row.room_id, roomDelegate.roomName)
+                                                        onClicked: root.joinVoiceFromTree(
+                                                            roomGroup.node_id, row.room_id, roomDelegate.roomName)
+                                                    }
+
+                                                    Item {
+                                                        id: roomHangup
+                                                        visible: row.voice_here === true
+                                                        implicitWidth: Theme.iconPx(26)
+                                                        implicitHeight: Theme.iconPx(26)
+                                                        Layout.alignment: Qt.AlignVCenter
+                                                        Layout.minimumWidth: implicitWidth
+                                                        Layout.maximumWidth: implicitWidth
+
+                                                        HangupSquare {
+                                                            anchors.fill: parent
+                                                            fill: roomHangupHover.hovered
+                                                                ? Qt.lighter(Theme.danger, 1.12)
+                                                                : Theme.danger
                                                         }
+
+                                                        Rectangle {
+                                                            anchors.fill: parent
+                                                            color: "transparent"
+                                                            border.width: roomHangupHover.hovered ? 1 : 0
+                                                            border.color: Theme.text
+                                                        }
+
+                                                        HoverHandler {
+                                                            id: roomHangupHover
+                                                            cursorShape: Qt.PointingHandCursor
+                                                        }
+                                                        TapHandler { onTapped: voiceDock.endCallRequested() }
+
+                                                        Accessible.role: Accessible.Button
+                                                        Accessible.name: qsTr("Leave voice")
+                                                        ToolTip.text: qsTr("Leave voice")
+                                                        ToolTip.visible: roomHangupHover.hovered
+                                                        ToolTip.delay: 400
                                                     }
                                                 }
                                             }
@@ -3774,7 +3798,7 @@ ApplicationWindow {
                                                             Item {
                                                                 Layout.preferredWidth: Theme.iconPx(16)
                                                                 Layout.preferredHeight: Theme.iconPx(16)
-                                                                Image {
+                                                                Glyph {
                                                                     anchors.centerIn: parent
                                                                     width: Theme.iconPx(8); height: Theme.iconPx(8)
                                                                     sourceSize.width: Theme.iconPx(16); sourceSize.height: Theme.iconPx(16)
@@ -3786,7 +3810,7 @@ ApplicationWindow {
                                                                     }
                                                                 }
                                                             }
-                                                            Image {
+                                                            Glyph {
                                                                 id: leafIcon
                                                                 // A folded list recedes; an open one reads in full.
                                                                 opacity: row.expanded ? 1.0 : 0.6

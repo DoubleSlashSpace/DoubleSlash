@@ -183,13 +183,13 @@ Item {
             }
             spacing: Theme.spacingSm
 
-            Image {
+            Glyph {
                 source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/lock.svg")
+                color: Theme.muted
                 sourceSize.width: Theme.iconPx(12)
                 sourceSize.height: Theme.iconPx(12)
                 Layout.preferredWidth: Theme.iconPx(12)
                 Layout.preferredHeight: Theme.iconPx(12)
-                fillMode: Image.PreserveAspectFit
             }
             Label {
                 Layout.fillWidth: true
