@@ -23,6 +23,18 @@ Item {
         placeholderText: "Peer name"
     }
 
+    // 36 is the voice dock's control at the designed size. The room row uses
+    // the same mark at 26. Both were cropped when the buffer grew with the
+    // screen scale and Qt kept showing only the item-sized window.
+    HangupSquare {
+        id: hangup
+        x: 420
+        y: 40
+        width: 36
+        height: 36
+        fill: "#ff2b40"
+    }
+
     TestCase {
         name: "SharedControls"
         when: windowShown
@@ -31,6 +43,12 @@ Item {
             id: clickSpy
             target: button
             signalName: "clicked"
+        }
+
+        SignalSpy {
+            id: hangupPainted
+            target: hangup
+            signalName: "painted"
         }
 
         function cleanup() {
@@ -177,6 +195,43 @@ Item {
                 compare(field.color, Theme.muted)
                 field.enabled = true
             }
+        }
+
+        // getImageData asks for device pixels. Qt's canvas image is the item
+        // size times the screen scale, so a logical point is scaled first.
+        function hangupPixel(logicalX, logicalY) {
+            var ratio = Screen.devicePixelRatio
+            var sample = hangup.context.getImageData(
+                Math.round(logicalX * ratio), Math.round(logicalY * ratio), 1, 1).data
+            return { r: sample[0], g: sample[1], b: sample[2], a: sample[3] }
+        }
+
+        function test_hangupSquareFillsItsControl() {
+            // The buffer Qt shows is the item. Growing it for the screen scale
+            // turns on the unfinished canvas tiling and crops the mark.
+            tryVerify(function() {
+                return Math.abs(hangup.canvasSize.width - hangup.width) < 0.01
+                    && Math.abs(hangup.canvasSize.height - hangup.height) < 0.01
+                    && Math.abs(hangup.canvasWindow.width - hangup.width) < 0.01
+                    && Math.abs(hangup.canvasWindow.height - hangup.height) < 0.01
+                    && Math.abs(hangup.canvasWindow.x) < 0.01
+                    && Math.abs(hangup.canvasWindow.y) < 0.01
+            })
+            hangupPainted.clear()
+            hangup.requestPaint()
+            tryVerify(function() { return hangupPainted.count > 0 && hangup.context })
+            // Inside the corner margin (about 9% of the side) the fill is solid.
+            var corner = hangupPixel(34, 34)
+            var origin = hangupPixel(1, 1)
+            verify(corner.a > 200,
+                   "bottom-right of the square must stay filled, alpha " + corner.a
+                   + " origin " + origin.a + " scale " + Screen.devicePixelRatio)
+            verify(corner.r > 200 && corner.g < 80 && corner.b < 120,
+                   "bottom-right must be the danger fill")
+            var hole = hangupPixel(18, 18)
+            verify(hole.a < 20, "center of the X must be open, alpha " + hole.a)
+            var arm = hangupPixel(12, 12)
+            verify(arm.a < 20, "an arm of the X must be open, alpha " + arm.a)
         }
     }
 }

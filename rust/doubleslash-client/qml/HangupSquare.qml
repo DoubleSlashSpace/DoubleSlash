@@ -4,6 +4,10 @@
 // whatever is behind the control shows through, and the same square is the
 // voice dock's Leave and the hang-up on the live voice room. Square caps,
 // so the arms end flat. The two ratios are shared with Android's HangupSquare.
+//
+// Draw in the item's own pixels. Qt already paints this canvas at the screen
+// scale. A larger buffer, or scaling the context on top of that, draws past
+// the image, and the right and the bottom of the mark are clipped.
 import QtQuick
 import DoubleSlash.Client 1.0
 
@@ -11,14 +15,9 @@ Canvas {
     id: mark
 
     property color fill: Theme.danger
-
-    // Paint in device pixels. The context is not pre-scaled when canvasSize
-    // is set by hand, so the transform below is the whole scale.
-    readonly property real ratio: Screen.devicePixelRatio
-    canvasSize: Qt.size(Math.max(1, width * ratio), Math.max(1, height * ratio))
+    antialiasing: true
 
     onFillChanged: requestPaint()
-    onRatioChanged: requestPaint()
 
     Behavior on fill { ColorAnimation { duration: Theme.animFast } }
 
@@ -29,7 +28,6 @@ Canvas {
         if (w < 1 || h < 1)
             return
         ctx.reset()
-        ctx.scale(ratio, ratio)
         ctx.clearRect(0, 0, w, h)
         ctx.globalCompositeOperation = "source-over"
         ctx.fillStyle = fill
