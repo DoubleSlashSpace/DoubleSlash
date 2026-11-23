@@ -53,6 +53,11 @@ fn fixture(root: &Path, include_attachments: bool) -> Result<BackupSnapshot> {
         ..Default::default()
     });
     peers.save()?;
+    peers.set_identity_blocked(
+        &Identity::from_seed(&[19; 32])?.public_id(),
+        "Room stranger",
+        true,
+    )?;
     let mut rooms = RoomStore::open(&identity, Some(&root.join("my_rooms.dat")))?;
     rooms.add(RoomEntry::new("room-id", "Private room").with_supernode("host"))?;
     rooms.hide_from_sidebar("host", "room-id")?;
@@ -136,6 +141,9 @@ fn backup_restores_identity_wal_history_hidden_rooms_and_attachments() -> anyhow
     assert!(Identity::load_with_passphrase(PASSWORD, &restored).is_err());
     let peers = PeerStore::open(&identity, Some(&restored.join("peers.dat")))?;
     assert!(peers.get("friend").is_some_and(|p| p.blocked));
+    let stranger = Identity::from_seed(&[19; 32])?.public_id();
+    assert!(peers.is_blocked(&stranger));
+    assert!(peers.find_identity(&stranger).is_none());
     let rooms = RoomStore::open(&identity, Some(&restored.join("my_rooms.dat")))?;
     assert!(rooms.is_hidden_from_sidebar("host", "room-id"));
     let chat = ChatStore::open(&identity, Some(&restored.join("chat_history.db")))?;

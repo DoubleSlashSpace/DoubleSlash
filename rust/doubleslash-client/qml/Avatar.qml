@@ -1,6 +1,7 @@
 // Avatar.qml - Identity-derived symmetric identicon.
 
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
 import DoubleSlash.Client 1.0
 
@@ -9,6 +10,20 @@ Item {
 
     // Peer identity string: base64url Ed25519 public key or any unique id.
     property string peerId: ""
+    /// Room-message authors opt in; ordinary avatars remain display-only.
+    property bool blockActionEnabled: false
+    property bool identityBlocked: false
+    signal blockRequested(bool blocked)
+    signal blockAndPurgeRequested()
+    readonly property bool canBlock: blockActionEnabled && peerId !== ""
+        && peerId.replace(/=+$/, "") !== (backend.public_id || "").replace(/=+$/, "")
+
+    activeFocusOnTab: canBlock
+    Accessible.role: canBlock ? Accessible.Button : Accessible.NoRole
+    Accessible.name: canBlock ? qsTr("Room message author actions") : ""
+    Accessible.onPressAction: if (root.canBlock) authorMenu.popup()
+    Keys.onReturnPressed: if (root.canBlock) authorMenu.popup()
+    Keys.onSpacePressed: if (root.canBlock) authorMenu.popup()
 
     // When non-empty, passed verbatim to avatarSvg() and used instead of the
     // trust-tier lookup. Use this for the own-avatar live preview in Settings.
@@ -49,7 +64,11 @@ Item {
     }
 
     Component.onCompleted: _refresh()
-    onPeerIdChanged: _refresh()
+    onPeerIdChanged: {
+        if (authorMenu) authorMenu.close()
+        _refresh()
+    }
+    onCanBlockChanged: if (!canBlock && authorMenu) authorMenu.close()
     onConfigJsonChanged: _refresh()
 
     Connections {
@@ -90,6 +109,34 @@ Item {
             smooth: root._imageSmooth
             mipmap: root._imageSmooth && root.size > 32
             visible: root._svgSource !== ""
+        }
+    }
+
+    MouseArea {
+        anchors.fill: parent
+        enabled: root.canBlock
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        cursorShape: Qt.PointingHandCursor
+        onClicked: authorMenu.popup()
+        onPressAndHold: authorMenu.popup()
+    }
+
+    Menu {
+        id: authorMenu
+        objectName: "avatarAuthorMenu"
+        MenuItem {
+            objectName: "avatarBlockAction"
+            text: root.identityBlocked ? qsTr("Unblock") : qsTr("Block")
+            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/block.svg")
+            enabled: root.canBlock
+            onTriggered: if (root.canBlock) root.blockRequested(!root.identityBlocked)
+        }
+        MenuItem {
+            objectName: "avatarBlockPurgeAction"
+            text: root.identityBlocked ? qsTr("Purge messages") : qsTr("Block and purge messages")
+            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
+            enabled: root.canBlock
+            onTriggered: if (root.canBlock) root.blockAndPurgeRequested()
         }
     }
 }

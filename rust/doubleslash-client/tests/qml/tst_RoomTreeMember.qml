@@ -29,6 +29,8 @@ Item {
     SignalSpy { id: toggleSpy; target: member; signalName: "toggleRequested" }
     SignalSpy { id: audioSpy; target: member; signalName: "localAudioChanged" }
     SignalSpy { id: inviteSpy; target: member; signalName: "inviteRequested" }
+    SignalSpy { id: blockSpy; target: member; signalName: "blockRequested" }
+    SignalSpy { id: purgeSpy; target: member; signalName: "blockAndPurgeRequested" }
     SignalSpy { id: popoutSpy; target: member; signalName: "popoutRequested" }
     SignalSpy { id: fullscreenSpy; target: member; signalName: "fullscreenRequested" }
 
@@ -36,12 +38,21 @@ Item {
         name: "RoomTreeMember"
         when: windowShown
 
+        function initTestCase() {
+            var icons = {}
+            ;["block", "trash", "video", "video-off", "speaker", "speaker-off", "speech", "invite", "check", "popout", "expand"].forEach(function(name) {
+                icons[name + ".svg"] = Qt.resolvedUrl("../../qml/icons/" + name + ".svg")
+            })
+            Icons.overrides = icons
+        }
+
         function init() {
             member.expanded = false
             member.inSession = false
             member.videoActive = false
             member.watching = false
             member.trusted = false
+            member.blocked = false
             member.listPeerId = ""
             member.canInvite = false
             member.isSelf = false
@@ -50,6 +61,8 @@ Item {
             toggleSpy.clear()
             audioSpy.clear()
             inviteSpy.clear()
+            blockSpy.clear()
+            purgeSpy.clear()
             popoutSpy.clear()
             fullscreenSpy.clear()
         }
@@ -113,6 +126,56 @@ Item {
             member.listPeerId = "list-a"
             verify(findButton("Message") !== null)
             verify(findButton("Invite to trusted peers") === null)
+        }
+
+        function test_strangers_can_be_blocked_without_trusting_them() {
+            member.expanded = true
+            var button = findButton("Block")
+            verify(button !== null)
+            button.clicked()
+            compare(blockSpy.count, 1)
+            compare(blockSpy.signalArguments[0][0], true)
+            compare(purgeSpy.count, 0)
+        }
+
+        function test_purge_is_available_before_and_after_blocking() {
+            member.expanded = true
+            var purge = findButton("Block and purge messages")
+            verify(purge !== null)
+            purge.clicked()
+            compare(purgeSpy.count, 1)
+            compare(blockSpy.count, 0)
+            member.blocked = true
+            purge = findButton("Purge messages")
+            verify(purge !== null)
+            purge.clicked()
+            compare(purgeSpy.count, 2)
+            compare(blockSpy.count, 0)
+        }
+
+        function test_blocked_members_offer_unblock_and_no_contact_or_video() {
+            member.expanded = true
+            member.blocked = true
+            member.canInvite = true
+            member.inSession = true
+            member.videoActive = true
+            member.trusted = true
+            member.listPeerId = "list-a"
+            verify(findButton("Message") === null)
+            verify(findButton("Invite to trusted peers") === null)
+            verify(findButton("Watch video") === null)
+            var button = findButton("Unblock")
+            verify(button !== null)
+            button.clicked()
+            compare(blockSpy.signalArguments[0][0], false)
+        }
+
+        function test_own_identity_cannot_be_blocked() {
+            member.isSelf = true
+            member.expanded = true
+            verify(findButton("Block") === null)
+            verify(findButton("Block and purge messages") === null)
+            verify(findButton("Purge messages") === null)
         }
 
         function test_invite_needs_a_room_we_are_in() {

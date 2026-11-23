@@ -5,7 +5,7 @@
 //! `chat_history.db` files are readable without migration.
 
 use parking_lot::Mutex;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
@@ -18,6 +18,12 @@ use crate::identity::Identity;
 pub const CHAT_DB_FILENAME: &str = "chat_history.db";
 pub const CHAT_STORE_LABEL: &str = "doubleslash-store/chat/v1";
 pub const PAGE_SIZE: usize = 50;
+
+#[derive(Debug, Serialize)]
+pub struct PurgedIdentityMessages {
+    pub removed: usize,
+    pub conversations: Vec<String>,
+}
 
 // ---------------------------------------------------------------------------
 // ChatMessage
@@ -993,6 +999,40 @@ impl ChatStore {
         Ok(())
     }
 
+    /// Delete this identity's complete private conversation, plus only their
+    /// authored rows in rooms. Never match a handle or a room id as an author.
+    pub fn purge_blocked_identity(
+        &self,
+        target: &crate::peer_store::BlockedHistoryTarget,
+    ) -> Result<PurgedIdentityMessages> {
+        let aliases = target.aliases();
+        let placeholders = vec!["?"; aliases.len()].join(",");
+        let predicate = format!(
+            "rtrim(sender, '=') IN ({placeholders}) OR (peer_id NOT LIKE 'room:%' AND rtrim(peer_id, '=') IN ({placeholders}))"
+        );
+        let mut conn = self.conn.lock();
+        let transaction = conn.transaction()?;
+        let conversations = {
+            let mut query = transaction.prepare(&format!(
+                "SELECT DISTINCT peer_id FROM messages WHERE {predicate}"
+            ))?;
+            let rows = query.query_map(
+                params_from_iter(aliases.iter().chain(aliases.iter())),
+                |row| row.get::<_, String>(0),
+            )?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let removed = transaction.execute(
+            &format!("DELETE FROM messages WHERE {predicate}"),
+            params_from_iter(aliases.iter().chain(aliases.iter())),
+        )?;
+        transaction.commit()?;
+        Ok(PurgedIdentityMessages {
+            removed,
+            conversations,
+        })
+    }
+
     /// Total message count (for stats/testing).
     pub fn total_count(&self) -> Result<usize> {
         let conn = self.conn.lock();
@@ -1048,8 +1088,134 @@ impl ChatStore {
 mod tests {
     use super::*;
     use crate::identity::Identity;
+    use crate::peer_store::{PeerRecord, PeerStore};
     use tempfile::tempdir;
     use uuid::Uuid;
+
+    #[test]
+    fn blocked_purge_clears_whole_private_chat_and_only_authored_room_rows() -> Result<()> {
+        let dir = tempdir()?;
+        let own = Identity::generate();
+        let person = Identity::generate();
+        let public_id = person.public_id();
+        let canonical = public_id.trim_end_matches('=');
+        let mut peers = PeerStore::open(&own, Some(&dir.path().join("peers.dat")))?;
+        peers.upsert(PeerRecord {
+            peer_id: "saved-contact-key".into(),
+            identity_pub: public_id.clone(),
+            handle: "Alice".into(),
+            ..Default::default()
+        });
+        peers.set_identity_blocked(&public_id, "Alice", true)?;
+        let target = peers.blocked_history_target("saved-contact-key", &own.public_id())?;
+        let store = ChatStore::open(&own, Some(&dir.path().join("chat.db")))?;
+        // Cover all private keys used by the clients, including our replies.
+        for key in [
+            "saved-contact-key",
+            &person.peer_id(),
+            &public_id,
+            canonical,
+        ] {
+            store.insert(&make_msg(key, "their message", false))?;
+            store.insert(&make_msg(key, "my reply", true))?;
+        }
+        let rooms = [
+            "room:ordinary",
+            "room:default@node-a",
+            "room:default@node-b",
+            "room:legacy-host:ordinary",
+        ];
+        for room in rooms {
+            for sender in [&public_id, canonical, &person.peer_id()] {
+                let mut message = make_msg(room, "remove authored message", false);
+                message.sender = sender.to_owned();
+                store.insert(&message)?;
+            }
+            for (sender, is_self) in [
+                (own.public_id(), true),
+                (own.public_id(), false),
+                ("other-person".into(), false),
+            ] {
+                let mut message = make_msg(room, canonical, is_self);
+                message.sender = sender;
+                // Identical display names and mentions must not match an identity.
+                message.sender_handle = "Alice".into();
+                store.insert(&message)?;
+            }
+        }
+        store.insert(&make_msg("unrelated-peer", "keep private chat", false))?;
+        let report = store.purge_blocked_identity(&target)?;
+        assert_eq!(report.removed, 20);
+        for key in target.aliases() {
+            assert!(store.get_history(key, 0)?.is_empty());
+        }
+        for room in rooms {
+            let remaining = store.get_history(room, 0)?;
+            assert_eq!(remaining.len(), 3);
+            assert!(remaining.iter().all(|row| row.body == canonical));
+            assert!(report.conversations.iter().any(|key| key == room));
+        }
+        assert_eq!(store.get_history("unrelated-peer", 0)?.len(), 1);
+        assert_eq!(store.total_count()?, 13);
+        assert_eq!(store.purge_blocked_identity(&target)?.removed, 0);
+        assert!(peers.is_blocked(&public_id));
+        Ok(())
+    }
+
+    #[test]
+    fn stranger_purge_needs_a_block_and_never_creates_trust() -> Result<()> {
+        let dir = tempdir()?;
+        let own = Identity::generate();
+        let stranger = Identity::generate().public_id();
+        let mut peers = PeerStore::open(&own, Some(&dir.path().join("peers.dat")))?;
+        let store = ChatStore::open(&own, Some(&dir.path().join("chat.db")))?;
+        let mut row = make_msg("room:test", "stranger", false);
+        row.sender = stranger.clone();
+        store.insert(&row)?;
+        assert!(peers
+            .blocked_history_target(&stranger, &own.public_id())
+            .is_err());
+        assert!(peers
+            .blocked_history_target("malformed", &own.public_id())
+            .is_err());
+        peers.set_identity_blocked(&own.public_id(), "Me", true)?;
+        assert!(peers
+            .blocked_history_target(&own.public_id(), &own.public_id())
+            .is_err());
+        assert_eq!(store.total_count()?, 1);
+        peers.set_identity_blocked(&stranger, "Member", true)?;
+        let target =
+            peers.blocked_history_target(stranger.trim_end_matches('='), &own.public_id())?;
+        assert_eq!(target.public_id(), stranger.trim_end_matches('='));
+        assert_eq!(store.purge_blocked_identity(&target)?.removed, 1);
+        assert!(peers.find_identity(&stranger).is_none());
+        peers.set_identity_blocked(&stranger, "", false)?;
+        assert!(peers
+            .blocked_history_target(&stranger, &own.public_id())
+            .is_err());
+        assert!(peers.list_peers().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_purge_rolls_back_every_conversation_and_keeps_the_block() -> Result<()> {
+        let dir = tempdir()?;
+        let own = Identity::generate();
+        let person = Identity::generate().public_id();
+        let mut peers = PeerStore::open(&own, Some(&dir.path().join("peers.dat")))?;
+        peers.set_identity_blocked(&person, "Member", true)?;
+        let target = peers.blocked_history_target(&person, &own.public_id())?;
+        let store = ChatStore::open(&own, Some(&dir.path().join("chat.db")))?;
+        store.insert(&make_msg(&person, "private", false))?;
+        let mut room = make_msg("room:test", "room", false);
+        room.sender = person.clone();
+        store.insert(&room)?;
+        store.conn.lock().execute_batch("CREATE TRIGGER prevent_room_delete BEFORE DELETE ON messages WHEN OLD.peer_id = 'room:test' BEGIN SELECT RAISE(ABORT, 'test storage failure'); END;")?;
+        assert!(store.purge_blocked_identity(&target).is_err());
+        assert_eq!(store.total_count()?, 2);
+        assert!(peers.is_blocked(&person));
+        Ok(())
+    }
 
     #[test]
     fn history_orders_by_arrival_not_by_the_senders_clock() {

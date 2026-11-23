@@ -250,6 +250,22 @@ impl ConnectionManager {
             }
             return;
         }
+        // A local denial includes people who have never been trusted. Room
+        // payloads still take their open/epoch-recovery paths below; their
+        // presentation is filtered by emit_event. Key control stays live.
+        if self.peer_store.read().is_blocked(&msg.sender)
+            && matches!(
+                msg.msg_type,
+                MessageType::InviteHandshakeAccept
+                    | MessageType::TrustRequest
+                    | MessageType::CapabilityInvoke
+                    | MessageType::SfuFileOffer
+                    | MessageType::SfuFileRequest
+                    | MessageType::SfuFileComplete
+            )
+        {
+            return;
+        }
         // Positive mutual-trust gate for chat/call/file-class signaling. These
         // message types are only honoured from peers we already trust (present
         // in the local store, not revoked/blocked). This both closes the
@@ -1642,6 +1658,11 @@ impl ConnectionManager {
                     .unwrap_or("")
                     .to_owned();
                 let joiner_identity_pub = msg.sender.clone();
+                if self.peer_store.read().is_blocked(&joiner_identity_pub) {
+                    self.send_invite_reject(&joiner_identity_pub, &invite_id)
+                        .await;
+                    return;
+                }
                 let joiner_peer_id = msg
                     .payload
                     .get("joiner_peer_id")
@@ -2869,6 +2890,9 @@ impl ConnectionManager {
             }
             return;
         };
+        if self.peer_store.read().is_blocked(&msg.sender) {
+            return;
+        }
         // Hand the manager raw bytes. This used to re-encode the decrypted
         // chunk to base64 purely so `on_chunk_received` could decode it again —
         // two allocations and two codec passes per chunk, ~4 000 of them for a
@@ -3410,10 +3434,7 @@ impl ConnectionManager {
     /// untrusted peer that merely shares a supernode cannot inject signaling.
     pub(crate) fn is_trusted_sender(peer_store: &Arc<RwLock<PeerStore>>, sender: &str) -> bool {
         let store = peer_store.read();
-        store
-            .get(sender)
-            .or_else(|| store.get_by_identity(sender))
-            .is_some_and(|rec| !rec.blocked && !rec.revoked)
+        !store.is_blocked(sender) && store.find_identity(sender).is_some_and(|rec| !rec.revoked)
     }
 
     pub(super) fn canonical_peer_id_for_sender(&self, sender: &str) -> String {

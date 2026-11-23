@@ -35,6 +35,14 @@ pub fn to_json(event: &ConnectionEvent) -> Option<Value> {
 
         // ── Peers and sessions ────────────────────────────────────────────
         E::PeerConnected(peer_id) => json!({ "event": "peer_connected", "peer_id": peer_id }),
+        E::IdentityBlockResult {
+            public_id,
+            blocked,
+            purge_messages,
+            error,
+        } => json!({
+            "event": "identity_block_result", "public_id": public_id, "blocked": blocked, "purge_messages": purge_messages, "error": error,
+        }),
         E::PeerDisconnected(peer_id) => {
             json!({ "event": "peer_disconnected", "peer_id": peer_id })
         }

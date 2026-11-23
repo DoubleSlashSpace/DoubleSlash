@@ -45,6 +45,8 @@ const KNOWN_COMMANDS: &[&str] = &[
     "chat.unread_total",
     "chat.typing",
     "chat.delete",
+    "chat.clear",
+    "chat.purge_blocked",
     "chat.retry",
     "chat.purge_all",
     "chat.trim",
@@ -460,7 +462,7 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
                     v
                 })
                 .collect();
-            json!({ "ok": true, "peers": peers })
+            json!({ "ok": true, "peers": peers, "blocked_people": store.blocked_people() })
         }
         "peer.block" | "peer.unblock" => {
             let Some(peer_id) = arg_str(&parsed, "peer_id") else {
@@ -469,6 +471,11 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
             let command = if cmd == "peer.block" {
                 ConnectionCommand::BlockPeer {
                     peer_id: peer_id.to_owned(),
+                    label: arg_str(&parsed, "label").unwrap_or("").to_owned(),
+                    purge_messages: parsed
+                        .get("purge_messages")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                 }
             } else {
                 ConnectionCommand::UnblockPeer {
@@ -533,6 +540,42 @@ pub fn dispatch(session: &Session, request: &str) -> Value {
         }
         // Local retention. None of this reaches the peer: they keep their own
         // copy, and the protocol has no "delete for everyone".
+        "chat.clear" => clear_peer_history(&session.chat_store, arg_str(&parsed, "peer_id")),
+        "chat.purge_blocked" => {
+            let Some(id) = arg_str(&parsed, "peer_id") else {
+                return err("chat.purge_blocked requires peer_id");
+            };
+            let target = match session
+                .peer_store
+                .read()
+                .blocked_history_target(id, &session.my_public_id)
+            {
+                Ok(target) => target,
+                Err(error) => return err(error.to_string()),
+            };
+            match session.chat_store.purge_blocked_identity(&target) {
+                Ok(report) => {
+                    let mut room_unread = serde_json::Map::new();
+                    let mut refresh_error = None;
+                    for room_id in report.conversations.iter().filter_map(|key| {
+                        doubleslash_client::chat_store::room_id_from_history_id(key)
+                    }) {
+                        match session.chat_store.room_unread_count(room_id) {
+                            Ok(count) => {
+                                room_unread.insert(room_id.to_owned(), json!(count));
+                            }
+                            Err(error) => {
+                                refresh_error = Some(format!(
+                                    "messages purged, but unread counts could not refresh: {error}"
+                                ));
+                            }
+                        }
+                    }
+                    json!({ "ok": true, "removed": report.removed, "identity_aliases": target.aliases(), "room_unread": room_unread, "refresh_error": refresh_error })
+                }
+                Err(error) => err(format!("could not purge messages: {error}")),
+            }
+        }
         "chat.purge_all" => match session.chat_store.purge_all() {
             Ok(removed) => json!({ "ok": true, "removed": removed }),
             Err(e) => err(format!("could not purge history: {e}")),
@@ -1755,6 +1798,20 @@ fn send_file(session: &Session, parsed: &Value) -> Value {
 /// Same shape as the desktop's `retryMessage`: the id is reused so the peer
 /// deduplicates a message that did arrive, and the stored status is moved to
 /// whatever the second attempt achieved rather than being left on "failed".
+fn clear_peer_history(
+    store: &doubleslash_client::chat_store::ChatStore,
+    peer_id: Option<&str>,
+) -> Value {
+    let Some(peer_id) = peer_id.filter(|id| !id.trim().is_empty() && !id.starts_with("room:"))
+    else {
+        return err("chat.clear requires a non-empty peer_id for a direct conversation");
+    };
+    match store.clear_history(peer_id) {
+        Ok(()) => json!({ "ok": true, "peer_id": peer_id }),
+        Err(error) => err(format!("could not clear chat history: {error}")),
+    }
+}
+
 fn retry_chat(session: &Session, msg_id: &str) -> Value {
     let stored = match session.chat_store.get_by_id(msg_id) {
         Ok(Some(msg)) => msg,
@@ -2391,6 +2448,54 @@ mod tests {
         assert_eq!(arg_str(&v, "a"), Some("x"));
         assert_eq!(arg_str(&v, "b"), None);
         assert_eq!(arg_str(&v, "missing"), None);
+    }
+
+    #[test]
+    fn clearing_a_peer_removes_both_directions_and_keeps_other_conversations(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use doubleslash_client::chat_store::ChatStore;
+        let store = ChatStore::open_with_key(&[7; 32], std::path::Path::new(":memory:"))?;
+        for (id, peer_id, is_self) in [
+            ("sent", "target", true),
+            ("received", "target", false),
+            ("other", "another-peer", false),
+            ("room", "room:example", false),
+        ] {
+            store.insert(&ChatMessage {
+                id: id.into(),
+                peer_id: peer_id.into(),
+                sender: "sender".into(),
+                recipient: "recipient".into(),
+                body: "saved text".into(),
+                timestamp: 1.0,
+                is_self,
+                status: MessageStatus::Delivered,
+                kind: MessageKind::Text,
+                attachment_name: String::new(),
+                attachment_path: String::new(),
+                size_str: String::new(),
+                status_note: String::new(),
+                sender_handle: String::new(),
+            })?;
+        }
+        for invalid in [None, Some(""), Some("  "), Some("room:example")] {
+            assert_eq!(clear_peer_history(&store, invalid)["ok"], json!(false));
+            assert_eq!(store.total_count()?, 4);
+        }
+        assert_eq!(
+            clear_peer_history(&store, Some("target"))["ok"],
+            json!(true)
+        );
+        assert!(store.get_history("target", 0)?.is_empty());
+        assert_eq!(store.get_history("another-peer", 0)?.len(), 1);
+        assert_eq!(store.get_history("room:example", 0)?.len(), 1);
+        assert_eq!(store.total_count()?, 2);
+        assert_eq!(
+            clear_peer_history(&store, Some("missing"))["ok"],
+            json!(true)
+        );
+        assert_eq!(store.total_count()?, 2);
+        Ok(())
     }
 
     /// A contact invite carries a grant bound to that peer's identity. A link

@@ -83,7 +83,7 @@ app-private collection root before opening stores.
 
 | Profile state | Representation / purpose |
 |---|---|
-| `peers.dat` | Encrypted contact trust/block records, names, supernode classification and connection hints |
+| `peers.dat` | Encrypted contact trust records, separate identity block list (including strangers), names, supernode classification and connection hints |
 | `my_rooms.dat` | Encrypted room definitions/credentials, owned Space trees, hiding/removals |
 | `chat_history.db` | SQLite with encrypted message fields; history, attachment references and unread state |
 | `device-key.dat` / `device-trust.db` | Local endpoint key / encrypted accepted registry rows, where present |
@@ -223,6 +223,23 @@ then per-sender signature replay deduplication. SFU audio and receiver-idempoten
 file chunk/completion classes skip deduplication, not signatures/freshness. Foreign
 chat/call/file classes additionally require a trusted, nonblocked, nonrevoked
 peer; sharing a relay does not authorize them.
+
+Identity blocks are device-local denials, independent of contact trust. They
+persist in `peers.dat` and portable backups without creating peer records.
+Signed room content still runs the epoch-recovery path; the shared manager
+filters blocked authors before client history, notifications, decoding and
+playout. File offers/requests are refused and active transfers stopped.
+Membership and key control remain live so a blocked elected keyer cannot
+strand the rest of a room. Plain blocking preserves history and does not stop that
+member receiving the blocker's shared-room content. Optional **Block and purge
+messages** first persists the block, then deletes local history in a ChatStore
+transaction: the complete private conversation under the identity's public and
+stored peer IDs, and only that author's rows across all room history keys. It
+matches identities, never handles, and also accepts padded IDs. Desktop runs the
+purge on a blocking worker; Android calls it off the event pump and serializes it
+with history reads. Successful deletion refreshes visible history and unread
+counts. A storage failure retains the block. No downloaded files, remote copies,
+membership or key-control state are deleted.
 
 | Path | Protection and node visibility |
 |---|---|

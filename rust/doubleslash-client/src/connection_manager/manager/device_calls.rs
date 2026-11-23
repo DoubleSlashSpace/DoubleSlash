@@ -275,6 +275,9 @@ impl ConnectionManager {
     }
 
     pub(super) fn direct_media_sender(&self, peer: &str) -> Option<mpsc::Sender<PeerOutbound>> {
+        if self.peer_store.read().is_blocked(peer) {
+            return None;
+        }
         let connection = self.peers.get(peer)?;
         if self.device_id.is_none() {
             return connection.quic_out_tx.clone();

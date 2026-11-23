@@ -636,6 +636,23 @@ fn route_video(video_in: &crate::video::SharedInbound, event: &ConnectionEvent) 
 /// *somewhere*. Filtering them out of the JSON without routing them here is
 /// what makes a call connect and stay silent: every inbound frame is dropped.
 fn route_media(call_tx: &mpsc::Sender<CallCommand>, event: &ConnectionEvent) {
+    if let ConnectionEvent::IdentityBlockResult {
+        public_id,
+        blocked: true,
+        error,
+        ..
+    } = event
+    {
+        if error.is_empty() {
+            for id in [
+                public_id.clone(),
+                format!("{}=", public_id.trim_end_matches('=')),
+            ] {
+                let _ = call_tx.try_send(CallCommand::RemovePeer { peer_id: id });
+            }
+        }
+        return;
+    }
     // `try_send` rather than blocking: the pump must keep draining the event
     // channel. A full audio queue means playout is already behind, and a
     // dropped frame there is concealed by the jitter buffer, whereas a stalled

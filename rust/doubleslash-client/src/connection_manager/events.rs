@@ -15,6 +15,14 @@ pub enum ConnectionEvent {
     PeerConnected(String),
     /// A peer's session ended.
     PeerDisconnected(String),
+    /// Result of a local identity block change. Empty `error` means persisted.
+    IdentityBlockResult {
+        public_id: String,
+        blocked: bool,
+        /// The app should purge local history only after this block succeeds.
+        purge_messages: bool,
+        error: String,
+    },
     /// The node does not negotiate device routing; no identity was registered.
     DeviceRoutingUnsupported { peer_id: String },
     /// Another device signed in with this identity runs a build without device
@@ -507,9 +515,11 @@ pub enum ConnectionCommand {
         transfer_id: String,
         purpose: String,
     },
-    /// Block a peer (prevent further inbound messages; update peer store).
+    /// Block a stored peer or an untrusted room member by public identity.
     BlockPeer {
         peer_id: String,
+        label: String,
+        purge_messages: bool,
     },
     UnblockPeer {
         peer_id: String,

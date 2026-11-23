@@ -11,6 +11,7 @@ Item {
 
     property var settings: null
     signal backupsRequested()
+    signal purgeBlockedPersonRequested(string publicId, string label)
     // Open the host-a-supernode wizard: empty for a new supernode, or a managed
     // node's id and name to add a server to that supernode's cluster.
     signal hostSupernodeRequested(string nodeId, string nodeName)
@@ -3238,6 +3239,32 @@ Item {
                 spacing: Theme.spacingLg
 
                 SettingsSectionHeader { title: "Privacy" }
+
+                SettingsCard {
+                    id: blockedPeopleCard
+                    title: "Blocked people"
+                    subtitle: "Blocks apply on this device to direct contact and new room content. They do not remove anyone from a room or hide what you send there."
+                    readonly property var people: {
+                        try { return JSON.parse(backend ? backend.blocked_people_json || "[]" : "[]") } catch (e) { return [] }
+                    }
+                    Label { visible: blockedPeopleCard.people.length === 0; text: "No blocked people"; color: Theme.muted }
+                    Repeater {
+                        model: blockedPeopleCard.people
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Label { text: modelData.label || modelData.public_id.substring(0, 12); color: Theme.text; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                                Label { text: modelData.public_id; color: Theme.muted; font.pixelSize: Theme.fontSizeCaption; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true }
+                            }
+                            ColumnLayout {
+                                StyledButton { text: "Purge messages"; onClicked: root.purgeBlockedPersonRequested(modelData.public_id, modelData.label) }
+                                StyledButton { text: "Unblock"; onClicked: if (backend) backend.setIdentityBlocked(modelData.public_id, "", false) }
+                            }
+                        }
+                    }
+                }
 
                 SettingsCard {
                     id: privacyBox

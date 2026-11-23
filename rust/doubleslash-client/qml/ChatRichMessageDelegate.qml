@@ -15,6 +15,8 @@ Item {
     signal transferAcceptRequested(string transferId)
     signal transferRejectRequested(string transferId)
     signal transferRetryRequested(string transferId)
+    signal authorBlockRequested(bool blocked)
+    signal authorPurgeRequested()
 
     property string msgId: ""
     /// Brief outline when a notification opened the conversation on this row.
@@ -22,6 +24,7 @@ Item {
     property string sender: ""
     /// Ed25519 public id for avatar lookup (room chat).
     property string senderPeerId: ""
+    property bool authorBlocked: false
     property string body: ""
     property string kind: "text"
     property bool mine: false
@@ -394,6 +397,10 @@ Item {
             peerId: root.avatarPeerId
             size: 32
             showRing: true
+            blockActionEnabled: root.isRoom && !root.mine
+            identityBlocked: root.authorBlocked
+            onBlockRequested: function(blocked) { root.authorBlockRequested(blocked) }
+            onBlockAndPurgeRequested: root.authorPurgeRequested()
             anchors.top: parent.top
             anchors.topMargin: 2
 

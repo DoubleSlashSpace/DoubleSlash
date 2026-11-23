@@ -760,6 +760,32 @@ impl Default for FileTransferManager {
 }
 
 impl FileTransferManager {
+    /// Stop only this identity's transfers. A room offer remains available to
+    /// other members; its current per-recipient stream is merely reset.
+    pub fn stop_identity(&mut self, public_id: &str, peer_id: &str) -> Vec<String> {
+        let matches =
+            |id: &str| id == peer_id || id.trim_end_matches('=') == public_id.trim_end_matches('=');
+        let mut cancelled = Vec::new();
+        self.inbound.retain(|id, transfer| {
+            if matches(&transfer.peer_id) {
+                cancelled.push(id.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for (id, transfer) in &mut self.outbound {
+            if matches(&transfer.peer_id) {
+                transfer.state = TransferState::Cancelled;
+                cancelled.push(id.clone());
+            } else if !transfer.to.is_empty() && matches(&transfer.to) {
+                transfer.to.clear();
+                transfer.state = TransferState::Pending;
+            }
+        }
+        cancelled
+    }
+
     pub fn new() -> Self {
         Self {
             outbound: HashMap::new(),
@@ -2839,6 +2865,39 @@ fn unix_now_f64() -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn blocking_stops_only_that_identity_and_keeps_the_room_offer() -> Result<(), String> {
+        let mut manager = super::FileTransferManager::new();
+        for (id, sender) in [("blocked-in", "public="), ("other-in", "other")] {
+            manager.on_offer_received_with_room(
+                sender,
+                "room",
+                "host",
+                id,
+                "file",
+                "hash",
+                5,
+                1,
+                "room_file",
+                false,
+                false,
+                "",
+            );
+        }
+        let (room_offer, _) =
+            manager.offer_file("room", "file", vec![1; 5], "room_file", None, false)?;
+        manager.start_stream_for(&room_offer, "public=", 0);
+        let stopped = manager.stop_identity("public", "hex-peer");
+        assert!(stopped.contains(&"blocked-in".to_owned()));
+        assert!(!manager.has_inbound("blocked-in"));
+        assert!(manager.has_inbound("other-in"));
+        assert!(manager.has_outbound(&room_offer));
+        assert!(manager.active_outbound_streams().is_empty());
+        manager.start_stream_for(&room_offer, "other", 0);
+        assert_eq!(manager.active_outbound_streams(), vec![room_offer]);
+        Ok(())
+    }
+
     use super::*;
 
     #[test]

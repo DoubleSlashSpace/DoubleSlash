@@ -45,6 +45,12 @@ Item {
             root.accepted(url)
     }
 
+    function discardBlocked(isBlocked) {
+        for (var i = queue.count - 1; i >= 0; i--) {
+            if (isBlocked(queue.get(i).senderId)) queue.remove(i)
+        }
+    }
+
     // The invite inside lives 15 minutes; an offer left unanswered past that
     // could only fail when accepted, so it goes quietly instead.
     Timer {

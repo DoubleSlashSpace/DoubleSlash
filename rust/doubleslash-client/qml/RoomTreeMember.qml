@@ -34,6 +34,7 @@ Item {
     property bool locallyMuted: false
     property int localVolume: 100
     property bool trusted: false
+    property bool blocked: false
     property string listPeerId: ""
     /// "" | "pending" | "sent" — our trust invite to them.
     property string inviteState: ""
@@ -60,6 +61,8 @@ Item {
     signal localAudioChanged(bool muted, int volume)
     signal messageRequested()
     signal inviteRequested()
+    signal blockRequested(bool blocked)
+    signal blockAndPurgeRequested()
 
     readonly property real visualLevel:
         (!inSession || isMuted) ? 0.0 : Math.max(0.0, Math.min(1.0, audioLevel))
@@ -84,16 +87,16 @@ Item {
     }
 
     readonly property bool canWatch:
-        root.inSession && !root.isSelf && (root.videoActive || root.watching)
-    readonly property bool canPopout: root.inSession && !root.isSelf && root.videoActive
+        root.inSession && !root.isSelf && !root.blocked && (root.videoActive || root.watching)
+    readonly property bool canPopout: root.inSession && !root.isSelf && !root.blocked && root.videoActive
     // Trusted peers can be messaged; anyone else can be offered trust, from a
     // room we are in. Only one of the two ever shows.
-    readonly property bool canMessage: root.trusted && root.listPeerId !== ""
-    readonly property bool canOfferTrust: !root.trusted && root.canInvite
+    readonly property bool canMessage: root.trusted && !root.blocked && root.listPeerId !== ""
+    readonly property bool canOfferTrust: !root.trusted && !root.blocked && root.canInvite
     // Decided from the conditions, not the icons' own visibility: a child of a
     // hidden row reads as hidden, so the row could never turn itself on.
     readonly property bool hasActionIcons:
-        root.canWatch || root.canPopout || root.canMessage || root.canOfferTrust
+        !root.isSelf
 
     implicitHeight: rowHeight + (root.expanded ? actions.implicitHeight + Theme.spacingSm : 0)
     clip: true
@@ -429,6 +432,22 @@ Item {
                     ToolTip.visible: hovered || (inviteHover.hovered && !enabled)
                     HoverHandler { id: inviteHover }
                     onClicked: root.inviteRequested()
+                }
+                ActionIcon {
+                    objectName: "blockMember"
+                    visible: !root.isSelf
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/block.svg")
+                    icon.color: root.blocked ? Theme.danger : Theme.text
+                    tip: root.blocked ? qsTr("Unblock") : qsTr("Block")
+                    onClicked: root.blockRequested(!root.blocked)
+                }
+                ActionIcon {
+                    objectName: "blockAndPurgeMember"
+                    visible: !root.isSelf
+                    icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
+                    icon.color: Theme.danger
+                    tip: root.blocked ? qsTr("Purge messages") : qsTr("Block and purge messages")
+                    onClicked: root.blockAndPurgeRequested()
                 }
             }
 

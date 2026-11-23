@@ -54,6 +54,7 @@ pub mod ffi {
         /// `leaveRoom()` instead of `endCall()`.
         #[qproperty(bool, voice_in_room)]
         #[qproperty(QString, session_banner)]
+        #[qproperty(QString, blocked_people_json)]
         #[qproperty(QString, call_state)]
         #[qproperty(QString, public_id)]
         #[qproperty(i32, self_chat_unread)]
@@ -143,6 +144,11 @@ pub mod ffi {
         #[qsignal]
         #[rust_name = "peers_updated"]
         fn peersUpdated(self: Pin<&mut AppBridge>, peers_json: QString);
+
+        /// Remove this author's room bubbles after the local purge commits.
+        #[qsignal]
+        #[rust_name = "identity_messages_purged"]
+        fn identityMessagesPurged(self: Pin<&mut AppBridge>, aliases_json: QString);
 
         /// Emitted for each inbound chat message. `msg_json` is a single
         /// `{msg_id, sender, body, timestamp, kind, mine, status}` JSON object.
@@ -581,6 +587,19 @@ pub mod ffi {
         #[qinvokable]
         #[rust_name = "unblock_peer"]
         fn unblockPeer(self: Pin<&mut AppBridge>, peer_id: &QString);
+
+        #[qinvokable]
+        #[rust_name = "set_identity_blocked"]
+        fn setIdentityBlocked(
+            self: Pin<&mut AppBridge>,
+            public_id: &QString,
+            label: &QString,
+            blocked: bool,
+        );
+
+        #[qinvokable]
+        #[rust_name = "block_and_purge_messages"]
+        fn blockAndPurgeMessages(self: Pin<&mut AppBridge>, public_id: &QString, label: &QString);
 
         /// Copy a peer's public ID to the system clipboard.
         #[qinvokable]
@@ -1377,6 +1396,7 @@ pub struct AppBridgeRust {
     voice_in_room: bool,
     voice_active: bool,
     session_banner: QString,
+    blocked_people_json: QString,
     call_state: QString,
     public_id: QString,
     /// Build ID exposed as qproperty for QML (e.g. Settings or status display).
@@ -1862,6 +1882,7 @@ impl Default for AppBridgeRust {
             voice_in_room: false,
             voice_active: false,
             session_banner: QString::default(),
+            blocked_people_json: QString::from("[]"),
             call_state: QString::from("idle"),
             public_id: QString::default(),
             build_id: QString::from(env!("DOUBLESLASH_BUILD_ID")),
@@ -3939,7 +3960,14 @@ impl ffi::AppBridge {
         let senders: Vec<String> = serde_json::from_str::<Vec<String>>(&peer_ids_json.to_string())
             .unwrap_or_default()
             .into_iter()
-            .filter(|s| !s.is_empty())
+            .filter(|s| {
+                !s.is_empty()
+                    && !self
+                        .rust()
+                        .peer_store
+                        .as_ref()
+                        .is_some_and(|ps| ps.read().is_blocked(s))
+            })
             .collect();
 
         let added: Vec<String> = {
@@ -4377,12 +4405,26 @@ impl ffi::AppBridge {
         let pid = peer_id.to_string();
         let cs_opt: Option<Arc<crate::chat_store::ChatStore>> =
             self.rust().chat_store.as_ref().map(Arc::clone);
-        if let Some(cs) = cs_opt {
-            if let Err(e) = cs.clear_history(&pid) {
-                warn!("clear_peer_history: {e}");
-                return;
-            }
+        let Some(cs) = cs_opt else {
+            self.as_mut()
+                .set_session_banner(QString::from("Chat history is not available"));
+            return;
+        };
+        if let Err(e) = cs.clear_history(&pid) {
+            warn!("clear_peer_history: {e}");
+            self.as_mut().set_session_banner(QString::from(
+                format!("Could not clear chat history: {e}").as_str(),
+            ));
+            return;
         }
+        // Use the same model-reset path as selecting a peer, after the store
+        // confirms deletion. Clearing an unselected peer must leave the open
+        // conversation alone.
+        if self.rust().selected_peer_id == pid {
+            self.as_mut().chat_history_loaded(QString::from("[]"));
+        }
+        self.as_mut().unread_changed(QString::from(pid.as_str()), 0);
+        publish_notification_badge(&mut self);
         {
             let buf = &mut self.as_mut().rust_mut().event_log;
             if buf.len() >= 300 {
@@ -5468,23 +5510,58 @@ impl ffi::AppBridge {
     }
 
     fn block_peer(self: Pin<&mut Self>, peer_id: &QString) {
-        let pid = peer_id.to_string();
-        if let Some(ref tx) = self.rust().conn_cmd_tx {
-            let _ = tx.try_send(ConnectionCommand::BlockPeer {
-                peer_id: pid.clone(),
-            });
+        self.set_identity_blocked(peer_id, &QString::default(), true);
+    }
+
+    fn set_identity_blocked(
+        mut self: Pin<&mut Self>,
+        public_id: &QString,
+        label: &QString,
+        blocked: bool,
+    ) {
+        let command = if blocked {
+            ConnectionCommand::BlockPeer {
+                peer_id: public_id.to_string(),
+                label: label.to_string(),
+                purge_messages: false,
+            }
+        } else {
+            ConnectionCommand::UnblockPeer {
+                peer_id: public_id.to_string(),
+            }
+        };
+        if self
+            .rust()
+            .conn_cmd_tx
+            .as_ref()
+            .is_none_or(|tx| tx.try_send(command).is_err())
+        {
+            self.as_mut().set_session_banner(QString::from(
+                "Could not change block: session unavailable or busy",
+            ));
         }
-        info!("Blocking peer: {pid}");
     }
 
     fn unblock_peer(self: Pin<&mut Self>, peer_id: &QString) {
-        let pid = peer_id.to_string();
-        if let Some(ref tx) = self.rust().conn_cmd_tx {
-            let _ = tx.try_send(ConnectionCommand::UnblockPeer {
-                peer_id: pid.clone(),
-            });
+        self.set_identity_blocked(peer_id, &QString::default(), false);
+    }
+
+    fn block_and_purge_messages(mut self: Pin<&mut Self>, public_id: &QString, label: &QString) {
+        let command = ConnectionCommand::BlockPeer {
+            peer_id: public_id.to_string(),
+            label: label.to_string(),
+            purge_messages: true,
+        };
+        if self
+            .rust()
+            .conn_cmd_tx
+            .as_ref()
+            .is_none_or(|tx| tx.try_send(command).is_err())
+        {
+            self.as_mut().set_session_banner(QString::from(
+                "Could not block and purge: session unavailable or busy",
+            ));
         }
-        info!("Unblocking peer: {pid}");
     }
 
     fn copy_peer_id(self: Pin<&mut Self>, peer_id: &QString) {
@@ -7093,7 +7170,124 @@ fn is_own_peer_record(
             && record.identity_pub.trim_end_matches('=') == my_public_id.trim_end_matches('='))
 }
 
+fn begin_blocked_message_purge(mut bridge: Pin<&mut ffi::AppBridge>, id: &str) {
+    let (store, peers, handle, own) = {
+        let state = bridge.rust();
+        (
+            state.chat_store.clone(),
+            state.peer_store.clone(),
+            state.rt_handle.clone(),
+            state.my_public_id.clone(),
+        )
+    };
+    let (Some(store), Some(peers), Some(handle)) = (store, peers, handle) else {
+        bridge.as_mut().set_session_banner(QString::from(
+            "Person remains blocked; message history is unavailable for purging",
+        ));
+        return;
+    };
+    let target = match peers.read().blocked_history_target(id, &own) {
+        Ok(target) => target,
+        Err(error) => {
+            bridge.as_mut().set_session_banner(QString::from(
+                format!("Person remains blocked; messages were not purged: {error}").as_str(),
+            ));
+            return;
+        }
+    };
+    let qt = bridge.qt_thread();
+    bridge
+        .as_mut()
+        .set_session_banner(QString::from("Person blocked; purging local messages…"));
+    let _job = handle.spawn_blocking(move || {
+        let result = store.purge_blocked_identity(&target);
+        let aliases = target.aliases().to_vec();
+        let _ = qt.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+            if !pub_id_eq(&bridge.rust().my_public_id, &own) {
+                return;
+            }
+            match result {
+                Err(error) => {
+                    bridge.as_mut().set_session_banner(QString::from(
+                        format!("Person remains blocked; messages could not be purged: {error}")
+                            .as_str(),
+                    ));
+                }
+                Ok(report) => {
+                    for rows in bridge.as_mut().rust_mut().room_chat_history.values_mut() {
+                        rows.retain(|raw| {
+                            let sender = serde_json::from_str::<serde_json::Value>(raw)
+                                .ok()
+                                .and_then(|row| {
+                                    row.get("sender_id")
+                                        .and_then(|v| v.as_str())
+                                        .map(str::to_owned)
+                                });
+                            !sender.is_some_and(|id| {
+                                aliases
+                                    .iter()
+                                    .any(|alias| id.trim_end_matches('=') == alias)
+                            })
+                        });
+                    }
+                    let mut rooms = HashSet::new();
+                    for conversation in &report.conversations {
+                        if let Some(room) = crate::chat_store::room_id_from_history_id(conversation)
+                        {
+                            rooms.insert(room.to_owned());
+                        } else if let Ok(count) = store.unread_count(conversation) {
+                            bridge.as_mut().unread_changed(
+                                QString::from(conversation.as_str()),
+                                i32::try_from(count).unwrap_or(i32::MAX),
+                            );
+                        }
+                    }
+                    for room in rooms {
+                        let count = room_unread_count(&bridge, &room);
+                        bridge
+                            .as_mut()
+                            .room_unread_changed(QString::from(room.as_str()), count);
+                    }
+                    let selected = bridge.rust().selected_peer_id.clone();
+                    if !selected.is_empty()
+                        && (aliases
+                            .iter()
+                            .any(|alias| selected.trim_end_matches('=') == alias)
+                            || report.conversations.contains(&selected))
+                    {
+                        bridge
+                            .as_mut()
+                            .select_peer(&QString::from(selected.as_str()));
+                    }
+                    bridge.as_mut().identity_messages_purged(QString::from(
+                        serde_json::json!(aliases).to_string().as_str(),
+                    ));
+                    publish_notification_badge(&mut bridge);
+                    bridge.as_mut().set_session_banner(QString::from(
+                        format!(
+                            "Blocked; purged {} messages from this device",
+                            report.removed
+                        )
+                        .as_str(),
+                    ));
+                }
+            }
+        });
+    });
+}
+
 fn emit_peers_updated(mut bridge: Pin<&mut ffi::AppBridge>) {
+    let blocked = bridge
+        .rust()
+        .peer_store
+        .as_ref()
+        .map(|ps| ps.read().blocked_people())
+        .unwrap_or_default();
+    bridge.as_mut().set_blocked_people_json(QString::from(
+        serde_json::to_string(&blocked)
+            .unwrap_or_else(|_| "[]".to_owned())
+            .as_str(),
+    ));
     let online = bridge.rust().online_peer_ids.clone();
     let in_call = bridge.rust().in_call_peer_ids.clone();
     let my_peer_id = bridge.rust().my_peer_id.clone();
@@ -10798,6 +10992,58 @@ fn dispatch_event(
                     QString::from(room_name.as_str()),
                     QString::from(invite_url.as_str()),
                 );
+            });
+        }
+        ConnectionEvent::IdentityBlockResult {
+            public_id,
+            blocked,
+            purge_messages,
+            error,
+        } => {
+            let _ = qt_thread.queue(move |mut bridge: Pin<&mut ffi::AppBridge>| {
+                if !error.is_empty() {
+                    bridge.as_mut().set_session_banner(QString::from(
+                        format!("Could not change block: {error}").as_str(),
+                    ));
+                    return;
+                }
+                if blocked {
+                    let peer_id = bridge.rust().peer_store.as_ref().and_then(|ps| {
+                        ps.read()
+                            .find_identity(&public_id)
+                            .map(|p| p.peer_id.clone())
+                    });
+                    if let Some(tx) = &bridge.rust().call_cmd_tx {
+                        for id in [
+                            Some(public_id.clone()),
+                            Some(format!("{}=", public_id.trim_end_matches('='))),
+                            peer_id.clone(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        {
+                            let _ = tx.try_send(CallCommand::RemovePeer { peer_id: id });
+                        }
+                    }
+                    let active = &bridge.rust().active_direct_call_peer_id;
+                    if !active.is_empty()
+                        && (pub_id_eq(active, &public_id) || peer_id.as_ref() == Some(active))
+                    {
+                        bridge.as_mut().end_call();
+                    }
+                }
+                emit_peers_updated(bridge.as_mut());
+                emit_rooms_sidebar_sync(bridge.as_mut());
+                bridge
+                    .as_mut()
+                    .set_session_banner(QString::from(if blocked {
+                        "Person blocked on this device"
+                    } else {
+                        "Person unblocked"
+                    }));
+                if blocked && purge_messages {
+                    begin_blocked_message_purge(bridge.as_mut(), &public_id);
+                }
             });
         }
         ConnectionEvent::TrustInviteResult {

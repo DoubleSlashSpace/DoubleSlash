@@ -503,6 +503,18 @@ impl PreparedRestore {
         for entry in entries {
             let _: crate::peer_store::PeerRecord = serde_json::from_value(entry.clone())?;
         }
+        if let Some(blocks) = peers.get("blocked_identities") {
+            let blocks: std::collections::HashMap<String, String> =
+                serde_json::from_value(blocks.clone())?;
+            for public_id in blocks.keys() {
+                if crate::crypto::b64url_decode(public_id)
+                    .ok()
+                    .is_none_or(|key| key.len() != 32)
+                {
+                    return Err(invalid("Invalid blocked identity"));
+                }
+            }
+        }
         let rooms = Zeroizing::new(decrypt_blob(
             &identity.derive_store_key(crate::room_store::ROOM_STORE_LABEL)?,
             &read_small(&directory.path().join("my_rooms.dat"))?,

@@ -344,11 +344,28 @@ submission requirements; see [Phase 4 in the backlog](../backlog.md#access-local
 accepted after unlock before the Home screen; the version is stored in
 `AppSettings.acceptedTermsVersion`. Mic and camera prompts show an in-app
 disclosure first, because a call keeps capture running with the screen off.
-Peer and room long-press menus include **Report** (a share sheet — there is no
-report backend). The portal WebView loads only `d://` / `doubleslash://`; anything
+The peer long-press menu and each room member's expanded actions offer **Block**
+or **Unblock**, including members you have never trusted. **Settings → Privacy →
+Blocked people** also lets you unblock anyone after leaving their room. Tap or
+long-press another author's avatar on a room-chat message for the same action,
+including on saved messages and attachments; your own avatar has no block menu.
+Blocks are local to this device and suppress new direct contact, room messages, file
+offers and media, and trust requests. Plain **Block** keeps history. **Block and
+purge messages** confirms before clearing the whole private conversation,
+including your replies, and removing only that person's messages from every saved
+room on this device. Already blocked people also offer **Purge messages** in their
+actions and the blocked list. Downloaded files and remote copies remain. Blocking
+does not remove members or stop them seeing what you send in shared rooms. Blocked trusted peers are
+hidden until you show hidden peers. There is no in-app reporting flow or central
+report backend. The portal WebView loads only `d://` / `doubleslash://`; anything
 else is blocked or opened in the system browser so the JS bridge cannot ride
 along. The public privacy policy is
 https://github.com/DoubleSlashSpace/DoubleSlash/blob/develop/PRIVACY.md.
+
+The peer long-press menu also offers **Clear chat history**. It deletes that
+conversation's sent and received messages on this device only; the contact,
+other conversations and the peer's copy remain. A successful clear refreshes
+the conversation immediately.
 
 **Incoming calls while backgrounded.** `IncomingCallNotifier` posts a
 `CallStyle` (API 31+) notification with Answer / Decline and a full-screen

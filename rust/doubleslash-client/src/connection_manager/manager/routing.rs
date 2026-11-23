@@ -94,6 +94,33 @@ impl ConnectionManager {
         &mut self,
         mut msg: SignalingMessage,
     ) -> bool {
+        if msg
+            .target
+            .as_deref()
+            .is_some_and(|id| self.peer_store.read().is_blocked(id))
+            && matches!(
+                msg.msg_type,
+                MessageType::ChatMessage
+                    | MessageType::ChatTyping
+                    | MessageType::CallRequest
+                    | MessageType::CallAccept
+                    | MessageType::FileTransferOffer
+                    | MessageType::FileTransferAccept
+                    | MessageType::FileTransferChunk
+                    | MessageType::FileTransferComplete
+                    | MessageType::CapabilityInvoke
+                    | MessageType::TrustRequest
+            )
+        {
+            if let Some(message_id) = msg.payload.get("message_id").and_then(Value::as_str) {
+                self.emit_event(ConnectionEvent::ChatSendFailed {
+                    peer_id: msg.target.clone().unwrap_or_default(),
+                    message_id: message_id.to_owned(),
+                    reason: "person blocked".into(),
+                });
+            }
+            return false;
+        }
         msg.source_device = self.device_id;
         if !self.prepare_device_call(&mut msg) {
             return false;

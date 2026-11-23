@@ -12,6 +12,12 @@ import kotlinx.serialization.Serializable
  */
 
 @Serializable
+data class BlockedPerson(
+    @SerialName("public_id") val publicId: String = "",
+    val label: String = "",
+)
+
+@Serializable
 data class Peer(
     @SerialName("peer_id") val peerId: String = "",
     @SerialName("identity_pub") val identityPub: String = "",

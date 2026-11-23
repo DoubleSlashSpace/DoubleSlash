@@ -88,6 +88,14 @@ impl ConnectionManager {
         }
         match target {
             OfferTarget::Peer { peer_id } => {
+                if self.peer_store.read().is_blocked(&peer_id) {
+                    self.emit_event(ConnectionEvent::FileFailed {
+                        transfer_id,
+                        reason: "person blocked".into(),
+                        retryable: false,
+                    });
+                    return;
+                }
                 let offer = match result {
                     Ok(offer) => offer,
                     Err(e) => {

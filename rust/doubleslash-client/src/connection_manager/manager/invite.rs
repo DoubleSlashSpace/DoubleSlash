@@ -728,6 +728,12 @@ impl ConnectionManager {
             Vec::new()
         };
 
+        if self.peer_store.read().is_blocked(&inviter_identity_pub) {
+            self.emit_event(ConnectionEvent::InviteFailed {
+                reason: "unblock this person before accepting their invite".into(),
+            });
+            return;
+        }
         info!(
             "Accepting invite from {} (id={})",
             &inviter_identity_pub[..8.min(inviter_identity_pub.len())],

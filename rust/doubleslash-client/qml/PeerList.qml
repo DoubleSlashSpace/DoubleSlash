@@ -31,8 +31,8 @@ Rectangle {
     signal peerSelected(string peerId, string handle)
     signal startCallRequested(string peerId)
     signal removePeerRequested(string peerId, string handle)
-    signal copyPeerIdRequested(string peerId)
     signal blockPeerRequested(string peerId)
+    signal blockAndPurgeRequested(string peerId, string handle)
     signal unblockPeerRequested(string peerId)
     signal clearHistoryRequested(string peerId)
 
@@ -347,12 +347,6 @@ Rectangle {
             onTriggered: root.startCallRequested(peerContextMenu.targetPeerId)
         }
 
-        MenuItem {
-            text: "Copy Peer ID"
-            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/clipboard.svg")
-            onTriggered: root.copyPeerIdRequested(peerContextMenu.targetPeerId)
-        }
-
         MenuSeparator {}
 
         MenuItem {
@@ -373,6 +367,12 @@ Rectangle {
                 else
                     root.blockPeerRequested(peerContextMenu.targetPeerId)
             }
+        }
+
+        MenuItem {
+            text: peerContextMenu.targetBlocked ? "Purge messages" : "Block and purge messages"
+            icon.source: Icons.resolve("qrc:/qt/qml/DoubleSlash/Client/icons/trash.svg")
+            onTriggered: root.blockAndPurgeRequested(peerContextMenu.targetPeerId, peerContextMenu.targetHandle)
         }
 
         MenuSeparator {}

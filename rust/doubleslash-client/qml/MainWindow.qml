@@ -545,6 +545,7 @@ ApplicationWindow {
 
     /// Watch a peer in the centre region, or stop watching wherever they are.
     function toggleWatching(peerId) {
+        if (root.isIdentityBlocked(peerId)) return
         if (root.watchedVideoPeers.indexOf(peerId) !== -1)
             root.stopWatchingVideo(peerId)
         else
@@ -1502,6 +1503,20 @@ ApplicationWindow {
             root.videoPopouts[peerId].close()
     }
 
+    readonly property var blockedPeople: {
+        try { return JSON.parse(backend.blocked_people_json || "[]") } catch (e) { return [] }
+    }
+    function isIdentityBlocked(id) {
+        var bare = (id || "").replace(/=+$/, "")
+        return root.blockedPeople.some(function(p) { return p.public_id.replace(/=+$/, "") === bare })
+    }
+    onBlockedPeopleChanged: {
+        if (trustInviteDialog) trustInviteDialog.discardBlocked(root.isIdentityBlocked)
+        ;(root.watchedVideoPeers || []).slice().forEach(function(id) {
+            if (root.isIdentityBlocked(id)) root.stopWatchingVideo(id)
+        })
+    }
+
     // ── Trust invites ────────────────────────────────────────────────────────
 
     /// Our trust invites by member id: "pending" | "sent". Session-only — it
@@ -1820,6 +1835,9 @@ ApplicationWindow {
             chatPanel._loadingHistory = false
         })
         backend.chatHistoryPrepended.connect(chatPanel.onHistoryPrepended)
+        backend.identityMessagesPurged.connect(function(aliasesJson) {
+            roomPanel.removeAuthorMessages(JSON.parse(aliasesJson))
+        })
         backend.messageStatusChanged.connect(chatModel.updateMessageStatus)
         backend.participantsUpdated.connect(roomModel.setParticipants)
         backend.participantsUpdated.connect(function() { root.sessionRosterStamp++ })
@@ -1992,12 +2010,8 @@ ApplicationWindow {
             chatModel.removeMessage(msgId)
             roomPanel.removeMessage(msgId)
         })
-        // Wire peer history clear: wipe the in-memory model
-        backend.peerHistoryCleared.connect(function(peerId) {
-            if (chatPanel.selectedPeerId === peerId) {
-                chatModel.clearMessages()
-            }
-        })
+        // A successful clear of the selected peer reloads through
+        // chatHistoryLoaded, including its model and pagination reset.
 
         backend.initializeBackend()
         backend.setRoomChatVisible(root.readingRoomText)
@@ -2076,7 +2090,8 @@ ApplicationWindow {
                     hostSupernodeWizard: hostSupernodeWizard,
                     createRoomDialog: createRoomDialog,
                     acceptInviteDialog: acceptInviteDialog,
-                    invitePopup: invitePopup
+                    invitePopup: invitePopup,
+                    confirmBlockPurgeDialog: confirmBlockPurgeDialog
                 })
             }
         }
@@ -2242,6 +2257,66 @@ ApplicationWindow {
         anchors.fill: parent
         z: 99
         onAccepted: (inviteUrl) => backend.pasteInvite(inviteUrl)
+    }
+
+    Dialog {
+        id: confirmBlockPurgeDialog
+        objectName: "confirmBlockPurgeDialog"
+        title: qsTr("Are you sure?")
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(560, root.width - Theme.spacingXl * 2)
+        padding: Theme.spacingLg
+        z: 100
+        closePolicy: Dialog.CloseOnEscape
+        background: Rectangle {
+            color: Theme.bg2
+            radius: 0
+            border.color: Theme.border
+        }
+        property string publicId: ""
+        property string personLabel: ""
+        function ask(id, label) {
+            publicId = id || ""
+            personLabel = label || id
+            open()
+        }
+        contentItem: ColumnLayout {
+            spacing: Theme.spacingMd
+            Label {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: qsTr("Block %1 and purge messages on this device?").arg(confirmBlockPurgeDialog.personLabel)
+                wrapMode: Text.WordWrap
+                color: Theme.text
+                font.pixelSize: Theme.fontSizeBody
+            }
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("This clears your entire private conversation, including your replies, and removes only their messages from all saved rooms. Other room members' messages stay. Downloaded files and other people's copies remain. This cannot be undone.")
+                wrapMode: Text.WordWrap
+                color: Theme.muted
+                font.pixelSize: Theme.fontSizeBody
+            }
+            StyledButton {
+                Layout.fillWidth: true
+                text: qsTr("Block and purge")
+                objectName: "confirmBlockPurgeButton"
+                danger: true
+                onClicked: {
+                    var id = confirmBlockPurgeDialog.publicId
+                    var label = confirmBlockPurgeDialog.personLabel
+                    confirmBlockPurgeDialog.close()
+                    backend.blockAndPurgeMessages(id, label)
+                }
+            }
+            StyledButton {
+                Layout.fillWidth: true
+                text: qsTr("Cancel")
+                objectName: "cancelBlockPurgeButton"
+                onClicked: confirmBlockPurgeDialog.close()
+            }
+        }
     }
 
     // Name a supernode on this device only. Nothing is sent; Reset goes back
@@ -2843,8 +2918,8 @@ ApplicationWindow {
                             peerId,
                             qsTr("This forgets %1 on this device and ends any call with them. Your chat history stays. You will need a new invite to reach them again.").arg(name))
                     }
-                    onCopyPeerIdRequested: (peerId) => backend.copyPeerId(peerId)
                     onBlockPeerRequested: (peerId) => backend.blockPeer(peerId)
+                    onBlockAndPurgeRequested: (peerId, label) => confirmBlockPurgeDialog.ask(peerId, label)
                     onUnblockPeerRequested: (peerId) => backend.unblockPeer(peerId)
                     onClearHistoryRequested: function(peerId) {
                         backend.clearPeerHistory(peerId)
@@ -3864,6 +3939,7 @@ ApplicationWindow {
                                                     && root.videoActivePeers[row.id] === true
                                                 watching: root.watchedVideoPeers.indexOf(row.id) !== -1
                                                 trusted: row.trusted
+                                                blocked: root.isIdentityBlocked(row.id)
                                                 listPeerId: row.list_peer_id
                                                 inviteState: root.trustInviteStates[row.id] || ""
                                                 canInvite: row.can_invite
@@ -3872,6 +3948,8 @@ ApplicationWindow {
                                                 onToggleRequested: root.toggleOpenMember(row.key)
                                                 onMessageRequested: root.messagePeer(row.list_peer_id, row.name)
                                                 onInviteRequested: root.sendTrustInvite(row.room_id, row.id)
+                                                onBlockRequested: function(blocked) { backend.setIdentityBlocked(row.id, row.name, blocked) }
+                                                onBlockAndPurgeRequested: confirmBlockPurgeDialog.ask(row.id, row.name)
                                             }
                                         }
 
@@ -3913,6 +3991,7 @@ ApplicationWindow {
                                                         locallyMuted: model.localMuted === true
                                                         localVolume: model.localVolume === undefined ? 100 : model.localVolume
                                                         trusted: model.trusted === true
+                                                        blocked: root.isIdentityBlocked(model.peerId)
                                                         listPeerId: model.listPeerId || ""
                                                         inviteState: root.trustInviteStates[model.peerId] || ""
                                                         canInvite: sessionColumn.row.can_invite
@@ -3932,6 +4011,8 @@ ApplicationWindow {
                                                             sessionMember.listPeerId, sessionMember.displayName)
                                                         onInviteRequested: root.sendTrustInvite(
                                                             sessionColumn.row.room_id, sessionMember.peerId)
+                                                        onBlockRequested: function(blocked) { backend.setIdentityBlocked(sessionMember.peerId, sessionMember.displayName, blocked) }
+                                                        onBlockAndPurgeRequested: confirmBlockPurgeDialog.ask(sessionMember.peerId, sessionMember.displayName)
                                                     }
                                                 }
                                             }
@@ -4236,6 +4317,11 @@ ApplicationWindow {
 
             RoomPanel {
                 id: roomPanel
+                blockedPeople: root.blockedPeople
+                onAuthorBlockRequested: function(publicId, label, blocked) {
+                    backend.setIdentityBlocked(publicId, label, blocked)
+                }
+                onAuthorPurgeRequested: (publicId, label) => confirmBlockPurgeDialog.ask(publicId, label)
                 anchors {
                     top: filePreviewLoader.bottom
                     left: parent.left
@@ -4345,6 +4431,7 @@ ApplicationWindow {
             }
 
             SettingsPage {
+                onPurgeBlockedPersonRequested: (publicId, label) => confirmBlockPurgeDialog.ask(publicId, label)
                 id: settingsPage
                 onBackupsRequested: { settingsModel.save(); backupWizard.open() }
                 onImportSupernodeRequested: hostSupernodeWizard.openImport()

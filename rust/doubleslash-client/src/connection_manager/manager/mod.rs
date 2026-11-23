@@ -7,6 +7,7 @@
 //! - [`peer_session`] — direct QUIC, aliases, reconnect, direct audio
 //! - [`invite`] — peer + room invite URLs and handshake
 
+mod blocking;
 mod device_calls;
 mod device_session;
 mod file_work;
@@ -1371,34 +1372,11 @@ impl ConnectionManager {
                                 purpose,
                             );
                         }
-                        ConnectionCommand::BlockPeer { peer_id } => {
-                            {
-                                let mut store = self.peer_store.write();
-                                if let Some(rec) = store.get_mut(&peer_id) {
-                                    rec.blocked = true;
-                                }
-                                let _ = store.save();
-                            }
-                            self.cancel_peer_reconnect(&peer_id);
-                            self.pending_call_fallback_checks.remove(&peer_id);
-                            if self.direct_fallback.is_pending_for(&peer_id) {
-                                self.direct_fallback.cancel();
-                            }
-                            // Drop any live direct session so we stop sending.
-                            if let Some(conn) = self.peers.get_mut(&peer_id) {
-                                conn.state = PeerConnectionState::Disconnected;
-                                conn.quic_out_tx = None;
-                                conn.endpoints.clear();
-                            }
-                            info!("Peer {} blocked", &peer_id[..8.min(peer_id.len())]);
+                        ConnectionCommand::BlockPeer { peer_id, label, purge_messages } => {
+                            self.apply_identity_block(&peer_id, &label, true, purge_messages).await;
                         }
                         ConnectionCommand::UnblockPeer { peer_id } => {
-                            let mut store = self.peer_store.write();
-                            if let Some(rec) = store.get_mut(&peer_id) {
-                                rec.blocked = false;
-                            }
-                            let _ = store.save();
-                            info!("Peer {} unblocked", &peer_id[..8.min(peer_id.len())]);
+                            self.set_identity_blocked(&peer_id, "", false).await;
                         }
                         ConnectionCommand::SendCapabilityAnnounce { peer_id } => {
                             self.send_capability_announce(&peer_id).await;
@@ -1783,6 +1761,9 @@ impl ConnectionManager {
     /// warn!-logged at power-of-two totals. Audio frames are best-effort by
     /// design and are counted but never logged.
     pub(super) fn emit_event(&self, event: ConnectionEvent) {
+        if self.blocked_content_event(&event) {
+            return;
+        }
         use super::internal::drop_metrics;
         if let Err(mpsc::error::TrySendError::Full(dropped)) = self.event_tx.try_send(event) {
             let total = drop_metrics::note(&drop_metrics::APP_EVENTS);
@@ -1970,6 +1951,9 @@ impl ConnectionManager {
                 endpoint,
                 out_tx,
             } => {
+                if self.peer_store.read().is_blocked(&peer_id) {
+                    return;
+                }
                 if endpoint.device.is_some() && self.device_id.is_none() {
                     return;
                 }

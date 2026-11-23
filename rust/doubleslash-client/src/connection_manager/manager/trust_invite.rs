@@ -154,6 +154,9 @@ impl ConnectionManager {
         if bare == me.trim_end_matches('=') {
             return Err("that is you".into());
         }
+        if self.peer_store.read().is_blocked(member_public_id) {
+            return Err("you have blocked this person".into());
+        }
         if let Some(rec) = self.peer_store.read().find_identity(member_public_id) {
             return Err(if rec.blocked || rec.revoked {
                 "you have blocked this peer".into()
@@ -222,7 +225,9 @@ impl ConnectionManager {
         // Any record at all — trusted, blocked, revoked, or a supernode — means
         // there is nothing to ask: either they are trusted already or the user
         // has decided against them.
-        if self.peer_store.read().find_identity(sender).is_some() {
+        if self.peer_store.read().find_identity(sender).is_some()
+            || self.peer_store.read().is_blocked(sender)
+        {
             debug!("[trust-invite] from {short}: already known — ignoring");
             return;
         }
@@ -580,6 +585,22 @@ mod tests {
         a.manager.send_trust_invite(ROOM, &b_pub).await;
         forward(&mut a, &mut b).await;
         assert!(offers(&drain(&mut b.events)).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_blocked_stranger_cannot_prompt_for_trust() {
+        let (mut a, mut b) = roommates();
+        let a_pub = a.manager.identity.public_id();
+        let b_pub = b.manager.identity.public_id();
+        b.manager
+            .set_identity_blocked(&a_pub, "Stranger", true)
+            .await;
+        a.manager.send_trust_invite(ROOM, &b_pub).await;
+        forward(&mut a, &mut b).await;
+        assert!(offers(&drain(&mut b.events)).is_empty());
+        assert!(b.manager.peer_store.read().list_peers().is_empty());
+        b.manager.send_trust_invite(ROOM, &a_pub).await;
+        assert!(!result_error(&drain(&mut b.events)).unwrap().is_empty());
     }
 
     #[test]

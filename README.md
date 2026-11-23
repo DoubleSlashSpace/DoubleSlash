@@ -326,7 +326,9 @@ Supernodes separately persist their identity, peer records, reusable invite, end
 
 ## Privacy Policy
 
-[PRIVACY.md](PRIVACY.md) contains the full policy; [TERMS.md](TERMS.md) covers user-generated content. Android requires terms acceptance before the home screen and provides an identifier-based report through the system share sheet.
+[PRIVACY.md](PRIVACY.md) contains the full policy; [TERMS.md](TERMS.md) covers user-generated content. Android requires terms acceptance before the home screen. Both clients offer **Block/Unblock** for peers and room members, including people you have never trusted. **Settings → Privacy → Blocked people** lists every blocked identity. Blocks apply on this device to direct contact and new room messages, files, voice and video. They do not remove anyone from a room or hide what you send there. Plain **Block** keeps history. **Block and purge messages** also clears the entire private conversation, including your replies, and removes only that person's messages from every saved room. Already blocked people have **Purge messages** in their actions and the blocked list. Purging requires confirmation, affects this device only, and leaves downloaded files and other people's copies intact. There is no central reporting service.
+
+In room chat, click or tap another author's avatar for these blocking and purge actions, including on saved messages and attachments. Your own avatar has no block action.
 
 DoubleSlash has no telemetry or central account/message store. Network activity includes peer/supernode connections, desktop update requests to GitHub, optional UPnP requests to the local router, user-opened video embeds, requests to the configured Ollama endpoint, and optional authenticated DDDNS record updates when you apply a hostname with its update token. Disable these optional integrations in Settings where provided. Android does not run the desktop UPnP mapper or update checker.
 

@@ -144,6 +144,7 @@ import com.doubleslash.client.videoKey
 import com.doubleslash.client.watching
 import com.doubleslash.client.inviteContacts
 import com.doubleslash.client.trustedPeer
+import com.doubleslash.client.isIdentityBlocked
 import com.doubleslash.client.TrustOffer
 import androidx.compose.ui.draw.alpha
 import com.doubleslash.client.VideoSize
@@ -154,6 +155,7 @@ import com.doubleslash.client.DateTimeFormats
 fun AppRoot(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsState()
     val snackbars = remember { SnackbarHostState() }
+    var confirmBlockPurge by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     // Errors and notices are transient; showing them in a snackbar keeps them
     // out of the layout so a failed send does not shift the message list.
@@ -187,6 +189,8 @@ fun AppRoot(viewModel: AppViewModel) {
             onToggleWatch = viewModel::toggleWatchVideo,
             onMessage = viewModel::messageRoomMember,
             onInvite = { roomId, memberId -> viewModel.sendTrustInvite(roomId, memberId) },
+            onSetBlocked = { id, label, blocked -> viewModel.setPeerBlocked(id, blocked, label) },
+            onBlockAndPurge = { id, label -> confirmBlockPurge = id to label },
         )
     }
 
@@ -207,8 +211,7 @@ fun AppRoot(viewModel: AppViewModel) {
             pendingVoiceJoin = null
         },
     )
-    // One set of tree actions for the list and the members sheet; only what a
-    // long-press "Report" opens differs between them.
+    // One set of tree actions for the list and the members sheet.
     val treeActionsFor: ((Room) -> Unit) -> RoomTreeActions = { onCreateSubRoom ->
         RoomTreeActions(
             onFold = { treeFold = it },
@@ -254,6 +257,7 @@ fun AppRoot(viewModel: AppViewModel) {
                     viewModel = viewModel,
                     treeFold = treeFold,
                     treeActionsFor = treeActionsFor,
+                    memberActions = memberActions,
                 )
 
                 is Screen.Portal -> PortalScreen(
@@ -276,6 +280,8 @@ fun AppRoot(viewModel: AppViewModel) {
                     onSetAvatarConfig = viewModel::setAvatarConfig,
                     onPreviewAvatar = viewModel::previewAvatar,
                     onPurgeHistory = viewModel::purgeChatHistory,
+                    onUnblockPerson = { id -> viewModel.setPeerBlocked(id, false) },
+                    onPurgePerson = { id, label -> confirmBlockPurge = id to label },
                     onTrimHistory = viewModel::trimChatHistory,
                     onSetInputGain = viewModel::setInputGain,
                     onSetOutputGain = viewModel::setOutputGain,
@@ -420,6 +426,25 @@ fun AppRoot(viewModel: AppViewModel) {
             avatar = state.avatars[offer.senderId],
             waiting = state.trustOffers.size - 1,
             onAnswer = viewModel::answerTrustOffer,
+        )
+    }
+
+    confirmBlockPurge?.let { (id, label) ->
+        DsDialog(
+            onDismissRequest = { confirmBlockPurge = null },
+            title = { Text("Are you sure?") },
+            text = {
+                Text("Block ${label.ifBlank { id.take(12) }} and purge messages on this device? " +
+                    "This clears your entire private conversation, including your replies, and removes only their messages from all saved rooms. " +
+                    "Other room members' messages stay. Downloaded files and other people's copies remain. This cannot be undone.")
+            },
+            confirmButton = {
+                SquareTextButton(onClick = {
+                    confirmBlockPurge = null
+                    viewModel.setPeerBlocked(id, true, label, purgeMessages = true)
+                }) { Text("Block and purge", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { SquareTextButton(onClick = { confirmBlockPurge = null }) { Text("Cancel") } },
         )
     }
 
@@ -855,6 +880,7 @@ private fun HomeScreen(
     viewModel: AppViewModel,
     treeFold: TreeFold,
     treeActionsFor: ((Room) -> Unit) -> RoomTreeActions,
+    memberActions: MemberActions,
 ) {
     val state by viewModel.state.collectAsState()
     var showAccept by remember { mutableStateOf(false) }
@@ -862,7 +888,6 @@ private fun HomeScreen(
     var peerSortMode by rememberSaveable { mutableStateOf("online") }
     var inviteText by rememberSaveable { mutableStateOf("") }
     var confirmRemovePeer by remember { mutableStateOf<Peer?>(null) }
-    var reportPeer by remember { mutableStateOf<Peer?>(null) }
     var showCreateRoom by remember { mutableStateOf(false) }
     // A room long-pressed for "Create room inside": the dialog opens with it
     // already chosen as the parent.
@@ -1042,7 +1067,8 @@ private fun HomeScreen(
                         viewModel.setPeerBlocked(peer.peerId, blocked)
                     },
                     onRemove = { peer -> confirmRemovePeer = peer },
-                    onReport = { peer -> reportPeer = peer },
+                    onClearHistory = { peer -> viewModel.clearPeerHistory(peer.peerId) },
+                    onBlockAndPurge = { peer -> memberActions.onBlockAndPurge(peer.peerId, peer.label) },
                 )
 
                 HomeTab.ROOMS -> {
@@ -1129,16 +1155,6 @@ private fun HomeScreen(
         )
     }
 
-    reportPeer?.let { peer ->
-        ReportDialog(
-            kind = "peer",
-            targetId = peer.peerId,
-            targetLabel = peer.label,
-            onBlock = { viewModel.setPeerBlocked(peer.peerId, true) },
-            onDismiss = { reportPeer = null },
-        )
-    }
-
     renameNode?.let { node ->
         RenameNodeDialog(
             node = node,
@@ -1201,7 +1217,8 @@ private fun PeersList(
     onAcceptInvite: () -> Unit,
     onSetBlocked: (Peer, Boolean) -> Unit,
     onRemove: (Peer) -> Unit,
-    onReport: (Peer) -> Unit,
+    onClearHistory: (Peer) -> Unit,
+    onBlockAndPurge: (Peer) -> Unit,
 ) {
     if (state.peers.isEmpty()) {
         EmptyPeers(onCreateInvite = onCreateInvite, onAcceptInvite = onAcceptInvite)
@@ -1243,7 +1260,8 @@ private fun PeersList(
                 onClick = { onOpenPeer(peer) },
                 onSetBlocked = { blocked -> onSetBlocked(peer, blocked) },
                 onRemove = { onRemove(peer) },
-                onReport = { onReport(peer) },
+                onClearHistory = { onClearHistory(peer) },
+                onBlockAndPurge = { onBlockAndPurge(peer) },
             )
             HorizontalDivider()
         }
@@ -1316,11 +1334,11 @@ private fun PeerRow(
     onClick: () -> Unit,
     onSetBlocked: (Boolean) -> Unit,
     onRemove: () -> Unit,
-    onReport: () -> Unit,
+    onClearHistory: () -> Unit,
+    onBlockAndPurge: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var statsOpen by remember { mutableStateOf(false) }
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val sample = link?.stats
 
     Box {
@@ -1340,8 +1358,8 @@ private fun PeerRow(
                 }
             }
         },
-        // Avatar and name are the row. The id stays on long-press. An online
-        // peer adds Direct, or Relayed plus the supernode carrying them.
+        // Avatar and name are the row. An online peer adds Direct, or Relayed
+        // plus the supernode carrying them.
         supportingContent = if (link == null) {
             null
         } else {
@@ -1403,13 +1421,6 @@ private fun PeerRow(
 
     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
         DropdownMenuItem(
-            text = { Text("Copy peer ID") },
-            onClick = {
-                clipboard.setText(androidx.compose.ui.text.AnnotatedString(peer.peerId))
-                menuOpen = false
-            },
-        )
-        DropdownMenuItem(
             text = { Text(if (peer.blocked) "Unblock" else "Block") },
             onClick = {
                 onSetBlocked(!peer.blocked)
@@ -1417,11 +1428,8 @@ private fun PeerRow(
             },
         )
         DropdownMenuItem(
-            text = { Text("Report") },
-            onClick = {
-                onReport()
-                menuOpen = false
-            },
+            text = { Text(if (peer.blocked) "Purge messages" else "Block and purge messages") },
+            onClick = { menuOpen = false; onBlockAndPurge() },
         )
         HorizontalDivider()
         DropdownMenuItem(
@@ -1429,6 +1437,14 @@ private fun PeerRow(
             onClick = {
                 onRemove()
                 menuOpen = false
+            },
+        )
+        HorizontalDivider()
+        DropdownMenuItem(
+            text = { Text("Clear chat history") },
+            onClick = {
+                menuOpen = false
+                onClearHistory()
             },
         )
     }
@@ -2223,6 +2239,20 @@ private fun RoomChatScreen(
                             onRetryFile = onRetryFile,
                             timeFormat = state.prefs.timeFormat,
                             transfers = transfers,
+                            authorBlocked = state.isIdentityBlocked(it.senderId),
+                            canBlockAuthor = !it.isSelf && it.senderId.isNotBlank() &&
+                                it.senderId.trimEnd('=') != state.identity.publicId.trimEnd('=') &&
+                                it.senderId != state.identity.peerId,
+                            onSetAuthorBlocked = { blocked ->
+                                treeActions.members.onSetBlocked(
+                                    it.senderId,
+                                    peers.roomSenderName(it.senderId, it.senderHandle),
+                                    blocked,
+                                )
+                            },
+                            onPurgeAuthor = {
+                                treeActions.members.onBlockAndPurge(it.senderId, peers.roomSenderName(it.senderId, it.senderHandle))
+                            },
                         )
                     }
                 }
@@ -2298,6 +2328,8 @@ private fun RoomChatScreen(
                     treeActions.members.onMessage(peer)
                 },
                 onInvite = treeActions.members.onInvite,
+                onSetBlocked = treeActions.members.onSetBlocked,
+                onBlockAndPurge = treeActions.members.onBlockAndPurge,
             ),
             onPeerAudio = treeActions.onPeerAudio,
         )
@@ -2348,6 +2380,10 @@ private fun RoomMessageBubble(
     onRetryFile: (String) -> Unit = {},
     timeFormat: String = DateTimeFormats.DEFAULT,
     transfers: Map<String, LiveTransfer> = emptyMap(),
+    authorBlocked: Boolean = false,
+    canBlockAuthor: Boolean = false,
+    onSetAuthorBlocked: (Boolean) -> Unit = {},
+    onPurgeAuthor: () -> Unit = {},
 ) {
     val invite = remember(message.body) { findInviteUrl(message.body) }
     val text = if (invite == null) message.body else bodyWithoutInvite(message.body, invite)
@@ -2367,7 +2403,15 @@ private fun RoomMessageBubble(
         verticalAlignment = Alignment.Top,
     ) {
         if (!message.isSelf) {
-            RoomAvatarSlot(avatar)
+            RoomAvatarSlot(
+                avatar = avatar,
+                senderId = message.senderId,
+                senderName = senderName,
+                canBlock = canBlockAuthor,
+                blocked = authorBlocked,
+                onSetBlocked = onSetAuthorBlocked,
+                onPurge = onPurgeAuthor,
+            )
             Spacer(Modifier.width(8.dp))
         }
         Column(horizontalAlignment = alignment) {
@@ -2498,12 +2542,45 @@ private const val TRUST_OFFER_LIFETIME_MS = 14 * 60 * 1000L
  * absent one reserves the same box rather than collapsing, which would shuffle
  * every bubble sideways the moment it appeared.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun RoomAvatarSlot(avatar: AvatarArt?) {
-    if (avatar != null) {
-        Avatar(avatar, Modifier.size(ROOM_AVATAR_SIZE))
-    } else {
-        Spacer(Modifier.size(ROOM_AVATAR_SIZE))
+private fun RoomAvatarSlot(
+    avatar: AvatarArt?,
+    senderId: String = "",
+    senderName: String = "",
+    canBlock: Boolean = false,
+    blocked: Boolean = false,
+    onSetBlocked: (Boolean) -> Unit = {},
+    onPurge: () -> Unit = {},
+) {
+    var menuOpen by remember(senderId) { mutableStateOf(false) }
+    Box(
+        Modifier.size(ROOM_AVATAR_SIZE).then(
+            if (canBlock) Modifier.combinedClickable(
+                role = Role.Button,
+                onClickLabel = "Actions for $senderName",
+                onLongClickLabel = "Actions for $senderName",
+                onClick = { menuOpen = true },
+                onLongClick = { menuOpen = true },
+            ).semantics { contentDescription = "Actions for $senderName" } else Modifier,
+        ),
+    ) {
+        if (avatar != null) Avatar(avatar, Modifier.size(ROOM_AVATAR_SIZE))
+        DropdownMenu(expanded = menuOpen && canBlock, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(
+                text = { Text(if (blocked) "Unblock" else "Block") },
+                leadingIcon = { Icon(painterResource(R.drawable.ds_block), contentDescription = null) },
+                onClick = {
+                    menuOpen = false
+                    if (canBlock) onSetBlocked(!blocked)
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(if (blocked) "Purge messages" else "Block and purge messages") },
+                leadingIcon = { Icon(painterResource(R.drawable.ds_trash), contentDescription = null) },
+                onClick = { menuOpen = false; if (canBlock) onPurge() },
+            )
+        }
     }
 }
 
@@ -2742,6 +2819,8 @@ private fun SettingsScreen(
     onSetAvatarConfig: (String) -> Unit,
     onPreviewAvatar: suspend (String) -> AvatarArt?,
     onPurgeHistory: () -> Unit,
+    onUnblockPerson: (String) -> Unit,
+    onPurgePerson: (String, String) -> Unit,
     onTrimHistory: (Int) -> Unit,
     onSetInputGain: (Int) -> Unit,
     onSetOutputGain: (Int) -> Unit,
@@ -3107,6 +3186,26 @@ private fun SettingsScreen(
 
             // ── Privacy ───────────────────────────────────────────────────
             SectionTitle("Privacy")
+            Text("Blocked people", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Blocks apply on this device to direct contact and new room content. " +
+                    "They do not remove anyone from a room or hide what you send there.",
+                style = MaterialTheme.typography.labelSmall,
+            )
+            if (state.blockedPeople.isEmpty()) Text("No blocked people")
+            state.blockedPeople.forEach { person ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(person.label.ifBlank { person.publicId.take(12) })
+                        Text(person.publicId, style = MaterialTheme.typography.labelSmall)
+                    }
+                    Column {
+                        SquareTextButton(onClick = { onPurgePerson(person.publicId, person.label) }) { Text("Purge messages") }
+                        SquareTextButton(onClick = { onUnblockPerson(person.publicId) }) { Text("Unblock") }
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
             Text("Chat history", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(4.dp))
             Text(

@@ -70,6 +70,7 @@ import com.doubleslash.client.inviteContacts
 import com.doubleslash.client.roomMembersUnion
 import com.doubleslash.client.roomSenderName
 import com.doubleslash.client.trustedPeer
+import com.doubleslash.client.isIdentityBlocked
 import com.doubleslash.client.videoKey
 import com.doubleslash.client.watching
 import kotlin.math.roundToInt
@@ -1700,6 +1701,7 @@ private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, acti
     val key = row.id.videoKey()
     val isSelf = key == state.identity.publicId.videoKey()
     val trusted = state.trustedPeer(row.id)
+    val blocked = state.isIdentityBlocked(row.id)
     // We are not in our own peer list, so a lookup there gave our own row a
     // shortened key instead of our name.
     val name = if (isSelf) {
@@ -1710,15 +1712,15 @@ private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, acti
     val speaking = row.inSession && key in state.speakingPeers && !(isSelf && state.muted)
     val cameraOn = row.voice && row.onRoster && state.cameraOn(row.id)
     val watching = state.watching(row.id)
-    val canWatch = row.inSession && !isSelf && (cameraOn || watching)
+    val canWatch = row.inSession && !isSelf && !blocked && (cameraOn || watching)
     val audio = state.peerAudio[key]
     val locallyMuted = row.inSession && audio?.muted == true
     val inviteState = state.trustInvites[key].orEmpty()
     val open = fold.openMember == row.key && !isSelf
     // Trusted peers can be messaged; anyone else can be offered trust, from a
     // room we are in. Only one of the two ever shows.
-    val canOfferTrust = trusted == null && row.canInvite
-    val hasIcons = canWatch || trusted != null || canOfferTrust
+    val canOfferTrust = trusted == null && !blocked && row.canInvite
+    val hasIcons = !isSelf
     val edgeX = indent(row.guides) - 2.dp
 
     Column(
@@ -1911,6 +1913,17 @@ private fun MemberRow(row: TreeRow.Member, state: AppState, fold: TreeFold, acti
                                 enabled = inviteState.isEmpty(),
                             ) { actions.members.onInvite(row.room.roomId, row.id) }
                         }
+                        TreeIcon(
+                            R.drawable.ds_block,
+                            if (blocked) "Unblock" else "Block",
+                            tint = if (blocked) ds.danger else ds.text,
+                            checked = blocked,
+                        ) { actions.members.onSetBlocked(row.id, name, !blocked) }
+                        TreeIcon(
+                            R.drawable.ds_trash,
+                            if (blocked) "Purge messages" else "Block and purge messages",
+                            tint = ds.danger,
+                        ) { actions.members.onBlockAndPurge(row.id, name) }
                     }
                 } else if (!row.inSession) {
                     // Nothing applies: say so rather than open an empty panel.
@@ -1960,6 +1973,8 @@ internal class MemberActions(
     val onToggleWatch: (String) -> Unit,
     val onMessage: (com.doubleslash.client.Peer) -> Unit,
     val onInvite: (roomId: String, memberId: String) -> Unit,
+    val onSetBlocked: (memberId: String, label: String, blocked: Boolean) -> Unit,
+    val onBlockAndPurge: (memberId: String, label: String) -> Unit,
 )
 
 /**

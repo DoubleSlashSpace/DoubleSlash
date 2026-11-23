@@ -5,6 +5,9 @@ import DoubleSlash.Client 1.0
 
 Item {
     id: root
+    property var blockedPeople: []
+    signal authorBlockRequested(string publicId, string label, bool blocked)
+    signal authorPurgeRequested(string publicId, string label)
 
     signal leaveRoom()
     signal openAttachment(string path)
@@ -105,6 +108,13 @@ Item {
                 roomChatModel.remove(i)
                 return
             }
+        }
+    }
+
+    function removeAuthorMessages(aliases) {
+        for (var i = roomChatModel.count - 1; i >= 0; i--) {
+            var author = (roomChatModel.get(i).senderPeerId || "").replace(/=+$/, "")
+            if (aliases.indexOf(author) !== -1) roomChatModel.remove(i)
         }
     }
 
@@ -560,6 +570,7 @@ Item {
 
         ListView {
             id: roomChat
+            objectName: "roomChatMessages"
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
@@ -658,6 +669,14 @@ Item {
                 msgId: model.msgId || ""
                 sender: model.sender || ""
                 senderPeerId: model.senderPeerId || ""
+                authorBlocked: {
+                    var author = senderPeerId.replace(/=+$/, "")
+                    return root.blockedPeople.some(function(p) { return p.public_id.replace(/=+$/, "") === author })
+                }
+                onAuthorBlockRequested: function(blocked) {
+                    root.authorBlockRequested(senderPeerId, senderDisplayName(), blocked)
+                }
+                onAuthorPurgeRequested: root.authorPurgeRequested(senderPeerId, senderDisplayName())
                 body: model.body || ""
                 kind: model.kind || "text"
                 mine: !!model.mine

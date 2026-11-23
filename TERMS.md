@@ -61,10 +61,18 @@ them access to sealed conversations or guarantee removal of remote content.
 
 ## 4. Reporting abuse
 
-Where an in-app reporting option is available, it lets you prepare a report
-and choose where to send it. It does not automatically attach private
-conversations or files. You must complete the send; preparing a report alone
-does not notify the maintainers.
+DoubleSlash has no central reporting service or in-app reporting flow. On
+both clients, choose **Block** from a peer's menu or a room member's actions,
+including people you have not trusted. Blocks suppress new direct contact and
+that person's new room content on this device. They do not remove the person
+from shared rooms or prevent them receiving what you send there. Unblock them
+from the same actions or **Settings → Privacy → Blocked people**.
+
+Plain **Block** preserves history. **Block and purge messages** also clears the
+whole private conversation, including your replies, and removes only that
+person's messages from all saved rooms on this device after confirmation. Already
+blocked people offer **Purge messages**. Downloaded files and other people's
+copies remain.
 
 You can also contact the project through [GitHub issues](https://github.com/DoubleSlashSpace/DoubleSlash/issues).
 Issues are public: include only information you intend to publish. Do not
@@ -74,8 +82,8 @@ are preferable to copying sensitive content.
 
 Report suspected child sexual exploitation to the appropriate authorities
 or child-protection reporting service in your country. In the United States,
-use [NCMEC's CyberTipline](https://report.cybertip.org/). An in-app or GitHub
-report does not submit a report to those services. If someone is in immediate
+use [NCMEC's CyberTipline](https://report.cybertip.org/). A GitHub report does
+not submit a report to those services. If someone is in immediate
 danger, contact local emergency services.
 
 ## 5. Shared content and third parties

@@ -17,11 +17,15 @@ use tracing::warn;
 
 use crate::avatar_config::AvatarConfig;
 use crate::crypto::{decrypt_blob, encrypt_blob};
-use crate::error::Result;
+use crate::error::{ClientError, Result};
 use crate::identity::Identity;
 
 pub const PEER_STORE_FILE: &str = "peers.dat";
 pub const PEER_STORE_LABEL: &str = "doubleslash-store/peers/v1";
+
+#[cfg(test)]
+#[path = "peer_store/blocking_tests.rs"]
+mod blocking_tests;
 
 /// Longest name [`PeerStore::set_local_name`] keeps.
 pub const LOCAL_NAME_MAX_CHARS: usize = 64;
@@ -135,6 +139,30 @@ pub struct PeerStore {
     file_path: PathBuf,
     key: [u8; 32],
     records: HashMap<String, PeerRecord>,
+    // A denial is not a trust record. Unblocking a stranger grants no trust.
+    blocked_identities: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BlockedIdentity {
+    pub public_id: String,
+    pub label: String,
+}
+
+/// A validated, already-blocked identity whose local history may be purged.
+/// Owns the aliases so no peer-store lock is held during a SQLite operation.
+pub struct BlockedHistoryTarget {
+    public_id: String,
+    aliases: Vec<String>,
+}
+
+impl BlockedHistoryTarget {
+    pub fn public_id(&self) -> &str {
+        &self.public_id
+    }
+    pub fn aliases(&self) -> &[String] {
+        &self.aliases
+    }
 }
 
 impl PeerStore {
@@ -155,6 +183,7 @@ impl PeerStore {
             file_path: path.to_owned(),
             key: *key,
             records: HashMap::new(),
+            blocked_identities: HashMap::new(),
         };
         store.load();
         Ok(store)
@@ -168,6 +197,21 @@ impl PeerStore {
                     Ok(plaintext) => {
                         match serde_json::from_slice::<serde_json::Value>(&plaintext) {
                             Ok(doc) => {
+                                self.blocked_identities = doc
+                                    .get("blocked_identities")
+                                    .and_then(|v| {
+                                        serde_json::from_value::<HashMap<String, String>>(v.clone())
+                                            .ok()
+                                    })
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|(id, label)| {
+                                        (
+                                            id.trim_end_matches('=').to_owned(),
+                                            clean_local_name(&label),
+                                        )
+                                    })
+                                    .collect();
                                 if let Some(v) = doc["version"].as_u64() {
                                     if v != 1 {
                                         warn!("Peer store schema version {v} is newer than supported (1); \
@@ -177,7 +221,22 @@ impl PeerStore {
                                 if let Some(peers) = doc["peers"].as_array() {
                                     for entry in peers {
                                         match serde_json::from_value::<PeerRecord>(entry.clone()) {
-                                            Ok(rec) => {
+                                            Ok(mut rec) => {
+                                                rec.blocked |=
+                                                    self.blocked_identities.contains_key(
+                                                        rec.identity_pub.trim_end_matches('='),
+                                                    );
+                                                if rec.blocked {
+                                                    self.blocked_identities
+                                                        .entry(
+                                                            rec.identity_pub
+                                                                .trim_end_matches('=')
+                                                                .to_owned(),
+                                                        )
+                                                        .or_insert_with(|| {
+                                                            clean_local_name(&rec.display_name())
+                                                        });
+                                                }
                                                 self.records.insert(rec.peer_id.clone(), rec);
                                             }
                                             Err(e) => {
@@ -225,12 +284,128 @@ impl PeerStore {
             "version": 1,
             "updated_at": unix_now(),
             "peers": sorted_peers,
+            "blocked_identities": self.blocked_identities,
         });
         let plaintext = serde_json::to_vec(&payload)?;
         encrypt_blob(&self.key, &plaintext)
     }
 
     // -- accessors ----------------------------------------------------------
+
+    /// Accept a stored peer id or either public-id spelling. A block does not
+    /// grant or revoke trust or room membership.
+    pub fn is_blocked(&self, id: &str) -> bool {
+        self.blocked_identities
+            .contains_key(id.trim_end_matches('='))
+            || self.records.get(id).is_some_and(|rec| {
+                rec.blocked
+                    || self
+                        .blocked_identities
+                        .contains_key(rec.identity_pub.trim_end_matches('='))
+            })
+    }
+
+    pub fn blocked_people(&self) -> Vec<BlockedIdentity> {
+        let mut entries = self.blocked_identities.clone();
+        for rec in self.records.values().filter(|r| r.blocked) {
+            entries
+                .entry(rec.identity_pub.trim_end_matches('=').to_owned())
+                .or_insert_with(|| clean_local_name(&rec.display_name()));
+        }
+        let mut people: Vec<_> = entries
+            .into_iter()
+            .map(|(public_id, label)| BlockedIdentity { public_id, label })
+            .collect();
+        people.sort_by(|a, b| {
+            a.label
+                .to_lowercase()
+                .cmp(&b.label.to_lowercase())
+                .then_with(|| a.public_id.cmp(&b.public_id))
+        });
+        people
+    }
+
+    pub fn blocked_history_target(
+        &self,
+        id: &str,
+        own_public_id: &str,
+    ) -> Result<BlockedHistoryTarget> {
+        let record = self.find_identity(id);
+        let public_id = record
+            .map_or(id, |r| r.identity_pub.as_str())
+            .trim_end_matches('=')
+            .to_owned();
+        let key = crate::crypto::b64url_decode(&public_id)?;
+        if key.len() != 32 || public_id == own_public_id.trim_end_matches('=') {
+            return Err(ClientError::Store(
+                "cannot purge this identity's messages".into(),
+            ));
+        }
+        if !self.is_blocked(&public_id) {
+            return Err(ClientError::Store(
+                "block this person before purging their messages".into(),
+            ));
+        }
+        let mut aliases = vec![public_id.clone(), crate::crypto::derive_peer_id(&key)];
+        if let Some(record) = record {
+            let alias = record.peer_id.trim_end_matches('=');
+            if !alias.is_empty() && !alias.starts_with("room:") {
+                aliases.push(alias.to_owned());
+            }
+        }
+        aliases.sort();
+        aliases.dedup();
+        Ok(BlockedHistoryTarget { public_id, aliases })
+    }
+
+    /// Persist a denial without creating a contact. Restore the in-memory
+    /// state on a save failure so the UI never claims a block was saved.
+    pub fn set_identity_blocked(&mut self, id: &str, label: &str, blocked: bool) -> Result<String> {
+        let record = self.find_identity(id);
+        let public_id = record
+            .map_or(id, |r| r.identity_pub.as_str())
+            .trim_end_matches('=')
+            .to_owned();
+        if record.is_none()
+            && crate::crypto::b64url_decode(&public_id)
+                .ok()
+                .is_none_or(|key| key.len() != 32)
+        {
+            return Err(ClientError::Store(
+                "a valid identity public ID is required".into(),
+            ));
+        }
+        let display = record
+            .map(|r| {
+                if r.local_name.is_empty() {
+                    r.display_name()
+                } else {
+                    r.local_name.clone()
+                }
+            })
+            .unwrap_or_else(|| label.to_owned());
+        let old_blocks = self.blocked_identities.clone();
+        let old_records = self.records.clone();
+        if blocked {
+            self.blocked_identities
+                .insert(public_id.clone(), clean_local_name(&display));
+        } else {
+            self.blocked_identities.remove(&public_id);
+        }
+        for rec in self
+            .records
+            .values_mut()
+            .filter(|r| r.identity_pub.trim_end_matches('=') == public_id)
+        {
+            rec.blocked = blocked;
+        }
+        if let Err(error) = self.save() {
+            self.blocked_identities = old_blocks;
+            self.records = old_records;
+            return Err(error);
+        }
+        Ok(public_id)
+    }
 
     pub fn list_peers(&self) -> Vec<&PeerRecord> {
         let mut v: Vec<&PeerRecord> = self.records.values().collect();
@@ -286,6 +461,12 @@ impl PeerStore {
 
     pub fn upsert(&mut self, mut record: PeerRecord) {
         self.keep_local_name(&mut record);
+        record.blocked |= self.is_blocked(&record.identity_pub);
+        if record.blocked {
+            self.blocked_identities
+                .entry(record.identity_pub.trim_end_matches('=').to_owned())
+                .or_insert_with(|| clean_local_name(&record.display_name()));
+        }
         self.records.insert(record.peer_id.clone(), record);
     }
 
@@ -327,6 +508,12 @@ impl PeerStore {
     /// unrelated record that happens to share the same `peer_id` HashMap key.
     pub fn upsert_from_invite(&mut self, mut record: PeerRecord) {
         self.keep_local_name(&mut record);
+        record.blocked |= self.is_blocked(&record.identity_pub);
+        if record.blocked {
+            self.blocked_identities
+                .entry(record.identity_pub.trim_end_matches('=').to_owned())
+                .or_insert_with(|| clean_local_name(&record.display_name()));
+        }
         let stale_keys: Vec<String> = self
             .records
             .iter()

@@ -36,6 +36,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.add
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -101,6 +103,7 @@ data class AppState(
     val notice: String? = null,
     val identity: IdentityInfo = IdentityInfo(),
     val peers: List<Peer> = emptyList(),
+    val blockedPeople: List<BlockedPerson> = emptyList(),
     /** Known supernodes — the hosts a new room can be created on. */
     val supernodes: List<Peer> = emptyList(),
     val rooms: List<Room> = emptyList(),
@@ -298,11 +301,18 @@ data class TrustOffer(
  * either spelling, as [roomSenderName] does.
  */
 internal fun AppState.trustedPeer(memberId: String): Peer? {
+    if (isIdentityBlocked(memberId)) return null
     val bare = memberId.trimEnd('=')
     return peers.firstOrNull {
         !it.blocked && !it.revoked && !it.isSupernode &&
             (it.identityPub.trimEnd('=') == bare || it.peerId == memberId)
     }
+}
+
+internal fun AppState.isIdentityBlocked(id: String): Boolean {
+    val publicId = peers.firstOrNull { it.peerId == id }?.identityPub ?: id
+    return blockedPeople.any { it.publicId.trimEnd('=') == publicId.trimEnd('=') } ||
+        peers.any { it.blocked && (it.peerId == id || it.identityPub.trimEnd('=') == publicId.trimEnd('=')) }
 }
 
 /**
@@ -1429,25 +1439,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // A pre-block snapshot must not finish after the block-result refresh.
+    private val peerRefresh = Mutex()
+
     fun refreshPeers() = viewModelScope.launch {
-        val reply = core.command("peer.list")
-        if (!reply.ok) {
-            _state.update { it.copy(error = reply.errorText) }
-            return@launch
+        peerRefresh.withLock {
+            val identity = _state.value.identity.publicId
+            val reply = core.command("peer.list")
+            if (_state.value.identity.publicId != identity) return@withLock
+            if (!reply.ok) {
+                _state.update { it.copy(error = reply.errorText) }
+                return@withLock
+            }
+            // Supernodes are infrastructure, not people — the desktop client
+            // keeps them out of the contact list too.
+            val all = reply.decodeList<Peer>(core, "peers")
+            _state.update {
+                it.copy(
+                    // Our own identity is the pinned row above the list instead.
+                    peers = all.filterNot { p -> p.isSupernode || p.isOwnIdentity(it.identity) },
+                    blockedPeople = reply.decodeList<BlockedPerson>(core, "blocked_people"),
+                    // Creating a room needs the full list of available hosts.
+                    supernodes = all.filter { p -> p.isSupernode },
+                )
+            }
+            refreshAvatars(all.filterNot { it.isSupernode }.map { it.peerId } + identityPeerId())
         }
-        // Supernodes are infrastructure, not people — the desktop client keeps
-        // them out of the contact list too.
-        val all = reply.decodeList<Peer>(core, "peers")
-        _state.update {
-            it.copy(
-                // Our own identity is the pinned row above the list instead.
-                peers = all.filterNot { p -> p.isSupernode || p.isOwnIdentity(it.identity) },
-                // Kept rather than discarded: creating a room needs a host to
-                // create it on, and this is the only list of them we have.
-                supernodes = all.filter { p -> p.isSupernode },
-            )
-        }
-        refreshAvatars(all.filterNot { it.isSupernode }.map { it.peerId } + identityPeerId())
     }
 
     /**
@@ -1494,6 +1511,58 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ── History ─────────────────────────────────────────────────────
+
+    // Serialize reads with per-peer clears so an older in-flight history page
+    // cannot put deleted messages back on screen.
+    private val historyAccess = Mutex()
+
+    fun clearPeerHistory(peerId: String) = viewModelScope.launch {
+        historyAccess.withLock {
+            val identity = _state.value.identity.publicId
+            val reply = core.command("chat.clear") { put("peer_id", peerId) }
+            if (_state.value.identity.publicId != identity) return@withLock
+            if (!reply.ok) {
+                _state.update { it.copy(error = reply.errorText) }
+                return@withLock
+            }
+            _state.update {
+                it.copy(
+                    messages = if ((it.screen as? Screen.Chat)?.peer?.peerId == peerId) emptyList() else it.messages,
+                    notice = "Chat history cleared on this device.",
+                )
+            }
+        }
+    }
+
+    private fun purgeBlockedMessages(publicId: String) = viewModelScope.launch {
+        historyAccess.withLock {
+            val identity = _state.value.identity.publicId
+            val reply = core.command("chat.purge_blocked") { put("peer_id", publicId) }
+            if (_state.value.identity.publicId != identity) return@withLock
+            if (!reply.ok) {
+                _state.update { it.copy(error = "Person remains blocked; ${reply.errorText}", notice = null) }
+                return@withLock
+            }
+            val aliases = reply.decodeList<String>(core, "identity_aliases").map { it.trimEnd('=') }.toSet()
+            val roomCounts = (reply["room_unread"] as? JsonObject)?.mapValues { (_, value) ->
+                value.jsonPrimitive.content.toIntOrNull() ?: 0
+            }.orEmpty()
+            _state.update { state ->
+                val peer = (state.screen as? Screen.Chat)?.peer
+                val clearDirect = peer != null && (peer.peerId.trimEnd('=') in aliases || peer.identityPub.trimEnd('=') in aliases)
+                var unread = state.roomUnread
+                for ((roomId, count) in roomCounts) unread = if (count > 0) unread + (roomId to count) else unread - roomId
+                state.copy(
+                    messages = if (clearDirect) emptyList() else state.messages,
+                    roomMessages = state.roomMessages.filterNot { it.senderId.trimEnd('=') in aliases },
+                    roomUnread = unread,
+                    notice = "Blocked; purged ${reply.number("removed").toInt()} messages from this device.",
+                    error = reply.string("refresh_error")?.takeIf { it.isNotBlank() },
+                )
+            }
+            roomCounts.keys.forEach { RoomMessageNotifier.cancel(getApplication(), it) }
+        }
+    }
 
     /**
      * Delete every message on this device.
@@ -1741,16 +1810,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun dismissSavedFile() = _state.update { it.copy(savedFile = null) }
 
     /** Block or unblock a peer, mirroring the desktop's context menu. */
-    fun setPeerBlocked(peerId: String, blocked: Boolean) = viewModelScope.launch {
+    fun setPeerBlocked(peerId: String, blocked: Boolean, label: String = "", purgeMessages: Boolean = false) = viewModelScope.launch {
         val reply = core.command(if (blocked) "peer.block" else "peer.unblock") {
             put("peer_id", peerId)
+            put("label", label)
+            put("purge_messages", blocked && purgeMessages)
         }
         if (!reply.ok) {
             _state.update { it.copy(error = reply.errorText) }
             return@launch
         }
-        _state.update { it.copy(notice = if (blocked) "Peer blocked." else "Peer unblocked.") }
-        refreshPeers()
     }
 
     /**
@@ -1850,9 +1919,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun loadHistory(peerId: String) {
-        val reply = core.command("chat.history") { put("peer_id", peerId) }
-        if (!reply.ok) return
-        _state.update { it.copy(messages = reply.decodeList<ChatMessage>(core, "messages")) }
+        historyAccess.withLock {
+            val identity = _state.value.identity.publicId
+            val reply = core.command("chat.history") { put("peer_id", peerId) }
+            if (!reply.ok || _state.value.identity.publicId != identity) return@withLock
+            _state.update {
+                if ((it.screen as? Screen.Chat)?.peer?.peerId == peerId) {
+                    it.copy(messages = reply.decodeList<ChatMessage>(core, "messages"))
+                } else it
+            }
+        }
     }
 
     fun sendChat(body: String) {
@@ -2282,33 +2358,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * desktop and vice versa.
      */
     private suspend fun loadRoomHistory(room: Room) {
-        // The room id identifies a room on whichever supernode hosts it, except
-        // the built-in one every node hosts, whose history the core keys by node.
-        val reply = core.command("room.history") {
-            put("room_id", room.roomId)
-            put("supernode_id", room.supernodeId)
-        }
-        if (!reply.ok) return
+        historyAccess.withLock {
+            val identity = _state.value.identity.publicId
+            // The room id identifies a room on whichever supernode hosts it, except
+            // the built-in one every node hosts, whose history the core keys by node.
+            val reply = core.command("room.history") {
+                put("room_id", room.roomId)
+                put("supernode_id", room.supernodeId)
+            }
+            if (!reply.ok || _state.value.identity.publicId != identity || (_state.value.screen as? Screen.RoomChat)?.room?.key != room.key) return@withLock
 
-        val history = reply.decodeList<ChatMessage>(core, "messages").map {
-            RoomMessage(
-                messageId = it.id,
-                // `sender`, not `peerId`: for a room message the conversation
-                // key is the room itself, so reading the author off it gave
-                // every message in the room the same sender.
-                senderId = it.sender,
-                senderHandle = it.senderHandle,
-                body = it.body,
-                timestamp = it.timestamp,
-                isSelf = it.isSelf || it.sender.sameIdentityAs(_state.value.identity.publicId),
-                kind = it.kind,
-                attachmentName = it.attachmentName,
-                attachmentPath = it.attachmentPath,
-                sizeStr = it.sizeStr,
-            )
+            val history = reply.decodeList<ChatMessage>(core, "messages").map {
+                RoomMessage(
+                    messageId = it.id,
+                    // `sender`, not `peerId`: for a room message the conversation
+                    // key is the room itself, so reading the author off it gave
+                    // every message in the room the same sender.
+                    senderId = it.sender,
+                    senderHandle = it.senderHandle,
+                    body = it.body,
+                    timestamp = it.timestamp,
+                    isSelf = it.isSelf || it.sender.sameIdentityAs(_state.value.identity.publicId),
+                    kind = it.kind,
+                    attachmentName = it.attachmentName,
+                    attachmentPath = it.attachmentPath,
+                    sizeStr = it.sizeStr,
+                )
+            }
+            _state.update { it.copy(roomMessages = history) }
+            refreshAvatars(history.map { msg -> msg.senderId }.distinct())
         }
-        _state.update { it.copy(roomMessages = history) }
-        refreshAvatars(history.map { msg -> msg.senderId }.distinct())
     }
 
     fun closeRoom() {
@@ -2499,6 +2578,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * "Watch video". The core is told the whole set each time.
      */
     fun toggleWatchVideo(peerId: String) {
+        if (_state.value.isIdentityBlocked(peerId)) return
         _state.update {
             val key = peerId.videoKey()
             val watched = if (it.watching(peerId)) {
@@ -2952,6 +3032,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             "invite_failed" ->
                 _state.update { it.copy(error = event.string("reason") ?: "invite failed") }
 
+            "identity_block_result" -> {
+                val error = event.stringOrEmpty("error")
+                if (error.isNotEmpty()) {
+                    _state.update { it.copy(error = error) }
+                    return@onCoreEvent
+                }
+                val id = event.stringOrEmpty("public_id").trimEnd('=')
+                val blocked = event["blocked"]?.jsonPrimitive?.booleanOrNull == true
+                if (blocked) {
+                    val call = _state.value.call
+                    if (call != null && (_state.value.peers.firstOrNull { it.peerId == call.peerId }?.identityPub ?: call.peerId).trimEnd('=') == id) endCall()
+                    _state.update { s -> s.copy(
+                        watchedVideo = s.watchedVideo.filterNot { it.trimEnd('=') == id },
+                        trustOffers = s.trustOffers.filterNot { it.senderId.trimEnd('=') == id },
+                    ) }
+                    publishWatchedVideo()
+                }
+                _state.update { it.copy(notice = if (blocked) "Person blocked on this device." else "Person unblocked.") }
+                refreshPeers()
+                if (blocked && event.boolean("purge_messages", false)) purgeBlockedMessages(id)
+            }
             "trust_invite_received" -> {
                 val offer = TrustOffer(
                     senderId = event.stringOrEmpty("sender_id"),

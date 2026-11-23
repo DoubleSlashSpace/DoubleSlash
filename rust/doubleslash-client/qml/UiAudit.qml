@@ -360,10 +360,89 @@ Item {
             r.chatModel.setMessages(JSON.stringify(audit._sampleMessages(false)))
         } })
 
+        list.push({ name: "clear-peer-history", scope: function() {
+            if (r.chatModel.matchCount("clear-history-sentinel") !== 0)
+                audit._error("Cleared peer messages stayed visible until another peer was selected")
+            if (r.chatPanel.selectedPeerId !== "ui-audit-clear-open")
+                audit._error("Clearing history changed the selected peer")
+            if (r.chatPanel._historyPage !== 0 || r.chatPanel._loadingHistory)
+                audit._error("Clearing history did not reset the active history page")
+            return _page()
+        }, setup: function() {
+            app.sidebarTab = 0
+            app.navIndex = 0
+            r.chatPanel.selectedPeerId = "ui-audit-clear-open"
+            r.chatPanel.selectedPeerName = "History clear test"
+            r.backend.selectPeer(r.chatPanel.selectedPeerId)
+        }, populate: function() {
+            r.chatModel.setMessages(JSON.stringify([
+                { msg_id: "clear-in", body: "clear-history-sentinel received", mine: false, timestamp: 1, kind: "text", status: "delivered" },
+                { msg_id: "clear-out", body: "clear-history-sentinel sent", mine: true, timestamp: 2, kind: "text", status: "delivered" }
+            ]))
+            r.chatPanel._historyPage = 4
+            r.chatPanel._loadingHistory = true
+            r.backend.clearPeerHistory("ui-audit-clear-other")
+            if (r.chatModel.matchCount("clear-history-sentinel") !== 2)
+                audit._error("Clearing an unselected peer erased the open conversation")
+            r.backend.clearPeerHistory(r.chatPanel.selectedPeerId)
+        } })
+
         list.push({ name: "rooms", scope: _page, setup: function() {
             audit._injectSampleRooms()
             app.sidebarTab = 1
             app.navIndex = 1
+        } })
+
+        list.push({ name: "block-purge-confirmation", dialog: true,
+            scope: function() { return audit._popupScope(r.confirmBlockPurgeDialog) },
+            setup: function() {
+                app.navIndex = 0
+                r.confirmBlockPurgeDialog.ask("A".repeat(43), audit._longName)
+            }, teardown: function() {
+                audit._namedItem(r.confirmBlockPurgeDialog.contentItem, "cancelBlockPurgeButton").clicked()
+                if (JSON.parse(r.backend.blocked_people_json).some(function(person) { return person.public_id === "A".repeat(43) }))
+                    audit._error("Opening and cancelling the purge confirmation blocked the person")
+            }
+        })
+
+        list.push({ name: "block-purge-history", ready: function() {
+            return r.backend.session_banner.indexOf("Blocked; purged ") === 0
+        }, scope: function() {
+            if (r.chatModel.matchCount("purge-private-sentinel") !== 0)
+                audit._error("Purging did not immediately clear the open private conversation")
+            if (r.chatPanel.selectedPeerId !== "A".repeat(43))
+                audit._error("Purging changed the selected private conversation")
+            var list = audit._namedItem(r.roomPanel, "roomChatMessages")
+            if (!list || list.model.count !== 2)
+                audit._error("Purging did not preserve exactly the other authors' room messages")
+            else for (var i = 0; i < list.model.count; i++) {
+                if (list.model.get(i).senderPeerId.replace(/=+$/, "") === "A".repeat(43))
+                    audit._error("Purged room author stayed visible")
+            }
+            return _page()
+        }, setup: function() {
+            app.sidebarTab = 1
+            app.navIndex = 1
+            r.chatPanel.selectedPeerId = "A".repeat(43)
+            r.chatPanel.selectedPeerName = "Purge test"
+            r.backend.selectPeer(r.chatPanel.selectedPeerId)
+            r.roomPanel.switchToRoom("Purge test room", "ui-audit-purge-room", "ui-audit-node-1")
+        }, populate: function() {
+            r.chatModel.setMessages(JSON.stringify([
+                {msg_id: "purge-in", body: "purge-private-sentinel received", mine: false, timestamp: 1, kind: "text", status: "delivered"},
+                {msg_id: "purge-out", body: "purge-private-sentinel reply", mine: true, timestamp: 2, kind: "text", status: "delivered"}
+            ]))
+            var authors = ["A".repeat(43) + "=", "other-room-author", r.backend.public_id]
+            for (var i = 0; i < authors.length; i++) {
+                r.roomPanel.appendRoomChat(JSON.stringify({msg_id: "purge-room-" + i, sender_id: authors[i],
+                    sender: i === 0 ? "Blocked author" : (i === 1 ? "Other member" : "Me"),
+                    body: "Room message from " + (i === 0 ? "blocked author" : (i === 1 ? "another member" : "me")),
+                    mine: i === 2, timestamp: 1000 + i, kind: "text"}))
+            }
+            r.confirmBlockPurgeDialog.ask("A".repeat(43), "Purge test")
+            audit._namedItem(r.confirmBlockPurgeDialog.contentItem, "confirmBlockPurgeButton").clicked()
+        }, teardown: function() {
+            r.backend.unblockPeer("A".repeat(43))
         } })
 
         list.push({ name: "room-chat", scope: _page, settle: 900, setup: function() {
@@ -390,10 +469,19 @@ Item {
         ]
         for (var t = 0; t < tabs.length; t++) {
             list.push((function(tab, name) {
+                var blockedBefore = "[]"
                 return { name: "settings-" + name, scope: _page, setup: function() {
+                    if (name === "privacy") {
+                        blockedBefore = r.backend.blocked_people_json
+                        r.backend.blocked_people_json = JSON.stringify([
+                            { public_id: "A".repeat(43), label: "A room member" },
+                            { public_id: "B".repeat(43), label: audit._longName }
+                        ])
+                    }
                     app.navIndex = 2
                     app.settingsTab = tab
                 }, teardown: function() {
+                    if (name === "privacy") r.backend.blocked_people_json = blockedBefore
                     // Leaving Settings stops any audio test a section started.
                     app.leaveSettings()
                 } }
@@ -441,10 +529,22 @@ Item {
             steps.push({ label: sc.name + " populate", call: sc.populate })
             steps.push({ wait: 900 })
         }
+        if (sc.ready)
+            steps.push({label: sc.name + " completion", until: sc.ready, timeout: 10000})
         steps.push({ label: sc.name + " pages", call: function() { return audit._pageSteps(sc, 0, null) } })
         if (sc.teardown)
             steps.push({ label: sc.name + " teardown", call: sc.teardown }, { wait: 350 })
         return steps
+    }
+
+    function _namedItem(root, name) {
+        if (root.objectName === name) return root
+        var children = root.children || []
+        for (var i = 0; i < children.length; i++) {
+            var item = _namedItem(children[i], name)
+            if (item) return item
+        }
+        return null
     }
 
     /// Audits the current page, then scrolls the scene's main list one

@@ -108,15 +108,41 @@ Create or unlock an identity at start-up; optionally stay unlocked.
 
 The peer list is the client's own record of who it trusts.
 
+Both clients offer **Block/Unblock** on room members, whether trusted or not,
+and list them under **Settings → Privacy → Blocked people**. You can also block
+from a room-chat message: click or tap the other author's
+avatar for **Block/Unblock**, including on saved messages and file attachments.
+Own avatars have no block action. A separate identity
+denial map in encrypted `peers.dat` persists blocks without creating contacts;
+unblocking a stranger grants no trust. Legacy peer blocks migrate into it and
+remain when a contact is removed. Portable backups carry it; live device sync
+does not. On this device, new direct contact, room chat/file offers, voice,
+video/shared audio and trust requests from that identity are suppressed. Active
+transfers with them stop. Room membership and key exchange remain unchanged,
+including when the blocked member is the elected keyer. Plain **Block** preserves
+history. **Block and purge messages** requires confirmation and additionally
+clears this device's entire private conversation (including your replies) and only
+that person's messages from all saved rooms. **Purge messages** is also available
+for already blocked people, including in Settings. Other authors' room messages,
+downloaded files and remote copies remain. Blocking does not prevent them
+receiving your shared-room content.
+
 * **Core** — `peer_store.rs`: add, `remove`, `remove_by_any_id`, block state,
   display names, per-peer audio preferences.
 * **Desktop** — `selectPeer`, `removePeer`, `blockPeer`, `unblockPeer`,
-  `peerDisplayName`, `copyPeerId`, `clearPeerHistory`, `setPeerAudioPref`,
+  `peerDisplayName`, `clearPeerHistory`, `setPeerAudioPref`,
   `applyPeerAudioPrefs`. Right-click context menu in `PeerList.qml`.
-* **Android** — `peer.list`, `peer.block`, `peer.unblock`, `peer.remove`.
-  Long-press a peer row for Copy peer ID / Block / Remove; removal confirms
+* **Android** — `peer.list`, `peer.block` (optional `purge_messages` intent),
+  `peer.unblock`, `peer.remove`, `chat.clear`, `chat.purge_blocked`.
+  Long-press a peer row for Block/Unblock, Remove, or Clear chat history; removal confirms
   first, and blocked peers are labelled in the list. `audio.peer_pref` supplies
   per-member voice mute/volume. Peer display-name editing is not exposed.
+
+**Clear chat history** deletes both incoming and outgoing messages for that
+direct conversation on this device only. Both clients refresh the open chat
+immediately after a successful clear; other conversations and the peer's copy
+remain. Desktop also resets the unread badge and history pagination. Android
+serializes history reads with clears so an old page cannot restore deleted rows.
 
 ### 3. Invites
 

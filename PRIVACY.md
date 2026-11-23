@@ -136,7 +136,7 @@ optional feature described below (updates, link previews, Ollama, and so on).
 |---|---|
 | `identity.dat` | Your Ed25519 identity (v2, AES-256-GCM encrypted at rest) |
 | `identity.json` | Legacy v1 plaintext identity (read-only after migration, if present) |
-| `peers.dat` | Trusted-peer records (encrypted): public keys, handles, relay hints, block state, optional avatar config, build-attestation metadata |
+| `peers.dat` | Trusted-peer records (encrypted): public keys, handles, relay hints, block state, optional avatar config, build-attestation metadata; a separate local list of blocked identities and labels, including people never trusted |
 | `chat_history.db` | Local chat history; message bodies and sender handles are AES-256-GCM encrypted at rest |
 | `settings.json` | App preferences (audio, video/capture choices, plugins, privacy toggles, window size, etc.) |
 | `my_rooms.dat` | Saved room invites (encrypted) |
@@ -539,6 +539,12 @@ on a device:
   live session without wiping stores.
 
 Peers who already received a message, file, or call still have their own copy.
+Both clients also offer **Block and purge messages**, or **Purge messages** for
+an already blocked person. After confirmation, this clears the entire local
+private conversation, including your replies, and only that person's authored
+messages across all locally saved rooms. Plain **Block** keeps history. Purging
+does not delete downloaded files or copies on other devices, and a failed purge
+leaves the person blocked.
 A revoke of a room file offer stops further downloads; bytes already delivered
 cannot be un-sent.
 

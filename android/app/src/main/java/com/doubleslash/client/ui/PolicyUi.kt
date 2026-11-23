@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -176,8 +175,8 @@ fun TermsScreen(
         Text(
             "Conversations are end-to-end sealed, so the project cannot read " +
                 "or take down a message on someone else's device. Block a peer " +
-                "from their long-press menu. Report from that same menu — it " +
-                "sends identifiers, not message bodies.",
+                "from their long-press menu. You can unblock them from the " +
+                "same menu after showing hidden peers.",
             style = MaterialTheme.typography.bodyMedium,
         )
         Spacer(Modifier.height(16.dp))
@@ -200,69 +199,4 @@ fun TermsScreen(
             Text("Decline and lock")
         }
     }
-}
-
-@Composable
-fun ReportDialog(
-    kind: String,
-    targetId: String,
-    targetLabel: String,
-    onBlock: (() -> Unit)?,
-    onDismiss: () -> Unit,
-) {
-    val context = LocalContext.current
-    var note by remember { mutableStateOf("") }
-
-    DsDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Report $kind") },
-        text = {
-            Column {
-                Text(
-                    "DoubleSlash cannot read sealed messages. This sends the " +
-                        "id and your note through an app you choose (mail, " +
-                        "GitHub, …). For child sexual abuse material, also " +
-                        "report to the authorities in your country.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    targetLabel,
-                    style = MaterialTheme.typography.labelMedium,
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = note,
-                    onValueChange = { note = it },
-                    label = { Text("What happened") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 3,
-                )
-            }
-        },
-        confirmButton = {
-            SquareTextButton(onClick = {
-                Legal.shareReport(
-                    context,
-                    Legal.reportSubject(targetLabel),
-                    Legal.reportBody(kind, targetId, targetLabel, note),
-                )
-                onDismiss()
-            }) { Text("Send report") }
-        },
-        dismissButton = {
-            Column {
-                if (onBlock != null) {
-                    SquareTextButton(onClick = {
-                        onBlock()
-                        onDismiss()
-                    }) { Text("Block") }
-                }
-                SquareTextButton(onClick = {
-                    Legal.openUrl(context, Legal.CYBERTIP_URL)
-                }) { Text("NCMEC CyberTip") }
-                SquareTextButton(onClick = onDismiss) { Text("Cancel") }
-            }
-        },
-    )
 }

@@ -1400,6 +1400,7 @@ async fn handle_event(
         // Nobody to ask: a headless client never accepts an offer of trust.
         | ConnectionEvent::TrustInviteReceived { .. }
         | ConnectionEvent::TrustInviteResult { .. }
+        | ConnectionEvent::IdentityBlockResult { .. }
         | ConnectionEvent::FileProgress { .. }
         | ConnectionEvent::FileFailed { .. }
         | ConnectionEvent::SupernodeInfoReceived { .. }

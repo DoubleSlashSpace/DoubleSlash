@@ -1733,6 +1733,10 @@ impl ConnectionManager {
     /// one starts out knowing nothing. That is why `force` exists rather than
     /// the caller clearing the cache.
     pub(super) async fn send_video_subscriptions(&mut self, senders: Vec<String>, force: bool) {
+        let senders: Vec<_> = senders
+            .into_iter()
+            .filter(|id| !self.peer_store.read().is_blocked(id))
+            .collect();
         if self.current_room_id.is_empty() || self.current_supernode_id.is_empty() {
             return; // Direct sessions have no relay fan-out to steer.
         }
@@ -2589,6 +2593,32 @@ mod tests {
         );
         // And having it, it stops asking.
         assert!(!member.manager.group_key_requests.contains_key(ROOM));
+    }
+
+    #[tokio::test]
+    async fn mutually_blocked_members_still_recover_the_room_key() {
+        let (mut keyer, mut member) = stranded();
+        let keyer_id = keyer.manager.identity.public_id();
+        let member_id = member.manager.identity.public_id();
+        keyer
+            .manager
+            .set_identity_blocked(&member_id, "Member", true)
+            .await;
+        member
+            .manager
+            .set_identity_blocked(&keyer_id, "Keyer", true)
+            .await;
+        assert!(keyer.manager.peer_store.read().list_peers().is_empty());
+        assert!(member.manager.peer_store.read().list_peers().is_empty());
+        member.manager.request_group_key(ROOM).await;
+        assert_eq!(forward(&mut member, &mut keyer).await, 1);
+        assert_eq!(forward(&mut keyer, &mut member).await, 1);
+        assert_eq!(member.manager.group_keys.epoch_key(ROOM, EPOCH), Some(KEY));
+        assert!(member
+            .manager
+            .room_group_members
+            .values()
+            .any(|members| members.contains(&keyer_id)));
     }
 
     /// Until the key lands the member is silent in both directions, which is why
